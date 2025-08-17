@@ -1,0 +1,177 @@
+[project]
+name = "ai-pipeline-core"
+version = "0.1.0"
+description = "Core utilities for AI-powered processing pipelines using prefect"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+authors = [
+    {name = "bbarwik", email = "bbarwik@gmail.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "httpx>=0.28.1",
+    "Jinja2>=3.1.6",
+    "lmnr>=0.7.4",
+    "openai>=1.99.9",
+    "prefect>=3.4.13",
+    "pydantic-settings>=2.10.1",
+    "pydantic>=2.11.7",
+    "python-magic>=0.4.27",
+    "ruamel.yaml>=0.18.14",
+    "tiktoken>=0.11.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/bbarwik/ai-pipeline-core"
+Repository = "https://github.com/bbarwik/ai-pipeline-core"
+Issues = "https://github.com/bbarwik/ai-pipeline-core/issues"
+
+[project.optional-dependencies]
+dev = [
+    "basedpyright>=1.31.2",
+    "bump2version>=1.0.1",
+    "pre-commit>=4.3.0",
+    "pytest-asyncio>=1.1.0",
+    "pytest-cov>=5.0.0",
+    "pytest-mock>=3.14.0",
+    "pytest-xdist>=3.8.0",
+    "pytest>=8.4.1",
+    "ruff>=0.12.9",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q -m 'not integration'"
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+]
+
+[tool.coverage.run]
+source = ["ai_pipeline_core"]
+omit = ["*/tests/*", "*/test_*.py"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = false
+
+[tool.ruff]
+# Configuration for the Ruff linter and formatter
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Select the rules you want to enforce. 'E' and 'F' are standard.
+# 'I' is for import sorting. 'TID' is for banned imports.
+select = ["E", "F", "I", "TID252"]
+
+[tool.ruff.format]
+# Use double quotes for strings
+quote-style = "double"
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Enforce relative imports within the same package
+ban-relative-imports = "parents"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"logging".msg = "Use from ai_pipeline_core.logging import get_pipeline_logger instead of import logging"
+
+[tool.basedpyright]
+# Python version to target
+pythonVersion = "3.12"
+# Enable strict type checking
+typeCheckingMode = "strict"
+# Include paths for type checking
+include = ["ai_pipeline_core", "tests"]
+# Exclude patterns
+exclude = [
+    "**/__pycache__",
+    "**/node_modules",
+    ".venv",
+    "venv",
+    "env",
+    ".git",
+    "build",
+    "dist",
+]
+# Report missing imports as errors
+reportMissingImports = true
+# Report missing type stubs as warnings (not errors)
+reportMissingTypeStubs = "warning"
+# Report undefined variables as errors
+reportUndefinedVariable = true
+# Report unknown parameter types as warnings
+reportUnknownParameterType = "warning"
+# Report unknown argument types as warnings
+reportUnknownArgumentType = "warning"
+# Report unknown lambda types as warnings
+reportUnknownLambdaType = "warning"
+# Report unknown variable types as warnings
+reportUnknownVariableType = "warning"
+# Report unknown member access as warnings
+reportUnknownMemberType = "warning"
+# Report use of Any type as informational
+reportAny = "information"
+# Report unused imports as warnings
+reportUnusedImport = "warning"
+# Report unused variables as warnings
+reportUnusedVariable = "warning"
+# Report duplicate imports as warnings
+reportDuplicateImport = "warning"
+# Report incompatible method overrides as errors
+reportIncompatibleMethodOverride = "error"
+# Report incompatible variable overrides as errors
+reportIncompatibleVariableOverride = "error"
+# Report missing parameter types as warnings
+reportMissingParameterType = "warning"
+
+[tool.bumpversion]
+current_version = "0.1.0"
+commit = true
+tag = true
+tag_name = "v{new_version}"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+[[tool.bumpversion.files]]
+filename = "ai_pipeline_core/__init__.py"
+search = '__version__ = "{current_version}"'
+replace = '__version__ = "{new_version}"'
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ai_pipeline_core"]
+include = [
+  "ai_pipeline_core/py.typed",
+  "ai_pipeline_core/**/*.yml",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "ai_pipeline_core/**/*.py",
+    "ai_pipeline_core/py.typed",
+    "ai_pipeline_core/**/*.yml",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]

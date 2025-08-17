@@ -1,0 +1,18 @@
+## Analysis for {{ document_name }}
+
+{% if summary %}
+### Summary
+{{ summary }}
+{% endif %}
+
+### Key Points
+{% for point in key_points %}
+{{ loop.index }}. {{ point }}
+{% endfor %}
+
+{% if recommendations %}
+### Recommendations
+{% for rec in recommendations %}
+- {{ rec }}
+{% endfor %}
+{% endif %}

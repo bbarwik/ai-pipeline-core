@@ -1,0 +1,272 @@
+# litellm config file for the ai-pipeline-core
+
+model_list:
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: gemini-2.5-pro-vertex
+    litellm_params:
+      model: vertex_ai/gemini-2.5-pro
+      vertex_project: "crested-archive-459519-e3"
+      vertex_location: "global"
+      vertex_region: "global"
+      vertex_credentials: /app/key.json
+  - model_name: gemini-2.5-pro-openrouter
+    litellm_params:
+      model: openrouter/google/gemini-2.5-pro
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body:
+        usage:
+          include: true
+    model_info:
+      mode: "chat"
+      max_tokens: 65535
+      max_input_tokens: 1048576
+      max_output_tokens: 65535
+      supports_pdf_input: true
+      supports_vision: true
+      supports_response_schema: true
+      supports_reasoning: true
+  - model_name: gemini-2.5-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: gemini-2.5-flash-vertex
+    litellm_params:
+      model: vertex_ai/gemini-2.5-flash
+      vertex_project: "crested-archive-459519-e3"
+      vertex_location: "global"
+      vertex_region: "global"
+      vertex_credentials: /app/key.json
+  - model_name: gemini-2.5-flash-openrouter
+    litellm_params:
+      model: openrouter/google/gemini-2.5-flash
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body:
+        usage:
+          include: true
+    model_info:
+      mode: "chat"
+      max_tokens: 65535
+      max_input_tokens: 1048576
+      max_output_tokens: 65535
+      supports_pdf_input: true
+      supports_vision: true
+      supports_response_schema: true
+      supports_reasoning: true
+  - model_name: gemini-2.5-flash-search
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+      web_search_options:
+        search_context_size: "high"
+      tools:
+        - urlContext: {}
+  - model_name: gemini-2.5-flash-search-vertex
+    litellm_params:
+      model: vertex_ai/gemini-2.5-flash
+      vertex_project: "crested-archive-459519-e3"
+      vertex_location: "global"
+      vertex_region: "global"
+      vertex_credentials: /app/key.json
+    model_info:
+      mode: "chat"
+      max_tokens: 65535
+      max_input_tokens: 1048576
+      max_output_tokens: 65535
+      supports_pdf_input: true
+      supports_vision: true
+      supports_response_schema: true
+      supports_reasoning: true
+  - model_name: gemini-2.5-flash-lite
+    litellm_params:
+      model: vertex_ai/gemini-2.5-flash-lite
+      vertex_project: "crested-archive-459519-e3"
+      vertex_location: "global"
+      vertex_region: "global"
+      vertex_credentials: /app/key.json
+  - model_name: gemini-2.5-flash-lite-aistudio
+    litellm_params:
+      model: gemini/gemini-2.5-flash-lite
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: gemini-2.5-flash-lite-openrouter
+    litellm_params:
+      model: openrouter/google/gemini-2.5-flash-lite
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body:
+        usage:
+          include: true
+    model_info:
+      mode: "chat"
+      max_tokens: 65535
+      max_input_tokens: 1048576
+      max_output_tokens: 65535
+      supports_pdf_input: true
+      supports_vision: true
+      supports_response_schema: true
+      supports_reasoning: true
+  - model_name: grok-4
+    litellm_params:
+      model: xai/grok-4
+      api_key: os.environ/XAI_API_KEY
+  - model_name: grok-3-mini
+    litellm_params:
+      model: xai/grok-3-mini
+      api_key: os.environ/XAI_API_KEY
+  - model_name: grok-3-mini-search
+    litellm_params:
+      model: xai/grok-3-mini
+      api_key: os.environ/XAI_API_KEY
+      web_search_options:
+        search_context_size: "high"
+  - model_name: o3
+    litellm_params:
+      model: openai/o3
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-5
+    litellm_params:
+      model: openai/gpt-5
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-5-mini
+    litellm_params:
+      model: openai/gpt-5-mini
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-4o-search
+    litellm_params:
+      model: openai/gpt-4o-search-preview
+      api_key: os.environ/OPENAI_API_KEY
+      web_search_options:
+        search_context_size: "high"
+  - model_name: sonar-pro-search
+    litellm_params:
+      model: openrouter/perplexity/sonar-pro
+      api_key: os.environ/OPENROUTER_API_KEY
+      web_search_options:
+        search_context_size: "high"
+      extra_body:
+        usage:
+          include: true
+    model_info:
+      mode: "chat"
+      max_tokens: 8000
+      max_input_tokens: 200000
+      max_output_tokens: 8000
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+      search_context_cost_per_query:
+        search_context_size_low: 0.006
+        search_context_size_medium: 0.01
+        search_context_size_high: 0.014
+      supports_web_search: true
+  - model_name: claude-sonnet-4
+    litellm_params:
+      model: openrouter/anthropic/claude-sonnet-4
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body:
+        usage:
+          include: true
+    model_info:
+      mode: "chat"
+      max_tokens: 64000
+      max_input_tokens: 200000
+      max_output_tokens: 64000
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+      cache_creation_input_token_cost: 0.00000375
+      cache_read_input_token_cost: 0.0000003
+      supports_function_calling: true
+      supports_vision: true
+      tool_use_system_prompt_tokens: 159
+      supports_assistant_prefill: true
+      supports_pdf_input: true
+      supports_prompt_caching: true
+      supports_response_schema: true
+      supports_tool_choice: true
+      supports_reasoning: true
+  - model_name: qwen3-235b-a22b
+    litellm_params:
+      model: openrouter/qwen/qwen3-235b-a22b-thinking-2507
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body:
+        usage:
+          include: true
+        provider:
+          order: ["cerebras", "deepinfra"]
+    model_info:
+      mode: "chat"
+      max_tokens: 128000
+      max_input_tokens: 128000
+      max_output_tokens: 128000
+      supports_pdf_input: false
+      supports_vision: false
+      supports_response_schema: true
+      supports_reasoning: true
+  - model_name: glm-4.5
+    litellm_params:
+      model: openrouter/z-ai/glm-4.5
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body:
+        usage:
+          include: true
+    model_info:
+      mode: "chat"
+      max_tokens: 96000
+      max_input_tokens: 131072
+      max_output_tokens: 96000
+      supports_pdf_input: false
+      supports_vision: false
+      supports_response_schema: true
+      supports_reasoning: true
+  - model_name: kimi-k2
+    litellm_params:
+      model: openrouter/moonshotai/kimi-k2
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body:
+        usage:
+          include: true
+    model_info:
+      mode: "chat"
+      max_tokens: 131000
+      max_input_tokens: 131000
+      max_output_tokens: 131000
+      supports_pdf_input: false
+      supports_vision: false
+      supports_response_schema: true
+      supports_reasoning: true
+
+# Router Settings: Define model aliases (groups/categories) and routing strategies.
+router_settings:
+  routing_strategy: simple-shuffle
+  fallbacks:
+    - {"gemini-2.5-flash-search": ["gemini-2.5-flash-search-vertex"]}
+    - {"gemini-2.5-flash": ["gemini-2.5-flash-vertex", "gemini-2.5-flash-openrouter", "grok-3-mini", "gpt-5-mini"]}
+    - {"gemini-2.5-pro": ["gemini-2.5-pro-vertex", "gemini-2.5-pro-openrouter", "gpt-5", "grok-4"]}
+    - {"gemini-2.5-flash-lite": ["gemini-2.5-flash-lite-aistudio", "gemini-2.5-flash-lite-openrouter"]}
+    - {"qwen3-235b-a22b": ["gemini-2.5-flash"]}
+
+# LiteLLM Settings: Configure caching, logging, and other global behaviors.
+litellm_settings:
+  request_timeout: 1200
+  num_retries: 6
+  retry_after: 10
+  telemetry: false
+  cache: true
+  cache_params:
+    type: "redis"
+    host: "redis" # Name of the redis service in docker-compose.yml
+    port: 6379
+    ttl: 86400 # Cache responses for 1 day
+  # Automatically drop parameters that are not supported by the destination model to prevent errors
+  drop_params: true
+  extra_spend_tag_headers:
+    - "x-litellm-spend"
+
+# General Settings: Configure database for logging, cost tracking, and keys.
+general_settings:
+  # Using a database is REQUIRED for cost tracking and prompt logging
+  database_url: os.environ/LITELLM_DATABASE_URL
+  # Store prompts and responses in the database for observability
+  store_prompts_in_spend_logs: true
+  # A master key to secure your proxy admin endpoints
+  master_key: os.environ/LITELLM_MASTER_KEY

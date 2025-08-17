@@ -1,0 +1,71 @@
+name: Manual Release (Version Bump)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Part to bump: major | minor | patch'
+        required: true
+        default: 'patch'
+      skip_integration_tests:
+        description: 'Skip integration tests (NOT recommended for releases)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  quality-checks:
+    uses: ./.github/workflows/reusable-quality-checks.yml
+    secrets: inherit  # Pass secrets for integration tests
+
+  integration-tests-check:
+    runs-on: ubuntu-latest
+    outputs:
+      tests_passed: ${{ steps.check.outputs.passed }}
+    steps:
+      - name: Check if integration tests should be enforced
+        id: check
+        run: |
+          if [ "${{ inputs.skip_integration_tests }}" == "true" ]; then
+            echo "⚠️ WARNING: Integration tests are being skipped!"
+            echo "This is NOT recommended for production releases."
+            echo "passed=skipped" >> "$GITHUB_OUTPUT"
+          else
+            echo "✓ Integration tests will be required for this release"
+            echo "passed=required" >> "$GITHUB_OUTPUT"
+          fi
+
+  bump-version:
+    needs: [quality-checks, integration-tests-check]
+    if: |
+      needs.quality-checks.result == 'success' &&
+      (needs.integration-tests-check.outputs.tests_passed == 'required' ||
+       needs.integration-tests-check.outputs.tests_passed == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install bump2version
+        run: |
+          python -m pip install --upgrade pip
+          pip install bump2version
+
+      - name: Git identity
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: Bump version and push tags
+        run: |
+          bump2version ${{ github.event.inputs.version_bump }}
+          git push --follow-tags

@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.detect.outputs.changed }}
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: read
+        name: Read version from pyproject.toml
+        run: |
+          VERSION=$(python - <<'PY'
+          import tomllib,sys
+          from pathlib import Path
+          data=tomllib.loads(Path("pyproject.toml").read_text("utf-8"))
+          print(data["project"]["version"])
+          PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - id: detect
+        name: Detect if version changed in last commit
+        run: |
+          if git diff --name-only HEAD~1..HEAD | grep -q "pyproject.toml"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  quality-checks:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    uses: ./.github/workflows/reusable-quality-checks.yml
+    secrets: inherit  # Pass secrets for integration tests
+
+  release:
+    needs: [quality-checks, check-version]
+    if: needs.check-version.outputs.should_release == 'true' && needs.quality-checks.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write  # For PyPI trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build
+
+      - name: Get previous tag
+        id: previoustag
+        uses: WyriHaximus/github-action-get-previous-tag@v1
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v${{ needs.check-version.outputs.version }}
+          name: Release ${{ needs.check-version.outputs.version }}
+          body: |
+            ## 🚀 Release ${{ needs.check-version.outputs.version }}
+
+            This release was created automatically when the version was bumped.
+
+            ### Install
+            ```bash
+            pip install ai-pipeline-core==${{ needs.check-version.outputs.version }}
+            ```
+
+            ### Changes
+            Compare: https://github.com/bbarwik/ai-pipeline-core/compare/${{ steps.previoustag.outputs.tag }}...v${{ needs.check-version.outputs.version }}
+          artifacts: dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true

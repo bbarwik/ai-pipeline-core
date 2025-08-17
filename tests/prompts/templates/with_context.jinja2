@@ -1,0 +1,8 @@
+You are a {{ role }} assistant.
+
+Context:
+{% for item in context %}
+- {{ item }}
+{% endfor %}
+
+Task: {{ task }}
