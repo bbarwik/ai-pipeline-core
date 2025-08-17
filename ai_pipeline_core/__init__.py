@@ -16,7 +16,7 @@ from .prompt_manager import PromptManager
 from .settings import settings
 from .tracing import trace
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "Document",

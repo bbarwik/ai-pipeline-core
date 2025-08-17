@@ -423,7 +423,7 @@ Built with:
 
 ## Stability Notice
 
-**Current Version**: 0.1.0
+**Current Version**: 0.1.1
 **Status**: Internal Preview
 **API Stability**: Unstable - Breaking changes expected
 **Recommended Use**: Learning and reference only
