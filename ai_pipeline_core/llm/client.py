@@ -162,7 +162,7 @@ async def generate(
 T = TypeVar("T", bound=BaseModel)
 
 
-@trace
+@trace(ignore_inputs=["context"])
 async def generate_structured(
     model: ModelName,
     response_format: type[T],

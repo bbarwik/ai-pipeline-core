@@ -340,3 +340,153 @@ class TestDocumentProperties:
                 return "final_report"
 
         assert FinalReportDocument.canonical_name() == "final_report"
+
+
+class TestMarkdownListHelpers:
+    """Tests for create_as_markdown_list and as_markdown_list helpers."""
+
+    def test_create_as_markdown_list_basic_join(self):
+        items = [
+            "First item line 1\nFirst item line 2",
+            "Second item",
+            "Third item with --- inside a word (should stay) like pre---post",
+        ]
+        doc = ConcreteTestFlowDocument.create_as_markdown_list(
+            name="list.md",
+            description="basic join",
+            items=items,
+        )
+        # Content should be items joined by the canonical separator
+        expected_content = (
+            items[0]
+            + Document.MARKDOWN_LIST_SEPARATOR
+            + items[1]
+            + Document.MARKDOWN_LIST_SEPARATOR
+            + items[2]
+        ).encode("utf-8")
+        assert isinstance(doc, ConcreteTestFlowDocument)
+        assert doc.name == "list.md"
+        assert doc.content == expected_content
+        assert doc.is_text is True
+
+        # as_markdown_list should split back to the same items
+        assert doc.as_markdown_list() == items
+
+    def test_create_as_markdown_list_removes_separator_lines(self):
+        sep_line = Document.MARKDOWN_LIST_SEPARATOR.strip()  # '---'
+        items = [
+            # Plain separator line alone should be removed
+            f"Line A\n{sep_line}\nLine B",
+            # Separator with surrounding whitespace should be removed
+            f"Start\n   {sep_line}   \nEnd",
+            # Tabs and mixed whitespace
+            f"One\n\t{sep_line}\t\nTwo",
+            # Separator at end of string without newline
+            f"X\n{sep_line}",
+            # Multiple consecutive separator-only lines
+            f"P\n{sep_line}\n{sep_line}\nQ",
+            # Lines containing separator but with other text should remain
+            f"keep {sep_line} here",
+            f"prefix-{sep_line}-suffix",
+        ]
+
+        doc = ConcreteTestFlowDocument.create_as_markdown_list(
+            name="list.md",
+            description=None,
+            items=items,
+        )
+
+        # Verify expected per-item cleaning effects when splitting back
+        result_items = doc.as_markdown_list()
+        # Ensure no separator-only lines remain within items
+        for item in result_items:
+            for line in item.splitlines():
+                assert line.strip() != sep_line, (
+                    f"Found stray separator-only line within item: {line!r}"
+                )
+        assert result_items[0] == "Line A\nLine B"
+        assert result_items[1] == "Start\nEnd"
+        assert result_items[2] == "One\nTwo"
+        assert result_items[3] == "X\n"  # trailing newline preserved; separator-only line removed
+        assert result_items[4] == "P\nQ"  # consecutive separator-only lines removed
+        # Inline/embedded separators should remain unchanged
+        assert result_items[5] == "keep --- here"
+        assert result_items[6] == "prefix-----suffix"
+
+    def test_create_as_markdown_list_handles_crlf(self):
+        sep_line = Document.MARKDOWN_LIST_SEPARATOR.strip()
+        items = [
+            f"A\r\n{sep_line}\r\nB\r\n",
+            f"C\r\n   {sep_line}\r\n   D",
+            f"E\r\n\t{sep_line}\r\nF",
+            f"G\r\n{sep_line}",  # separator as last line
+        ]
+        doc = ConcreteTestFlowDocument.create_as_markdown_list(
+            name="list_crlf.md",
+            description="crlf",
+            items=items,
+        )
+        result_items = doc.as_markdown_list()
+        assert (
+            result_items[0] == "A\nB\n"
+        )  # trailing newline preserved from original item text apart from removed lines
+        assert result_items[1] == "C\n   D"
+        assert result_items[2] == "E\nF"
+        assert (
+            result_items[3] == "G\n"
+        )  # trailing newline from original line preserved; separator-only line removed
+
+    def test_as_markdown_list_is_inverse_of_create_as_markdown_list(self):
+        # Items that include various whitespace and embedded dashes that should not be removed
+        items = [
+            "alpha\n---embedded---\nbeta",
+            "no separators here",
+            "spaces- --- -around",
+        ]
+        doc = ConcreteTestFlowDocument.create_as_markdown_list(
+            name="roundtrip.md",
+            description="roundtrip",
+            items=items,
+        )
+        assert doc.as_markdown_list() == items
+
+
+class TestCreateFactory:
+    """Tests for the generic create() classmethod."""
+
+    def test_create_with_str_content(self):
+        text = "Hello ✨"
+        doc = ConcreteTestFlowDocument.create(
+            name="greeting.txt",
+            description="str content",
+            content=text,
+        )
+        assert isinstance(doc, ConcreteTestFlowDocument)
+        assert doc.name == "greeting.txt"
+        assert doc.description == "str content"
+        assert doc.content == text.encode("utf-8")
+        assert doc.size == len(text.encode("utf-8"))
+        # Deterministic hashing
+        assert doc.id == doc.sha256[:6]
+
+    def test_create_with_bytes_content(self):
+        raw = b"\x00\xffdata"
+        doc = ConcreteTestFlowDocument.create(
+            name="raw.bin",
+            description=None,
+            content=raw,
+        )
+        assert doc.content == raw
+        assert doc.size == len(raw)
+        assert not doc.is_text
+
+    def test_create_validation_applies(self):
+        # Name validation still applies through create()
+        with pytest.raises(DocumentNameError):
+            ConcreteTestFlowDocument.create(name="../hack.txt", description=None, content="x")
+
+        # Size validation applies too (using SmallDocument)
+        doc_ok = SmallDocument.create(name="ok.txt", description=None, content="12345")
+        assert doc_ok.size == 5
+        with pytest.raises(DocumentSizeError):
+            SmallDocument.create(name="big.txt", description=None, content="12345678901")

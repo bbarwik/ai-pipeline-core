@@ -8,7 +8,6 @@ from prefect.logging import get_logger
 from ai_pipeline_core.llm import AIMessages, ModelOptions, generate
 from ai_pipeline_core.llm.model_types import ModelName
 from ai_pipeline_core.settings import settings
-from ai_pipeline_core.tracing import trace
 from tests.test_helpers import ConcreteFlowDocument
 
 from .model_categories import CORE_MODELS, SEARCH_MODELS
@@ -31,7 +30,6 @@ pytestmark = [
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", CORE_MODELS)
-@trace(test=True)
 async def test_llm_model_basic_math(model: ModelName):
     """Test all models on basic math."""
     question = "Hi. What is 12+97?"
@@ -53,7 +51,6 @@ async def test_llm_model_basic_math(model: ModelName):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", SEARCH_MODELS)
-@trace(test=True)
 async def test_llm_model_search_feature(model: ModelName):
     """Test search models with search queries."""
     question = (
@@ -93,7 +90,6 @@ async def test_llm_model_search_feature(model: ModelName):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", CORE_MODELS)
-@trace(test=True)
 async def test_llm_model_no_search_feature(model: ModelName):
     """Test non-search models to ensure they don't have search capability."""
     question = (
@@ -133,7 +129,6 @@ async def test_llm_model_no_search_feature(model: ModelName):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", CORE_MODELS)
-@trace(test=True)
 async def test_llm_model_text_file_attachment(model: ModelName):
     """Test models with text file attachments."""
     # Create documents with text content
@@ -166,7 +161,6 @@ async def test_llm_model_text_file_attachment(model: ModelName):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", CORE_MODELS)
-@trace(test=True)
 async def test_llm_model_image_file_attachment(model: ModelName):
     """Test models with image file attachments."""
     if model == "grok-3-mini":
@@ -225,7 +219,6 @@ async def test_llm_model_image_file_attachment(model: ModelName):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", CORE_MODELS)
-@trace(test=True)
 async def test_llm_model_pdf_file_attachment(model: ModelName):
     """Test models with PDF file attachments."""
     if model in ["grok-3-mini", "grok-4"]:
@@ -269,7 +262,6 @@ async def test_llm_model_pdf_file_attachment(model: ModelName):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", CORE_MODELS)
-@trace(test=True)
 async def test_llm_model_conversation_context(model: ModelName):
     """Test models with conversation context."""
     # First message
@@ -305,7 +297,6 @@ async def test_llm_model_conversation_context(model: ModelName):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", CORE_MODELS)
-@trace(test=True)
 async def test_llm_model_with_options(model: ModelName):
     """Test models with various options."""
     messages = AIMessages(["Write exactly 3 words."])

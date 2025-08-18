@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import re
 from abc import ABC, abstractmethod
 from base64 import b32encode
 from enum import StrEnum
@@ -26,6 +27,7 @@ class Document(BaseModel, ABC):
 
     MAX_CONTENT_SIZE: ClassVar[int] = 10 * 1024 * 1024  # 10MB default
     DESCRIPTION_EXTENSION: ClassVar[str] = ".description.md"
+    MARKDOWN_LIST_SEPARATOR: ClassVar[str] = "\n\n---\n\n"
 
     def __init__(self, **data: Any) -> None:
         """Prevent direct instantiation of abstract Document class."""
@@ -199,15 +201,34 @@ class Document(BaseModel, ABC):
 
     def as_yaml(self) -> Any:
         """Parse document as YAML"""
-        if not self.is_text:
-            raise ValueError(f"Document is not text: {self.name}")
-        return YAML().load(self.content.decode("utf-8"))  # type: ignore
+        return YAML().load(self.as_text())
 
     def as_json(self) -> Any:
         """Parse document as JSON"""
-        if not self.is_text:
-            raise ValueError(f"Document is not text: {self.name}")
-        return json.loads(self.content.decode("utf-8"))
+        return json.loads(self.as_text())
+
+    def as_markdown_list(self) -> list[str]:
+        """Parse document as a markdown list"""
+        return self.as_text().split(self.MARKDOWN_LIST_SEPARATOR)
+
+    @classmethod
+    def create(cls, name: str, description: str | None, content: bytes | str) -> Self:
+        """Create a document from a name, description, and content"""
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        return cls(name=name, description=description, content=content)
+
+    @classmethod
+    def create_as_markdown_list(cls, name: str, description: str | None, items: list[str]) -> Self:
+        """Create a document from a name, description, and list of strings"""
+        # remove other list separators (lines that are only the separator + whitespace)
+        separator = Document.MARKDOWN_LIST_SEPARATOR.strip()
+        pattern = re.compile(rf"^[ \t]*{re.escape(separator)}[ \t]*(?:\r?\n|$)", flags=re.MULTILINE)
+        # Normalize CRLF/CR to LF before cleaning to ensure consistent behavior
+        normalized_items = [re.sub(r"\r\n?", "\n", item) for item in items]
+        cleaned_items = [pattern.sub("", item) for item in normalized_items]
+        content = Document.MARKDOWN_LIST_SEPARATOR.join(cleaned_items)
+        return cls.create(name, description, content)
 
     def serialize_model(self) -> dict[str, Any]:
         """Serialize document to a dictionary with proper encoding."""
