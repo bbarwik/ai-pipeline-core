@@ -6,6 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI Pipeline Core is a high-performance async library for building AI pipelines with Prefect and LMNR (Laminar) tracing. It provides strong typing with Pydantic and uses LiteLLM proxy for OpenAI API compatibility.
 
+> [!NOTE]
+> The `dependencies_docs/` directory contains guides for AI assistants on interacting with external dependencies (Prefect, LMNR, etc.), NOT user documentation for ai-pipeline-core. These files are excluded from repository listings.
+
 ## Absolute Non-Negotiable Rules
 
 1. **Minimalism Above All**
@@ -71,12 +74,12 @@ make clean             # Remove all build artifacts and caches
 ### Documents System (`ai_pipeline_core/documents/`)
 Foundation for all data handling. Documents are immutable Pydantic models that wrap content with metadata. Can handle text, images, PDFs, and future document types.
 
-- **Document**: Abstract base class. Handles encoding, MIME type detection, serialization
-- **FlowDocument**: Persistent documents for Prefect flows (survive across runs)
-- **TaskDocument**: Temporary documents for Prefect tasks (exist only during execution)
+- **Document**: Abstract base class. Handles encoding, MIME type detection, serialization. Cannot be instantiated directly.
+- **FlowDocument**: Abstract base for persistent documents in Prefect flows (survive across runs). Cannot be instantiated directly.
+- **TaskDocument**: Abstract base for temporary documents in Prefect tasks (exist only during execution). Cannot be instantiated directly.
 - **DocumentList**: Type-validated container, not just `list[Document]` - adds validation
 
-**Critical**: Each flow/task defines its own document classes. Never use raw bytes/strings - always Document classes. MIME type detection is automatic and required for AI interactions.
+**Critical**: Each flow/task must define its own concrete document classes by inheriting from FlowDocument or TaskDocument. Never instantiate abstract classes directly. Never use raw bytes/strings - always Document classes. MIME type detection is automatic and required for AI interactions.
 
 ### LLM Module (`ai_pipeline_core/llm/`)
 All AI interactions through LiteLLM proxy (OpenAI API compatible). Built-in retry, LMNR monitoring, cost calculation.
@@ -109,7 +112,7 @@ Philosophy: Prompts near their usage = easier maintenance.
 LMNR integration via `@trace` decorator. Always use `test=True` in tests to avoid polluting production metrics.
 
 ### Settings (`ai_pipeline_core/settings.py`)
-Central configuration for all external services (Prefect, LMNR, OpenAI). Will be updated with deployment guide from `docs/prefect_deployment.md`.
+Central configuration for all external services (Prefect, LMNR, OpenAI). Will be updated with deployment guide from `dependencies_docs/prefect_deployment.md`.
 
 ### Logging (`ai_pipeline_core/logging/`)
 Unified Prefect-integrated logging. Replaces Python's logging module entirely. Never import `logging` directly.
@@ -188,7 +191,7 @@ logger = get_pipeline_logger(__name__)
 
 ## Prefect Integration Notes
 
-See `docs/prefect.md`, `docs/prefect_deployment.md`, and `docs/prefect_logging.md` for detailed Prefect patterns.
+See `dependencies_docs/prefect.md`, `dependencies_docs/prefect_deployment.md`, and `dependencies_docs/prefect_logging.md` for detailed Prefect patterns.
 
 Key points:
 - FlowDocuments are persistent across flow runs

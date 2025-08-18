@@ -5,11 +5,11 @@ from pathlib import Path
 import pytest
 from prefect.logging import get_logger
 
-from ai_pipeline_core.documents import FlowDocument
 from ai_pipeline_core.llm import AIMessages, ModelOptions, generate
 from ai_pipeline_core.llm.model_types import ModelName
 from ai_pipeline_core.settings import settings
 from ai_pipeline_core.tracing import trace
+from tests.test_helpers import ConcreteFlowDocument
 
 from .model_categories import CORE_MODELS, SEARCH_MODELS
 
@@ -137,8 +137,8 @@ async def test_llm_model_no_search_feature(model: ModelName):
 async def test_llm_model_text_file_attachment(model: ModelName):
     """Test models with text file attachments."""
     # Create documents with text content
-    doc1 = FlowDocument(name="file1.md", content=b"This file contains number 121")
-    doc2 = FlowDocument(
+    doc1 = ConcreteFlowDocument(name="file1.md", content=b"This file contains number 121")
+    doc2 = ConcreteFlowDocument(
         name="file2.md", content=b"This file contains number eight hundred twenty two"
     )
 
@@ -177,7 +177,7 @@ async def test_llm_model_image_file_attachment(model: ModelName):
     if not test_image_path.exists():
         pytest.skip(f"Test image not found at {test_image_path}")
 
-    image_doc = FlowDocument(name="test_image.png", content=test_image_path.read_bytes())
+    image_doc = ConcreteFlowDocument(name="test_image.png", content=test_image_path.read_bytes())
 
     messages = AIMessages(
         [
@@ -236,7 +236,7 @@ async def test_llm_model_pdf_file_attachment(model: ModelName):
     if not test_pdf_path.exists():
         pytest.skip(f"Test PDF not found at {test_pdf_path}")
 
-    pdf_doc = FlowDocument(name="test_pdf.pdf", content=test_pdf_path.read_bytes())
+    pdf_doc = ConcreteFlowDocument(name="test_pdf.pdf", content=test_pdf_path.read_bytes())
 
     messages = AIMessages(
         [

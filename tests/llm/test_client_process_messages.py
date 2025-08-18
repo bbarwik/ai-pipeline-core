@@ -1,8 +1,8 @@
 """Tests for LLM client message processing."""
 
-from ai_pipeline_core.documents import FlowDocument
 from ai_pipeline_core.llm import AIMessages, ModelResponse
 from ai_pipeline_core.llm.client import _process_messages  # type: ignore[reportPrivateUsage]
+from tests.test_helpers import ConcreteFlowDocument
 
 
 class TestProcessMessages:
@@ -66,7 +66,7 @@ class TestProcessMessages:
     def test_full_message_ordering(self):
         """Test complete message ordering with all components."""
         # Create mixed context
-        doc = FlowDocument(name="context.txt", content=b"Document content")
+        doc = ConcreteFlowDocument(name="context.txt", content=b"Document content")
         context_response = ModelResponse(
             id="ctx-resp",
             object="chat.completion",

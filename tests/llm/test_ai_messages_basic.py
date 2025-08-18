@@ -2,8 +2,8 @@
 
 import pytest
 
-from ai_pipeline_core.documents import FlowDocument
 from ai_pipeline_core.llm import AIMessages, ModelResponse
+from tests.test_helpers import ConcreteFlowDocument
 
 
 class TestAIMessagesBasic:
@@ -20,7 +20,7 @@ class TestAIMessagesBasic:
         assert single.get_last_message_as_str() == "only"
 
         # Document as last should raise
-        doc = FlowDocument(name="test.txt", content=b"content")
+        doc = ConcreteFlowDocument(name="test.txt", content=b"content")
         messages_with_doc = AIMessages(["first", doc])
         with pytest.raises(ValueError) as exc_info:
             messages_with_doc.get_last_message_as_str()
@@ -52,7 +52,7 @@ class TestAIMessagesBasic:
         assert messages.get_last_message() == "last"
 
         # Document
-        doc = FlowDocument(name="test.txt", content=b"content")
+        doc = ConcreteFlowDocument(name="test.txt", content=b"content")
         messages_doc = AIMessages(["first", doc])
         assert messages_doc.get_last_message() == doc
 
@@ -113,7 +113,7 @@ class TestAIMessagesBasic:
 
     def test_to_prompt_mixed_types(self):
         """Test converting mixed message types."""
-        doc = FlowDocument(name="test.txt", content=b"Document content")
+        doc = ConcreteFlowDocument(name="test.txt", content=b"Document content")
         response = ModelResponse(
             id="test",
             object="chat.completion",

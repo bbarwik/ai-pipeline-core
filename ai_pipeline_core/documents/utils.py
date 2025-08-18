@@ -1,4 +1,5 @@
 import re
+from typing import Any, Iterable, Type
 from urllib.parse import urlparse
 
 
@@ -31,3 +32,54 @@ def sanitize_url(url: str) -> str:
         sanitized = "unnamed"
 
     return sanitized
+
+
+def camel_to_snake(name: str) -> str:
+    """Convert CamelCase (incl. acronyms) to snake_case."""
+    s1 = re.sub(r"(.)([A-Z][a-z0-9]+)", r"\1_\2", name)
+    s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1)
+    return s2.replace("__", "_").strip("_").lower()
+
+
+def canonical_name_key(
+    obj_or_name: Type[Any] | str,
+    *,
+    max_parent_suffixes: int = 3,
+    extra_suffixes: Iterable[str] = (),
+) -> str:
+    """
+    Produce a canonical snake_case key from a class or name by:
+      1) Starting with the class name (or given string),
+      2) Stripping any trailing parent class names (up to `max_parent_suffixes` from the MRO),
+      3) Stripping any `extra_suffixes`,
+      4) Converting to snake_case.
+
+    Examples (given typical MROs):
+      FinalReportDocument(WorkflowDocument -> Document) -> 'final_report'
+      FooWorkflowDocument(WorkflowDocument -> Document) -> 'foo'
+      BarFlow(Config -> Base -> Flow) -> 'bar'
+    """
+    name = obj_or_name.__name__ if isinstance(obj_or_name, type) else str(obj_or_name)
+
+    # From MRO, collect up to N parent names to consider as removable suffixes
+    suffixes: list[str] = []
+    if isinstance(obj_or_name, type):
+        for base in obj_or_name.mro()[1 : 1 + max_parent_suffixes]:
+            if base is object:
+                continue
+            suffixes.append(base.__name__)
+
+    # Add any custom suffixes the caller wants to strip (e.g., 'Config')
+    suffixes.extend(extra_suffixes)
+
+    # Iteratively trim the longest matching suffix first
+    trimmed = True
+    while trimmed and suffixes:
+        trimmed = False
+        for sfx in sorted(set(suffixes), key=len, reverse=True):
+            if sfx and name.endswith(sfx):
+                name = name[: -len(sfx)]
+                trimmed = True
+                break
+
+    return camel_to_snake(name)

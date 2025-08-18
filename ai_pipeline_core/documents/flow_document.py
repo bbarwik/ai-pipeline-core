@@ -1,6 +1,6 @@
 """Flow-specific document base class."""
 
-from typing import Literal, final
+from typing import Any, Literal, final
 
 from .document import Document
 
@@ -14,6 +14,12 @@ class FlowDocument(Document):
 
     Compared to TaskDocument, FlowDocument are persistent across Prefect flow runs.
     """
+
+    def __init__(self, **data: Any) -> None:
+        """Prevent direct instantiation of abstract FlowDocument class."""
+        if type(self) is FlowDocument:
+            raise TypeError("Cannot instantiate abstract FlowDocument class directly")
+        super().__init__(**data)
 
     @final
     def get_base_type(self) -> Literal["flow"]:

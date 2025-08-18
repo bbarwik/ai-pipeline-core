@@ -5,9 +5,9 @@ import os
 import pytest
 from pydantic import BaseModel
 
-from ai_pipeline_core.documents import FlowDocument
 from ai_pipeline_core.llm import AIMessages, ModelOptions, generate, generate_structured
 from ai_pipeline_core.settings import settings
+from tests.test_helpers import ConcreteFlowDocument
 
 # Skip all tests in this file if API key not available
 pytestmark = pytest.mark.integration
@@ -62,7 +62,7 @@ class TestLLMIntegration:
     @pytest.mark.asyncio
     async def test_document_in_context(self):
         """Test using a document as context."""
-        doc = FlowDocument(
+        doc = ConcreteFlowDocument(
             name="info.txt",
             content=b"The capital of France is Paris.",
             description="Geographic information",

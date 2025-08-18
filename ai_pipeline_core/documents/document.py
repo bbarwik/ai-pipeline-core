@@ -10,6 +10,7 @@ from typing import Any, ClassVar, Literal, Self
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 from ruamel.yaml import YAML
 
+from ai_pipeline_core.documents.utils import canonical_name_key
 from ai_pipeline_core.exceptions import DocumentNameError, DocumentSizeError
 
 from .mime_type import (
@@ -25,6 +26,12 @@ class Document(BaseModel, ABC):
 
     MAX_CONTENT_SIZE: ClassVar[int] = 10 * 1024 * 1024  # 10MB default
     DESCRIPTION_EXTENSION: ClassVar[str] = ".description.md"
+
+    def __init__(self, **data: Any) -> None:
+        """Prevent direct instantiation of abstract Document class."""
+        if type(self) is Document:
+            raise TypeError("Cannot instantiate abstract Document class directly")
+        super().__init__(**data)
 
     # Optional enum of allowed file names. Subclasses may set this.
     # This is used to validate the document name.
@@ -179,10 +186,10 @@ class Document(BaseModel, ABC):
         """Check if document is an image"""
         return is_image_mime_type(self.mime_type)
 
-    @property
-    def should_be_cached(self) -> bool:
-        """Check if document should be cached"""
-        return False
+    @classmethod
+    def canonical_name(cls) -> str:
+        """Get the canonical name of the document"""
+        return canonical_name_key(cls)
 
     def as_text(self) -> str:
         """Parse document as text"""

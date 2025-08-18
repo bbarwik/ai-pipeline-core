@@ -396,9 +396,15 @@ For learning purposes, see [CLAUDE.md](CLAUDE.md) for our comprehensive coding s
 ## Documentation
 
 - [CLAUDE.md](CLAUDE.md) - Detailed coding standards and architecture guide
-- [Prefect Integration](docs/prefect.md) - Prefect patterns and best practices
-- [Deployment Guide](docs/prefect_deployment.md) - Production deployment
-- [Prefect Logging](docs/prefect_logging.md) - Logging configuration guide
+
+### dependencies_docs/ Directory
+> [!NOTE]
+> The `dependencies_docs/` directory contains guides for AI assistants (like Claude Code) on how to interact with the project's external dependencies and tooling, NOT user documentation for ai-pipeline-core itself. These files are excluded from repository listings to avoid confusion.
+
+**AI Assistant Dependency Guides:**
+- [Prefect Integration](dependencies_docs/prefect.md) - Prefect patterns and best practices for AI assistants
+- [Deployment Guide](dependencies_docs/prefect_deployment.md) - Production deployment guide for AI assistants
+- [Prefect Logging](dependencies_docs/prefect_logging.md) - Logging configuration guide for AI assistants
 
 ## License
 
@@ -423,13 +429,9 @@ Built with:
 
 ## Stability Notice
 
-**Current Version**: 0.1.1
+**Current Version**: 0.1.2
 **Status**: Internal Preview
 **API Stability**: Unstable - Breaking changes expected
 **Recommended Use**: Learning and reference only
 
 For production use, please fork this repository and maintain your own stable version.
-
----
-
-**Remember**: The best code is no code. The second best is minimal, typed, async code that does exactly what's needed.

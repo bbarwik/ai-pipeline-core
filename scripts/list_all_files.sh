@@ -35,7 +35,7 @@ git ls-files --cached --others --exclude-standard | sort | while IFS= read -r fi
     echo "FILE: $file_path"
     echo "$SEPARATOR"
 
-    if [[ "$file_path" == *test_data* || "$file_path" == *scripts/* || "$file_path" == *docs/* ]]; then
+    if [[ "$file_path" == *test_data* || "$file_path" == *scripts/* || "$file_path" == *dependencies_docs/* ]]; then
         echo "[contents skipped]"
     # Check if the file is binary. The `file` command is a good heuristic.
     # The `-b` option prevents printing the filename.

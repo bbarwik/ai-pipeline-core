@@ -2,8 +2,8 @@
 
 import base64
 
-from ai_pipeline_core.documents import FlowDocument
 from ai_pipeline_core.llm import AIMessages
+from tests.test_helpers import ConcreteFlowDocument
 
 
 class TestDocumentToPrompt:
@@ -11,7 +11,7 @@ class TestDocumentToPrompt:
 
     def test_text_document_conversion(self):
         """Test converting text document to prompt format."""
-        doc = FlowDocument(
+        doc = ConcreteFlowDocument(
             name="test.txt", content=b"This is the document content.", description="A test document"
         )
 
@@ -34,7 +34,7 @@ class TestDocumentToPrompt:
 
     def test_text_document_without_description(self):
         """Test text document without description."""
-        doc = FlowDocument(name="test.txt", content=b"Content only")
+        doc = ConcreteFlowDocument(name="test.txt", content=b"Content only")
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -51,7 +51,7 @@ class TestDocumentToPrompt:
             b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
             b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
         )
-        doc = FlowDocument(name="image.png", content=png_content, description="Test image")
+        doc = ConcreteFlowDocument(name="image.png", content=png_content, description="Test image")
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -86,7 +86,7 @@ class TestDocumentToPrompt:
     def test_pdf_document_conversion(self):
         """Test converting PDF document to prompt format."""
         pdf_content = b"%PDF-1.4\n%\xd3\xeb\xe9\xe1\n1 0 obj\n<</Type/Catalog>>\nendobj"
-        doc = FlowDocument(name="document.pdf", content=pdf_content)
+        doc = ConcreteFlowDocument(name="document.pdf", content=pdf_content)
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -115,13 +115,15 @@ class TestDocumentToPrompt:
 
     def test_unsupported_mime_type(self):
         """Test handling of unsupported MIME types - skip since we can't mock frozen models."""
-        # Skip this test as FlowDocument is frozen and we can't patch its properties
+        # Skip this test as ConcreteFlowDocument is frozen and we can't patch its properties
         # The actual behavior is tested in integration tests
         pass
 
     def test_markdown_document(self):
         """Test markdown document conversion."""
-        doc = FlowDocument(name="readme.md", content=b"# Header\n\nThis is **markdown** content.")
+        doc = ConcreteFlowDocument(
+            name="readme.md", content=b"# Header\n\nThis is **markdown** content."
+        )
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -137,7 +139,7 @@ class TestDocumentToPrompt:
         import json
 
         json_data = {"key": "value", "number": 42}
-        doc = FlowDocument(name="data.json", content=json.dumps(json_data).encode())
+        doc = ConcreteFlowDocument(name="data.json", content=json.dumps(json_data).encode())
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -150,7 +152,7 @@ class TestDocumentToPrompt:
         """Test handling of large text documents."""
         # Create a large text document
         large_content = "x" * 10000
-        doc = FlowDocument(name="large.txt", content=large_content.encode())
+        doc = ConcreteFlowDocument(name="large.txt", content=large_content.encode())
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -161,7 +163,7 @@ class TestDocumentToPrompt:
     def test_unicode_text_document(self):
         """Test handling of Unicode text."""
         unicode_content = "Hello 世界! 🌍 Здравствуй мир!"
-        doc = FlowDocument(name="unicode.txt", content=unicode_content.encode("utf-8"))
+        doc = ConcreteFlowDocument(name="unicode.txt", content=unicode_content.encode("utf-8"))
 
         parts = AIMessages.document_to_prompt(doc)
 
