@@ -154,3 +154,71 @@ class TestAIMessagesBasic:
         with pytest.raises(ValueError) as exc_info:
             messages.to_prompt()
         assert "Unsupported message type" in str(exc_info.value)
+
+    def test_get_prompt_cache_key_basic(self):
+        """Test basic prompt cache key generation."""
+        messages = AIMessages(["Hello", "World"])
+        key1 = messages.get_prompt_cache_key()
+        key2 = messages.get_prompt_cache_key()
+
+        # Same messages should produce same key
+        assert key1 == key2
+        assert isinstance(key1, str)
+        assert len(key1) == 64  # SHA256 hex digest length
+
+        # Different messages should produce different key
+        messages2 = AIMessages(["Hello", "Universe"])
+        key3 = messages2.get_prompt_cache_key()
+        assert key1 != key3
+
+    def test_get_prompt_cache_key_with_system_prompt(self):
+        """Test cache key generation with system prompt."""
+        messages = AIMessages(["Hello"])
+
+        # Without system prompt
+        key1 = messages.get_prompt_cache_key()
+
+        # With system prompt
+        key2 = messages.get_prompt_cache_key("You are helpful")
+        key3 = messages.get_prompt_cache_key("You are helpful")
+        key4 = messages.get_prompt_cache_key("You are creative")
+
+        # Different system prompts should produce different keys
+        assert key1 != key2
+        assert key2 == key3  # Same system prompt
+        assert key2 != key4  # Different system prompt
+
+        # None system prompt should be same as no argument
+        key5 = messages.get_prompt_cache_key(None)
+        assert key1 == key5
+
+    def test_get_prompt_cache_key_with_complex_messages(self):
+        """Test cache key with complex message types."""
+        doc = ConcreteFlowDocument(name="test.txt", content=b"content")
+        response = ModelResponse(
+            id="test",
+            object="chat.completion",
+            created=1234567890,
+            model="test-model",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Response"},
+                    "finish_reason": "stop",
+                }
+            ],
+        )
+
+        messages1 = AIMessages(["Hello", doc, response])
+        messages2 = AIMessages(["Hello", doc, response])
+
+        # Same complex messages should produce same key
+        key1 = messages1.get_prompt_cache_key()
+        key2 = messages2.get_prompt_cache_key()
+        assert key1 == key2
+
+        # Different document content should produce different key
+        doc2 = ConcreteFlowDocument(name="test.txt", content=b"different")
+        messages3 = AIMessages(["Hello", doc2, response])
+        key3 = messages3.get_prompt_cache_key()
+        assert key1 != key3

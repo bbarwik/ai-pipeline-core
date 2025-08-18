@@ -12,10 +12,13 @@ from .model_categories import SEARCH_MODELS
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
 
 # Skip all tests if API keys not configured
-pytestmark = pytest.mark.skipif(
-    not HAS_API_KEYS,
-    reason="OpenAI API keys not configured in settings or .env file",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not HAS_API_KEYS,
+        reason="OpenAI API keys not configured in settings or .env file",
+    ),
+]
 
 
 class TestSearchModelsIntegration:

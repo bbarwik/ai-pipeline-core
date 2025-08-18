@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 
 from openai.types.chat import (
@@ -58,6 +59,11 @@ class AIMessages(list[AIMessageType]):
                 assert isinstance(message, str)
                 messages.append(message)
         return messages
+
+    def get_prompt_cache_key(self, system_prompt: str | None = None) -> str:
+        if not system_prompt:
+            system_prompt = ""
+        return hashlib.sha256((system_prompt + json.dumps(self.to_prompt())).encode()).hexdigest()
 
     @staticmethod
     def document_to_prompt(document: Document) -> list[ChatCompletionContentPartParam]:

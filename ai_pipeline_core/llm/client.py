@@ -48,15 +48,13 @@ def _process_messages(
         # Use AIMessages.to_prompt() for context
         context_messages = context.to_prompt()
 
-        # Apply caching to context messages
-        for msg in context_messages:
-            if msg.get("role") == "user":
-                # Add cache control to user messages in context
-                msg["cache_control"] = {  # type: ignore
-                    "type": "ephemeral",
-                    "ttl": "120s",  # Cache for 2m
-                }
-            processed_messages.append(msg)
+        # Apply caching to last context message
+        context_messages[-1]["cache_control"] = {  # type: ignore
+            "type": "ephemeral",
+            "ttl": "120s",  # Cache for 2m
+        }
+
+        processed_messages.extend(context_messages)
 
     # Process regular messages without caching
     if messages:
@@ -108,9 +106,14 @@ async def _generate_with_retry(
         **options.to_openai_completion_kwargs(),
     }
 
+    if context:
+        completion_kwargs["prompt_cache_key"] = context.get_prompt_cache_key(options.system_prompt)
+
     for attempt in range(options.retries):
         try:
-            with Laminar.start_as_current_span(model, span_type="LLM", input=messages) as span:
+            with Laminar.start_as_current_span(
+                model, span_type="LLM", input=processed_messages
+            ) as span:
                 response = await _generate(model, processed_messages, completion_kwargs)
                 span.set_attributes(response.get_laminar_metadata())
                 Laminar.set_span_output(response.content)
