@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.1.4"
+version = "0.1.5"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -22,7 +22,7 @@ classifiers = [
 dependencies = [
     "httpx>=0.28.1",
     "Jinja2>=3.1.6",
-    "lmnr>=0.7.4",
+    "lmnr>=0.7.5",
     "openai>=1.99.9",
     "prefect>=3.4.13",
     "pydantic-settings>=2.10.1",
@@ -140,7 +140,7 @@ reportIncompatibleVariableOverride = "error"
 reportMissingParameterType = "warning"
 
 [tool.bumpversion]
-current_version = "0.1.4"
+current_version = "0.1.5"
 commit = true
 tag = true
 tag_name = "v{new_version}"

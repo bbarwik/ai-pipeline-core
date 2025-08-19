@@ -103,6 +103,7 @@ def trace(
     ignore_inputs: list[str] | None = None,
     input_formatter: Callable[..., str] | None = None,
     output_formatter: Callable[..., str] | None = None,
+    preserve_global_context: bool = True,
 ) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
     """Decorator that wires Laminar tracing and observation into a function.
 
@@ -136,6 +137,7 @@ def trace(
         _ignore_inputs = ignore_inputs
         _input_formatter = input_formatter
         _output_formatter = output_formatter
+        _preserve_global_context = preserve_global_context
 
         # --- Check debug_only flag and environment variable ---
         if debug_only and os.getenv("LMNR_DEBUG", "").lower() != "true":
@@ -173,6 +175,8 @@ def trace(
                 observe_params["input_formatter"] = _input_formatter
             if _output_formatter is not None:
                 observe_params["output_formatter"] = _output_formatter
+            if _preserve_global_context:
+                observe_params["preserve_global_context"] = _preserve_global_context
 
             return observe_params
 

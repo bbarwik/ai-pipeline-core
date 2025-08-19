@@ -25,7 +25,7 @@ from .mime_type import (
 class Document(BaseModel, ABC):
     """Abstract base class for all documents"""
 
-    MAX_CONTENT_SIZE: ClassVar[int] = 10 * 1024 * 1024  # 10MB default
+    MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024  # 25MB default
     DESCRIPTION_EXTENSION: ClassVar[str] = ".description.md"
     MARKDOWN_LIST_SEPARATOR: ClassVar[str] = "\n\n---\n\n"
 
@@ -105,7 +105,7 @@ class Document(BaseModel, ABC):
         except TypeError:
             raise DocumentNameError(f"{cls.__name__}.FILES must be an Enum of string values")
 
-        if name not in allowed:
+        if len(allowed) > 0 and name not in allowed:
             allowed_str = ", ".join(sorted(allowed))
             raise DocumentNameError(f"Invalid filename '{name}'. Allowed names: {allowed_str}")
 
