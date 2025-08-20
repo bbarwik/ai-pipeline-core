@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from base64 import b32encode
 from enum import StrEnum
 from functools import cached_property
-from typing import Any, ClassVar, Literal, Self
+from typing import Any, ClassVar, Literal, Self, TypeVar
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 from ruamel.yaml import YAML
@@ -19,7 +19,10 @@ from .mime_type import (
     is_image_mime_type,
     is_pdf_mime_type,
     is_text_mime_type,
+    is_yaml_mime_type,
 )
+
+TModel = TypeVar("TModel", bound=BaseModel)
 
 
 class Document(BaseModel, ABC):
@@ -207,15 +210,40 @@ class Document(BaseModel, ABC):
         """Parse document as JSON"""
         return json.loads(self.as_text())
 
+    def as_pydantic_model(self, model_type: type[TModel]) -> TModel:
+        """Parse document as a pydantic model and return the validated instance"""
+        data = self.as_yaml() if is_yaml_mime_type(self.mime_type) else self.as_json()
+        return model_type.model_validate(data)
+
     def as_markdown_list(self) -> list[str]:
         """Parse document as a markdown list"""
         return self.as_text().split(self.MARKDOWN_LIST_SEPARATOR)
 
     @classmethod
-    def create(cls, name: str, description: str | None, content: bytes | str) -> Self:
+    def create(
+        cls,
+        name: str,
+        description: str | None,
+        content: bytes | str | BaseModel | list[str] | Any,
+    ) -> Self:
         """Create a document from a name, description, and content"""
-        if isinstance(content, str):
+        is_yaml_extension = name.endswith(".yaml") or name.endswith(".yml")
+        is_json_extension = name.endswith(".json")
+        is_markdown_extension = name.endswith(".md")
+        is_str_list = isinstance(content, list) and all(isinstance(item, str) for item in content)
+        if isinstance(content, bytes):
+            pass
+        elif isinstance(content, str):
             content = content.encode("utf-8")
+        elif is_str_list and is_markdown_extension:
+            return cls.create_as_markdown_list(name, description, content)  # type: ignore[arg-type]
+        elif is_yaml_extension:
+            return cls.create_as_yaml(name, description, content)
+        elif is_json_extension:
+            return cls.create_as_json(name, description, content)
+        else:
+            raise ValueError(f"Unsupported content type: {type(content)} for {name}")
+
         return cls(name=name, description=description, content=content)
 
     @classmethod
@@ -228,6 +256,32 @@ class Document(BaseModel, ABC):
         normalized_items = [re.sub(r"\r\n?", "\n", item) for item in items]
         cleaned_items = [pattern.sub("", item) for item in normalized_items]
         content = Document.MARKDOWN_LIST_SEPARATOR.join(cleaned_items)
+        return cls.create(name, description, content)
+
+    @classmethod
+    def create_as_json(cls, name: str, description: str | None, data: Any) -> Self:
+        """Create a document from a name, description, and JSON data"""
+        assert name.endswith(".json"), f"Document name must end with .json: {name}"
+        if isinstance(data, BaseModel):
+            data = data.model_dump(mode="json")
+        content = json.dumps(data, indent=2).encode("utf-8")
+        return cls.create(name, description, content)
+
+    @classmethod
+    def create_as_yaml(cls, name: str, description: str | None, data: Any) -> Self:
+        """Create a document from a name, description, and YAML data"""
+        assert name.endswith(".yaml") or name.endswith(".yml"), (
+            f"Document name must end with .yaml or .yml: {name}"
+        )
+        if isinstance(data, BaseModel):
+            data = data.model_dump()
+        yaml = YAML()
+        yaml.indent(mapping=2, sequence=4, offset=2)
+        from io import BytesIO
+
+        stream = BytesIO()
+        yaml.dump(data, stream)
+        content = stream.getvalue()
         return cls.create(name, description, content)
 
     def serialize_model(self) -> dict[str, Any]:

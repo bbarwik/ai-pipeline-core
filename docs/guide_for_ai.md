@@ -176,7 +176,71 @@ This is the abstract class that underpins all data objects. You will never insta
 -   **Key Methods**:
     -   `as_text() -> str`: Safely decodes the `content` as a UTF-8 string. Raises a `ValueError` if the document is binary.
     -   `as_json() -> Any`: Parses the text content as JSON.
+    -   `as_yaml() -> Any`: Parses the text content as YAML.
+    -   `as_pydantic_model(model_type: type[T]) -> T`: Parses the document content (JSON or YAML based on MIME type) and validates it as a Pydantic model instance.
     -   `as_markdown_list() -> list[str]`: Splits a Markdown document that uses `\n\n---\n\n` as a separator into a list of strings.
+
+#### Creating Documents: The Smart `create` Method
+
+The `Document.create()` class method is a powerful factory that intelligently handles multiple content types based on both the content type and file extension:
+
+-   **Signature**: `create(name: str, description: str | None, content: bytes | str | BaseModel | list[str] | Any) -> Self`
+-   **Smart Type Detection**:
+    -   `bytes`: Used directly as document content
+    -   `str`: Automatically encoded to UTF-8 bytes
+    -   `list[str]` + `.md` extension: Creates a markdown list document using `create_as_markdown_list()`
+    -   `dict/BaseModel` + `.json` extension: Serializes to formatted JSON using `create_as_json()`
+    -   `dict/BaseModel` + `.yaml/.yml` extension: Serializes to formatted YAML using `create_as_yaml()`
+    -   Other types: Raises `ValueError` with clear error message
+
+**Usage Examples:**
+
+```python
+from pydantic import BaseModel
+from ai_pipeline_core.documents import FlowDocument
+
+class MyDocument(FlowDocument):
+    pass
+
+# Create from string - automatically encodes to UTF-8
+doc1 = MyDocument.create("text.txt", "Simple text", "Hello, World!")
+
+# Create from bytes - used directly
+doc2 = MyDocument.create("binary.dat", None, b"\x00\x01\x02")
+
+# Create JSON document from dict - automatically formatted
+data = {"users": [{"name": "Alice"}, {"name": "Bob"}]}
+doc3 = MyDocument.create("data.json", "User data", data)
+# The content will be pretty-printed JSON with 2-space indentation
+
+# Create YAML document from Pydantic model
+class Config(BaseModel):
+    host: str
+    port: int
+
+config = Config(host="localhost", port=8080)
+doc4 = MyDocument.create("config.yaml", "Server config", config)
+# The content will be properly formatted YAML
+
+# Create markdown list document
+sections = [
+    "# Chapter 1\nIntroduction",
+    "# Chapter 2\nMain content",
+    "# Chapter 3\nConclusion"
+]
+doc5 = MyDocument.create("chapters.md", "Book chapters", sections)
+# Sections will be joined with markdown separators
+```
+
+#### Helper Methods for Document Creation
+
+For more explicit control, you can use the specialized creation methods:
+
+-   **`create_as_json(name: str, description: str | None, data: Any) -> Self`**: Creates a JSON document. The `name` must end with `.json`. Automatically handles Pydantic models and formats with indentation.
+
+-   **`create_as_yaml(name: str, description: str | None, data: Any) -> Self`**: Creates a YAML document. The `name` must end with `.yaml` or `.yml`. Automatically handles Pydantic models with proper formatting.
+
+-   **`create_as_markdown_list(name: str, description: str | None, items: list[str]) -> Self`**: Creates a markdown document from a list of strings, joining them with `\n\n---\n\n` separators.
 
 #### `FlowDocument`: Persistent State
 Inherit from this class for any data artifact that needs to be passed from one workflow step to the next. These documents are considered the primary, persistent outputs of your flows.
@@ -568,10 +632,12 @@ async def analyze_sentiment(document: TextInputDocument, model: ModelName) -> Se
     # The result is a validated Pydantic object
     result_data = response.parsed
 
-    return SentimentReportDocument(
+    # Use the smart create method with a Pydantic model
+    # It will automatically serialize to formatted JSON
+    return SentimentReportDocument.create(
         name=f"sentiment_{document.name}.json",
-        content=result_data.model_dump_json(indent=2).encode('utf-8'),
-        description=f"Sentiment analysis for {document.name}"
+        description=f"Sentiment analysis for {document.name}",
+        content=result_data  # Pass the Pydantic model directly
     )
 ```
 
@@ -633,7 +699,8 @@ if __name__ == "__main__":
 
 This section provides a detailed breakdown of every public component.
 
--   **`ai_pipeline_core.documents`**: `Document`, `FlowDocument`, `TaskDocument`, `DocumentList`. Details all properties (`id`, `name`, `content`, `mime_type`) and methods (`as_text`, `as_json`, `create`, `filter_by_type`).
+-   **`ai_pipeline_core.documents`**: `Document`, `FlowDocument`, `TaskDocument`, `DocumentList`. Details all properties (`id`, `name`, `content`, `mime_type`) and methods (`as_text`, `as_json`, `as_yaml`, `as_pydantic_model`, `create`, `create_as_json`, `create_as_yaml`, `create_as_markdown_list`, `filter_by_type`).
+-   **`ai_pipeline_core.documents.mime_type`**: MIME type detection utilities. `detect_mime_type(content: bytes, name: str) -> str` for intelligent MIME type detection, `is_json_mime_type(mime_type: str) -> bool` and `is_yaml_mime_type(mime_type: str) -> bool` for checking specific formats.
 -   **`ai_pipeline_core.llm`**: `generate`, `generate_structured`, `AIMessages`, `ModelOptions`, `ModelResponse`, `StructuredModelResponse`, `ModelName`. Details all function signatures, parameters, and return object attributes (`.content`, `.parsed`).
 -   **`ai_pipeline_core.flow`**: `FlowConfig`. Details the class variables and methods for defining flow contracts.
 -   **`ai_pipeline_core.tracing`**: `@trace`. Details all decorator arguments and their effects.
@@ -645,6 +712,65 @@ This section provides a detailed breakdown of every public component.
 
 ## 6. Best Practices & Advanced Patterns
 
+### Working with Structured Data Documents
+
+The new document creation methods make it easy to work with structured data throughout your pipeline:
+
+```python
+from pydantic import BaseModel
+from ai_pipeline_core.documents import FlowDocument, DocumentList
+
+class AnalysisResult(BaseModel):
+    score: float
+    findings: list[str]
+    metadata: dict[str, Any]
+
+class AnalysisDocument(FlowDocument):
+    pass
+
+# Creating a structured document
+result = AnalysisResult(score=0.95, findings=["High quality"], metadata={"version": 1})
+doc = AnalysisDocument.create("analysis.json", "Analysis results", result)
+
+# Later, reading it back with full type safety
+parsed_result = doc.as_pydantic_model(AnalysisResult)
+assert isinstance(parsed_result, AnalysisResult)
+assert parsed_result.score == 0.95
+
+# Or for YAML configuration files
+config_doc = AnalysisDocument.create("config.yaml", "Configuration", {
+    "model": "gpt-4",
+    "temperature": 0.7,
+    "features": ["analysis", "summary"]
+})
+
+# The MIME type is automatically detected
+assert "yaml" in config_doc.mime_type
+config_data = config_doc.as_yaml()
+```
+
+### Intelligent Content Type Detection
+
+The `create` method's smart detection allows you to write more generic code:
+
+```python
+def save_results(name: str, data: Any) -> FlowDocument:
+    """Save any type of results with automatic format detection."""
+    # The create method will:
+    # - Use JSON for .json files
+    # - Use YAML for .yaml/.yml files
+    # - Use markdown list for .md files with list[str]
+    # - Use UTF-8 encoding for strings
+    # - Use bytes directly
+    return ResultDocument.create(name, "Results", data)
+
+# Works with all these
+doc1 = save_results("data.json", {"key": "value"})  # JSON formatted
+doc2 = save_results("config.yaml", {"host": "localhost"})  # YAML formatted
+doc3 = save_results("text.txt", "Plain text")  # UTF-8 encoded
+doc4 = save_results("sections.md", ["Part 1", "Part 2"])  # Markdown list
+```
+
 -   **Error Handling**: Wrap LLM calls in `try...except LLMError:` for transient API issues. For `generate_structured`, also catch `pydantic.ValidationError` in case the model returns malformed JSON.
 -   **Flexible Pipelines with Custom Options**: To make your pipeline highly configurable, define a custom Pydantic or dataclass `FlowOptions` object. Pass this object from your main script into your flow, and then down into your tasks. This allows you to control model selection, feature flags, and other parameters from a single point.
 -   **Testing**:
@@ -654,9 +780,13 @@ This section provides a detailed breakdown of every public component.
     -   **DO** use `DocumentList.filter_by_type()` to get the specific documents you need.
     -   **DO** pass large, static data to the `context` argument of `generate()`.
     -   **DO** define a Pydantic model and use `generate_structured()` for predictable outputs.
+    -   **DO** use `Document.create()` with appropriate file extensions to automatically format structured data.
+    -   **DO** use `doc.as_pydantic_model(ModelClass)` for type-safe parsing of JSON/YAML documents.
+    -   **DO** leverage the smart content type detection of `create()` to simplify document creation.
     -   **DON'T** ever import the standard `logging` library. Always use `get_pipeline_logger()`.
     -   **DON'T** hardcode model names in tasks. Pass them down from the flow.
     -   **DON'T** pass raw strings or bytes between tasks. Always wrap them in a `Document`.
+    -   **DON'T** manually serialize Pydantic models to JSON/YAML - use `Document.create()` with the appropriate extension.
 
 ---
 

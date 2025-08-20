@@ -490,3 +490,201 @@ class TestCreateFactory:
         assert doc_ok.size == 5
         with pytest.raises(DocumentSizeError):
             SmallDocument.create(name="big.txt", description=None, content="12345678901")
+
+
+class TestNewDocumentMethods:
+    """Tests for new Document methods: as_pydantic_model, create_as_json, create_as_yaml."""
+
+    def test_as_pydantic_model_from_json(self):
+        """Test parsing JSON document as Pydantic model."""
+        from pydantic import BaseModel, Field
+
+        class TestModel(BaseModel):
+            name: str
+            age: int = Field(ge=0)
+            tags: list[str] = []
+
+        # Create a JSON document
+        json_content = '{"name": "Alice", "age": 30, "tags": ["python", "ai"]}'
+        doc = ConcreteTestFlowDocument(name="data.json", content=json_content.encode())
+
+        # Parse as Pydantic model
+        model = doc.as_pydantic_model(TestModel)
+        assert isinstance(model, TestModel)
+        assert model.name == "Alice"
+        assert model.age == 30
+        assert model.tags == ["python", "ai"]
+
+        # Test with missing optional field
+        json_content2 = '{"name": "Bob", "age": 25}'
+        doc2 = ConcreteTestFlowDocument(name="data2.json", content=json_content2.encode())
+        model2 = doc2.as_pydantic_model(TestModel)
+        assert model2.name == "Bob"
+        assert model2.age == 25
+        assert model2.tags == []
+
+        # Test validation error
+        json_invalid = '{"name": "Charlie", "age": -5}'
+        doc_invalid = ConcreteTestFlowDocument(name="invalid.json", content=json_invalid.encode())
+        with pytest.raises(ValueError):  # Pydantic validation error
+            doc_invalid.as_pydantic_model(TestModel)
+
+    def test_as_pydantic_model_from_yaml(self):
+        """Test parsing YAML document as Pydantic model."""
+        from pydantic import BaseModel
+
+        class ConfigModel(BaseModel):
+            host: str
+            port: int
+            debug: bool = False
+
+        # Create a YAML document
+        yaml_content = """host: localhost
+port: 8080
+debug: true
+"""
+        doc = ConcreteTestFlowDocument(name="config.yaml", content=yaml_content.encode())
+
+        # Parse as Pydantic model
+        model = doc.as_pydantic_model(ConfigModel)
+        assert isinstance(model, ConfigModel)
+        assert model.host == "localhost"
+        assert model.port == 8080
+        assert model.debug is True
+
+        # Test with .yml extension
+        doc_yml = ConcreteTestFlowDocument(name="config.yml", content=yaml_content.encode())
+        model_yml = doc_yml.as_pydantic_model(ConfigModel)
+        assert model_yml.host == "localhost"
+
+    def test_create_as_json_with_dict(self):
+        """Test create_as_json with dictionary data."""
+        data = {"key": "value", "number": 42, "list": [1, 2, 3]}
+        doc = ConcreteTestFlowDocument.create_as_json(
+            name="test.json", description="JSON from dict", data=data
+        )
+
+        assert doc.name == "test.json"
+        assert doc.description == "JSON from dict"
+        assert doc.is_text is True
+        assert "json" in doc.mime_type
+
+        # Verify content can be parsed back
+        parsed = doc.as_json()
+        assert parsed == data
+
+        # Verify formatting (should be indented)
+        text = doc.as_text()
+        assert "  " in text  # Check for indentation
+
+    def test_create_as_json_with_pydantic_model(self):
+        """Test create_as_json with Pydantic model."""
+        from pydantic import BaseModel
+
+        class UserModel(BaseModel):
+            username: str
+            email: str
+            active: bool = True
+
+        user = UserModel(username="alice", email="alice@example.com")
+        doc = ConcreteTestFlowDocument.create_as_json(
+            name="user.json", description="User data", data=user
+        )
+
+        assert doc.name == "user.json"
+        parsed = doc.as_json()
+        assert parsed["username"] == "alice"
+        assert parsed["email"] == "alice@example.com"
+        assert parsed["active"] is True
+
+    def test_create_as_json_name_validation(self):
+        """Test that create_as_json validates file extension."""
+        # Should fail if name doesn't end with .json
+        with pytest.raises(AssertionError) as exc_info:
+            ConcreteTestFlowDocument.create_as_json(
+                name="test.txt", description=None, data={"key": "value"}
+            )
+        assert "must end with .json" in str(exc_info.value)
+
+    def test_create_as_yaml_with_dict(self):
+        """Test create_as_yaml with dictionary data."""
+        data = {"database": {"host": "localhost", "port": 5432}, "cache": {"ttl": 300}}
+        doc = ConcreteTestFlowDocument.create_as_yaml(
+            name="config.yaml", description="YAML config", data=data
+        )
+
+        assert doc.name == "config.yaml"
+        assert doc.description == "YAML config"
+        assert doc.is_text is True
+        assert "yaml" in doc.mime_type
+
+        # Verify content can be parsed back
+        parsed = doc.as_yaml()
+        assert parsed == data
+
+        # Verify YAML formatting
+        text = doc.as_text()
+        assert "database:" in text
+        assert "  host:" in text  # Check for indentation
+
+    def test_create_as_yaml_with_yml_extension(self):
+        """Test create_as_yaml accepts .yml extension."""
+        data = {"test": "value"}
+        doc = ConcreteTestFlowDocument.create_as_yaml(
+            name="config.yml", description=None, data=data
+        )
+        assert doc.name == "config.yml"
+        assert doc.as_yaml() == data
+
+    def test_create_as_yaml_with_pydantic_model(self):
+        """Test create_as_yaml with Pydantic model."""
+        from pydantic import BaseModel
+
+        class ServerConfig(BaseModel):
+            name: str
+            workers: int
+            ssl_enabled: bool
+
+        config = ServerConfig(name="api-server", workers=4, ssl_enabled=True)
+        doc = ConcreteTestFlowDocument.create_as_yaml(
+            name="server.yaml", description="Server config", data=config
+        )
+
+        assert doc.name == "server.yaml"
+        parsed = doc.as_yaml()
+        assert parsed["name"] == "api-server"
+        assert parsed["workers"] == 4
+        assert parsed["ssl_enabled"] is True
+
+    def test_create_as_yaml_name_validation(self):
+        """Test that create_as_yaml validates file extension."""
+        # Should fail if name doesn't end with .yaml or .yml
+        with pytest.raises(AssertionError) as exc_info:
+            ConcreteTestFlowDocument.create_as_yaml(
+                name="test.txt", description=None, data={"key": "value"}
+            )
+        assert "must end with .yaml or .yml" in str(exc_info.value)
+
+    def test_create_as_json_yaml_roundtrip(self):
+        """Test that JSON/YAML creation and parsing roundtrips correctly."""
+        from pydantic import BaseModel
+
+        class DataModel(BaseModel):
+            items: list[str]
+            metadata: dict[str, int]
+
+        original = DataModel(items=["a", "b", "c"], metadata={"count": 3, "version": 1})
+
+        # JSON roundtrip
+        json_doc = ConcreteTestFlowDocument.create_as_json(
+            name="data.json", description=None, data=original
+        )
+        json_model = json_doc.as_pydantic_model(DataModel)
+        assert json_model == original
+
+        # YAML roundtrip
+        yaml_doc = ConcreteTestFlowDocument.create_as_yaml(
+            name="data.yaml", description=None, data=original
+        )
+        yaml_model = yaml_doc.as_pydantic_model(DataModel)
+        assert yaml_model == original
