@@ -146,7 +146,7 @@ class TestLLMIntegration:
         """Test that tracing doesn't break generation."""
         from ai_pipeline_core.tracing import trace
 
-        @trace(test=True)  # Mark as test to avoid polluting prod metrics
+        @trace(level="debug", tags=["test"])  # Mark as test to avoid polluting prod metrics
         async def traced_generation():
             messages = AIMessages(["Say 'traced'"])
             return await generate(

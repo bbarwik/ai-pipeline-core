@@ -67,7 +67,7 @@ class TestTraceDecorator:
         """Test tracing a basic synchronous function."""
         mock_observe.return_value = lambda f: f  # Pass through
 
-        @trace
+        @trace(level="debug")
         def test_func(x: int) -> int:
             return x * 2
 
@@ -83,7 +83,7 @@ class TestTraceDecorator:
         """Test tracing an async function."""
         mock_observe.return_value = lambda f: f  # Pass through
 
-        @trace
+        @trace(level="debug")
         async def test_func(x: int) -> int:
             await asyncio.sleep(0.001)
             return x * 2
@@ -99,7 +99,7 @@ class TestTraceDecorator:
         """Test custom name for traced function."""
         mock_observe.return_value = lambda f: f
 
-        @trace(name="custom_operation")
+        @trace(level="debug", name="custom_operation")
         def test_func():
             return "result"
 
@@ -109,54 +109,40 @@ class TestTraceDecorator:
         call_kwargs = mock_observe.call_args[1]
         assert call_kwargs["name"] == "custom_operation"
 
-    @patch("ai_pipeline_core.tracing.observe")
-    @patch("ai_pipeline_core.tracing.Laminar.initialize")
-    def test_test_flag_adds_tag(self, mock_init: Mock, mock_observe: Mock) -> None:
-        """Test that test=True adds test tag."""
-        mock_observe.return_value = lambda f: f
-
-        @trace(test=True)
-        def test_func():
-            return "result"
-
-        test_func()
-
-        call_kwargs = mock_observe.call_args[1]
-        assert "tags" in call_kwargs
-        assert "test" in call_kwargs["tags"]
+    # Note: test parameter was removed from trace decorator
 
     @patch.dict(os.environ, {"LMNR_DEBUG": "false"})
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
-    def test_debug_only_without_env(self, mock_init: Mock, mock_observe: Mock) -> None:
-        """Test debug_only=True without LMNR_DEBUG env var."""
+    def test_debug_level_with_env_false(self, mock_init: Mock, mock_observe: Mock) -> None:
+        """Test level='debug' with LMNR_DEBUG=false should trace."""
+        mock_observe.return_value = lambda f: f
 
-        @trace(debug_only=True)
+        @trace(level="debug")
         def test_func():
             return "result"
 
         result = test_func()
         assert result == "result"
 
-        # Observe should NOT have been called
-        mock_observe.assert_not_called()
+        # Observe SHOULD have been called (traces when LMNR_DEBUG is not "true")
+        mock_observe.assert_called()
 
     @patch.dict(os.environ, {"LMNR_DEBUG": "true"})
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
-    def test_debug_only_with_env(self, mock_init: Mock, mock_observe: Mock) -> None:
-        """Test debug_only=True with LMNR_DEBUG=true."""
-        mock_observe.return_value = lambda f: f
+    def test_debug_level_with_env_true(self, mock_init: Mock, mock_observe: Mock) -> None:
+        """Test level='debug' with LMNR_DEBUG=true should NOT trace."""
 
-        @trace(debug_only=True)
+        @trace(level="debug")
         def test_func():
             return "result"
 
         result = test_func()
         assert result == "result"
 
-        # Observe SHOULD have been called
-        mock_observe.assert_called()
+        # Observe should NOT have been called (doesn't trace when LMNR_DEBUG is "true")
+        mock_observe.assert_not_called()
 
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
@@ -164,7 +150,12 @@ class TestTraceDecorator:
         """Test ignore input/output flags."""
         mock_observe.return_value = lambda f: f
 
-        @trace(ignore_input=True, ignore_output=True, ignore_inputs=["password", "secret"])
+        @trace(
+            level="debug",
+            ignore_input=True,
+            ignore_output=True,
+            ignore_inputs=["password", "secret"],
+        )
         def test_func():
             return "result"
 
@@ -187,7 +178,7 @@ class TestTraceDecorator:
         def output_fmt(result):
             return f"Output: {result}"
 
-        @trace(input_formatter=input_fmt, output_formatter=output_fmt)
+        @trace(level="debug", input_formatter=input_fmt, output_formatter=output_fmt)
         def test_func(x):
             return x * 2
 
@@ -203,7 +194,7 @@ class TestTraceDecorator:
         """Test TraceInfo injection into function kwargs."""
         mock_observe.return_value = lambda f: f
 
-        @trace
+        @trace(level="debug")
         def test_func(x: int, trace_info: TraceInfo) -> int:
             # Should receive a TraceInfo instance
             assert isinstance(trace_info, TraceInfo)
@@ -213,22 +204,7 @@ class TestTraceDecorator:
         result = test_func(5)  # type: ignore[call-arg]
         assert result == 10
 
-    @patch("ai_pipeline_core.tracing.observe")
-    @patch("ai_pipeline_core.tracing.Laminar.initialize")
-    def test_runtime_test_flag(self, mock_init: Mock, mock_observe: Mock) -> None:
-        """Test runtime test flag in kwargs."""
-        mock_observe.return_value = lambda f: f
-
-        @trace
-        def test_func(x: int, test: bool = False) -> int:
-            return x * 2
-
-        # Call with test=True
-        test_func(5, test=True)
-
-        call_kwargs = mock_observe.call_args[1]
-        assert "tags" in call_kwargs
-        assert "test" in call_kwargs["tags"]
+    # Note: runtime test flag functionality was removed
 
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
@@ -254,17 +230,17 @@ class TestTraceDecorator:
         mock_observe.return_value = lambda f: f
 
         # Bare decorator
-        @trace
+        @trace(level="debug")
         def func1():
             return "func1"
 
         # With parentheses but no args
-        @trace()
+        @trace(level="debug")
         def func2():
             return "func2"
 
         # With arguments
-        @trace(name="func3_custom")
+        @trace(level="debug", name="func3_custom")
         def func3():
             return "func3"
 
@@ -280,7 +256,7 @@ class TestTraceDecorator:
         """Test TraceInfo with custom metadata."""
         mock_observe.return_value = lambda f: f
 
-        @trace
+        @trace(level="debug")
         def test_func(trace_info: TraceInfo):
             return "result"
 

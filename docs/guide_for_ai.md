@@ -1,8 +1,4 @@
-Of course. Here is the final, comprehensive guide for the `ai-pipeline-core` library, written as official documentation. It is detailed, contains extensive code examples, and does not reference the specific `research-pipeline` project.
-
----
-
-# The Official `ai-pipeline-core` Developer's Guide
+# The Official `ai-pipeline-core` Developer's Guide (v0.1.7)
 
 ## Table of Contents
 
@@ -29,6 +25,13 @@ Of course. Here is the final, comprehensive guide for the `ai-pipeline-core` lib
         *   `ModelResponse` & `StructuredModelResponse`: Understanding Outputs
     *   **Flow Orchestration**: Building the Pipeline
         *   `FlowConfig`: The Contract for Your Flows
+        *   `FlowOptions`: Extensible Configuration System (New in v0.1.7)
+    *   **Enhanced Decorators** (New in v0.1.7)
+        *   `@pipeline_flow` & `@pipeline_task`: Prefect + Tracing Combined
+        *   Clean Prefect Imports: `flow` and `task` without tracing
+    *   **Simple Runner Module** (New in v0.1.7)
+        *   CLI-based Pipeline Execution
+        *   Programmatic Pipeline Running
     *   **Observability & Utilities**
         *   `@trace`: Automatic Monitoring
         *   `PromptManager`: Organized & Reusable Prompts
@@ -87,6 +90,41 @@ Before you can build your first pipeline, you must set up your local environment
 Install the library directly from PyPI:
 ```bash
 pip install ai-pipeline-core
+```
+
+### Simplified Imports (New in v0.1.7)
+
+Most commonly used components are now available from the top-level import:
+
+```python
+# All major components from single import
+from ai_pipeline_core import (
+    # Documents
+    Document, DocumentList, FlowDocument, TaskDocument,
+    canonical_name_key, sanitize_url,
+
+    # Flow configuration
+    FlowConfig, FlowOptions,
+
+    # LLM components
+    generate, generate_structured,
+    AIMessages, ModelName, ModelOptions,
+    ModelResponse, StructuredModelResponse,
+
+    # Decorators
+    pipeline_flow, pipeline_task,  # With tracing
+    flow, task,  # Clean Prefect (from .prefect)
+
+    # Utilities
+    trace, TraceLevel, TraceInfo,
+    PromptManager,
+    settings,
+    get_pipeline_logger,
+)
+
+# Or import specific modules for more components
+from ai_pipeline_core.simple_runner import run_cli, run_pipeline
+from ai_pipeline_core.prefect import flow, task  # Clean decorators
 ```
 
 ### Environment Variables (`.env`)
@@ -454,6 +492,162 @@ async def generate_final_report(documents: DocumentList, ...):
     # ...
 ```
 
+#### `FlowOptions`: Extensible Configuration System (New in v0.1.7)
+A base class for creating type-safe, extensible configuration objects for your flows.
+
+-   **Base Attributes**:
+    -   `core_model: ModelName | str`: Primary model for complex analysis (default: "gpt-5")
+    -   `small_model: ModelName | str`: Fast model for simple tasks (default: "gpt-5-mini")
+-   **Extension Pattern**: Inherit from `FlowOptions` to add your custom configuration fields
+
+**Usage Pattern:**
+Create custom options classes that inherit from `FlowOptions` to configure your flows:
+
+```python
+from ai_pipeline_core.flow import FlowOptions
+from pydantic import Field
+
+class MyFlowOptions(FlowOptions):
+    """Custom options for my specific flow."""
+    batch_size: int = Field(default=100, ge=1)
+    temperature: float = Field(default=0.7, ge=0, le=2)
+    enable_caching: bool = Field(default=True)
+
+    # You still have access to base fields
+    # core_model and small_model are inherited
+
+# Use with pipeline_flow decorator
+@pipeline_flow
+async def my_pipeline(
+    project_name: str,
+    documents: DocumentList,
+    flow_options: MyFlowOptions  # Type-safe custom options
+) -> DocumentList:
+    # Access both custom and base fields
+    model = flow_options.core_model
+    batch_size = flow_options.batch_size
+    # ...
+```
+
+### **Enhanced Decorators** (New in v0.1.7)
+
+#### `@pipeline_flow` & `@pipeline_task`: Prefect + Tracing Combined
+These decorators combine Prefect's orchestration with automatic LMNR tracing.
+
+**`@pipeline_flow`**: Enforces a standardized signature for document processing flows:
+- First parameter: `project_name: str`
+- Second parameter: `documents: DocumentList`
+- Third parameter: `flow_options: FlowOptions` (or subclass)
+- Must return: `DocumentList`
+
+```python
+from ai_pipeline_core import pipeline_flow, FlowOptions
+from ai_pipeline_core.documents import DocumentList
+
+@pipeline_flow(trace_level="always", name="analyzer")
+async def analyze_documents(
+    project_name: str,
+    documents: DocumentList,
+    flow_options: FlowOptions
+) -> DocumentList:
+    # Automatic tracing + Prefect flow functionality
+    # ...
+    return results
+```
+
+**`@pipeline_task`**: Combines Prefect task with tracing:
+
+```python
+from ai_pipeline_core import pipeline_task
+
+@pipeline_task(trace_level="always", retries=3, timeout_seconds=300)
+async def process_document(doc: Document) -> Document:
+    # Automatic tracing + retry logic
+    # ...
+    return result
+```
+
+#### Clean Prefect Imports
+For cases where you don't need tracing, import clean Prefect decorators:
+
+```python
+# Clean Prefect decorators (no tracing)
+from ai_pipeline_core.prefect import flow, task
+
+# Or use enhanced decorators with tracing
+from ai_pipeline_core import pipeline_flow, pipeline_task
+```
+
+### **Simple Runner Module** (New in v0.1.7)
+
+#### CLI-based Pipeline Execution
+The `run_cli` function provides a command-line interface for running pipelines:
+
+```python
+# my_app/cli.py
+from ai_pipeline_core.simple_runner import run_cli
+from my_app.flows import my_pipeline
+from my_app.config import MyFlowConfig, MyFlowOptions
+
+def main():
+    run_cli(
+        flows=[my_pipeline],
+        flow_configs=[MyFlowConfig],
+        options_cls=MyFlowOptions
+    )
+
+if __name__ == "__main__":
+    main()
+```
+
+Run from command line:
+```bash
+python -m my_app.cli ./output --batch-size 50 --temperature 0.9
+```
+
+#### Programmatic Pipeline Running
+For running pipelines from Python code:
+
+```python
+from pathlib import Path
+import asyncio
+from ai_pipeline_core.simple_runner import run_pipeline
+
+async def main():
+    result = await run_pipeline(
+        project_name="my-project",
+        output_dir=Path("./output"),
+        flow=my_pipeline,
+        flow_config=MyFlowConfig,
+        flow_options=MyFlowOptions(batch_size=50)
+    )
+    print(f"Processed {len(result)} documents")
+
+asyncio.run(main())
+```
+
+#### Document I/O Utilities
+Helper functions for loading and saving documents:
+
+```python
+from ai_pipeline_core.simple_runner import (
+    load_documents_from_directory,
+    save_documents_to_directory
+)
+
+# Load documents organized by type
+docs = load_documents_from_directory(
+    base_dir=Path("./input"),
+    document_types=[InputDoc1, InputDoc2]
+)
+
+# Save documents organized by type
+save_documents_to_directory(
+    base_dir=Path("./output"),
+    documents=results
+)
+```
+
 ### **Observability & Utilities**
 
 #### `@trace`: Automatic Monitoring
@@ -699,11 +893,14 @@ if __name__ == "__main__":
 
 This section provides a detailed breakdown of every public component.
 
--   **`ai_pipeline_core.documents`**: `Document`, `FlowDocument`, `TaskDocument`, `DocumentList`. Details all properties (`id`, `name`, `content`, `mime_type`) and methods (`as_text`, `as_json`, `as_yaml`, `as_pydantic_model`, `create`, `create_as_json`, `create_as_yaml`, `create_as_markdown_list`, `filter_by_type`).
+-   **`ai_pipeline_core.documents`**: `Document`, `FlowDocument`, `TaskDocument`, `DocumentList`, `canonical_name_key`, `sanitize_url`. Details all properties (`id`, `name`, `content`, `mime_type`) and methods (`as_text`, `as_json`, `as_yaml`, `as_pydantic_model`, `create`, `create_as_json`, `create_as_yaml`, `create_as_markdown_list`, `filter_by_type`).
 -   **`ai_pipeline_core.documents.mime_type`**: MIME type detection utilities. `detect_mime_type(content: bytes, name: str) -> str` for intelligent MIME type detection, `is_json_mime_type(mime_type: str) -> bool` and `is_yaml_mime_type(mime_type: str) -> bool` for checking specific formats.
--   **`ai_pipeline_core.llm`**: `generate`, `generate_structured`, `AIMessages`, `ModelOptions`, `ModelResponse`, `StructuredModelResponse`, `ModelName`. Details all function signatures, parameters, and return object attributes (`.content`, `.parsed`).
--   **`ai_pipeline_core.flow`**: `FlowConfig`. Details the class variables and methods for defining flow contracts.
--   **`ai_pipeline_core.tracing`**: `@trace`. Details all decorator arguments and their effects.
+-   **`ai_pipeline_core.llm`**: `generate`, `generate_structured`, `AIMessages`, `ModelOptions`, `ModelResponse`, `StructuredModelResponse`, `ModelName`. Details all function signatures, parameters, and return object attributes (`.content`, `.parsed`). Note: All exports also available from top-level `ai_pipeline_core` import.
+-   **`ai_pipeline_core.flow`**: `FlowConfig`, `FlowOptions`. Details the class variables and methods for defining flow contracts and extensible configuration.
+-   **`ai_pipeline_core.pipeline`**: `pipeline_flow`, `pipeline_task`. Enhanced decorators combining Prefect with tracing.
+-   **`ai_pipeline_core.prefect`**: `flow`, `task`. Clean Prefect decorators without tracing.
+-   **`ai_pipeline_core.simple_runner`**: `run_cli`, `run_pipeline`, `run_pipelines`, `load_documents_from_directory`, `save_documents_to_directory`, `FlowSequence`, `ConfigSequence`. Complete pipeline execution utilities.
+-   **`ai_pipeline_core.tracing`**: `@trace`, `TraceLevel`, `TraceInfo`. Details all decorator arguments and their effects.
 -   **`ai_pipeline_core.prompt_manager`**: `PromptManager`. Details the constructor and `.get()` method.
 -   **`ai_pipeline_core.settings`**: `settings`. Lists all available configuration variables.
 -   **`ai_pipeline_core.logging`**: `get_pipeline_logger`. Explains its usage and integration with Prefect.
@@ -783,10 +980,14 @@ doc4 = save_results("sections.md", ["Part 1", "Part 2"])  # Markdown list
     -   **DO** use `Document.create()` with appropriate file extensions to automatically format structured data.
     -   **DO** use `doc.as_pydantic_model(ModelClass)` for type-safe parsing of JSON/YAML documents.
     -   **DO** leverage the smart content type detection of `create()` to simplify document creation.
+    -   **DO** use `pipeline_flow` and `pipeline_task` for flows that need tracing.
+    -   **DO** extend `FlowOptions` for custom flow configuration.
+    -   **DO** use the simple runner module for quick pipeline execution.
     -   **DON'T** ever import the standard `logging` library. Always use `get_pipeline_logger()`.
     -   **DON'T** hardcode model names in tasks. Pass them down from the flow.
     -   **DON'T** pass raw strings or bytes between tasks. Always wrap them in a `Document`.
     -   **DON'T** manually serialize Pydantic models to JSON/YAML - use `Document.create()` with the appropriate extension.
+    -   **DON'T** mix clean Prefect decorators with pipeline decorators - choose one pattern per module.
 
 ---
 

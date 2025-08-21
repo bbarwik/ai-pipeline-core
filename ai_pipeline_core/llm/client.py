@@ -118,11 +118,13 @@ async def _generate_with_retry(
                 span.set_attributes(response.get_laminar_metadata())
                 Laminar.set_span_output(response.content)
                 if not response.content:
-                    # disable cache in case of empty response
-                    completion_kwargs["extra_body"]["cache"] = {"no-cache": True}
                     raise ValueError(f"Model {model} returned an empty response.")
                 return response
         except (asyncio.TimeoutError, ValueError, Exception) as e:
+            if not isinstance(e, asyncio.TimeoutError):
+                # disable cache if it's not a timeout because it may cause an error
+                completion_kwargs["extra_body"]["cache"] = {"no-cache": True}
+
             logger.warning(
                 "LLM generation failed (attempt %d/%d): %s",
                 attempt + 1,
@@ -167,7 +169,7 @@ T = TypeVar("T", bound=BaseModel)
 
 @trace(ignore_inputs=["context"])
 async def generate_structured(
-    model: ModelName,
+    model: ModelName | str,
     response_format: type[T],
     *,
     context: AIMessages = AIMessages(),

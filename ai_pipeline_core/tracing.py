@@ -11,7 +11,7 @@ from __future__ import annotations
 import inspect
 import os
 from functools import wraps
-from typing import Any, Callable, ParamSpec, TypeVar, cast, overload
+from typing import Any, Callable, Literal, ParamSpec, TypeVar, cast, overload
 
 from lmnr import Instruments, Laminar, observe
 from pydantic import BaseModel
@@ -23,6 +23,8 @@ from ai_pipeline_core.settings import settings
 # ---------------------------------------------------------------------------
 P = ParamSpec("P")
 R = TypeVar("R")
+
+TraceLevel = Literal["always", "debug", "off"]
 
 
 # ---------------------------------------------------------------------------
@@ -67,22 +69,28 @@ def _initialise_laminar() -> None:
     if settings.lmnr_project_api_key:
         Laminar.initialize(
             project_api_key=settings.lmnr_project_api_key,
-            disabled_instruments=[Instruments.OPENAI],
+            disabled_instruments=[Instruments.OPENAI] if Instruments.OPENAI else [],
         )
 
 
-# Overload for calls like @trace(name="...", test=True)
+# Overload for calls like @trace(name="...", level="debug")
 @overload
 def trace(
     *,
+    level: TraceLevel = "always",
     name: str | None = None,
-    test: bool = False,
-    debug_only: bool = False,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    span_type: str | None = None,
     ignore_input: bool = False,
     ignore_output: bool = False,
     ignore_inputs: list[str] | None = None,
     input_formatter: Callable[..., str] | None = None,
     output_formatter: Callable[..., str] | None = None,
+    ignore_exceptions: bool = False,
+    preserve_global_context: bool = True,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
 
 
@@ -95,55 +103,75 @@ def trace(func: Callable[P, R]) -> Callable[P, R]: ...
 def trace(
     func: Callable[P, R] | None = None,
     *,
+    level: TraceLevel = "always",
     name: str | None = None,
-    test: bool = False,
-    debug_only: bool = False,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    span_type: str | None = None,
     ignore_input: bool = False,
     ignore_output: bool = False,
     ignore_inputs: list[str] | None = None,
     input_formatter: Callable[..., str] | None = None,
     output_formatter: Callable[..., str] | None = None,
+    ignore_exceptions: bool = False,
     preserve_global_context: bool = True,
 ) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
     """Decorator that wires Laminar tracing and observation into a function.
 
     Args:
         func: The function to be traced (when used as @trace)
+        level: Trace level control:
+            - "always": Always trace (default)
+            - "debug": Only trace when LMNR_DEBUG environment variable is NOT set to "true"
+            - "off": Never trace
         name: Custom name for the observation (defaults to function name)
-        test: Mark this trace as a test run
-        debug_only: Only trace when LMNR_DEBUG=true environment variable is set
+        metadata: Additional metadata for the trace
+        tags: Additional tags for the trace
+        span_type: Type of span for the trace
         ignore_input: Ignore all inputs in the trace
         ignore_output: Ignore the output in the trace
         ignore_inputs: List of specific input parameter names to ignore
         input_formatter: Custom formatter for inputs (takes any arguments, returns string)
         output_formatter: Custom formatter for outputs (takes any arguments, returns string)
+        ignore_exceptions: Whether to ignore exceptions in tracing
+        preserve_global_context: Whether to preserve global context
 
     Returns:
         The decorated function with Laminar tracing enabled
     """
 
+    if level == "off":
+        if func:
+            return func
+        return lambda f: f
+
     def decorator(f: Callable[P, R]) -> Callable[P, R]:
+        # Handle 'debug' level logic - only trace when LMNR_DEBUG is NOT "true"
+        if level == "debug" and os.getenv("LMNR_DEBUG", "").lower() == "true":
+            return f
+
         # --- Pre-computation (done once when the function is decorated) ---
         _initialise_laminar()
         sig = inspect.signature(f)
         is_coroutine = inspect.iscoroutinefunction(f)
-        decorator_test_flag = test
         observe_name = name or f.__name__
         _observe = observe
 
         # Store the new parameters
+        _session_id = session_id
+        _user_id = user_id
+        _metadata = metadata
+        _tags = tags or []
+        _span_type = span_type
         _ignore_input = ignore_input
         _ignore_output = ignore_output
         _ignore_inputs = ignore_inputs
         _input_formatter = input_formatter
         _output_formatter = output_formatter
+        _ignore_exceptions = ignore_exceptions
         _preserve_global_context = preserve_global_context
-
-        # --- Check debug_only flag and environment variable ---
-        if debug_only and os.getenv("LMNR_DEBUG", "").lower() != "true":
-            # If debug_only is True but LMNR_DEBUG is not set to "true",
-            # return the original function without tracing
-            return f
 
         # --- Helper function for runtime logic ---
         def _prepare_and_get_observe_params(runtime_kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -157,12 +185,22 @@ def trace(
                 if "trace_info" in sig.parameters:
                     runtime_kwargs["trace_info"] = trace_info
 
-            runtime_test_flag = bool(runtime_kwargs.get("test", False))
-            if (decorator_test_flag or runtime_test_flag) and "test" not in trace_info.tags:
-                trace_info.tags.append("test")
-
             observe_params = trace_info.get_observe_kwargs()
             observe_params["name"] = observe_name
+
+            # Override with decorator-level session_id and user_id if provided
+            if _session_id:
+                observe_params["session_id"] = _session_id
+            if _user_id:
+                observe_params["user_id"] = _user_id
+
+            # Merge decorator-level metadata and tags
+            if _metadata:
+                observe_params["metadata"] = {**observe_params.get("metadata", {}), **_metadata}
+            if _tags:
+                observe_params["tags"] = observe_params.get("tags", []) + _tags
+            if _span_type:
+                observe_params["span_type"] = _span_type
 
             # Add the new Laminar parameters
             if _ignore_input:
@@ -175,6 +213,8 @@ def trace(
                 observe_params["input_formatter"] = _input_formatter
             if _output_formatter is not None:
                 observe_params["output_formatter"] = _output_formatter
+            if _ignore_exceptions:
+                observe_params["ignore_exceptions"] = _ignore_exceptions
             if _preserve_global_context:
                 observe_params["preserve_global_context"] = _preserve_global_context
 
@@ -207,3 +247,6 @@ def trace(
         return decorator(func)  # Called as @trace
     else:
         return decorator  # Called as @trace(...)
+
+
+__all__ = ["trace", "TraceLevel", "TraceInfo"]

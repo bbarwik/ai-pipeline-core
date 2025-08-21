@@ -1,7 +1,23 @@
 """Pipeline Core - Shared infrastructure for AI pipelines."""
 
-from .documents import Document, DocumentList, FlowDocument, TaskDocument
-from .flow import FlowConfig
+from . import llm
+from .documents import (
+    Document,
+    DocumentList,
+    FlowDocument,
+    TaskDocument,
+    canonical_name_key,
+    sanitize_url,
+)
+from .flow import FlowConfig, FlowOptions
+from .llm import (
+    AIMessages,
+    AIMessageType,
+    ModelName,
+    ModelOptions,
+    ModelResponse,
+    StructuredModelResponse,
+)
 from .logging import (
     LoggerMixin,
     LoggingConfig,
@@ -9,28 +25,53 @@ from .logging import (
     get_pipeline_logger,
     setup_logging,
 )
-from .logging import (
-    get_pipeline_logger as get_logger,
-)
+from .logging import get_pipeline_logger as get_logger
+from .pipeline import pipeline_flow, pipeline_task
+from .prefect import flow, task
 from .prompt_manager import PromptManager
 from .settings import settings
-from .tracing import trace
+from .tracing import TraceInfo, TraceLevel, trace
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 __all__ = [
-    "Document",
-    "DocumentList",
-    "FlowConfig",
-    "FlowDocument",
+    # Config/Settings
+    "settings",
+    # Logging
     "get_logger",
     "get_pipeline_logger",
     "LoggerMixin",
     "LoggingConfig",
-    "PromptManager",
-    "settings",
     "setup_logging",
     "StructuredLoggerMixin",
+    # Documents
+    "Document",
+    "DocumentList",
+    "FlowDocument",
     "TaskDocument",
+    "canonical_name_key",
+    "sanitize_url",
+    # Flow/Task
+    "FlowConfig",
+    "FlowOptions",
+    # Prefect decorators (clean, no tracing)
+    "task",
+    "flow",
+    # Pipeline decorators (with tracing)
+    "pipeline_task",
+    "pipeline_flow",
+    # LLM
+    "llm",
+    "ModelName",
+    "ModelOptions",
+    "ModelResponse",
+    "StructuredModelResponse",
+    "AIMessages",
+    "AIMessageType",
+    # Tracing
     "trace",
+    "TraceLevel",
+    "TraceInfo",
+    # Utils
+    "PromptManager",
 ]

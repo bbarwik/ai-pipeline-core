@@ -29,6 +29,7 @@ AI Pipeline Core is a high-performance async library for building AI pipelines w
    - No `requests` library - use `httpx` with async
    - No `time.sleep()` - use `asyncio.sleep()`
    - No blocking database calls
+   - Exception: Local file I/O in simple_runner module may use sync functions for simplicity
 
 4. **Strong Typing with Pydantic**
    - Every function must have complete type hints

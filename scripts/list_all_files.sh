@@ -3,8 +3,7 @@
 # This script lists all files in the current repository that are not ignored by git,
 # and prints their contents. It is intended to be used when repository files need to be
 # provided within an AI prompt.
-# For files in the 'test_data' or 'scripts' directories, it prints '[contents skipped]'
-# instead of the content.
+# Some files and directories are excluded entirely via IGNORE_PATTERNS defined below.
 
 # Check if git is installed
 if ! command -v git &> /dev/null
@@ -22,11 +21,46 @@ fi
 
 SEPARATOR="========================================"
 
+# Patterns to ignore completely (files will not be listed)
+IGNORE_PATTERNS=(
+    ".claude/*"
+    ".github/*"
+    ".devcontainer/*"
+    "tests/test_data/*"
+    "test_data/*"
+    "Makefile"
+    "License"
+    "LICENSE"
+    ".gitignore"
+    ".gitattributes"
+    ".env.example"
+    "examples/*"
+    "scripts/*"
+    "docs/*"
+    "dependencies_docs/*"
+)
+
+# Helper: return 0 if the given file path should be ignored
+should_ignore() {
+    local file_path_to_check="$1"
+    for pattern in "${IGNORE_PATTERNS[@]}"; do
+        if [[ "$file_path_to_check" == $pattern ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Get all tracked and untracked files, excluding standard gitignores.
 # The files are piped to a while loop to handle file paths with spaces correctly.
 git ls-files --cached --others --exclude-standard | sort | while IFS= read -r file_path; do
     # This check is important because ls-files can list files that are staged for deletion but no longer exist on disk.
     if [ ! -f "$file_path" ]; then
+        continue
+    fi
+
+    # Skip files matching ignore patterns
+    if should_ignore "$file_path"; then
         continue
     fi
 

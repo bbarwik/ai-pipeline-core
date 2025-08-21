@@ -109,40 +109,76 @@ async def process_document(doc: Document):
     return response.parsed
 ```
 
-### Prefect Flow Integration
+### Enhanced Pipeline Decorators (New in v0.1.7)
 ```python
-from prefect import flow, task
-from ai_pipeline_core.documents import Document, DocumentList, FlowDocument
-from ai_pipeline_core.flow import FlowConfig
-from ai_pipeline_core.tracing import trace
+from ai_pipeline_core import pipeline_flow, pipeline_task
+from ai_pipeline_core.flow import FlowOptions
+from ai_pipeline_core.documents import DocumentList, FlowDocument
 
-class OutputDocument(FlowDocument):
-    """Custom output document type"""
-    def get_type(self) -> str:
-        return "output"
+class CustomFlowOptions(FlowOptions):
+    """Extend base options with your custom fields"""
+    batch_size: int = 100
+    temperature: float = 0.7
 
-class MyFlowConfig(FlowConfig):
-    INPUT_DOCUMENT_TYPES = [InputDocument]
-    OUTPUT_DOCUMENT_TYPE = OutputDocument
-
-@task
-@trace
+@pipeline_task(trace_level="always", retries=3)
 async def process_task(doc: Document) -> Document:
-    # Task-level processing with automatic tracing
+    # Task with automatic tracing and retries
     result = await process_document(doc)
-    # Convert result to JSON string for document content
-    import json
-    return OutputDocument(name="result", content=json.dumps(result.model_dump()).encode())
+    return OutputDocument(name="result", content=result.encode())
 
-@flow
-async def my_pipeline(documents: DocumentList):
-    config = MyFlowConfig()
-    input_docs = config.get_input_documents(documents)
+@pipeline_flow(trace_level="always")
+async def my_pipeline(
+    project_name: str,
+    documents: DocumentList,
+    flow_options: CustomFlowOptions  # Type-safe custom options
+) -> DocumentList:
+    # Pipeline flow with enforced signature and tracing
+    results = []
+    for doc in documents:
+        result = await process_task(doc)
+        results.append(result)
+    return DocumentList(results)
+```
 
-    results = await process_task.map(input_docs)
+### Simple Runner Utility (New in v0.1.7)
+```python
+from ai_pipeline_core.simple_runner import run_cli, run_pipeline
+from ai_pipeline_core.flow import FlowOptions
 
-    config.validate_output_documents(results)
-    return results
+# CLI-based pipeline execution
+if __name__ == "__main__":
+    run_cli(
+        flows=[my_pipeline],
+        flow_configs=[MyFlowConfig],
+        options_cls=CustomFlowOptions
+    )
+
+# Or programmatic execution
+async def main():
+    result = await run_pipeline(
+        project_name="my-project",
+        output_dir=Path("./output"),
+        flow=my_pipeline,
+        flow_config=MyFlowConfig,
+        flow_options=CustomFlowOptions(batch_size=50)
+    )
+```
+
+### Clean Prefect Decorators (New in v0.1.7)
+```python
+# Import clean Prefect decorators without tracing
+from ai_pipeline_core.prefect import flow, task
+
+# Or use pipeline decorators with tracing
+from ai_pipeline_core import pipeline_flow, pipeline_task
+
+@task  # Clean Prefect task
+def compute(x: int) -> int:
+    return x * 2
+
+@pipeline_task(trace_level="always")  # With tracing
+def compute_traced(x: int) -> int:
+    return x * 2
 ```
 
 ## Core Modules
@@ -249,8 +285,14 @@ ai_pipeline_core/
 │   ├── client.py      # Async client implementation
 │   └── model_options.py # Configuration models
 ├── flow/              # Prefect flow utilities
-│   └── config.py      # Type-safe flow configuration
+│   ├── config.py      # Type-safe flow configuration
+│   └── options.py     # FlowOptions base class (v0.1.7)
+├── simple_runner/     # Pipeline execution utilities (v0.1.7)
+│   ├── cli.py         # CLI interface
+│   └── simple_runner.py # Core runner logic
 ├── logging/           # Structured logging
+├── pipeline.py        # Enhanced decorators (v0.1.7)
+├── prefect.py         # Clean Prefect exports (v0.1.7)
 ├── tracing.py         # Observability decorators
 └── settings.py        # Centralized configuration
 ```
@@ -427,9 +469,29 @@ Built with:
 - [LiteLLM](https://litellm.ai/) - LLM proxy
 - [Pydantic](https://pydantic-docs.helpmanual.io/) - Data validation
 
+## What's New in v0.1.7
+
+### Major Additions
+- **Enhanced Pipeline Decorators**: New `pipeline_flow` and `pipeline_task` decorators combining Prefect functionality with automatic LMNR tracing
+- **FlowOptions Base Class**: Extensible configuration system for flows with type-safe inheritance
+- **Simple Runner Module**: CLI and programmatic utilities for easy pipeline execution
+- **Clean Prefect Exports**: Separate imports for Prefect decorators with and without tracing
+- **Expanded Exports**: All major components now accessible from top-level package import
+
+### API Improvements
+- Better type inference for document flows with custom options
+- Support for custom FlowOptions inheritance in pipeline flows
+- Improved error messages for invalid flow signatures
+- Enhanced document utility functions (`canonical_name_key`, `sanitize_url`)
+
+### Developer Experience
+- Simplified imports - most components available from `ai_pipeline_core` directly
+- Better separation of concerns between clean Prefect and traced pipeline decorators
+- More intuitive flow configuration with `FlowOptions` inheritance
+
 ## Stability Notice
 
-**Current Version**: 0.1.6
+**Current Version**: 0.1.7
 **Status**: Internal Preview
 **API Stability**: Unstable - Breaking changes expected
 **Recommended Use**: Learning and reference only
