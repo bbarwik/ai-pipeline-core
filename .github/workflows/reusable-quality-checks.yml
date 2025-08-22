@@ -92,7 +92,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests with coverage (unit only)
-        run: pytest -v --tb=short -m "not integration" --maxfail=1 --durations=10 --cov=ai_pipeline_core --cov-report=term-missing --cov-fail-under=80
+        run: pytest -v --tb=short -m "not integration" --maxfail=1 --durations=10 --cov=ai_pipeline_core --cov-report=term-missing --cov-fail-under=80 -n 4
 
   integration-test:
     # Always run integration tests for releases (when called from release workflow)
@@ -128,7 +128,7 @@ jobs:
         run: |
           if [ -n "$OPENAI_API_KEY" ]; then
             echo "Running integration tests with configured API keys..."
-            pytest -v --tb=short -m "integration" --maxfail=1 --durations=10
+            pytest -v --tb=short -m "integration" --maxfail=1 --durations=10 -n 4
           else
             # For release workflows, integration tests are required
             if [ "${{ github.event_name }}" == "workflow_call" ]; then
@@ -142,4 +142,77 @@ jobs:
               echo "WARNING: Skipping integration tests - OPENAI_API_KEY not set"
               echo "Integration tests will be required for releases."
             fi
+          fi
+
+      - name: Test showcase.py CLI example
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "Running showcase.py CLI test with configured API keys..."
+
+            # Create a temporary directory for test output
+            TEST_DIR=$(mktemp -d)
+            echo "Testing showcase.py with output directory: $TEST_DIR"
+
+            # Run the actual showcase CLI with real API calls
+            python examples/showcase.py "$TEST_DIR" --temperature 0.5 --batch-size 2
+
+            # Verify the expected directory structure was created
+            echo "Verifying directory structure..."
+
+            # Check that main directories exist
+            if [ ! -d "$TEST_DIR/input" ]; then
+                echo "ERROR: input directory not created"
+                exit 1
+            fi
+
+            if [ ! -d "$TEST_DIR/analysis" ]; then
+                echo "ERROR: analysis directory not created"
+                exit 1
+            fi
+
+            if [ ! -d "$TEST_DIR/enhanced" ]; then
+                echo "ERROR: enhanced directory not created"
+                exit 1
+            fi
+
+            # Check that files were created in each directory
+            INPUT_FILES=$(find "$TEST_DIR/input" -type f | wc -l)
+            if [ "$INPUT_FILES" -eq 0 ]; then
+                echo "ERROR: No files created in input directory"
+                exit 1
+            fi
+
+            ANALYSIS_FILES=$(find "$TEST_DIR/analysis" -type f | wc -l)
+            if [ "$ANALYSIS_FILES" -eq 0 ]; then
+                echo "ERROR: No files created in analysis directory"
+                exit 1
+            fi
+
+            ENHANCED_FILES=$(find "$TEST_DIR/enhanced" -type f | wc -l)
+            if [ "$ENHANCED_FILES" -eq 0 ]; then
+                echo "ERROR: No files created in enhanced directory"
+                exit 1
+            fi
+
+            # Check that files are not empty
+            for file in $(find "$TEST_DIR" -type f -name "*.json" -o -name "*.txt" -o -name "*.yaml"); do
+                if [ ! -s "$file" ]; then
+                    echo "ERROR: File $file is empty"
+                    exit 1
+                fi
+            done
+
+            echo "SUCCESS: showcase.py created expected directory structure"
+            echo "Directory contents:"
+            find "$TEST_DIR" -type f | sort
+
+            # Cleanup
+            rm -rf "$TEST_DIR"
+          else
+            echo "WARNING: Skipping showcase.py CLI test - OPENAI_API_KEY not set"
+            echo "Showcase.py CLI test will be required for releases."
           fi

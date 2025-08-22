@@ -165,7 +165,7 @@ class TestDocumentsFlowWithInheritedOptions:
     def test_documents_flow_with_base_options(self):
         """Test documents_flow with base FlowOptions."""
 
-        class TestDocument(FlowDocument):
+        class SampleDocument(FlowDocument):
             pass
 
         @pipeline_flow
@@ -178,8 +178,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert isinstance(flow_options, FlowOptions)
             assert flow_options.core_model == "gpt-5"
             assert flow_options.small_model == "gpt-5-mini"
-            # Use TestDocument to avoid unused warning
-            if TestDocument:
+            # Use SampleDocument to avoid unused warning
+            if SampleDocument:
                 pass
             return documents
 
@@ -196,7 +196,7 @@ class TestDocumentsFlowWithInheritedOptions:
             batch_size: int = Field(default=10, gt=0)
             enable_logging: bool = Field(default=True)
 
-        class TestDocument(FlowDocument):
+        class SampleDocument(FlowDocument):
             pass
 
         @pipeline_flow  # type: ignore[arg-type]
@@ -211,8 +211,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert flow_options.core_model == "custom-core"
             assert flow_options.batch_size == 20
             assert flow_options.enable_logging is False
-            # Use TestDocument to avoid unused warning
-            if TestDocument:
+            # Use SampleDocument to avoid unused warning
+            if SampleDocument:
                 pass
             return documents
 
@@ -239,7 +239,7 @@ class TestDocumentsFlowWithInheritedOptions:
             processing_modes: list[str] = Field(default_factory=lambda: ["fast", "accurate"])
             metadata: dict[str, Any] = Field(default_factory=dict)
 
-        class TestDocument(FlowDocument):
+        class SampleDocument(FlowDocument):
             pass
 
         @pipeline_flow  # type: ignore[arg-type]
@@ -256,8 +256,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert "fast" in flow_options.processing_modes
             assert "parallel" in flow_options.processing_modes
             assert flow_options.metadata["version"] == "2.0"
-            # Use TestDocument to avoid unused warning
-            if TestDocument:
+            # Use SampleDocument to avoid unused warning
+            if SampleDocument:
                 pass
             return documents
 
@@ -284,7 +284,7 @@ class TestDocumentsFlowWithInheritedOptions:
         class StrictFlowOptions(FlowOptions):
             required_field: str  # No default - required field
 
-        class TestDocument(FlowDocument):
+        class SampleDocument(FlowDocument):
             pass
 
         @pipeline_flow  # type: ignore[arg-type]
@@ -292,8 +292,8 @@ class TestDocumentsFlowWithInheritedOptions:
             project_name: str, documents: DocumentList, flow_options: StrictFlowOptions
         ) -> DocumentList:
             assert flow_options.required_field == "test-value"
-            # Use TestDocument to avoid unused warning
-            if TestDocument:
+            # Use SampleDocument to avoid unused warning
+            if SampleDocument:
                 pass
             return documents
 
@@ -322,7 +322,7 @@ class TestDocumentsFlowWithInheritedOptions:
 
             feature_flags: dict[str, bool] = Field(default_factory=dict)
 
-        class TestDocument(FlowDocument):
+        class SampleDocument(FlowDocument):
             pass
 
         @pipeline_flow  # type: ignore[arg-type]
@@ -334,8 +334,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert flow_options.organization == "custom-org"  # From BaseProjectOptions
             assert flow_options.environment == "production"  # From BaseProjectOptions
             assert flow_options.feature_flags["new_feature"] is True  # From SpecificProjectOptions
-            # Use TestDocument to avoid unused warning
-            if TestDocument:
+            # Use SampleDocument to avoid unused warning
+            if SampleDocument:
                 pass
             return documents
 
@@ -348,6 +348,50 @@ class TestDocumentsFlowWithInheritedOptions:
         result = asyncio.run(
             multi_level_flow(  # type: ignore[call-overload]
                 project_name="multi-level", documents=DocumentList([]), flow_options=options
+            )
+        )
+        assert isinstance(result, DocumentList)
+
+    def test_flow_options_with_pydantic_fields(self):
+        """Test FlowOptions with Pydantic Field definitions (reproduces user issue)."""
+
+        # Define constants like the user has
+        PRIMARY_MODELS = ["gpt-5", "gpt-5-mini"]
+        SMALL_MODELS = ["gpt-5-mini", "gemini-2.5-flash"]
+        SEARCH_MODELS = ["sonar", "gemini-2.5-flash-search"]
+
+        class ProjectFlowOptions(FlowOptions):
+            """Project-specific flow options extending the base FlowOptions."""
+
+            # Using Pydantic Field() like the user
+            primary_models: list[str] = Field(default_factory=lambda: PRIMARY_MODELS.copy())
+            small_models_list: list[str] = Field(default_factory=lambda: SMALL_MODELS.copy())
+            search_models: list[str] = Field(default_factory=lambda: SEARCH_MODELS.copy())
+
+        class SampleDocument(FlowDocument):
+            pass
+
+        # This should reproduce the type error
+        @pipeline_flow
+        async def convert_input_documents(
+            project_name: str,
+            documents: DocumentList,
+            flow_options: ProjectFlowOptions,
+        ) -> DocumentList:
+            # Verify we can access all fields
+            assert isinstance(flow_options.primary_models, list)
+            assert isinstance(flow_options.small_models_list, list)
+            assert isinstance(flow_options.search_models, list)
+            # Use SampleDocument to avoid unused warning
+            if SampleDocument:
+                pass
+            return documents
+
+        # Try to run the flow
+        options = ProjectFlowOptions()
+        result = asyncio.run(
+            convert_input_documents(
+                project_name="test", documents=DocumentList([]), flow_options=options
             )
         )
         assert isinstance(result, DocumentList)

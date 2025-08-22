@@ -1,259 +1,435 @@
 #!/usr/bin/env python3
 """
-Example: end‑to‑end showcase of ai_pipeline_core
+Complete showcase of ai_pipeline_core features (v0.1.8)
 
-This example demonstrates, in one file, how to:
-  • Define typed Documents (FlowDocument)
-  • Use PromptManager to render a Jinja2 prompt
-  • Call LLMs with both raw and structured responses (generate / generate_structured)
-  • Configure a Flow with FlowConfig and run a Prefect @flow of @task steps
-  • Use tracing (@trace) and the unified pipeline logger
+This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
+  • Settings configuration
+  • Logging system (LoggerMixin, StructuredLoggerMixin)
+  • Document system (Document, FlowDocument, TaskDocument, DocumentList)
+  • Flow configuration (FlowConfig, FlowOptions)
+  • Pipeline decorators (pipeline_flow, pipeline_task)
+  • Prefect utilities (flow, task, prefect_test_harness, disable_run_logger)
+  • LLM module (generate, generate_structured, AIMessages, ModelOptions, etc.)
+  • Tracing (trace, TraceLevel, TraceInfo)
+  • PromptManager for Jinja2 templates
+  • Simple runner module (run_cli, run_pipeline, load/save documents)
 
-The script is intentionally self-contained: on first run it will create a
-local prompts/analyze.jinja2 file next to this script so you can run it
-without any extra setup beyond environment variables.
+Prerequisites:
+  - OPENAI_API_KEY and OPENAI_BASE_URL configured (can be set in .env)
+  - Optional: LMNR_PROJECT_API_KEY for tracing
 
-Prereqs (environment):
-  - OPENAI_API_KEY (or compatible LiteLLM proxy key)
-  - OPENAI_BASE_URL (LiteLLM proxy or OpenAI-compatible endpoint)
+Usage:
+  python examples/showcase.py ./output --temperature 0.7 --batch-size 5
 
-Run:
-  python examples/showcase.py "Your text to analyze"
-
-Tip: For richer logs, set PREFECT_LOGGING_LEVEL=INFO
+Tip: Set PREFECT_LOGGING_LEVEL=INFO for richer logs and LMNR_DEBUG=true for more detailed tracing
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-import sys
-from pathlib import Path
-from typing import Iterable
+from enum import StrEnum
+from typing import Any, Literal
 
-from prefect import flow, task
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+# Import ALL exports from ai_pipeline_core.__init__
 from ai_pipeline_core import (
+    AIMessages,
+    Document,
+    DocumentList,
+    # Flow configuration
+    FlowConfig,
+    FlowDocument,
+    FlowOptions,
+    # Logging
+    LoggingConfig,
+    ModelName,
+    ModelOptions,
+    ModelResponse,
+    # Utilities
     PromptManager,
+    StructuredLoggerMixin,
+    TaskDocument,
+    canonical_name_key,
+    # Prefect utilities
+    get_logger,
+    get_pipeline_logger,
+    # LLM components
+    llm,
+    pipeline_flow,
+    pipeline_task,
+    sanitize_url,
+    # Settings
     settings,
     setup_logging,
     trace,
 )
-from ai_pipeline_core.documents import DocumentList, FlowDocument
-from ai_pipeline_core.flow import FlowConfig
-from ai_pipeline_core.llm import (
-    AIMessages,
-    ModelName,
-    ModelOptions,
-    StructuredModelResponse,
-    generate,
-    generate_structured,
-)
-from ai_pipeline_core.logging import get_pipeline_logger
+
+# Clean Prefect imports (no tracing)
+from ai_pipeline_core.prefect import flow, task
+
+# Import simple_runner features
+from ai_pipeline_core.simple_runner import run_cli
 
 # -----------------------------------------------------------------------------
-# Logging setup
+# Setup logging with all features
 # -----------------------------------------------------------------------------
-setup_logging()  # use defaults; respects Prefect logging env vars
+setup_logging(level="INFO")  # Can also pass config_path for YAML config
 logger = get_pipeline_logger(__name__)
 
-
-# -----------------------------------------------------------------------------
-# Document types for this flow
-# -----------------------------------------------------------------------------
-class InputText(FlowDocument):
-    """Plain text input to be analyzed."""
-
-
-class AnalysisReport(FlowDocument):
-    """JSON report produced by the flow (as UTF-8 bytes content)."""
+# Demonstrate both get_logger and get_pipeline_logger (they're aliases)
+alt_logger = get_logger("showcase.alternative")
 
 
 # -----------------------------------------------------------------------------
-# Flow configuration (input/output type checks & helpers)
+# Demonstrate LoggerMixin and StructuredLoggerMixin
 # -----------------------------------------------------------------------------
-class DemoFlowConfig(FlowConfig):
-    INPUT_DOCUMENT_TYPES = [InputText]
-    OUTPUT_DOCUMENT_TYPE = AnalysisReport
+class DataProcessor(StructuredLoggerMixin):
+    """Example class using StructuredLoggerMixin for advanced logging."""
 
+    def process(self, data: str) -> dict[str, Any]:
+        # Use inherited logging methods
+        self.log_info(f"Processing data of length {len(data)}")
 
-# -----------------------------------------------------------------------------
-# Prompt template bootstrap (keeps example self-contained)
-# -----------------------------------------------------------------------------
-TEMPLATE_NAME = "analyze.jinja2"
+        # Log structured event
+        self.log_event("data_processing_started", data_length=len(data), processor="showcase")
 
+        # Log metrics
+        self.log_metric("input_size", len(data), "characters", source="showcase")
 
-def ensure_prompt_exists(base_dir: Path) -> Path:
-    prompts_dir = base_dir / "prompts"
-    prompts_dir.mkdir(parents=True, exist_ok=True)
-    template_path = prompts_dir / TEMPLATE_NAME
+        # Use context manager for timed operations
+        with self.log_operation("text_analysis", data_size=len(data)):
+            # Simulate processing
+            result = {"length": len(data), "words": len(data.split())}
 
-    if not template_path.exists():
-        template_path.write_text(
-            (
-                """You are a senior analyst.\n"""
-                """Summarize the following text clearly and concisely.\n"""
-                """Return only what is asked for; do not add extra text.\n\n"""
-                """Text:\n"""
-                """{{ text }}\n\n"""
-                """Constraints:\n"""
-                """- Title: a punchy, 5–8 word headline\n"""
-                """- Summary: 2–3 short sentences\n"""
-                """- Bullets: 3–5 terse bullet points\n"""
-            ),
-            encoding="utf-8",
-        )
-        logger.info("Created example prompt at %s", template_path)
+        # Log span
+        self.log_span("processing_complete", 100.5, status="success")
 
-    return template_path
+        return result
 
 
 # -----------------------------------------------------------------------------
-# Structured response schema (for generate_structured)
+# Document types demonstrating all document features
 # -----------------------------------------------------------------------------
-class ReportSchema(BaseModel):
-    title: str
+class AllowedInputFiles(StrEnum):
+    """Demonstrate FILES enum for document validation."""
+
+    CONFIG = "config.yaml"
+    DATA = "data.json"
+    TEXT = "input.txt"
+
+
+class InputDocument(FlowDocument):
+    """Flow document with filename restrictions."""
+
+    FILES = AllowedInputFiles
+
+
+class AnalysisDocument(FlowDocument):
+    """Output document demonstrating create methods."""
+
+    pass
+
+
+class EnhancedDocument(FlowDocument):
+    """Enhanced document for stage 2 output."""
+
+    pass
+
+
+class TempProcessingDocument(TaskDocument):
+    """Temporary task document (not persisted)."""
+
+    pass
+
+
+# -----------------------------------------------------------------------------
+# Custom FlowOptions demonstrating extension
+# -----------------------------------------------------------------------------
+class ShowcaseFlowOptions(FlowOptions):
+    """Extended flow options with custom fields."""
+
+    temperature: float = Field(default=0.7, ge=0, le=2, description="LLM temperature")
+    batch_size: int = Field(default=10, ge=1, description="Processing batch size")
+    enable_structured: bool = Field(default=True, description="Use structured output")
+    reasoning_effort: Literal["low", "medium", "high"] = Field(
+        default="medium", description="Reasoning level"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Flow configurations
+# -----------------------------------------------------------------------------
+class Stage1Config(FlowConfig):
+    """First stage: process input documents."""
+
+    INPUT_DOCUMENT_TYPES = [InputDocument]
+    OUTPUT_DOCUMENT_TYPE = AnalysisDocument
+
+
+class Stage2Config(FlowConfig):
+    """Second stage: enhance analysis documents."""
+
+    INPUT_DOCUMENT_TYPES = [AnalysisDocument]
+    OUTPUT_DOCUMENT_TYPE = EnhancedDocument
+
+
+# -----------------------------------------------------------------------------
+# Structured response schemas
+# -----------------------------------------------------------------------------
+class TextAnalysis(BaseModel):
+    """Structured output for text analysis."""
+
     summary: str
-    bullets: list[str]
+    key_points: list[str]
+    sentiment: str
+    confidence: float = Field(ge=0, le=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 # -----------------------------------------------------------------------------
-# Tasks
+# Tasks demonstrating various decorators and features
 # -----------------------------------------------------------------------------
-@task
-@trace(name="render_prompt")
-def render_prompt(doc: InputText) -> str:
-    """Render a Jinja2 prompt using PromptManager.
-
-    PromptManager looks in the script directory and in a sibling
-    "prompts/" directory. We ensure the file exists beforehand.
-    """
-    # Ensure the prompt exists (first run convenience)
-    ensure_prompt_exists(Path(__file__).parent)
-    pm = PromptManager(__file__)
-    # Render the template; your variables become available to Jinja2
-    return pm.get(TEMPLATE_NAME, text=doc.as_text())
 
 
-@task
-@trace(name="llm_one_liner")
-async def one_liner_summary(model: ModelName, doc: InputText) -> str:
-    """Quick one-line summary using the raw text generation API."""
-    context = AIMessages([doc])  # documents in context are cached by the client
-    messages = AIMessages(["Give a single concise one-line summary of the provided document."])
+# Task with custom tracing parameters
+@pipeline_task(
+    name="analyze_with_tracing",
+    trace_level="always",
+    trace_ignore_inputs=["sensitive_data"],
+    retries=3,
+    timeout_seconds=120,
+)
+async def analyze_with_advanced_tracing(
+    doc: Document,
+    model: ModelName | str,
+    sensitive_data: str = "secret",
+) -> TextAnalysis:
+    # Use AIMessages with different content types
+    messages = AIMessages(
+        [
+            doc,  # Document automatically converted
+            "Analyze this document thoroughly",
+        ]
+    )
 
-    resp = await generate(
+    response = await llm.generate_structured(
         model=model,
-        context=context,
+        response_format=TextAnalysis,
         messages=messages,
         options=ModelOptions(
-            system_prompt="You summarize text clearly and tersely.",
-            max_completion_tokens=256,
-            timeout=60,
+            system_prompt="You are an expert analyst",
+            max_completion_tokens=2000,
+            reasoning_effort="high",
+            service_tier="default",
         ),
     )
-    return resp.content.strip()
 
-
-@task
-@trace(name="llm_structured")
-async def structured_report(model: ModelName, doc: InputText, rendered_prompt: str) -> ReportSchema:
-    """Structured report using generate_structured -> ReportSchema."""
-    response: StructuredModelResponse[ReportSchema] = await generate_structured(
-        model=model,
-        response_format=ReportSchema,
-        context=AIMessages([doc]),
-        messages=AIMessages([rendered_prompt]),
-        options=ModelOptions(
-            system_prompt=(
-                "You are a precise, neutral analyst. Respond in the exact schema I require."
-            ),
-            max_completion_tokens=2048,
-            timeout=120,
-        ),
-    )
     return response.parsed
 
 
+# Clean Prefect task (no tracing)
 @task
-@trace(name="build_output_document")
-def build_output_document(doc: InputText, one_liner: str, report: ReportSchema) -> AnalysisReport:
-    """Pack the structured result into an output FlowDocument as JSON bytes."""
-    payload = {
-        "source_id": doc.id,
-        "source_name": doc.name,
-        "one_liner": one_liner,
-        "report": report.model_dump(),
-    }
-    content = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-    return AnalysisReport(name="analysis_report.json", content=content)
+async def simple_transform(text: str) -> str:
+    """Clean Prefect task without tracing."""
+    return text.upper()
+
+
+# Demonstrate @trace decorator alone
+@trace(level="always", name="custom_operation", span_type="PROCESSING", metadata={"version": "1.0"})
+async def traced_operation(data: str) -> dict[str, Any]:
+    """Function with only tracing, no Prefect."""
+    processor = DataProcessor()
+    return processor.process(data)
 
 
 # -----------------------------------------------------------------------------
-# The flow
+# Flows demonstrating different features
 # -----------------------------------------------------------------------------
-@flow(name="ai-pipeline-core-demo")
-async def demo_flow(documents: DocumentList, model: ModelName = "gpt-5-mini") -> DocumentList:
-    # Validate inputs
-    cfg = DemoFlowConfig()
-    input_docs = cfg.get_input_documents(documents)
+
+
+@pipeline_flow(name="stage1_analysis", trace_level="always", retries=2, timeout_seconds=600)
+async def stage1_flow(
+    project_name: str, documents: DocumentList, flow_options: ShowcaseFlowOptions
+) -> DocumentList:
+    """First stage: analyze input documents."""
+
+    # Validate inputs using FlowConfig
+    config = Stage1Config()
+    input_docs = config.get_input_documents(documents)
+
+    # Use PromptManager for templates
+    prompts = PromptManager(__file__)
 
     outputs = DocumentList(validate_same_type=True)
 
-    # Simple serial composition for clarity in example
     for doc in input_docs:
-        prompt = render_prompt(doc)
-        one = await one_liner_summary(model, doc)  # type: ignore[misc]
-        rep = await structured_report(model, doc, prompt)  # type: ignore[misc]
-        out: AnalysisReport = build_output_document(doc, one, rep)  # type: ignore[misc]
-        outputs.append(out)
+        # Demonstrate canonical_name_key utility
+        canonical = canonical_name_key(doc.__class__)
+        logger.info(f"Processing {canonical}: {doc.name}")
+
+        # Load prompt template
+        prompt = prompts.get(
+            "showcase.jinja2", text=doc.as_text(), temperature=flow_options.temperature
+        )
+
+        # Demonstrate different generate modes
+        if flow_options.enable_structured:
+            # Structured generation
+            analysis = await analyze_with_advanced_tracing(
+                doc, flow_options.core_model, "sensitive_value"
+            )
+
+            # Create document using smart factory with Pydantic model
+            output = AnalysisDocument.create(
+                f"analysis_{doc.id}.json",
+                "Structured analysis result",
+                analysis,  # Pydantic model auto-serialized to JSON
+            )
+        else:
+            # Raw text generation
+            response: ModelResponse = await llm.generate(
+                flow_options.small_model,
+                context=AIMessages([doc]),  # Context for caching
+                messages=prompt,
+                options=ModelOptions(
+                    max_completion_tokens=1000,
+                    reasoning_effort=flow_options.reasoning_effort,
+                    temperature=flow_options.temperature,
+                ),
+            )
+
+            # Access response metadata
+            logger.info(f"Model used: {response.model}")
+            logger.info(f"Tokens: {response.usage.total_tokens if response.usage else 'N/A'}")
+
+            # Create text document
+            output = AnalysisDocument.create(
+                f"analysis_{doc.id}.txt", "Text analysis result", response.content
+            )
+
+        outputs.append(output)
 
     # Validate outputs
-    cfg.validate_output_documents(outputs)
+    config.validate_output_documents(outputs)
+    return outputs
+
+
+@pipeline_flow(name="stage2_enhancement")
+async def stage2_flow(
+    project_name: str, documents: DocumentList, flow_options: ShowcaseFlowOptions
+) -> DocumentList:
+    """Second stage: enhance analysis documents."""
+
+    config = Stage2Config()
+    input_docs = config.get_input_documents(documents)
+
+    outputs = DocumentList()
+
+    for doc in input_docs:
+        # Create temporary task document (demonstrates task documents are allowed but not persisted)
+        TempProcessingDocument(name="temp.txt", content=b"temporary processing data")
+
+        # Demonstrate various document methods
+        if doc.is_text:
+            content = doc.as_text()
+        elif doc.mime_type.startswith("application/json"):
+            content = str(doc.as_json())
+        else:
+            content = f"Binary document: {doc.size} bytes"
+
+        # Simple transformation
+        enhanced = await simple_transform(content)
+
+        # Demonstrate sanitize_url utility
+        safe_name = sanitize_url(f"https://example.com/doc/{doc.id}")
+
+        # Create enhanced document
+        if doc.name.endswith(".json"):
+            # Try to parse and enhance JSON
+            try:
+                data = doc.as_json()
+                data["enhanced"] = True
+                data["safe_name"] = safe_name
+                output = EnhancedDocument.create_as_json(doc.name, "Enhanced analysis", data)
+            except Exception:
+                output = EnhancedDocument.create(doc.name, "Enhanced text", enhanced)
+        else:
+            output = EnhancedDocument.create(doc.name, "Enhanced text", enhanced)
+
+        outputs.append(output)
+
+    config.validate_output_documents(outputs)
     return outputs
 
 
 # -----------------------------------------------------------------------------
-# CLI entrypoint
+# Clean Prefect flow (no tracing)
 # -----------------------------------------------------------------------------
-async def _amain(args: list[str]) -> int:
-    if not (settings.openai_api_key and settings.openai_base_url):
-        logger.warning(
-            "OPENAI_API_KEY / OPENAI_BASE_URL not set; real LLM calls will fail. "
-            "Configure environment or a LiteLLM proxy before running."
-        )
+@flow(name="cleanup_flow")
+async def cleanup_flow(project_name: str) -> None:
+    """Demonstrate clean Prefect flow without tracing."""
+    logger.info(f"Cleaning up project: {project_name}")
+    # Could perform cleanup tasks here
 
-    # Compose input documents from CLI args or a default sample
-    if args:
-        texts: Iterable[str] = args
-    else:
-        texts = [
-            """ai_pipeline_core focuses on minimal, typed, async building blocks for LLM flows\n"
-            "with Prefect integration, structured outputs, and Jinja2 prompt management.""",
-        ]
 
+# -----------------------------------------------------------------------------
+# Initializer for run_cli
+# -----------------------------------------------------------------------------
+def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
+    """Initialize with sample documents for CLI mode."""
+    logger.info("Initializing showcase with sample data")
+
+    # Check settings
+    if not settings.openai_api_key:
+        logger.warning("OPENAI_API_KEY not set")
+
+    # Create sample documents
     docs = DocumentList(
         [
-            InputText(name=f"input_{i + 1}.txt", content=t.encode("utf-8"))
-            for i, t in enumerate(texts)
+            InputDocument.create(
+                "input.txt",
+                "Sample input document",
+                """AI Pipeline Core is a powerful async library for building
+            production-grade AI pipelines with strong typing, observability,
+            and Prefect integration.""",
+            ),
+            InputDocument.create_as_json(
+                "data.json",
+                "Sample JSON data",
+                {
+                    "project": "ai-pipeline-core",
+                    "version": "0.1.8",
+                    "features": ["async", "typed", "observable"],
+                },
+            ),
+            InputDocument.create_as_yaml(
+                "config.yaml",
+                "Sample configuration",
+                {"model": "gpt-5-mini", "temperature": 0.7, "max_tokens": 2000},
+            ),
         ]
     )
 
-    results = await demo_flow(docs)
-
-    # Log the pretty JSON of the first result so users see output quickly
-    if results:
-        logger.info("First result (JSON):\n%s", results[0].content.decode("utf-8"))
-
-    return 0
+    return "showcase-project", docs
 
 
-def main() -> None:
-    try:
-        raise SystemExit(asyncio.run(_amain(sys.argv[1:])))
-    except KeyboardInterrupt:
-        raise SystemExit(130)
+# -----------------------------------------------------------------------------
+# Main entry point
+# -----------------------------------------------------------------------------
+def main():
+    """Main entry point - CLI mode with run_cli."""
+    # LoggingConfig can be used for custom configuration
+    logging_config = LoggingConfig()
+    logging_config.apply()
+
+    # Run in CLI mode with all features
+    run_cli(
+        flows=[stage1_flow, stage2_flow],
+        flow_configs=[Stage1Config, Stage2Config],
+        options_cls=ShowcaseFlowOptions,
+        initializer=initialize_showcase,
+        trace_name="showcase",
+    )
 
 
 if __name__ == "__main__":

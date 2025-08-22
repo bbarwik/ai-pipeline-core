@@ -14,6 +14,27 @@ class FlowConfig(ABC):
     INPUT_DOCUMENT_TYPES: ClassVar[list[type[FlowDocument]]]
     OUTPUT_DOCUMENT_TYPE: ClassVar[type[FlowDocument]]
 
+    def __init_subclass__(cls, **kwargs):
+        """Validate that OUTPUT_DOCUMENT_TYPE is not in INPUT_DOCUMENT_TYPES."""
+        super().__init_subclass__(**kwargs)
+
+        # Skip validation for the abstract base class itself
+        if cls.__name__ == "FlowConfig":
+            return
+
+        # Ensure required attributes are defined
+        if not hasattr(cls, "INPUT_DOCUMENT_TYPES"):
+            raise TypeError(f"FlowConfig {cls.__name__} must define INPUT_DOCUMENT_TYPES")
+        if not hasattr(cls, "OUTPUT_DOCUMENT_TYPE"):
+            raise TypeError(f"FlowConfig {cls.__name__} must define OUTPUT_DOCUMENT_TYPE")
+
+        # Validate that output type is not in input types
+        if cls.OUTPUT_DOCUMENT_TYPE in cls.INPUT_DOCUMENT_TYPES:
+            raise TypeError(
+                f"FlowConfig {cls.__name__}: OUTPUT_DOCUMENT_TYPE "
+                f"({cls.OUTPUT_DOCUMENT_TYPE.__name__}) cannot be in INPUT_DOCUMENT_TYPES"
+            )
+
     @classmethod
     def get_input_document_types(cls) -> list[type[FlowDocument]]:
         """

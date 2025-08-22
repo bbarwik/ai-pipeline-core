@@ -6,7 +6,8 @@
         "--network=shared_network"
     ],
     "features": {
-        "ghcr.io/anthropics/devcontainer-features/claude-code:latest": {}
+        "ghcr.io/anthropics/devcontainer-features/claude-code:latest": {},
+        "ghcr.io/devcontainers/features/github-cli:1": {}
     },
     "containerEnv": {
         "PYTHONPATH": "/workspaces/ai-pipeline-core",
@@ -14,7 +15,8 @@
     },
     "mounts": [
         "type=bind,source=${env:HOME}/.claude,target=/home/vscode/.claude",
-        "type=bind,source=${env:HOME}/.claude.json,target=/home/vscode/.claude.json"
+        "type=bind,source=${env:HOME}/.claude.json,target=/home/vscode/.claude.json",
+        "type=bind,source=${env:HOME}/.config/gh,target=/home/vscode/.config/gh"
     ],
 	"customizations": {
 		"vscode": {

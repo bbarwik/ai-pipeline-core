@@ -1,1006 +1,802 @@
-# The Official `ai-pipeline-core` Developer's Guide (v0.1.7)
+# AI Pipeline Core API Reference (v0.1.8)
+
+## Version 0.1.8 Breaking Changes
+- **Pipeline decorators now require async functions only** - `@pipeline_flow` and `@pipeline_task` will raise `TypeError` for sync functions
+- **Document class name validation** - Subclasses starting with "Test" are rejected at definition time
+- **FlowConfig validation** - `OUTPUT_DOCUMENT_TYPE` cannot be in `INPUT_DOCUMENT_TYPES`
+- **Temperature field added** to `ModelOptions` for explicit temperature control
 
 ## Table of Contents
 
-1.  **Introduction & Philosophy**
-    *   What is `ai-pipeline-core`?
-    *   Core Principles
-
-2.  **Getting Started: Environment Setup**
-    *   Installation
-    *   Environment Variables (`.env`)
-    *   **Crucial**: Setting up the LiteLLM Proxy
-
-3.  **Core Concepts: A Deep Dive**
-    *   **The Document System**: The Heart of Data Flow
-        *   `Document`: The Abstract Base
-        *   `FlowDocument`: Persistent State
-        *   `TaskDocument`: Ephemeral Data
-        *   `DocumentList`: The Type-Safe Container
-    *   **The LLM Client**: Your Gateway to AI
-        *   `generate()`: For Standard Text Generation
-        *   `generate_structured()`: For Pydantic-backed Responses
-        *   `AIMessages`: The Universal Input Formatter
-        *   `ModelOptions`: Configuring AI Calls
-        *   `ModelResponse` & `StructuredModelResponse`: Understanding Outputs
-    *   **Flow Orchestration**: Building the Pipeline
-        *   `FlowConfig`: The Contract for Your Flows
-        *   `FlowOptions`: Extensible Configuration System (New in v0.1.7)
-    *   **Enhanced Decorators** (New in v0.1.7)
-        *   `@pipeline_flow` & `@pipeline_task`: Prefect + Tracing Combined
-        *   Clean Prefect Imports: `flow` and `task` without tracing
-    *   **Simple Runner Module** (New in v0.1.7)
-        *   CLI-based Pipeline Execution
-        *   Programmatic Pipeline Running
-    *   **Observability & Utilities**
-        *   `@trace`: Automatic Monitoring
-        *   `PromptManager`: Organized & Reusable Prompts
-        *   `settings`: Type-Safe Configuration
-        *   `get_pipeline_logger`: Unified Logging
-
-4.  **Practical Walkthrough: Building a Sentiment Analysis Flow**
-    *   Step 1: Defining the Documents
-    *   Step 2: Defining the `FlowConfig`
-    *   Step 3: Creating the Prompt Template
-    *   Step 4: Writing the Analysis Task
-    *   Step 5: Composing the Prefect Flow
-    *   Step 6: Running the Flow
-
-5.  **Complete API Reference**
-    *   Module: `ai_pipeline_core.documents`
-    *   Module: `ai_pipeline_core.llm`
-    *   Module: `ai_pipeline_core.flow`
-    *   Module: `ai_pipeline_core.tracing`
-    *   Module: `ai_pipeline_core.prompt_manager`
-    *   Module: `ai_pipeline_core.settings`
-    *   Module: `ai_pipeline_core.logging`
-
-6.  **Best Practices & Advanced Patterns**
-    *   Error Handling Strategies
-    *   Creating Flexible Pipelines with Custom Options
-    *   Testing Your Tasks and Flows
-    *   DOs and DON'Ts
-
-7.  **Troubleshooting & FAQ**
+1. **Settings Configuration**
+2. **Logging System**
+3. **Document System**
+4. **Flow Configuration**
+5. **Pipeline Decorators**
+6. **Prefect Utilities**
+7. **LLM Module**
+8. **Tracing**
+9. **Utilities**
+10. **Usage Patterns**
+11. **Best Practices**
 
 ---
 
-## 1. Introduction & Philosophy
+## 1. Settings Configuration
 
-### What is `ai-pipeline-core`?
+### `settings`
+Singleton instance of `Settings` class providing environment-based configuration with Pydantic validation.
 
-`ai-pipeline-core` is a specialized Python library designed to be the foundational layer for building complex, production-grade AI data processing pipelines. It was created to solve common problems encountered in AI engineering: untyped data, blocking I/O, poor observability, and inconsistent patterns. It provides a set of robust, reusable components, allowing developers to focus exclusively on the unique business logic of their AI application.
+**Class:** `Settings(BaseSettings)`
+- **Model Config:** `SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")`
 
-### Core Principles
+**Properties:**
+- `openai_base_url: str = ""` - Base URL for OpenAI-compatible API (LiteLLM proxy)
+- `openai_api_key: str = ""` - API key for authentication
+- `prefect_api_url: str = ""` - Prefect server URL
+- `prefect_api_key: str = ""` - Prefect authentication key
+- `lmnr_project_api_key: str = ""` - Laminar observability API key
 
-Every feature in `ai-pipeline-core` adheres to these principles:
-
-1.  **100% Async Architecture**: All I/O operations (especially LLM calls) are asynchronous, built on `asyncio` and `httpx`. This is critical for building high-throughput systems that can perform many operations concurrently without being blocked.
-2.  **Strong Typing & Validation**: Pydantic is used for all data structures. This eliminates runtime errors from malformed data and makes the codebase self-documenting. If the type-checker passes, the code is far more likely to be correct.
-3.  **Minimalism & Abstraction**: The library provides the thinnest possible layer over powerful tools like Prefect, OpenAI-compatible APIs, and LMNR. Every line of code must justify its existence. There are no deep, complex abstractions to learn.
-4.  **Production-Ready by Default**: Features like automatic retries, structured logging, and observability tracing are built-in, not afterthoughts.
-5.  **Developer Experience for Experts**: The library is designed for experienced developers. It prioritizes clarity, consistency, and conciseness over verbose comments or boilerplate.
-
-## 2. Getting Started: Environment Setup
-
-Before you can build your first pipeline, you must set up your local environment to meet the expectations of `ai-pipeline-core`.
-
-### Installation
-
-Install the library directly from PyPI:
-```bash
-pip install ai-pipeline-core
-```
-
-### Simplified Imports (New in v0.1.7)
-
-Most commonly used components are now available from the top-level import:
-
+**Usage:**
 ```python
-# All major components from single import
-from ai_pipeline_core import (
-    # Documents
-    Document, DocumentList, FlowDocument, TaskDocument,
-    canonical_name_key, sanitize_url,
-
-    # Flow configuration
-    FlowConfig, FlowOptions,
-
-    # LLM components
-    generate, generate_structured,
-    AIMessages, ModelName, ModelOptions,
-    ModelResponse, StructuredModelResponse,
-
-    # Decorators
-    pipeline_flow, pipeline_task,  # With tracing
-    flow, task,  # Clean Prefect (from .prefect)
-
-    # Utilities
-    trace, TraceLevel, TraceInfo,
-    PromptManager,
-    settings,
-    get_pipeline_logger,
-)
-
-# Or import specific modules for more components
-from ai_pipeline_core.simple_runner import run_cli, run_pipeline
-from ai_pipeline_core.prefect import flow, task  # Clean decorators
+from ai_pipeline_core import settings
+# Access as: settings.openai_api_key
 ```
-
-### Environment Variables (`.env`)
-
-Create a `.env` file in the root of your project or set enviromental variables.
-If `.env` file exist it is loaded automatically by the `settings` object.
-
-```dotenv
-# .env
-
-# [REQUIRED] LiteLLM Proxy Configuration
-# This tells the library where to send all AI requests.
-OPENAI_BASE_URL=http://localhost:4000/v1
-OPENAI_API_KEY=your-litellm-proxy-key # Can be any string, used for auth if you configure it.
-
-# [OPTIONAL] Observability
-# Your project key from LMNR (lmnr.ai) for tracing.
-LMNR_PROJECT_API_KEY=lmnr_...
-
-# [OPTIONAL] Prefect Configuration
-# Only needed if you are connecting to a Prefect server or cloud.
-# Leave blank for the default local Prefect UI.
-PREFECT_API_URL=
-PREFECT_API_KEY=
-```
-
-### **Crucial**: Setting up the LiteLLM Proxy
-
-`ai-pipeline-core` does not call OpenAI, Anthropic, or Google APIs directly. It speaks to a single, standardized **OpenAI-compatible API endpoint**. The recommended way to create this endpoint locally is with **LiteLLM**. LiteLLM acts as a translation layer, allowing you to use models from over 100 providers through a single, consistent API.
-
-**Why is this required?** It decouples your code from specific model providers. You can switch from `gpt-5-mini` to `gemini-2.5-flash` just by changing a string, without altering any application code.
-
-**Steps to run LiteLLM locally:**
-
-1.  **Create a `litellm-config.yml` file** in your project root. This file contains your actual API keys for the model providers.
-
-    ```yaml
-    # litellm-config.yml
-
-    model_list:
-      - model_name: gpt-5-mini
-        litellm_params:
-          model: openai/gpt-4o-mini
-          api_key: sk-proj-... # Your OpenAI API Key
-      - model_name: gemini-2.5-flash
-        litellm_params:
-          model: gemini/flash-1.5
-          api_key: your-google-api-key
-      # Add any other models you want to use
-
-    litellm_settings:
-      drop_params: true # Helps prevent errors from unsupported parameters
-    ```
-
-2.  **Run LiteLLM using Docker (Recommended):**
-    This is the easiest and most isolated way to run the proxy.
-
-    ```bash
-    docker run -d \
-      --name litellm-proxy \
-      -p 4000:4000 \
-      -v $(pwd)/litellm-config.yml:/app/config.yaml \
-      ghcr.io/berriai/litellm:main \
-      --config /app/config.yaml \
-      --port 4000 \
-      --host 0.0.0.0
-    ```
-    Your `OPENAI_BASE_URL` should now point to `http://localhost:4000/v1`. The proxy is running and ready to receive requests from `ai-pipeline-core`.
 
 ---
 
-## 3. Core Concepts: A Deep Dive
+## 2. Logging System
 
-### **The Document System**: The Heart of Data Flow
+### `get_pipeline_logger(name: str)`
+Creates a Prefect-aware logger instance using Prefect's `get_logger`.
 
-#### `Document`: The Abstract Base
-This is the abstract class that underpins all data objects. You will never instantiate it directly.
+**Parameters:**
+- `name: str` - Logger name (typically `__name__`)
 
--   **Key Properties**:
-    -   `name: str`: The filename of the document (e.g., `initial_whitepaper.md`).
-    -   `content: bytes`: The raw, binary content of the document.
-    -   `description: str | None`: An optional Markdown description.
-    -   `id: str`: A unique, 6-character ID generated from a hash of the content. It's deterministic: the same content always produces the same ID.
-    -   `sha256: str`: The full SHA256 hash of the content.
-    -   `mime_type: str`: The automatically detected MIME type (e.g., `text/plain`, `application/pdf`, `image/png`).
-    -   `is_text`, `is_pdf`, `is_image`: Boolean helpers for quick type checking.
--   **Key Methods**:
-    -   `as_text() -> str`: Safely decodes the `content` as a UTF-8 string. Raises a `ValueError` if the document is binary.
-    -   `as_json() -> Any`: Parses the text content as JSON.
-    -   `as_yaml() -> Any`: Parses the text content as YAML.
-    -   `as_pydantic_model(model_type: type[T]) -> T`: Parses the document content (JSON or YAML based on MIME type) and validates it as a Pydantic model instance.
-    -   `as_markdown_list() -> list[str]`: Splits a Markdown document that uses `\n\n---\n\n` as a separator into a list of strings.
+**Returns:** Logger instance that automatically uses Prefect's run logger when in flow/task context
 
-#### Creating Documents: The Smart `create` Method
+**Behavior:**
+- Ensures logging is setup if not already initialized
+- Returns Prefect logger instance
 
-The `Document.create()` class method is a powerful factory that intelligently handles multiple content types based on both the content type and file extension:
+### `setup_logging(config_path: Path | None = None, level: str | None = None)`
+Initializes logging configuration for the pipeline.
 
--   **Signature**: `create(name: str, description: str | None, content: bytes | str | BaseModel | list[str] | Any) -> Self`
--   **Smart Type Detection**:
-    -   `bytes`: Used directly as document content
-    -   `str`: Automatically encoded to UTF-8 bytes
-    -   `list[str]` + `.md` extension: Creates a markdown list document using `create_as_markdown_list()`
-    -   `dict/BaseModel` + `.json` extension: Serializes to formatted JSON using `create_as_json()`
-    -   `dict/BaseModel` + `.yaml/.yml` extension: Serializes to formatted YAML using `create_as_yaml()`
-    -   Other types: Raises `ValueError` with clear error message
+**Parameters:**
+- `config_path: Path | None` - Optional YAML config file path
+- `level: str | None` - Override log level (DEBUG, INFO, WARNING, ERROR)
 
-**Usage Examples:**
+**Behavior:**
+- Applies logging configuration from file or defaults
+- Sets Prefect environment variables if configured
+- Overrides level for all pipeline loggers if provided
 
+### `LoggingConfig`
+Manages logging configuration from YAML files.
+
+**Constructor:**
+- `config_path: Path | None` - Path to YAML config file
+
+**Methods:**
+- `load_config() -> dict` - Load configuration from file or defaults
+- `apply()` - Apply configuration using `logging.config.dictConfig`
+- `_get_default_config() -> dict` - Returns default logging configuration
+
+**Default Log Levels:**
 ```python
-from pydantic import BaseModel
-from ai_pipeline_core.documents import FlowDocument
+DEFAULT_LOG_LEVELS = {
+    "ai_pipeline_core": "INFO",
+    "ai_pipeline_core.documents": "INFO",
+    "ai_pipeline_core.llm": "INFO",
+    "ai_pipeline_core.flow": "INFO",
+    "ai_pipeline_core.testing": "DEBUG",
+}
+```
 
-class MyDocument(FlowDocument):
-    pass
+### `LoggerMixin`
+Mix-in class providing logging methods with automatic context detection.
 
-# Create from string - automatically encodes to UTF-8
-doc1 = MyDocument.create("text.txt", "Simple text", "Hello, World!")
+**Cached Properties:**
+- `logger` - Returns `get_run_logger()` in flow/task context, otherwise `get_logger()`
 
-# Create from bytes - used directly
-doc2 = MyDocument.create("binary.dat", None, b"\x00\x01\x02")
+**Methods:**
+- `log_debug(message: str, **kwargs)` - Debug level with extra kwargs
+- `log_info(message: str, **kwargs)` - Info level with extra kwargs
+- `log_warning(message: str, **kwargs)` - Warning level with extra kwargs
+- `log_error(message: str, exc_info: bool = False, **kwargs)` - Error with optional exception
+- `log_critical(message: str, exc_info: bool = False, **kwargs)` - Critical with optional exception
+- `log_with_context(level: str, message: str, context: dict)` - Structured logging with context dict
 
-# Create JSON document from dict - automatically formatted
-data = {"users": [{"name": "Alice"}, {"name": "Bob"}]}
-doc3 = MyDocument.create("data.json", "User data", data)
-# The content will be pretty-printed JSON with 2-space indentation
+**Private Methods:**
+- `_get_run_logger()` - Attempts to get Prefect run logger, returns None if not in context
 
-# Create YAML document from Pydantic model
-class Config(BaseModel):
-    host: str
-    port: int
+### `StructuredLoggerMixin`
+Extends LoggerMixin with structured logging capabilities.
 
-config = Config(host="localhost", port=8080)
-doc4 = MyDocument.create("config.yaml", "Server config", config)
-# The content will be properly formatted YAML
+**Additional Methods:**
+- `log_event(event: str, **kwargs)` - Log structured events with `structured=True` flag
+- `log_metric(metric_name: str, value: float, unit: str = "", **tags)` - Log metrics with tags
+- `log_span(operation: str, duration_ms: float, **attributes)` - Log operation spans
+- `log_operation(operation: str, **context) -> Generator` - Context manager for timed operations
 
-# Create markdown list document
-sections = [
-    "# Chapter 1\nIntroduction",
-    "# Chapter 2\nMain content",
-    "# Chapter 3\nConclusion"
+**Context Manager Behavior:**
+- Logs start with debug level
+- Logs completion with info level and duration
+- Logs failure with error level, exception info, and duration
+- Always re-raises exceptions
+
+---
+
+## 3. Document System
+
+### `Document` (Abstract Base Class)
+Base class for all document types. Cannot be instantiated directly.
+
+**Class Variables:**
+- `MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024` - 25MB default limit
+- `DESCRIPTION_EXTENSION: ClassVar[str] = ".description.md"` - Reserved extension
+- `MARKDOWN_LIST_SEPARATOR: ClassVar[str] = "\n\n---\n\n"` - Markdown list separator
+- `FILES: ClassVar[type[StrEnum] | None] = None` - Optional filename restrictions
+
+**Constructor Validation:**
+- Prevents direct instantiation of abstract class
+- **v0.1.8:** Prevents subclass names starting with "Test" (pytest conflict)
+  - Raises `TypeError` at class definition time
+  - Suggests alternatives: `SampleDocument`, `ExampleDocument`, `DemoDocument`, `MockDocument`
+
+**Properties (Pydantic Fields):**
+- `name: str` - Validated filename (no path traversal, no reserved extensions)
+- `description: str | None` - Optional description
+- `content: bytes` - Binary content (size-validated)
+
+**Computed Properties:**
+- `id: str` - First 6 chars of SHA256 hash (base32 encoded, uppercase)
+- `sha256: str` - Full SHA256 hash (base32 encoded, uppercase)
+- `size: int` - Content size in bytes
+- `detected_mime_type: str` - MIME type from content + extension
+- `mime_type: str` - Alias for detected_mime_type
+- `is_text: bool` - True if text MIME type
+- `is_pdf: bool` - True if PDF MIME type
+- `is_image: bool` - True if image MIME type
+- `base_type: Literal["flow", "task"]` - Alias for get_base_type()
+- `is_flow: bool` - True if flow document
+- `is_task: bool` - True if task document
+
+**Abstract Methods:**
+- `get_base_type() -> Literal["flow", "task"]` - Must be implemented by subclasses
+
+**Instance Methods:**
+- `as_text() -> str` - Decode as UTF-8 (raises ValueError if not text)
+- `as_yaml() -> Any` - Parse using ruamel.yaml
+- `as_json() -> Any` - Parse using json.loads
+- `as_pydantic_model(model_type: type[T]) -> T` - Parse and validate as Pydantic model
+- `as_markdown_list() -> list[str]` - Split by MARKDOWN_LIST_SEPARATOR
+- `serialize_model() -> dict` - Serialize with metadata and smart encoding
+- `from_dict(data: dict) -> Self` - Deserialize from dict with encoding support
+
+**Class Methods:**
+- `canonical_name() -> str` - Get canonical snake_case name
+- `get_expected_files() -> list[str] | None` - Get allowed filenames from FILES enum
+- `validate_file_name(name: str)` - Validate against FILES enum if defined
+- `create(name: str, description: str | None, content: bytes | str | BaseModel | list[str] | Any) -> Self` - Smart factory method
+- `create_as_markdown_list(name: str, description: str | None, items: list[str]) -> Self` - Create markdown with separators
+- `create_as_json(name: str, description: str | None, data: Any) -> Self` - Create JSON with 2-space indent
+- `create_as_yaml(name: str, description: str | None, data: Any) -> Self` - Create YAML with proper formatting
+
+**Validators:**
+- `validate_name` - Checks for path traversal, reserved extensions, whitespace
+- `validate_content` - Enforces MAX_CONTENT_SIZE limit
+
+**Serializers:**
+- `serialize_content` - Encodes to UTF-8 or base64 for JSON serialization
+
+### `FlowDocument` (Abstract Base Class)
+Base for flow-specific documents. Persistent across Prefect flow runs.
+
+**Inheritance:** All Document properties and methods
+**Override:** `get_base_type()` returns `"flow"` (marked as `@final`)
+**Constructor:** Prevents direct instantiation of abstract class
+
+### `TaskDocument` (Abstract Base Class)
+Base for task-specific documents. Temporary within task execution.
+
+**Inheritance:** All Document properties and methods
+**Override:** `get_base_type()` returns `"task"` (marked as `@final`)
+**Constructor:** Prevents direct instantiation of abstract class
+
+### `DocumentList`
+Type-safe container extending `list[Document]` with validation.
+
+**Constructor Parameters:**
+- `documents: list[Document] | None = None` - Initial documents
+- `validate_same_type: bool = False` - Enforce same document type
+- `validate_duplicates: bool = False` - Prevent duplicate filenames
+
+**Overridden Methods (with validation):**
+- `append(document: Document)` - Add with validation
+- `extend(documents: Iterable[Document])` - Add multiple
+- `insert(index: int, document: Document)` - Insert at index
+- `__setitem__(index: int | slice, value: Document | Iterable[Document])` - Set with validation
+- `__iadd__(other: Any) -> Self` - In-place addition
+
+**Custom Methods:**
+- `filter_by_type(document_type: type[Document]) -> DocumentList` - Filter by exact type (uses `type(doc) is`)
+- `filter_by_types(document_types: list[type[Document]]) -> DocumentList` - Filter by multiple types
+- `get_by_name(name: str) -> Document | None` - Find by filename
+
+**Private Validation Methods:**
+- `_validate()` - Runs all validations
+- `_validate_no_duplicates()` - Checks for duplicate names
+- `_validate_no_description_files()` - Prevents DESCRIPTION_EXTENSION files
+- `_validate_types()` - Ensures same type if required
+
+### Utility Functions
+
+#### `canonical_name_key(obj_or_name: type | str, max_parent_suffixes: int = 3, extra_suffixes: Iterable[str] = ()) -> str`
+Converts class names to canonical snake_case by stripping suffixes.
+
+**Algorithm:**
+1. Extracts class name or uses string directly
+2. Collects up to `max_parent_suffixes` from MRO (excluding object)
+3. Adds `extra_suffixes` to removal list
+4. Iteratively removes longest matching suffix
+5. Converts result to snake_case
+
+#### `sanitize_url(url: str) -> str`
+Sanitizes URLs for use in filenames.
+
+**Behavior:**
+1. Removes protocol (http://, https://)
+2. Replaces invalid chars with underscore
+3. Collapses multiple underscores
+4. Strips leading/trailing underscores and dots
+5. Limits to 100 characters
+6. Falls back to "unnamed" if empty
+
+---
+
+## 4. Flow Configuration
+
+### `FlowConfig` (Abstract Base Class)
+Type-safe configuration for Prefect flows.
+
+**Class Variables (must be defined by subclasses):**
+- `INPUT_DOCUMENT_TYPES: ClassVar[list[type[FlowDocument]]]` - Required input types
+- `OUTPUT_DOCUMENT_TYPE: ClassVar[type[FlowDocument]]` - Output document type
+
+**Validation (v0.1.8):**
+- Enforced at class definition time via `__init_subclass__`
+- `OUTPUT_DOCUMENT_TYPE` cannot be in `INPUT_DOCUMENT_TYPES` (prevents circular dependencies)
+- Raises `TypeError` with clear message if validation fails
+
+**Class Methods:**
+- `get_input_document_types() -> list[type[FlowDocument]]` - Returns INPUT_DOCUMENT_TYPES
+- `get_output_document_type() -> type[FlowDocument]` - Returns OUTPUT_DOCUMENT_TYPE
+- `has_input_documents(documents: DocumentList) -> bool` - Check all inputs present (uses isinstance)
+- `get_input_documents(documents: DocumentList) -> DocumentList` - Extract inputs (raises ValueError if missing)
+- `validate_output_documents(documents: DocumentList)` - Assert all outputs match type
+
+### `FlowOptions`
+Pydantic settings for flow configuration.
+
+**Base Class:** `BaseSettings`
+**Model Config:** `SettingsConfigDict(frozen=True, extra="ignore")`
+
+**Fields:**
+- `core_model: ModelName | str = Field(default="gpt-5", description="Primary model for complex analysis and generation tasks.")`
+- `small_model: ModelName | str = Field(default="gpt-5-mini", description="Fast, cost-effective model for simple tasks and orchestration.")`
+
+---
+
+## 5. Pipeline Decorators
+
+### `@pipeline_task`
+Decorator combining Prefect task with LMNR tracing. Requires async functions. Returns the actual Prefect Task object typed as `_TaskLike` Protocol.
+
+**Overloads:**
+1. Direct decoration: `@pipeline_task`
+2. With parameters: `@pipeline_task(...parameters...)`
+
+**Tracing Parameters:**
+- `trace_level: TraceLevel = "always"` - "always", "debug", or "off"
+- `trace_ignore_input: bool = False` - Ignore all inputs
+- `trace_ignore_output: bool = False` - Ignore output
+- `trace_ignore_inputs: list[str] | None = None` - Specific params to ignore
+- `trace_input_formatter: Callable[..., str] | None = None` - Custom formatter
+- `trace_output_formatter: Callable[..., str] | None = None` - Custom formatter
+
+**Prefect Parameters (all standard task parameters):**
+- `name: str | None = None`
+- `description: str | None = None`
+- `tags: Iterable[str] | None = None`
+- `version: str | None = None`
+- `cache_policy: CachePolicy | type[NotSet] = NotSet`
+- `cache_key_fn: Callable[[TaskRunContext, dict], str | None] | None = None`
+- `cache_expiration: timedelta | None = None`
+- `task_run_name: TaskRunNameValueOrCallable | None = None`
+- `retries: int | None = None` (defaults to 0 if None)
+- `retry_delay_seconds: int | float | list[float] | Callable[[int], list[float]] | None = None`
+- `retry_jitter_factor: float | None = None`
+- `persist_result: bool | None = None`
+- `result_storage: ResultStorage | str | None = None`
+- `result_serializer: ResultSerializer | str | None = None`
+- `result_storage_key: str | None = None`
+- `cache_result_in_memory: bool = True`
+- `timeout_seconds: int | float | None = None`
+- `log_prints: bool | None = False`
+- `refresh_cache: bool | None = None`
+- `on_completion: list[StateHookCallable] | None = None`
+- `on_failure: list[StateHookCallable] | None = None`
+- `retry_condition_fn: RetryConditionCallable | None = None`
+- `viz_return_value: bool | None = None`
+- `asset_deps: list[str | Asset] | None = None`
+
+**Implementation:**
+1. Validates function is coroutine (raises TypeError if not)
+2. Applies trace decorator if trace_level != "off"
+3. Wraps with Prefect's native task decorator
+4. Returns cast to `_TaskLike[R_co]`
+
+### `@pipeline_flow`
+Decorator for async document-processing flows with tracing. Returns the actual Prefect Flow object typed as `_FlowLike` Protocol with contravariant FlowOptions support.
+
+**Required Signature:**
+```python
+async def flow_name(
+    project_name: str,
+    documents: DocumentList,
+    flow_options: FlowOptions,  # or any subclass
+    *args,
+    **kwargs
+) -> DocumentList
+```
+
+**Type Safety:** The decorator properly handles FlowOptions subclasses as contravariant, allowing flows to accept more specific option types.
+
+**Parameters:** Similar to `@pipeline_task` but for flows, including:
+- All tracing parameters
+- `flow_run_name: Callable[[], str] | str | None = None`
+- `retries: int | None = None` (defaults to 0)
+- `retry_delay_seconds: int | float | None = None`
+- `task_runner: TaskRunner[PrefectFuture[Any]] | None = None`
+- `timeout_seconds: int | float | None = None`
+- `validate_parameters: bool = True`
+- Flow state hooks: `on_completion`, `on_failure`, `on_cancellation`, `on_crashed`, `on_running`
+
+**Validation:**
+1. Must be async function
+2. Must have at least 3 parameters
+3. Internal wrapper validates return type is DocumentList
+
+---
+
+## 6. Prefect Utilities
+
+### `prefect_test_harness`
+Direct export of `prefect.testing.utilities.prefect_test_harness` for testing.
+
+**Usage:** Context manager for creating isolated Prefect test environment.
+
+### `disable_run_logger`
+Direct export of `prefect.logging.disable_run_logger` for disabling run logging.
+
+**Usage:** Context manager to suppress Prefect run logs.
+
+### Clean Decorators (from `ai_pipeline_core.prefect`)
+The module `ai_pipeline_core.prefect` provides direct re-exports of Prefect's native decorators:
+- `@flow` - Prefect's flow decorator without tracing (supports both sync and async)
+- `@task` - Prefect's task decorator without tracing (supports both sync and async)
+
+**Note:** These are NOT exported from the main `ai_pipeline_core` module. Import them explicitly:
+```python
+from ai_pipeline_core.prefect import flow, task
+```
+
+---
+
+## 7. LLM Module
+
+### `ModelName`
+Type alias for supported model literals:
+```python
+ModelName: TypeAlias = Literal[
+    # Core models
+    "gemini-2.5-pro", "gpt-5", "grok-4",
+    # Small models
+    "gemini-2.5-flash", "gpt-5-mini", "grok-3-mini",
+    # Search models
+    "gemini-2.5-flash-search", "sonar-pro-search",
+    "gpt-4o-search", "grok-3-mini-search"
 ]
-doc5 = MyDocument.create("chapters.md", "Book chapters", sections)
-# Sections will be joined with markdown separators
 ```
 
-#### Helper Methods for Document Creation
+### `AIMessageType`
+Type alias: `str | Document | ModelResponse`
 
-For more explicit control, you can use the specialized creation methods:
+### `ModelOptions`
+Pydantic model for LLM generation configuration.
 
--   **`create_as_json(name: str, description: str | None, data: Any) -> Self`**: Creates a JSON document. The `name` must end with `.json`. Automatically handles Pydantic models and formats with indentation.
+**Fields:**
+- `temperature: float | None = None` - Controls randomness (0-2)
+- `system_prompt: str | None = None`
+- `search_context_size: Literal["low", "medium", "high"] | None = None`
+- `reasoning_effort: Literal["low", "medium", "high"] | None = None`
+- `retries: int = 3`
+- `retry_delay_seconds: int = 10`
+- `timeout: int = 300`
+- `service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None`
+- `max_completion_tokens: int | None = None`
+- `response_format: type[BaseModel] | None = None` - Used internally by generate_structured
 
--   **`create_as_yaml(name: str, description: str | None, data: Any) -> Self`**: Creates a YAML document. The `name` must end with `.yaml` or `.yml`. Automatically handles Pydantic models with proper formatting.
+**Methods:**
+- `to_openai_completion_kwargs() -> dict` - Converts to OpenAI API kwargs with proper extra_body handling, including temperature
 
--   **`create_as_markdown_list(name: str, description: str | None, items: list[str]) -> Self`**: Creates a markdown document from a list of strings, joining them with `\n\n---\n\n` separators.
+### `AIMessages`
+Type-safe container extending `list[AIMessageType]`.
 
-#### `FlowDocument`: Persistent State
-Inherit from this class for any data artifact that needs to be passed from one workflow step to the next. These documents are considered the primary, persistent outputs of your flows.
+**Methods:**
+- `get_last_message() -> AIMessageType` - Returns `self[-1]`
+- `get_last_message_as_str() -> str` - Returns last as string (raises ValueError if not str)
+- `to_prompt() -> list[ChatCompletionMessageParam]` - Converts to OpenAI format
+- `to_tracing_log() -> list[str]` - For logging (excludes document content)
+- `get_prompt_cache_key(system_prompt: str | None = None) -> str` - SHA256 hash for caching
 
-**Usage Pattern:**
-Every file you intend to save as an output of a workflow step should correspond to a class that inherits from `FlowDocument`.
+**Static Methods:**
+- `document_to_prompt(document: Document) -> list[ChatCompletionContentPartParam]`
+  - Wraps documents in XML-like tags
+  - Handles text, image, and PDF documents
+  - Returns proper multimodal format for images/PDFs
 
+### `ModelResponse`
+Response from LLM extending OpenAI's `ChatCompletion`.
+
+**Additional Fields:**
+- `headers: dict[str, str] = Field(default_factory=dict)`
+- `model_options: dict[str, Any] = Field(default_factory=dict)`
+
+**Properties:**
+- `content: str` - Returns `choices[0].message.content or ""`
+
+**Methods:**
+- `set_model_options(options: dict)` - Deep copy and store (removes "messages" key)
+- `set_headers(headers: dict)` - Deep copy and store
+- `get_laminar_metadata() -> dict[str, str | int | float]` - Extract observability metadata including LiteLLM headers, usage, costs
+
+### `StructuredModelResponse[T]`
+Generic response with parsed structured output.
+
+**Additional Fields:**
+- `_parsed_value: T | None` - Private field for parsed value
+
+**Properties:**
+- `parsed: T` - Returns parsed Pydantic instance (raises ValueError if None)
+
+**Constructor:**
+- Handles both regular ChatCompletion and ParsedChatCompletion
+- Extracts parsed value from completion if available
+
+### Core Generation Functions
+
+#### `generate`
 ```python
-from ai_pipeline_core.documents import FlowDocument
-
-class FinalReportDocument(FlowDocument):
-    """A final, comprehensive report generated by the pipeline."""
-    pass
+@trace(ignore_inputs=["context"])
+async def generate(
+    model: ModelName | str,
+    *,
+    context: AIMessages = AIMessages(),
+    messages: AIMessages | str,
+    options: ModelOptions = ModelOptions()
+) -> ModelResponse
 ```
 
-#### `TaskDocument`: Ephemeral Data
-Inherit from this class for temporary data that is created and consumed within a single task or flow run. It is not intended to be a final, saved output.
+**Features:**
+- Automatic retry with exponential backoff
+- Context caching (2-minute TTL via cache_control)
+- LMNR span creation and metadata
+- Automatic prompt processing
+- Timeout and error handling
 
-**Usage Pattern:**
-When an agent performs a web search, the result can be stored in a temporary `SearchResultDocument`. This document is used by an analysis task immediately after, but it's not saved to disk as a final artifact of the flow.
+**Internal Implementation:**
+1. `_process_messages` - Formats messages with system prompt and cache control
+2. `_generate` - Makes actual API call using AsyncOpenAI
+3. `_generate_with_retry` - Handles retry logic with cache disabling on non-timeout errors
 
+#### `generate_structured`
 ```python
-from ai_pipeline_core.documents import TaskDocument
-
-class SearchResultDocument(TaskDocument):
-    """Temporary search result from a web query."""
-    pass
+@trace(ignore_inputs=["context"])
+async def generate_structured(
+    model: ModelName | str,
+    response_format: type[T],
+    *,
+    context: AIMessages = AIMessages(),
+    messages: AIMessages | str,
+    options: ModelOptions = ModelOptions()
+) -> StructuredModelResponse[T]
 ```
 
-#### `DocumentList`: The Type-Safe Container
-This is more than just a `list[Document]`. It's a custom list class that provides validation and convenient filtering methods. All flows must accept and return a `DocumentList`.
+**Additional Behavior:**
+- Sets `options.response_format` to provided type
+- Uses `client.chat.completions.parse` for structured output
+- Extracts and validates parsed value
+- Returns StructuredModelResponse with typed parsed property
 
-**Usage Pattern:**
-It's used at the boundaries of every flow and internally for data manipulation.
+---
 
+## 8. Tracing
+
+### `TraceLevel`
+Type alias: `Literal["always", "debug", "off"]`
+
+### `TraceInfo`
+Pydantic model for trace metadata.
+
+**Fields:**
+- `session_id: str | None = None`
+- `user_id: str | None = None`
+- `metadata: dict[str, str] = {}`
+- `tags: list[str] = []`
+
+**Methods:**
+- `get_observe_kwargs() -> dict` - Converts to Laminar kwargs with env var fallbacks
+
+### `@trace` Decorator
+Adds Laminar observability to functions (sync or async).
+
+**Overloads:**
+1. Direct: `@trace`
+2. With params: `@trace(...parameters...)`
+
+**Parameters:**
+- `func: Callable | None = None` - Function to trace
+- `level: TraceLevel = "always"` - When to trace
+- `name: str | None = None` - Custom span name (defaults to function name)
+- `session_id: str | None = None` - Override session
+- `user_id: str | None = None` - Override user
+- `metadata: dict[str, Any] | None = None` - Additional metadata
+- `tags: list[str] | None = None` - Additional tags
+- `span_type: str | None = None` - Span type for Laminar
+- `ignore_input: bool = False` - Don't log inputs
+- `ignore_output: bool = False` - Don't log outputs
+- `ignore_inputs: list[str] | None = None` - Specific params to ignore
+- `input_formatter: Callable[..., str] | None = None` - Custom formatter
+- `output_formatter: Callable[..., str] | None = None` - Custom formatter
+- `ignore_exceptions: bool = False` - Don't trace exceptions
+- `preserve_global_context: bool = True` - Maintain global context
+
+**Behavior:**
+- "off": Returns function unchanged
+- "debug": Only traces when LMNR_DEBUG != "true"
+- "always": Always traces
+- Initializes Laminar once per process
+- Injects TraceInfo if function accepts it
+- Preserves function signature
+- Handles both sync and async functions
+
+**Internal Implementation:**
+- `_initialise_laminar()` - One-time Laminar setup with disabled OpenAI instrument
+- `_prepare_and_get_observe_params()` - Runtime parameter preparation
+- Creates sync or async wrapper based on function type
+
+---
+
+## 9. Utilities
+
+### `PromptManager`
+Jinja2-based prompt template manager.
+
+**Constructor:**
+- `current_dir: str` - Required: calling module's `__file__` path
+- `prompts_dir: str = "prompts"` - Directory name to search
+
+**Search Algorithm:**
+1. Current directory's `prompts/` subdirectory
+2. Current directory itself
+3. Parent directories' `prompts/` (up to 4 levels while `__init__.py` exists)
+
+**Properties:**
+- `search_paths: list[Path]` - All discovered search paths
+- `env: jinja2.Environment` - Configured Jinja2 environment
+
+**Jinja2 Configuration:**
+- `loader`: FileSystemLoader with all search paths
+- `trim_blocks`: True
+- `lstrip_blocks`: True
+- `autoescape`: False (for prompt engineering)
+
+**Methods:**
+- `get(prompt_path: str, **kwargs) -> str` - Render template
+  - Auto-adds `.jinja2` or `.jinja` extension if missing
+  - Raises `PromptNotFoundError` if not found
+  - Raises `PromptRenderError` on template errors
+  - Handles multiple error types with proper re-raising
+
+---
+
+## 10. Usage Patterns
+
+### Creating Custom Documents
 ```python
-from ai_pipeline_core.documents import DocumentList
-from my_app.documents import InitialReportDocument, UserInputDocument
+from ai_pipeline_core import FlowDocument, TaskDocument
+from enum import StrEnum
 
-@flow
-async def my_flow(documents: DocumentList, ...):
-    # 'documents' contains ALL documents from previous steps.
-    # We use filter_by_types to get just the ones we need.
-    input_documents = documents.filter_by_types([
-        InitialReportDocument,
-        UserInputDocument
-    ])
-    # ...
+class AllowedFiles(StrEnum):
+    CONFIG = "config.yaml"
+    DATA = "data.json"
+
+class InputDocument(FlowDocument):
+    FILES = AllowedFiles  # Optional filename restriction
+
+class TempDocument(TaskDocument):
+    pass  # Temporary processing document
 ```
 
-### **The LLM Client**: Your Gateway to AI
-
-This module provides a simple, powerful, and consistent interface for all AI model interactions.
-
-#### `generate()`: For Standard Text Generation
-This is your workhorse for any task that requires a text-based response from an LLM.
-
--   **Signature**: `async def generate(model: ModelName, *, context: AIMessages, messages: AIMessages | str, options: ModelOptions) -> ModelResponse`
--   **Key Parameters**:
-    -   `model: ModelName`: The name of the model to use (e.g., `"gpt-5-mini"`).
-    -   `context: AIMessages`: **(Keyword-only)** A list of documents and messages that provide background information. This part of the prompt is optimized for caching by the LLM client. Use it for large, static data like source documents.
-    -   `messages: AIMessages | str`: **(Keyword-only)** The dynamic part of the prompt, typically the specific question or instruction. This part is not cached.
-    -   `options: ModelOptions`: Configuration for the call (e.g., retries, timeout).
--   **Returns**: A `ModelResponse` object.
-
-**Usage Pattern:**
-Used for tasks like summarizing, consolidating reports, and writing sections of a final report.
-
+### Document Creation Patterns
 ```python
-from ai_pipeline_core.llm import generate, AIMessages, ModelOptions
-
-# ...
-consolidation_prompt = "Consolidate the provided documents into a single report."
-messages = AIMessages([consolidation_prompt])
-context = AIMessages(source_documents) # A DocumentList
-
-response = await generate(
-    model="gemini-2.5-flash",
-    context=context,
-    messages=messages,
-    options=ModelOptions(max_completion_tokens=8000)
-)
-
-final_report = response.content # Access the text via .content
-```
-
-#### `generate_structured()`: For Pydantic-backed Responses
-Use this when you need the LLM to return data in a specific, predictable JSON structure.
-
--   **Signature**: `async def generate_structured(model: ModelName, response_format: type[T], *, ...,) -> StructuredModelResponse[T]`
--   **Key Parameters**:
-    -   `response_format: type[BaseModel]`: The Pydantic model class that the LLM's output should conform to.
--   **Returns**: A `StructuredModelResponse[T]`, where `T` is your Pydantic model.
-
-**Usage Pattern:**
-Crucial for tasks where you need to brainstorm or extract data into a consistent, machine-readable format.
-
-```python
+from ai_pipeline_core import FlowDocument
 from pydantic import BaseModel
-from ai_pipeline_core.llm import generate_structured
 
-class RiskAnalysis(BaseModel):
-    risk_title: str
-    description: str
-    severity_score: float
+class MyDoc(FlowDocument):
+    pass
 
-# ...
-response = await generate_structured(
-    model="gpt-5-mini",
-    messages=AIMessages(["Identify the main risk in the provided document."]),
-    response_format=RiskAnalysis, # Tell the LLM to return this structure
-)
+# Smart creation based on extension and content type
+doc1 = MyDoc.create("data.json", None, {"key": "value"})  # JSON
+doc2 = MyDoc.create("config.yaml", None, {"host": "localhost"})  # YAML
+doc3 = MyDoc.create("text.txt", None, "Hello")  # UTF-8
+doc4 = MyDoc.create("sections.md", None, ["Part 1", "Part 2"])  # Markdown list
 
-# .parsed gives you a fully validated instance of your Pydantic model.
-# No manual JSON parsing or validation needed.
-validated_data: RiskAnalysis = response.parsed
-print(f"Risk: {validated_data.risk_title}, Severity: {validated_data.severity_score}")
+# Direct creation methods
+config = BaseModel(...)
+doc5 = MyDoc.create_as_json("output.json", "Results", config)
+doc6 = MyDoc.create_as_yaml("settings.yaml", None, {"debug": True})
 ```
 
-#### `AIMessages`: The Universal Input Formatter
-A specialized list that handles the complexity of formatting different types of content for the LLM API.
-
--   **What it does**:
-    -   Converts `str` to a user message.
-    -   Converts a text `Document` to a user message with XML-like tags containing its metadata and content.
-    -   Converts an image or PDF `Document` to the correct multimodal format (base64 data URI).
-    -   Converts a `ModelResponse` to an assistant message, enabling conversational context.
-
-**Usage Pattern:**
-Simply wrap your list of inputs in the `AIMessages` constructor before passing them to `generate` or `generate_structured`.
-
+### Implementing Flows
 ```python
-from ai_pipeline_core.llm import AIMessages
+from ai_pipeline_core import pipeline_flow, FlowConfig, FlowOptions, DocumentList
 
-# ...
-image_doc = ImageDocument(...)
-text_doc = TextDocument(...)
-previous_response = await generate(...)
-
-# AIMessages handles each type correctly.
-messages = AIMessages([
-    text_doc,
-    image_doc,
-    "Based on the text and the image, what do you see?",
-    previous_response,
-    "Based on your previous answer, what is the key takeaway?"
-])
-```
-
-#### `ModelOptions`: Configuring AI Calls
-A Pydantic class for specifying all options for an LLM call.
-
--   **Key Attributes**:
-    -   `system_prompt: str`: Sets the system prompt.
-    -   `retries: int`: Number of retries on failure.
-    -   `timeout: int`: Call timeout in seconds.
-    -   `max_completion_tokens: int`: Limits the length of the response.
-    -   `search_context_size`: For search-enabled models.
-    -   `reasoning_effort`: For models supporting advanced reasoning.
-
-**Usage Pattern:**
-Instantiate `ModelOptions` and pass it to the `options` argument.
-
-```python
-from ai_pipeline_core.llm import ModelOptions
-
-options = ModelOptions(
-    system_prompt="You are a financial analyst.",
-    max_completion_tokens=8000,
-    retries=5
-)
-response = await generate(..., options=options)
-```
-
-#### `ModelResponse` & `StructuredModelResponse`: Understanding Outputs
-These are Pydantic models that wrap the LLM's response, providing both the content and useful metadata.
-
--   **`ModelResponse`** (from `generate`)
-    -   `.content: str`: The main text response from the AI.
--   **`StructuredModelResponse[T]`** (from `generate_structured`)
-    -   `.parsed: T`: The validated Pydantic object of type `T`.
-    -   `.content: str`: The raw string (usually JSON) that was parsed into the object.
-
-### **Flow Orchestration**: Building the Pipeline
-
-#### `FlowConfig`: The Contract for Your Flows
-This class provides a simple, declarative way to enforce type safety at the boundaries of your Prefect flows.
-
--   **Key Class Variables**:
-    -   `INPUT_DOCUMENT_TYPES: list[type[FlowDocument]]`: A list of the document classes the flow *requires* as input.
-    -   `OUTPUT_DOCUMENT_TYPE: type[FlowDocument]`: The single document class the flow is *guaranteed* to output.
--   **Key Methods**:
-    -   `get_input_documents(docs: DocumentList)`: Filters the provided `DocumentList` to include only the required input types. It will raise a `ValueError` if any required type is missing.
-    -   `validate_output_documents(docs: DocumentList)`: Raises an `AssertionError` if any document in the list is not of the specified `OUTPUT_DOCUMENT_TYPE`.
-
-**Usage Pattern:**
-Every flow should have a corresponding `FlowConfig` class. This pattern is strictly enforced for clarity and safety.
-
-```python
-from ai_pipeline_core.flow import FlowConfig
-from my_app.documents import FinalReportDocument, AnalysisDocument
-
-class FinalReportConfig(FlowConfig):
-    INPUT_DOCUMENT_TYPES = [AnalysisDocument]
-    OUTPUT_DOCUMENT_TYPE = FinalReportDocument
-
-@flow
-async def generate_final_report(documents: DocumentList, ...):
-    # This line ensures the flow has the analysis it needs to run.
-    input_documents = FinalReportConfig.get_input_documents(documents)
-    # ...
-```
-
-#### `FlowOptions`: Extensible Configuration System (New in v0.1.7)
-A base class for creating type-safe, extensible configuration objects for your flows.
-
--   **Base Attributes**:
-    -   `core_model: ModelName | str`: Primary model for complex analysis (default: "gpt-5")
-    -   `small_model: ModelName | str`: Fast model for simple tasks (default: "gpt-5-mini")
--   **Extension Pattern**: Inherit from `FlowOptions` to add your custom configuration fields
-
-**Usage Pattern:**
-Create custom options classes that inherit from `FlowOptions` to configure your flows:
-
-```python
-from ai_pipeline_core.flow import FlowOptions
-from pydantic import Field
+class MyFlowConfig(FlowConfig):
+    INPUT_DOCUMENT_TYPES = [InputDocument]
+    OUTPUT_DOCUMENT_TYPE = OutputDocument
 
 class MyFlowOptions(FlowOptions):
-    """Custom options for my specific flow."""
-    batch_size: int = Field(default=100, ge=1)
-    temperature: float = Field(default=0.7, ge=0, le=2)
-    enable_caching: bool = Field(default=True)
+    temperature: float = 0.7
+    batch_size: int = 100
 
-    # You still have access to base fields
-    # core_model and small_model are inherited
-
-# Use with pipeline_flow decorator
-@pipeline_flow
-async def my_pipeline(
+@pipeline_flow(trace_level="always", retries=3)
+async def my_flow(
     project_name: str,
     documents: DocumentList,
-    flow_options: MyFlowOptions  # Type-safe custom options
+    flow_options: MyFlowOptions
 ) -> DocumentList:
-    # Access both custom and base fields
-    model = flow_options.core_model
-    batch_size = flow_options.batch_size
-    # ...
+    inputs = MyFlowConfig.get_input_documents(documents)
+    # Process...
+    outputs = DocumentList([output_doc])
+    MyFlowConfig.validate_output_documents(outputs)
+    return outputs
 ```
 
-### **Enhanced Decorators** (New in v0.1.7)
-
-#### `@pipeline_flow` & `@pipeline_task`: Prefect + Tracing Combined
-These decorators combine Prefect's orchestration with automatic LMNR tracing.
-
-**`@pipeline_flow`**: Enforces a standardized signature for document processing flows:
-- First parameter: `project_name: str`
-- Second parameter: `documents: DocumentList`
-- Third parameter: `flow_options: FlowOptions` (or subclass)
-- Must return: `DocumentList`
-
+### Using LLM Generation
 ```python
-from ai_pipeline_core import pipeline_flow, FlowOptions
-from ai_pipeline_core.documents import DocumentList
-
-@pipeline_flow(trace_level="always", name="analyzer")
-async def analyze_documents(
-    project_name: str,
-    documents: DocumentList,
-    flow_options: FlowOptions
-) -> DocumentList:
-    # Automatic tracing + Prefect flow functionality
-    # ...
-    return results
-```
-
-**`@pipeline_task`**: Combines Prefect task with tracing:
-
-```python
-from ai_pipeline_core import pipeline_task
-
-@pipeline_task(trace_level="always", retries=3, timeout_seconds=300)
-async def process_document(doc: Document) -> Document:
-    # Automatic tracing + retry logic
-    # ...
-    return result
-```
-
-#### Clean Prefect Imports
-For cases where you don't need tracing, import clean Prefect decorators:
-
-```python
-# Clean Prefect decorators (no tracing)
-from ai_pipeline_core.prefect import flow, task
-
-# Or use enhanced decorators with tracing
-from ai_pipeline_core import pipeline_flow, pipeline_task
-```
-
-### **Simple Runner Module** (New in v0.1.7)
-
-#### CLI-based Pipeline Execution
-The `run_cli` function provides a command-line interface for running pipelines:
-
-```python
-# my_app/cli.py
-from ai_pipeline_core.simple_runner import run_cli
-from my_app.flows import my_pipeline
-from my_app.config import MyFlowConfig, MyFlowOptions
-
-def main():
-    run_cli(
-        flows=[my_pipeline],
-        flow_configs=[MyFlowConfig],
-        options_cls=MyFlowOptions
-    )
-
-if __name__ == "__main__":
-    main()
-```
-
-Run from command line:
-```bash
-python -m my_app.cli ./output --batch-size 50 --temperature 0.9
-```
-
-#### Programmatic Pipeline Running
-For running pipelines from Python code:
-
-```python
-from pathlib import Path
-import asyncio
-from ai_pipeline_core.simple_runner import run_pipeline
-
-async def main():
-    result = await run_pipeline(
-        project_name="my-project",
-        output_dir=Path("./output"),
-        flow=my_pipeline,
-        flow_config=MyFlowConfig,
-        flow_options=MyFlowOptions(batch_size=50)
-    )
-    print(f"Processed {len(result)} documents")
-
-asyncio.run(main())
-```
-
-#### Document I/O Utilities
-Helper functions for loading and saving documents:
-
-```python
-from ai_pipeline_core.simple_runner import (
-    load_documents_from_directory,
-    save_documents_to_directory
+from ai_pipeline_core import (
+    generate, generate_structured,
+    AIMessages, ModelOptions, ModelName
 )
-
-# Load documents organized by type
-docs = load_documents_from_directory(
-    base_dir=Path("./input"),
-    document_types=[InputDoc1, InputDoc2]
-)
-
-# Save documents organized by type
-save_documents_to_directory(
-    base_dir=Path("./output"),
-    documents=results
-)
-```
-
-### **Observability & Utilities**
-
-#### `@trace`: Automatic Monitoring
-A decorator that wraps any function (sync or async) and sends its execution details to LMNR.
-
--   **Key Arguments**:
-    -   `name: str`: Override the trace name (defaults to the function name).
-    -   `test: bool`: **Crucial for testing.** Set to `True` in `pytest` tests to prevent polluting production metrics.
-    -   `ignore_inputs: list[str]`: A list of argument names to exclude from the trace (e.g., for sensitive data).
-
-**Usage Pattern:**
-It should be applied to **every** `@flow` and `@task`.
-
-```python
-from prefect import task
-from ai_pipeline_core.tracing import trace
-
-@task
-@trace() # <--- This enables tracing for the task
-async def my_processing_task(...):
-    # ...
-```
-
-#### `PromptManager`: Organized & Reusable Prompts
-A utility for loading and rendering Jinja2 templates.
-
--   **Search Logic**: When you initialize `PromptManager(__file__)`, it searches for templates in this order:
-    1.  In a `prompts/` subdirectory within the same directory as the Python file.
-    2.  In the same directory as the Python file itself.
-    3.  In `prompts/` subdirectories of parent packages.
--   **Usage**:
-    1.  Create a `.jinja2` file next to your task's Python file.
-    2.  Instantiate `PromptManager` at the module level.
-    3.  Call `.get()` to render the template.
-
-**Usage Pattern:**
-Every task with a non-trivial prompt should use this pattern.
-
-```python
-# my_app/tasks/analyzer.py
-from ai_pipeline_core.prompt_manager import PromptManager
-
-# 1. Initialize once at the module level
-prompt_manager = PromptManager(__file__)
-
-@task
-async def analyze_data(project_name: str):
-    # 2. Render the prompt inside the task
-    # This will load 'analyzer_prompt.jinja2'
-    # from the same directory as this Python file.
-    prompt = prompt_manager.get(
-        "analyzer_prompt.jinja2",
-        project=project_name,
-    )
-    # ...
-```
-
-#### `settings`: Type-Safe Configuration
-A global Pydantic `BaseSettings` object that automatically loads configuration from your `.env` file.
-
-**Usage Pattern:**
-Import and use the `settings` object anywhere you need access to environment-specific configuration.
-
-```python
-from ai_pipeline_core.settings import settings
-
-def get_api_client():
-    # Access the validated API key
-    api_key = settings.openai_api_key
-    base_url = settings.openai_base_url
-    # ...
-```
-
-#### `get_pipeline_logger`: Unified Logging
-The one-stop function for getting a logger instance that is correctly configured and integrated with Prefect.
-
-**Usage Pattern:**
-Used anywhere logging is needed. **Never `import logging` directly.**
-
-```python
-from ai_pipeline_core.logging import get_pipeline_logger
-
-logger = get_pipeline_logger(__name__)
-
-# ...
-logger.info("Starting data processing for user.", extra={"user_id": 123})
-logger.error("Failed to connect to database.", exc_info=True)
-```
-
----
-
-## 4. Practical Walkthrough: Building a Sentiment Analysis Flow
-
-Let's build a simple, new flow from scratch using all the core concepts to solidify your understanding.
-
-**Goal**: Create a flow that takes text documents, analyzes their sentiment, and outputs a structured JSON report.
-
-#### Step 1: Defining the Documents
-Create two new `FlowDocument` classes in your application's `documents` module.
-
-```python
-# my_app/documents.py
-
-from ai_pipeline_core.documents import FlowDocument
-
-class TextInputDocument(FlowDocument):
-    """A simple text document for analysis."""
-    pass
-
-class SentimentReportDocument(FlowDocument):
-    """A JSON document containing the sentiment analysis report."""
-    pass
-```
-
-#### Step 2: Defining the `FlowConfig`
-Create a config class that specifies our new documents as input and output.
-
-```python
-# my_app/flows.py
-
-from ai_pipeline_core.flow import FlowConfig
-from .documents import TextInputDocument, SentimentReportDocument
-
-class SentimentAnalysisConfig(FlowConfig):
-    INPUT_DOCUMENT_TYPES = [TextInputDocument]
-    OUTPUT_DOCUMENT_TYPE = SentimentReportDocument
-```
-
-#### Step 3: Creating the Prompt Template
-Create a file named `analyze_sentiment.jinja2` in a new `my_app/tasks/` directory.
-
-```jinja2
-{# my_app/tasks/analyze_sentiment.jinja2 #}
-
-Analyze the sentiment of the following text.
-Categorize it as 'Positive', 'Negative', or 'Neutral'.
-Provide a confidence score between 0.0 and 1.0.
-
-Text to analyze:
-{{ text_content }}
-```
-
-#### Step 4: Writing the Analysis Task
-Create the task that will call the LLM.
-
-```python
-# my_app/tasks.py
-
-from pydantic import BaseModel, Field
-from prefect import task
-from ai_pipeline_core.llm import generate_structured, AIMessages, ModelName
-from ai_pipeline_core.prompt_manager import PromptManager
-from ai_pipeline_core.tracing import trace
-from .documents import TextInputDocument, SentimentReportDocument
-
-prompt_manager = PromptManager(__file__)
-
-class SentimentResult(BaseModel):
-    sentiment: str = Field(description="'Positive', 'Negative', or 'Neutral'")
-    confidence: float = Field(description="Confidence score from 0.0 to 1.0")
-
-@task
-@trace
-async def analyze_sentiment(document: TextInputDocument, model: ModelName) -> SentimentReportDocument:
-    prompt = prompt_manager.get(
-        "analyze_sentiment.jinja2",
-        text_content=document.as_text()
-    )
-
-    response = await generate_structured(
-        model=model,
-        response_format=SentimentResult,
-        messages=AIMessages([prompt])
-    )
-
-    # The result is a validated Pydantic object
-    result_data = response.parsed
-
-    # Use the smart create method with a Pydantic model
-    # It will automatically serialize to formatted JSON
-    return SentimentReportDocument.create(
-        name=f"sentiment_{document.name}.json",
-        description=f"Sentiment analysis for {document.name}",
-        content=result_data  # Pass the Pydantic model directly
-    )
-```
-
-#### Step 5: Composing the Prefect Flow
-Now, create the flow that uses the task.
-
-```python
-# my_app/flows.py
-
-from prefect import flow
-from ai_pipeline_core.documents import DocumentList
-from ai_pipeline_core.tracing import trace
-from .tasks import analyze_sentiment
-# ... (include FlowConfig from Step 2)
-
-@flow
-@trace
-async def sentiment_analysis_flow(documents: DocumentList, model: ModelName) -> DocumentList:
-    config = SentimentAnalysisConfig()
-    input_docs = config.get_input_documents(documents)
-
-    # Use .map for parallel execution over all input documents
-    results = await analyze_sentiment.map(input_docs, model=model)
-
-    output_docs = DocumentList(results)
-    config.validate_output_documents(output_docs)
-    return output_docs
-```
-
-#### Step 6: Running the Flow
-You can now run this flow, for example, from a simple script.
-
-```python
-# run.py
-import asyncio
-from my_app.flows import sentiment_analysis_flow
-from my_app.documents import TextInputDocument
-from ai_pipeline_core.documents import DocumentList
-
-async def main():
-    docs = DocumentList([
-        TextInputDocument(name="review1.txt", content=b"I love this product! It's amazing."),
-        TextInputDocument(name="review2.txt", content=b"This was a terrible experience, I'm very disappointed.")
-    ])
-    results = await sentiment_analysis_flow(docs, model="gemini-2.5-flash")
-    for result in results:
-        print(f"--- {result.name} ---")
-        print(result.as_text())
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
----
-
-## 5. Complete API Reference
-
-*(This section would be an exhaustive, doc-style list of every public class and function. For brevity in this response, I will summarize instead of repeating the full 5000+ word API list.)*
-
-This section provides a detailed breakdown of every public component.
-
--   **`ai_pipeline_core.documents`**: `Document`, `FlowDocument`, `TaskDocument`, `DocumentList`, `canonical_name_key`, `sanitize_url`. Details all properties (`id`, `name`, `content`, `mime_type`) and methods (`as_text`, `as_json`, `as_yaml`, `as_pydantic_model`, `create`, `create_as_json`, `create_as_yaml`, `create_as_markdown_list`, `filter_by_type`).
--   **`ai_pipeline_core.documents.mime_type`**: MIME type detection utilities. `detect_mime_type(content: bytes, name: str) -> str` for intelligent MIME type detection, `is_json_mime_type(mime_type: str) -> bool` and `is_yaml_mime_type(mime_type: str) -> bool` for checking specific formats.
--   **`ai_pipeline_core.llm`**: `generate`, `generate_structured`, `AIMessages`, `ModelOptions`, `ModelResponse`, `StructuredModelResponse`, `ModelName`. Details all function signatures, parameters, and return object attributes (`.content`, `.parsed`). Note: All exports also available from top-level `ai_pipeline_core` import.
--   **`ai_pipeline_core.flow`**: `FlowConfig`, `FlowOptions`. Details the class variables and methods for defining flow contracts and extensible configuration.
--   **`ai_pipeline_core.pipeline`**: `pipeline_flow`, `pipeline_task`. Enhanced decorators combining Prefect with tracing.
--   **`ai_pipeline_core.prefect`**: `flow`, `task`. Clean Prefect decorators without tracing.
--   **`ai_pipeline_core.simple_runner`**: `run_cli`, `run_pipeline`, `run_pipelines`, `load_documents_from_directory`, `save_documents_to_directory`, `FlowSequence`, `ConfigSequence`. Complete pipeline execution utilities.
--   **`ai_pipeline_core.tracing`**: `@trace`, `TraceLevel`, `TraceInfo`. Details all decorator arguments and their effects.
--   **`ai_pipeline_core.prompt_manager`**: `PromptManager`. Details the constructor and `.get()` method.
--   **`ai_pipeline_core.settings`**: `settings`. Lists all available configuration variables.
--   **`ai_pipeline_core.logging`**: `get_pipeline_logger`. Explains its usage and integration with Prefect.
-
----
-
-## 6. Best Practices & Advanced Patterns
-
-### Working with Structured Data Documents
-
-The new document creation methods make it easy to work with structured data throughout your pipeline:
-
-```python
 from pydantic import BaseModel
-from ai_pipeline_core.documents import FlowDocument, DocumentList
 
-class AnalysisResult(BaseModel):
+# Text generation with context caching
+response = await generate(
+    "gpt-5",
+    context=AIMessages([large_document]),  # Cached for 2 minutes
+    messages=AIMessages(["Analyze this"]),  # Dynamic
+    options=ModelOptions(
+        system_prompt="You are an analyst",
+        max_completion_tokens=4000,
+        retries=5
+    )
+)
+text = response.content
+
+# Structured generation
+class Analysis(BaseModel):
+    summary: str
     score: float
-    findings: list[str]
-    metadata: dict[str, Any]
+    tags: list[str]
 
-class AnalysisDocument(FlowDocument):
-    pass
-
-# Creating a structured document
-result = AnalysisResult(score=0.95, findings=["High quality"], metadata={"version": 1})
-doc = AnalysisDocument.create("analysis.json", "Analysis results", result)
-
-# Later, reading it back with full type safety
-parsed_result = doc.as_pydantic_model(AnalysisResult)
-assert isinstance(parsed_result, AnalysisResult)
-assert parsed_result.score == 0.95
-
-# Or for YAML configuration files
-config_doc = AnalysisDocument.create("config.yaml", "Configuration", {
-    "model": "gpt-4",
-    "temperature": 0.7,
-    "features": ["analysis", "summary"]
-})
-
-# The MIME type is automatically detected
-assert "yaml" in config_doc.mime_type
-config_data = config_doc.as_yaml()
+structured = await generate_structured(
+    "gpt-5-mini",
+    Analysis,
+    messages="Analyze the sentiment",
+    options=ModelOptions(timeout=60)
+)
+result: Analysis = structured.parsed
 ```
 
-### Intelligent Content Type Detection
-
-The `create` method's smart detection allows you to write more generic code:
-
+### Prompt Management
 ```python
-def save_results(name: str, data: Any) -> FlowDocument:
-    """Save any type of results with automatic format detection."""
-    # The create method will:
-    # - Use JSON for .json files
-    # - Use YAML for .yaml/.yml files
-    # - Use markdown list for .md files with list[str]
-    # - Use UTF-8 encoding for strings
-    # - Use bytes directly
-    return ResultDocument.create(name, "Results", data)
+from ai_pipeline_core import PromptManager
 
-# Works with all these
-doc1 = save_results("data.json", {"key": "value"})  # JSON formatted
-doc2 = save_results("config.yaml", {"host": "localhost"})  # YAML formatted
-doc3 = save_results("text.txt", "Plain text")  # UTF-8 encoded
-doc4 = save_results("sections.md", ["Part 1", "Part 2"])  # Markdown list
+# At module level
+prompts = PromptManager(__file__)
+
+# In function
+async def analyze(doc: Document):
+    prompt = prompts.get(
+        "analysis.jinja2",  # Extension optional
+        document=doc,
+        temperature=0.7
+    )
+    response = await generate(...)
 ```
 
--   **Error Handling**: Wrap LLM calls in `try...except LLMError:` for transient API issues. For `generate_structured`, also catch `pydantic.ValidationError` in case the model returns malformed JSON.
--   **Flexible Pipelines with Custom Options**: To make your pipeline highly configurable, define a custom Pydantic or dataclass `FlowOptions` object. Pass this object from your main script into your flow, and then down into your tasks. This allows you to control model selection, feature flags, and other parameters from a single point.
--   **Testing**:
-    -   **Unit Tests**: Use `pytest-mock` to mock `ai_pipeline_core.llm.generate` and `generate_structured`. This lets you test your task's logic without making real API calls.
-    -   **Integration Tests**: Mark tests that make real API calls with `@pytest.mark.integration`. Always use `@trace(test=True)` within these tests to keep test data separate in LMNR.
--   **DOs and DON'Ts**:
-    -   **DO** use `DocumentList.filter_by_type()` to get the specific documents you need.
-    -   **DO** pass large, static data to the `context` argument of `generate()`.
-    -   **DO** define a Pydantic model and use `generate_structured()` for predictable outputs.
-    -   **DO** use `Document.create()` with appropriate file extensions to automatically format structured data.
-    -   **DO** use `doc.as_pydantic_model(ModelClass)` for type-safe parsing of JSON/YAML documents.
-    -   **DO** leverage the smart content type detection of `create()` to simplify document creation.
-    -   **DO** use `pipeline_flow` and `pipeline_task` for flows that need tracing.
-    -   **DO** extend `FlowOptions` for custom flow configuration.
-    -   **DO** use the simple runner module for quick pipeline execution.
-    -   **DON'T** ever import the standard `logging` library. Always use `get_pipeline_logger()`.
-    -   **DON'T** hardcode model names in tasks. Pass them down from the flow.
-    -   **DON'T** pass raw strings or bytes between tasks. Always wrap them in a `Document`.
-    -   **DON'T** manually serialize Pydantic models to JSON/YAML - use `Document.create()` with the appropriate extension.
-    -   **DON'T** mix clean Prefect decorators with pipeline decorators - choose one pattern per module.
+### Tracing Patterns
+```python
+from ai_pipeline_core import trace, TraceInfo, TraceLevel
+
+@trace(
+    level="always",
+    name="custom_operation",
+    ignore_inputs=["sensitive_data"],
+    span_type="TASK"
+)
+async def process_data(
+    data: str,
+    sensitive_data: str,
+    trace_info: TraceInfo  # Automatically injected
+) -> str:
+    # trace_info contains session_id, user_id, metadata, tags
+    return result
+
+# For testing
+@trace(level="debug")  # Only traces when LMNR_DEBUG != "true"
+async def test_function():
+    pass
+```
 
 ---
 
-## 7. Troubleshooting & FAQ
+## 11. Best Practices
 
--   **`httpx.ConnectError: [Errno 111] Connection refused`**: Your LiteLLM proxy is not running. Start it using the `docker run` command from the setup section.
--   **`PromptNotFoundError`**: `PromptManager` could not find your `.jinja2` file. Check that:
-    1.  You are initializing it correctly: `PromptManager(__file__)`.
-    2.  The template file is in the same directory as the Python file, or in a `prompts/` subdirectory.
-    3.  The filename is spelled correctly.
--   **Async Errors (`RuntimeWarning: coroutine ... was never awaited`)**: You have called an `async` function without using `await`. Find the function call in the traceback and add `await` before it.
--   **`pydantic.ValidationError` from `generate_structured`**: The LLM failed to return JSON that matches your Pydantic model. Debug by:
-    1.  Inspecting the raw `.content` of the `StructuredModelResponse` to see what the LLM returned.
-    2.  Simplifying your Pydantic model.
-    3.  Improving your prompt to be more explicit about the required output format.
-    4.  Trying a more powerful model (e.g., `gpt-5` instead of `gpt-5-mini`).
+### Document Naming Rules
+- **NEVER** create Document subclasses starting with "Test" (pytest conflict)
+- Use descriptive names: `ReportDocument`, not `TestDocument`
+- Alternative prefixes: `Sample`, `Example`, `Demo`, `Mock`
+
+### Async Requirements (v0.1.8 Breaking Change)
+- `@pipeline_flow` requires `async def` functions only (will raise TypeError for sync)
+- `@pipeline_task` requires `async def` functions only (will raise TypeError for sync)
+- Clean `@flow` and `@task` from `ai_pipeline_core.prefect` support both sync and async (Prefect native)
+
+### Performance Optimization
+- Use `context` parameter in generate() for large, static content (2-minute cache)
+- Use `messages` parameter for dynamic queries
+- Batch document processing using Prefect's `.map()`
+
+### Error Handling
+- LLM functions include automatic retry with exponential backoff
+- Wrap in `try/except LLMError` for transient issues
+- For `generate_structured`, also catch `ValidationError`
+
+### Type Safety
+- Always use `DocumentList` at flow boundaries
+- Define concrete Document classes for each file type
+- Use `FlowConfig` to enforce input/output contracts
+- Extend `FlowOptions` for custom configuration
+
+### Observability
+- Set `LMNR_PROJECT_API_KEY` for production tracing
+- Use `trace_level="debug"` for development
+- Use `ignore_inputs` for sensitive parameters
+- Environment variables: `LMNR_SESSION_ID`, `LMNR_USER_ID`
+
+### Testing
+- Use `@trace(level="debug")` in tests
+- Mock `generate` and `generate_structured` for unit tests
+- Mark integration tests with `@pytest.mark.integration`
+- Use `prefect_test_harness` for flow testing
+
+### Common Pitfalls to Avoid
+- Don't import `logging` directly - use `get_pipeline_logger()`
+- Don't pass raw strings/bytes between tasks - use Documents
+- Don't hardcode model names - pass via FlowOptions
+- Don't manually serialize Pydantic models - use `Document.create()`
+- Don't mix pipeline decorators with clean Prefect decorators

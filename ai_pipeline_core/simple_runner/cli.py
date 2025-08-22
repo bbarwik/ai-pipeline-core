@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Callable, Type, TypeVar, cast
 
@@ -10,6 +13,8 @@ from pydantic_settings import CliPositionalArg, SettingsConfigDict
 from ai_pipeline_core.documents import DocumentList
 from ai_pipeline_core.flow.options import FlowOptions
 from ai_pipeline_core.logging import get_pipeline_logger, setup_logging
+from ai_pipeline_core.prefect import disable_run_logger, prefect_test_harness
+from ai_pipeline_core.settings import settings
 
 from .simple_runner import ConfigSequence, FlowSequence, run_pipelines, save_documents_to_directory
 
@@ -28,12 +33,18 @@ def _initialize_environment() -> None:
         logger.warning(f"Failed to initialize LMNR tracing: {e}")
 
 
+def _running_under_pytest() -> bool:  # NEW
+    """Return True when invoked by pytest (so fixtures will supply test contexts)."""
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
 def run_cli(
     *,
     flows: FlowSequence,
     flow_configs: ConfigSequence,
     options_cls: Type[TOptions],
     initializer: InitializerFunc = None,
+    trace_name: str | None = None,
 ) -> None:
     """
     Parse CLI+env into options, then run the pipeline.
@@ -43,13 +54,20 @@ def run_cli(
     - --start/--end: optional, 1-based step bounds
     - all other flags come from options_cls (fields & Field descriptions)
     """
+    # Check if no arguments provided before initialization
+    if len(sys.argv) == 1:
+        # Add --help to show usage
+        sys.argv.append("--help")
+
     _initialize_environment()
 
     class _RunnerOptions(  # type: ignore[reportRedeclaration]
         options_cls,
         cli_parse_args=True,
         cli_kebab_case=True,
-        cli_exit_on_error=False,
+        cli_exit_on_error=True,  # Let it exit normally on error
+        cli_prog_name="ai-pipeline",
+        cli_use_class_docs_for_groups=True,
     ):
         working_directory: CliPositionalArg[Path]
         project_name: str | None = None
@@ -82,14 +100,28 @@ def run_cli(
         if getattr(opts, "start", 1) == 1 and initial_documents:
             save_documents_to_directory(wd, initial_documents)
 
-    asyncio.run(
-        run_pipelines(
-            project_name=project_name,
-            output_dir=wd,
-            flows=flows,
-            flow_configs=flow_configs,
-            flow_options=opts,
-            start_step=getattr(opts, "start", 1),
-            end_step=getattr(opts, "end", None),
+    # Setup context stack with optional test harness and tracing
+
+    with ExitStack() as stack:
+        if not settings.prefect_api_key and not _running_under_pytest():
+            stack.enter_context(prefect_test_harness())
+            stack.enter_context(disable_run_logger())
+
+        if trace_name:
+            stack.enter_context(
+                Laminar.start_span(
+                    name=f"{trace_name}-{project_name}", input=[opts.model_dump_json()]
+                )
+            )
+
+        asyncio.run(
+            run_pipelines(
+                project_name=project_name,
+                output_dir=wd,
+                flows=flows,
+                flow_configs=flow_configs,
+                flow_options=opts,
+                start_step=getattr(opts, "start", 1),
+                end_step=getattr(opts, "end", None),
+            )
         )
-    )

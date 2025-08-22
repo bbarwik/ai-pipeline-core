@@ -1,10 +1,8 @@
 """Common test fixtures for pipeline projects."""
 
-import asyncio
-
 import pytest
-from prefect.logging import disable_run_logger
-from prefect.testing.utilities import prefect_test_harness
+
+from ai_pipeline_core import disable_run_logger, prefect_test_harness
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -25,31 +23,3 @@ def disable_prefect_logging():
     """
     with disable_run_logger():
         yield
-
-
-@pytest.fixture(autouse=True)
-def event_loop():
-    """
-    Create an event loop with proper cleanup handling.
-    This overrides pytest-asyncio's default event loop fixture to handle cleanup better.
-    """
-    loop = asyncio.new_event_loop()
-    yield loop
-
-    # Give pending tasks time to complete before closing the loop
-    try:
-        pending = asyncio.all_tasks(loop)
-        if pending:
-            # Allow a small delay for httpx and other async cleanup
-            loop.run_until_complete(asyncio.sleep(0.2))
-
-            # Cancel remaining tasks
-            for task in asyncio.all_tasks(loop):
-                task.cancel()
-
-            # Wait for cancellation to complete
-            loop.run_until_complete(
-                asyncio.gather(*asyncio.all_tasks(loop), return_exceptions=True)
-            )
-    finally:
-        loop.close()

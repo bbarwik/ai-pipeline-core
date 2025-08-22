@@ -25,6 +25,12 @@ class SampleDocument(FlowDocument):
     pass
 
 
+class OutputDocument(FlowDocument):
+    """Output document for testing."""
+
+    pass
+
+
 class NonFlowDoc(TaskDocument):
     """Task document for testing - should be skipped in save."""
 
@@ -35,7 +41,7 @@ class EdgeCaseFlowConfig(FlowConfig):
     """Test flow configuration for edge cases."""
 
     INPUT_DOCUMENT_TYPES = [SampleDocument]
-    OUTPUT_DOCUMENT_TYPE = SampleDocument
+    OUTPUT_DOCUMENT_TYPE = OutputDocument
 
 
 class TestEdgeCases:
@@ -152,7 +158,7 @@ class TestEdgeCases:
         async def test_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
-            return DocumentList([SampleDocument(name="result.txt", content=b"result")])
+            return DocumentList([OutputDocument(name="result.txt", content=b"result")])
 
         # Prepare input documents since EdgeCaseFlowConfig requires them
         input_doc = SampleDocument(name="input.txt", content=b"input")
@@ -177,7 +183,7 @@ class TestEdgeCases:
         async def test_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
-            return DocumentList([SampleDocument(name="result.txt", content=b"result")])
+            return DocumentList([OutputDocument(name="result.txt", content=b"result")])
 
         # Prepare input documents since EdgeCaseFlowConfig requires them
         input_doc = SampleDocument(name="input.txt", content=b"input")

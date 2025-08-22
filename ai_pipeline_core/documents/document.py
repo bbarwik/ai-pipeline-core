@@ -26,11 +26,26 @@ TModel = TypeVar("TModel", bound=BaseModel)
 
 
 class Document(BaseModel, ABC):
-    """Abstract base class for all documents"""
+    """Abstract base class for all documents.
+
+    Warning: Document subclasses should NOT start with 'Test' prefix as this
+    causes conflicts with pytest test discovery. Classes with 'Test' prefix
+    will be rejected at definition time.
+    """
 
     MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024  # 25MB default
     DESCRIPTION_EXTENSION: ClassVar[str] = ".description.md"
     MARKDOWN_LIST_SEPARATOR: ClassVar[str] = "\n\n---\n\n"
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Validate subclass names to prevent pytest conflicts."""
+        super().__init_subclass__(**kwargs)
+        if cls.__name__.startswith("Test"):
+            raise TypeError(
+                f"Document subclass '{cls.__name__}' cannot start with 'Test' prefix. "
+                "This causes conflicts with pytest test discovery. "
+                "Please use a different name (e.g., 'SampleDocument', 'ExampleDocument')."
+            )
 
     def __init__(self, **data: Any) -> None:
         """Prevent direct instantiation of abstract Document class."""

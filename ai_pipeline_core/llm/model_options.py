@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 
 class ModelOptions(BaseModel):
+    temperature: float | None = None
     system_prompt: str | None = None
     search_context_size: Literal["low", "medium", "high"] | None = None
     reasoning_effort: Literal["low", "medium", "high"] | None = None
@@ -20,6 +21,9 @@ class ModelOptions(BaseModel):
             "timeout": self.timeout,
             "extra_body": {},
         }
+
+        if self.temperature:
+            kwargs["temperature"] = self.temperature
 
         if self.max_completion_tokens:
             kwargs["max_completion_tokens"] = self.max_completion_tokens

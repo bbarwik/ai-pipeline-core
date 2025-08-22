@@ -321,11 +321,11 @@ class TestDocumentProperties:
         """Test canonical_name method."""
 
         # Simple case - removes Document suffix
-        class TestDocument(FlowDocument):
+        class SampleDocument(FlowDocument):
             def get_type(self) -> str:
-                return "test"
+                return "sample"
 
-        assert TestDocument.canonical_name() == "test"
+        assert SampleDocument.canonical_name() == "sample"
 
         # Removes FlowDocument suffix
         class MyFlowDocument(FlowDocument):

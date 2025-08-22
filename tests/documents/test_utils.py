@@ -108,11 +108,11 @@ class TestCanonicalNameKey:
     def test_class_with_document_suffix(self):
         """Test classes ending with Document."""
 
-        class TestDocument(FlowDocument):
+        class SampleDocument(FlowDocument):
             def get_type(self) -> str:
-                return "test"
+                return "sample"
 
-        assert canonical_name_key(TestDocument) == "test"
+        assert canonical_name_key(SampleDocument) == "sample"
 
         class FinalReportDocument(FlowDocument):
             def get_type(self) -> str:

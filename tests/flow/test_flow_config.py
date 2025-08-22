@@ -201,3 +201,36 @@ class TestSingleInputFlow:
         input_docs = SingleInputFlowConfig.get_input_documents(documents)
         assert len(input_docs) == 1
         assert doc1 in input_docs
+
+
+class TestFlowConfigValidation:
+    """Test FlowConfig validation rules."""
+
+    def test_output_type_not_in_input_types_raises_error(self):
+        """Test that OUTPUT_DOCUMENT_TYPE cannot be in INPUT_DOCUMENT_TYPES."""
+
+        with pytest.raises(TypeError) as exc_info:
+
+            class InvalidFlowConfig(FlowConfig):  # pyright: ignore[reportUnusedClass]
+                """Flow config with output type in input types."""
+
+                INPUT_DOCUMENT_TYPES = [InputDoc1, OutputDoc]  # OutputDoc is also the output
+                OUTPUT_DOCUMENT_TYPE = OutputDoc
+
+        assert "OUTPUT_DOCUMENT_TYPE" in str(exc_info.value)
+        assert "cannot be in INPUT_DOCUMENT_TYPES" in str(exc_info.value)
+        assert "OutputDoc" in str(exc_info.value)
+
+    def test_valid_config_does_not_raise(self):
+        """Test that valid config with different input and output types works."""
+
+        # This should not raise
+        class ValidFlowConfig(FlowConfig):
+            """Valid flow config."""
+
+            INPUT_DOCUMENT_TYPES = [InputDoc1, InputDoc2]
+            OUTPUT_DOCUMENT_TYPE = OutputDoc
+
+        # Should be able to use the class normally
+        assert ValidFlowConfig.get_output_document_type() == OutputDoc
+        assert ValidFlowConfig.get_input_document_types() == [InputDoc1, InputDoc2]

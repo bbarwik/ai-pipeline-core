@@ -33,11 +33,11 @@ def test_flow_wrapper_creates_prefect_flow():
     assert hasattr(my_flow, "serve")
 
 
-def test_pipeline_task_creates_prefect_task():
+async def test_pipeline_task_creates_prefect_task():
     """Test that pipeline_task creates a proper Prefect Task with tracing."""
 
     @pipeline_task
-    def my_task(x: int) -> int:
+    async def my_task(x: int) -> int:
         return x * 2
 
     # Check it's a Prefect Task
@@ -87,7 +87,7 @@ def test_trace_with_level():
     assert func3() == 3
 
 
-def test_pipeline_task_with_trace_params():
+async def test_pipeline_task_with_trace_params():
     """Test that pipeline_task decorator accepts trace parameters."""
 
     @pipeline_task(
@@ -97,7 +97,7 @@ def test_pipeline_task_with_trace_params():
         trace_ignore_inputs=["password"],
         name="my_task",
     )
-    def my_task(x: int, password: str) -> int:
+    async def my_task(x: int, password: str) -> int:
         return x * 2
 
     # Should create a valid task

@@ -58,6 +58,7 @@ make install-dev         # Install with dev dependencies and pre-commit hooks
 # Testing
 make test                # Run all tests
 make test-cov           # Run tests with coverage report
+make test-showcase      # Test the showcase.py CLI example
 pytest tests/test_documents.py::TestDocument::test_creation  # Run single test
 
 # Code quality
@@ -89,7 +90,7 @@ All AI interactions through LiteLLM proxy (OpenAI API compatible). Built-in retr
 - **generate_structured()**: Returns structured Pydantic model outputs
 - **AIMessages**: Type-safe container, converts Documents to prompts automatically
 - **ModelOptions**: Config for retry, timeout, response format, system prompts
-- **Strong model typing**: Use `ModelName` enum to prevent model name typos
+- **Strong model typing**: Use `ModelName` type alias to prevent model name typos
 
 **Critical**: Context/messages split is for caching efficiency. Context is expensive and rarely changes, messages are dynamic. Always use ModelOptions, never raw dicts.
 
@@ -110,7 +111,7 @@ Jinja2 template loading with smart path resolution:
 Philosophy: Prompts near their usage = easier maintenance.
 
 ### Tracing (`ai_pipeline_core/tracing.py`)
-LMNR integration via `@trace` decorator. Always use `test=True` in tests to avoid polluting production metrics.
+LMNR integration via `@trace` decorator. Test environment is automatically detected to avoid polluting production metrics.
 
 ### Settings (`ai_pipeline_core/settings.py`)
 Central configuration for all external services (Prefect, LMNR, OpenAI). Will be updated with deployment guide from `dependencies_docs/prefect_deployment.md`.
@@ -169,6 +170,13 @@ from ai_pipeline_core.logging import get_pipeline_logger
 logger = get_pipeline_logger(__name__)
 ```
 
+## Document Class Naming Rules
+
+**CRITICAL**: Never create Document subclasses with names starting with "Test" prefix. This causes conflicts with pytest test discovery. The Document base class enforces this rule and will raise a TypeError if violated.
+
+❌ **BAD**: `TestDocument`, `TestFlowDocument`, `TestInputDoc`
+✅ **GOOD**: `SampleDocument`, `ExampleDocument`, `DemoDocument`, `MockDocument`
+
 ## Forbidden Patterns (NEVER Do These)
 
 1. **No print statements** - Use pipeline logger
@@ -199,6 +207,27 @@ Key points:
 - TaskDocuments are temporary within task execution
 - Each flow/task defines its own document classes
 - Use FlowConfig for type-safe flow definitions
+- **@pipeline_flow and @pipeline_task require async functions only** - sync functions will be rejected with TypeError
+- Use @flow and @task from ai_pipeline_core.prefect for clean decorators (support both sync and async)
+
+## FlowConfig Validation Rules
+
+**CRITICAL**: FlowConfig subclasses must follow these rules:
+1. **Must define INPUT_DOCUMENT_TYPES and OUTPUT_DOCUMENT_TYPE** - These are required attributes
+2. **OUTPUT_DOCUMENT_TYPE cannot be in INPUT_DOCUMENT_TYPES** - This prevents circular dependencies
+3. Validation happens at class definition time via `__init_subclass__`
+
+Example:
+```python
+class ValidConfig(FlowConfig):
+    INPUT_DOCUMENT_TYPES = [InputDoc]
+    OUTPUT_DOCUMENT_TYPE = OutputDoc  # Must be different from input types
+
+# This will raise TypeError at definition time:
+class InvalidConfig(FlowConfig):
+    INPUT_DOCUMENT_TYPES = [SomeDoc]
+    OUTPUT_DOCUMENT_TYPE = SomeDoc  # ERROR: Same as input!
+```
 
 ## Testing Approach
 
@@ -207,6 +236,31 @@ Key points:
 - Mock external services (OpenAI, LMNR)
 - Test with proper Document types, not raw data
 - Coverage target: >80%
+- **Test fixtures**: conftest.py provides session-scoped `prefect_test_fixture` - don't create nested test harnesses
+- **CLI testing**: run_cli automatically detects test environment via Prefect settings
+
+## Code Elegance Principles
+
+When implementing solutions:
+1. **Check existing APIs first** - Use Prefect settings API instead of checking environment variables
+2. **Use context managers** - Combine multiple contexts with `ExitStack` instead of nested blocks
+3. **Avoid external dependencies** - Don't use httpx for simple checks, use framework's own APIs
+4. **No code duplication** - If you're writing the same code twice, refactor immediately
+5. **Detect environment properly** - Check framework state (e.g., `prefect.settings.PREFECT_API_URL.value()`) not environment variables
+
+Example of elegant context management:
+```python
+# Good - minimal and clear
+with ExitStack() as stack:
+    if not prefect.settings.PREFECT_API_URL.value():
+        stack.enter_context(prefect_test_harness())
+    stack.enter_context(disable_run_logger())
+    if trace_name:
+        stack.enter_context(Laminar.start_span(...))
+    # Execute logic here
+
+# Bad - duplicated code blocks for different conditions
+```
 
 ## When Making Changes
 

@@ -27,12 +27,12 @@ from .logging import (
 )
 from .logging import get_pipeline_logger as get_logger
 from .pipeline import pipeline_flow, pipeline_task
-from .prefect import flow, task
+from .prefect import disable_run_logger, prefect_test_harness
 from .prompt_manager import PromptManager
 from .settings import settings
 from .tracing import TraceInfo, TraceLevel, trace
 
-__version__ = "0.1.7"
+__version__ = "0.1.8"
 
 __all__ = [
     # Config/Settings
@@ -54,12 +54,12 @@ __all__ = [
     # Flow/Task
     "FlowConfig",
     "FlowOptions",
-    # Prefect decorators (clean, no tracing)
-    "task",
-    "flow",
     # Pipeline decorators (with tracing)
     "pipeline_task",
     "pipeline_flow",
+    # Prefect decorators (clean, no tracing)
+    "prefect_test_harness",
+    "disable_run_logger",
     # LLM
     "llm",
     "ModelName",

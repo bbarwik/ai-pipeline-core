@@ -109,7 +109,7 @@ async def process_document(doc: Document):
     return response.parsed
 ```
 
-### Enhanced Pipeline Decorators (New in v0.1.7)
+### Enhanced Pipeline Decorators
 ```python
 from ai_pipeline_core import pipeline_flow, pipeline_task
 from ai_pipeline_core.flow import FlowOptions
@@ -140,7 +140,7 @@ async def my_pipeline(
     return DocumentList(results)
 ```
 
-### Simple Runner Utility (New in v0.1.7)
+### Simple Runner Utility
 ```python
 from ai_pipeline_core.simple_runner import run_cli, run_pipeline
 from ai_pipeline_core.flow import FlowOptions
@@ -164,7 +164,7 @@ async def main():
     )
 ```
 
-### Clean Prefect Decorators (New in v0.1.7)
+### Clean Prefect Decorators
 ```python
 # Import clean Prefect decorators without tracing
 from ai_pipeline_core.prefect import flow, task
@@ -172,12 +172,12 @@ from ai_pipeline_core.prefect import flow, task
 # Or use pipeline decorators with tracing
 from ai_pipeline_core import pipeline_flow, pipeline_task
 
-@task  # Clean Prefect task
+@task  # Clean Prefect task (supports both sync and async)
 def compute(x: int) -> int:
     return x * 2
 
-@pipeline_task(trace_level="always")  # With tracing
-def compute_traced(x: int) -> int:
+@pipeline_task(trace_level="always")  # With tracing (async only)
+async def compute_traced(x: int) -> int:
     return x * 2
 ```
 
@@ -204,12 +204,12 @@ docs = DocumentList([doc1, doc2])
 Managed AI interactions with built-in retry logic, cost tracking, and structured outputs.
 
 **Supported Models** (via LiteLLM proxy):
-- OpenAI: GPT-4, GPT-5 series
-- Anthropic: Claude 3 series
-- Google: Gemini 2.5 series
-- xAI: Grok models
-- Perplexity: Sonar models (with search capabilities)
-- And many more through LiteLLM compatibility
+- OpenAI: gpt-5
+- Anthropic: claude-4
+- Google: gemini-2.5
+- xAI: grok-3, grok-4
+- Perplexity: sonar-pro-search
+- And many more through LiteLLM compatibility. Every model from openrouter should work.
 
 ```python
 from ai_pipeline_core.llm import generate_structured, AIMessages, ModelOptions
@@ -286,13 +286,13 @@ ai_pipeline_core/
 │   └── model_options.py # Configuration models
 ├── flow/              # Prefect flow utilities
 │   ├── config.py      # Type-safe flow configuration
-│   └── options.py     # FlowOptions base class (v0.1.7)
-├── simple_runner/     # Pipeline execution utilities (v0.1.7)
+│   └── options.py     # FlowOptions base class
+├── simple_runner/     # Pipeline execution utilities
 │   ├── cli.py         # CLI interface
 │   └── simple_runner.py # Core runner logic
 ├── logging/           # Structured logging
-├── pipeline.py        # Enhanced decorators (v0.1.7)
-├── prefect.py         # Clean Prefect exports (v0.1.7)
+├── pipeline.py        # Enhanced decorators
+├── prefect.py         # Clean Prefect exports
 ├── tracing.py         # Observability decorators
 └── settings.py        # Centralized configuration
 ```
@@ -303,6 +303,7 @@ ai_pipeline_core/
 ```bash
 make test           # Run all tests
 make test-cov      # Run with coverage report
+make test-showcase # Test the showcase.py CLI example
 pytest tests/test_documents.py::TestDocument::test_creation  # Single test
 ```
 
@@ -439,6 +440,22 @@ For learning purposes, see [CLAUDE.md](CLAUDE.md) for our comprehensive coding s
 
 - [CLAUDE.md](CLAUDE.md) - Detailed coding standards and architecture guide
 
+## Examples
+
+### In This Repository
+- [showcase.py](examples/showcase.py) - Complete example demonstrating all core features including the CLI runner
+  ```bash
+  # Run the showcase example with CLI
+  python examples/showcase.py ./output --temperature 0.7 --batch-size 5
+
+  # Show help
+  python examples/showcase.py --help
+  ```
+- [showcase.jinja2](examples/showcase.jinja2) - Example Jinja2 prompt template
+
+### Real-World Application
+- [AI Documentation Writer](https://github.com/bbarwik/ai-documentation-writer) - Production-ready example showing how to build sophisticated AI pipelines for automated documentation generation. See [examples/ai-documentation-writer.md](examples/ai-documentation-writer.md) for a detailed overview.
+
 ### dependencies_docs/ Directory
 > [!NOTE]
 > The `dependencies_docs/` directory contains guides for AI assistants (like Claude Code) on how to interact with the project's external dependencies and tooling, NOT user documentation for ai-pipeline-core itself. These files are excluded from repository listings to avoid confusion.
@@ -469,29 +486,29 @@ Built with:
 - [LiteLLM](https://litellm.ai/) - LLM proxy
 - [Pydantic](https://pydantic-docs.helpmanual.io/) - Data validation
 
-## What's New in v0.1.7
+## What's New in v0.1.8
 
-### Major Additions
-- **Enhanced Pipeline Decorators**: New `pipeline_flow` and `pipeline_task` decorators combining Prefect functionality with automatic LMNR tracing
-- **FlowOptions Base Class**: Extensible configuration system for flows with type-safe inheritance
-- **Simple Runner Module**: CLI and programmatic utilities for easy pipeline execution
-- **Clean Prefect Exports**: Separate imports for Prefect decorators with and without tracing
-- **Expanded Exports**: All major components now accessible from top-level package import
+### Breaking Changes
+- **Async-Only Pipeline Decorators**: `@pipeline_flow` and `@pipeline_task` now require `async def` functions (raises TypeError for sync)
+- **Document Class Name Validation**: Document subclasses cannot start with "Test" prefix (pytest conflict prevention)
+- **FlowConfig Validation**: OUTPUT_DOCUMENT_TYPE cannot be in INPUT_DOCUMENT_TYPES (prevents circular dependencies)
+- **Temperature Field**: Added optional `temperature` field to `ModelOptions` for explicit control
 
-### API Improvements
-- Better type inference for document flows with custom options
-- Support for custom FlowOptions inheritance in pipeline flows
-- Improved error messages for invalid flow signatures
-- Enhanced document utility functions (`canonical_name_key`, `sanitize_url`)
+### Major Improvements
+- **Pipeline Module Refactoring**: Reduced from ~400 to ~150 lines with cleaner Protocol-based typing
+- **Enhanced Validation**: FlowConfig and Document classes now validate at definition time
+- **Better CLI Support**: Auto-displays help when no arguments provided, improved context management
+- **Test Suite Updates**: All tests updated to use async/await consistently
 
-### Developer Experience
-- Simplified imports - most components available from `ai_pipeline_core` directly
-- Better separation of concerns between clean Prefect and traced pipeline decorators
-- More intuitive flow configuration with `FlowOptions` inheritance
+### Documentation Updates
+- Added Document naming rules to CLAUDE.md
+- Added FlowConfig validation rules
+- Added code elegance principles section
+- Updated guide_for_ai.md to API reference format
 
 ## Stability Notice
 
-**Current Version**: 0.1.7
+**Current Version**: 0.1.8
 **Status**: Internal Preview
 **API Stability**: Unstable - Breaking changes expected
 **Recommended Use**: Learning and reference only
