@@ -77,7 +77,9 @@ async def run_pipeline(
 ) -> DocumentList:
     """Execute a single pipeline flow."""
     if flow_name is None:
-        flow_name = getattr(flow_func, "name", getattr(flow_func, "__name__", "flow"))
+        # For Prefect Flow objects, use their name attribute
+        # For regular functions, fall back to __name__
+        flow_name = getattr(flow_func, "name", None) or getattr(flow_func, "__name__", "flow")
 
     logger.info(f"Running Flow: {flow_name}")
 
@@ -126,7 +128,10 @@ async def run_pipelines(
     for i in range(start_index, end_index + 1):
         flow_func = flows[i]
         config = flow_configs[i]
-        flow_name = getattr(flow_func, "name", getattr(flow_func, "__name__", f"flow_{i + 1}"))
+        # For Prefect Flow objects, use their name attribute; for functions, use __name__
+        flow_name = getattr(flow_func, "name", None) or getattr(
+            flow_func, "__name__", f"flow_{i + 1}"
+        )
 
         logger.info(f"--- [Step {i + 1}/{num_steps}] Running Flow: {flow_name} ---")
 
