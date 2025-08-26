@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Complete showcase of ai_pipeline_core features (v0.1.8)
+Complete showcase of ai_pipeline_core features (v0.1.10)
 
 This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
   • Settings configuration
@@ -27,7 +27,7 @@ Tip: Set PREFECT_LOGGING_LEVEL=INFO for richer logs and LMNR_DEBUG=true for more
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -49,6 +49,7 @@ from ai_pipeline_core import (
     PromptManager,
     StructuredLoggerMixin,
     TaskDocument,
+    TemporaryDocument,
     canonical_name_key,
     # Prefect utilities
     get_logger,
@@ -121,7 +122,7 @@ class AllowedInputFiles(StrEnum):
 class InputDocument(FlowDocument):
     """Flow document with filename restrictions."""
 
-    FILES = AllowedInputFiles
+    FILES: ClassVar[type[AllowedInputFiles]] = AllowedInputFiles
 
 
 class AnalysisDocument(FlowDocument):
@@ -283,7 +284,7 @@ async def stage1_flow(
             output = AnalysisDocument.create(
                 f"analysis_{doc.id}.json",
                 "Structured analysis result",
-                analysis,  # Pydantic model auto-serialized to JSON
+                content=analysis,  # Pydantic model auto-serialized to JSON
             )
         else:
             # Raw text generation
@@ -304,14 +305,15 @@ async def stage1_flow(
 
             # Create text document
             output = AnalysisDocument.create(
-                f"analysis_{doc.id}.txt", "Text analysis result", response.content
+                f"analysis_{doc.id}.txt",
+                "Text analysis result",
+                content=response.content,
             )
 
         outputs.append(output)
 
-    # Validate outputs
-    config.validate_output_documents(outputs)
-    return outputs
+    # Use create_and_validate_output method
+    return config.create_and_validate_output(outputs)
 
 
 @pipeline_flow(name="stage2_enhancement")
@@ -350,16 +352,16 @@ async def stage2_flow(
                 data = doc.as_json()
                 data["enhanced"] = True
                 data["safe_name"] = safe_name
-                output = EnhancedDocument.create_as_json(doc.name, "Enhanced analysis", data)
+                output = EnhancedDocument.create_as_json(doc.name, "Enhanced analysis", data=data)
             except Exception:
-                output = EnhancedDocument.create(doc.name, "Enhanced text", enhanced)
+                output = EnhancedDocument.create(doc.name, "Enhanced text", content=enhanced)
         else:
             output = EnhancedDocument.create(doc.name, "Enhanced text", enhanced)
 
         outputs.append(output)
 
-    config.validate_output_documents(outputs)
-    return outputs
+    # Use create_and_validate_output method
+    return config.create_and_validate_output(outputs)
 
 
 # -----------------------------------------------------------------------------
@@ -383,29 +385,53 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
     if not settings.openai_api_key:
         logger.warning("OPENAI_API_KEY not set")
 
-    # Create sample documents
+    # Create sample documents including list[BaseModel] demonstration
+    sample_models = [
+        TextAnalysis(
+            summary="First sample",
+            key_points=["point 1", "point 2"],
+            sentiment="positive",
+            confidence=0.9,
+        ),
+        TextAnalysis(
+            summary="Second sample",
+            key_points=["point A", "point B"],
+            sentiment="neutral",
+            confidence=0.85,
+        ),
+    ]
+
+    # Create temporary document to demonstrate TemporaryDocument usage
+    temp_doc = TemporaryDocument.create(
+        "temp_demo.txt",
+        "Demo of TemporaryDocument",
+        content="This demonstrates the new TemporaryDocument class",
+    )
+    logger.info(f"Created TemporaryDocument: {temp_doc.name} (type: {temp_doc.base_type})")
+
     docs = DocumentList(
         [
             InputDocument.create(
                 "input.txt",
                 "Sample input document",
-                """AI Pipeline Core is a powerful async library for building
+                content="""AI Pipeline Core is a powerful async library for building
             production-grade AI pipelines with strong typing, observability,
             and Prefect integration.""",
             ),
             InputDocument.create_as_json(
                 "data.json",
                 "Sample JSON data",
-                {
+                data={
                     "project": "ai-pipeline-core",
-                    "version": "0.1.8",
+                    "version": "0.1.10",
                     "features": ["async", "typed", "observable"],
+                    "models": [m.model_dump() for m in sample_models],  # Include list demo
                 },
             ),
             InputDocument.create_as_yaml(
                 "config.yaml",
                 "Sample configuration",
-                {"model": "gpt-5-mini", "temperature": 0.7, "max_tokens": 2000},
+                data={"model": "gpt-5-mini", "temperature": 0.7, "max_tokens": 2000},
             ),
         ]
     )

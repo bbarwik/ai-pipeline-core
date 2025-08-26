@@ -486,29 +486,9 @@ Built with:
 - [LiteLLM](https://litellm.ai/) - LLM proxy
 - [Pydantic](https://pydantic-docs.helpmanual.io/) - Data validation
 
-## What's New in v0.1.8
-
-### Breaking Changes
-- **Async-Only Pipeline Decorators**: `@pipeline_flow` and `@pipeline_task` now require `async def` functions (raises TypeError for sync)
-- **Document Class Name Validation**: Document subclasses cannot start with "Test" prefix (pytest conflict prevention)
-- **FlowConfig Validation**: OUTPUT_DOCUMENT_TYPE cannot be in INPUT_DOCUMENT_TYPES (prevents circular dependencies)
-- **Temperature Field**: Added optional `temperature` field to `ModelOptions` for explicit control
-
-### Major Improvements
-- **Pipeline Module Refactoring**: Reduced from ~400 to ~150 lines with cleaner Protocol-based typing
-- **Enhanced Validation**: FlowConfig and Document classes now validate at definition time
-- **Better CLI Support**: Auto-displays help when no arguments provided, improved context management
-- **Test Suite Updates**: All tests updated to use async/await consistently
-
-### Documentation Updates
-- Added Document naming rules to CLAUDE.md
-- Added FlowConfig validation rules
-- Added code elegance principles section
-- Updated guide_for_ai.md to API reference format
-
 ## Stability Notice
 
-**Current Version**: 0.1.9
+**Current Version**: 0.1.10
 **Status**: Internal Preview
 **API Stability**: Unstable - Breaking changes expected
 **Recommended Use**: Learning and reference only

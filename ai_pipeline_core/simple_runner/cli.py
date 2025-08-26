@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable, Type, TypeVar, cast
 
 from lmnr import Laminar
+from pydantic import ValidationError
 from pydantic_settings import CliPositionalArg, SettingsConfigDict
 
 from ai_pipeline_core.documents import DocumentList
@@ -76,7 +77,49 @@ def run_cli(
 
         model_config = SettingsConfigDict(frozen=True, extra="ignore")
 
-    opts = cast(FlowOptions, _RunnerOptions())  # type: ignore[reportCallIssue]
+    try:
+        opts = cast(FlowOptions, _RunnerOptions())  # type: ignore[reportCallIssue]
+    except ValidationError as e:
+        print("\nError: Invalid command line arguments\n", file=sys.stderr)
+        for error in e.errors():
+            field = " -> ".join(str(loc) for loc in error["loc"])
+            msg = error["msg"]
+            value = error.get("input", "")
+
+            # Format the field name nicely (convert from snake_case to kebab-case for CLI)
+            cli_field = field.replace("_", "-")
+
+            print(f"  --{cli_field}: {msg}", file=sys.stderr)
+            if value:
+                print(f"    Provided value: '{value}'", file=sys.stderr)
+
+            # Add helpful hints for common errors
+            if error["type"] == "float_parsing":
+                print("    Hint: Please provide a valid number (e.g., 0.7)", file=sys.stderr)
+            elif error["type"] == "int_parsing":
+                print("    Hint: Please provide a valid integer (e.g., 10)", file=sys.stderr)
+            elif error["type"] == "literal_error":
+                ctx = error.get("ctx", {})
+                expected = ctx.get("expected", "valid options")
+                print(f"    Hint: Valid options are: {expected}", file=sys.stderr)
+            elif error["type"] in [
+                "less_than_equal",
+                "greater_than_equal",
+                "less_than",
+                "greater_than",
+            ]:
+                ctx = error.get("ctx", {})
+                if "le" in ctx:
+                    print(f"    Hint: Value must be ≤ {ctx['le']}", file=sys.stderr)
+                elif "ge" in ctx:
+                    print(f"    Hint: Value must be ≥ {ctx['ge']}", file=sys.stderr)
+                elif "lt" in ctx:
+                    print(f"    Hint: Value must be < {ctx['lt']}", file=sys.stderr)
+                elif "gt" in ctx:
+                    print(f"    Hint: Value must be > {ctx['gt']}", file=sys.stderr)
+
+        print("\nRun with --help to see all available options\n", file=sys.stderr)
+        sys.exit(1)
 
     wd: Path = cast(Path, getattr(opts, "working_directory"))
     wd.mkdir(parents=True, exist_ok=True)
@@ -103,16 +146,16 @@ def run_cli(
     # Setup context stack with optional test harness and tracing
 
     with ExitStack() as stack:
-        if not settings.prefect_api_key and not _running_under_pytest():
-            stack.enter_context(prefect_test_harness())
-            stack.enter_context(disable_run_logger())
-
         if trace_name:
             stack.enter_context(
-                Laminar.start_span(
+                Laminar.start_as_current_span(
                     name=f"{trace_name}-{project_name}", input=[opts.model_dump_json()]
                 )
             )
+
+        if not settings.prefect_api_key and not _running_under_pytest():
+            stack.enter_context(prefect_test_harness())
+            stack.enter_context(disable_run_logger())
 
         asyncio.run(
             run_pipelines(

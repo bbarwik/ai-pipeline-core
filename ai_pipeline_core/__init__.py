@@ -33,7 +33,7 @@ from .prompt_manager import PromptManager
 from .settings import settings
 from .tracing import TraceInfo, TraceLevel, trace
 
-__version__ = "0.1.9"
+__version__ = "0.1.10"
 
 __all__ = [
     # Config/Settings
