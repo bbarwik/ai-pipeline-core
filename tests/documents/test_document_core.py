@@ -2,6 +2,7 @@
 
 import base64
 from enum import StrEnum
+from typing import ClassVar
 
 import pytest
 
@@ -31,7 +32,7 @@ class AllowedDocumentNames(StrEnum):
 class RestrictedDocument(FlowDocument):
     """Document with restricted file names."""
 
-    FILES = AllowedDocumentNames
+    FILES: ClassVar[type[AllowedDocumentNames]] = AllowedDocumentNames
 
     def get_type(self) -> str:
         return "restricted"

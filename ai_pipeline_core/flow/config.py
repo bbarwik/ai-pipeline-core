@@ -1,7 +1,7 @@
 """Flow configuration base class."""
 
 from abc import ABC
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from ai_pipeline_core.documents import DocumentList, FlowDocument
 
@@ -14,7 +14,7 @@ class FlowConfig(ABC):
     INPUT_DOCUMENT_TYPES: ClassVar[list[type[FlowDocument]]]
     OUTPUT_DOCUMENT_TYPE: ClassVar[type[FlowDocument]]
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any):
         """Validate that OUTPUT_DOCUMENT_TYPE is not in INPUT_DOCUMENT_TYPES."""
         super().__init_subclass__(**kwargs)
 
@@ -85,3 +85,21 @@ class FlowConfig(ABC):
             "Documents must be of the correct type. "
             f"Expected: {output_document_class.__name__}, Got invalid: {invalid}"
         )
+
+    @classmethod
+    def create_and_validate_output(
+        cls, output: FlowDocument | list[FlowDocument] | DocumentList
+    ) -> DocumentList:
+        """
+        Create the output documents for the flow.
+        """
+        documents: DocumentList
+        if isinstance(output, FlowDocument):
+            documents = DocumentList([output])
+        elif isinstance(output, DocumentList):
+            documents = output
+        else:
+            assert isinstance(output, list)
+            documents = DocumentList(output)  # type: ignore[arg-type]
+        cls.validate_output_documents(documents)
+        return documents

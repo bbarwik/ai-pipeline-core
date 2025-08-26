@@ -6,7 +6,19 @@ from abc import ABC, abstractmethod
 from base64 import b32encode
 from enum import StrEnum
 from functools import cached_property
-from typing import Any, ClassVar, Literal, Self, TypeVar
+from io import BytesIO
+from typing import (
+    Any,
+    ClassVar,
+    Literal,
+    Self,
+    TypeVar,
+    cast,
+    final,
+    get_args,
+    get_origin,
+    overload,
+)
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 from ruamel.yaml import YAML
@@ -23,6 +35,7 @@ from .mime_type import (
 )
 
 TModel = TypeVar("TModel", bound=BaseModel)
+ContentInput = bytes | str | BaseModel | list[str] | Any
 
 
 class Document(BaseModel, ABC):
@@ -46,6 +59,22 @@ class Document(BaseModel, ABC):
                 "This causes conflicts with pytest test discovery. "
                 "Please use a different name (e.g., 'SampleDocument', 'ExampleDocument')."
             )
+        if hasattr(cls, "FILES"):
+            files = getattr(cls, "FILES")
+            if not issubclass(files, StrEnum):
+                raise TypeError(
+                    f"Document subclass '{cls.__name__}'.FILES must be an Enum of string values"
+                )
+        # Check that the Document's model_fields only contain the allowed fields
+        # It prevents AI models from adding additional fields to documents
+        allowed = {"name", "description", "content"}
+        current = set(getattr(cls, "model_fields", {}).keys())
+        extras = current - allowed
+        if extras:
+            raise TypeError(
+                f"Document subclass '{cls.__name__}' cannot declare additional fields: "
+                f"{', '.join(sorted(extras))}. Only {', '.join(sorted(allowed))} are allowed."
+            )
 
     def __init__(self, **data: Any) -> None:
         """Prevent direct instantiation of abstract Document class."""
@@ -53,49 +82,60 @@ class Document(BaseModel, ABC):
             raise TypeError("Cannot instantiate abstract Document class directly")
         super().__init__(**data)
 
-    # Optional enum of allowed file names. Subclasses may set this.
-    # This is used to validate the document name.
-    FILES: ClassVar[type[StrEnum] | None] = None
-
     name: str
     description: str | None = None
     content: bytes
 
     # Pydantic configuration
     model_config = ConfigDict(
-        frozen=True,  # Make documents immutable
+        frozen=True,
         arbitrary_types_allowed=True,
+        extra="forbid",
     )
 
     @abstractmethod
-    def get_base_type(self) -> Literal["flow", "task"]:
+    def get_base_type(self) -> Literal["flow", "task", "temporary"]:
         """Get the type of the document - must be implemented by subclasses"""
         raise NotImplementedError("Subclasses must implement this method")
 
+    @final
     @property
-    def base_type(self) -> Literal["flow", "task"]:
+    def base_type(self) -> Literal["flow", "task", "temporary"]:
         """Alias for document_type for backward compatibility"""
         return self.get_base_type()
 
+    @final
     @property
     def is_flow(self) -> bool:
         """Check if document is a flow document"""
         return self.get_base_type() == "flow"
 
+    @final
     @property
     def is_task(self) -> bool:
         """Check if document is a task document"""
         return self.get_base_type() == "task"
 
+    @final
+    @property
+    def is_temporary(self) -> bool:
+        """Check if document is a temporary document"""
+        return self.get_base_type() == "temporary"
+
+    @final
     @classmethod
     def get_expected_files(cls) -> list[str] | None:
         """
         Return the list of allowed file names for this document class, or None if unrestricted.
         """
-        if cls.FILES is None:
+        if not hasattr(cls, "FILES"):
             return None
+        files = getattr(cls, "FILES")
+        if not files:
+            return None
+        assert issubclass(files, StrEnum)
         try:
-            values = [member.value for member in cls.FILES]
+            values = [member.value for member in files]
         except TypeError:
             raise DocumentNameError(f"{cls.__name__}.FILES must be an Enum of string values")
         if len(values) == 0:
@@ -115,13 +155,9 @@ class Document(BaseModel, ABC):
         Override this method in subclasses for custom conventions (regex, prefixes, etc.).
         Raise DocumentNameError when invalid.
         """
-        if cls.FILES is None:
+        allowed = cls.get_expected_files()
+        if not allowed:
             return
-
-        try:
-            allowed = {str(member.value) for member in cls.FILES}  # type: ignore[arg-type]
-        except TypeError:
-            raise DocumentNameError(f"{cls.__name__}.FILES must be an Enum of string values")
 
         if len(allowed) > 0 and name not in allowed:
             allowed_str = ", ".join(sorted(allowed))
@@ -166,16 +202,19 @@ class Document(BaseModel, ABC):
             # Fall back to base64 for binary content
             return base64.b64encode(v).decode("ascii")
 
+    @final
     @property
     def id(self) -> str:
         """Return the first 6 characters of the SHA256 hash of the content, encoded in base32"""
         return self.sha256[:6]
 
+    @final
     @cached_property
     def sha256(self) -> str:
         """Full SHA256 hash of content, encoded in base32"""
         return b32encode(hashlib.sha256(self.content).digest()).decode("ascii").upper()
 
+    @final
     @property
     def size(self) -> int:
         """Size of content in bytes"""
@@ -225,23 +264,61 @@ class Document(BaseModel, ABC):
         """Parse document as JSON"""
         return json.loads(self.as_text())
 
-    def as_pydantic_model(self, model_type: type[TModel]) -> TModel:
+    @overload
+    def as_pydantic_model(self, model_type: type[TModel]) -> TModel: ...
+
+    @overload
+    def as_pydantic_model(self, model_type: type[list[TModel]]) -> list[TModel]: ...
+
+    def as_pydantic_model(
+        self, model_type: type[TModel] | type[list[TModel]]
+    ) -> TModel | list[TModel]:
         """Parse document as a pydantic model and return the validated instance"""
         data = self.as_yaml() if is_yaml_mime_type(self.mime_type) else self.as_json()
-        return model_type.model_validate(data)
+
+        if get_origin(model_type) is list:
+            if not isinstance(data, list):
+                raise ValueError(f"Expected list data for {model_type}, got {type(data)}")
+            item_type = get_args(model_type)[0]
+            return [item_type.model_validate(item) for item in data]
+
+        # At this point model_type must be type[TModel], not type[list[TModel]]
+        single_model = cast(type[TModel], model_type)
+        return single_model.model_validate(data)
 
     def as_markdown_list(self) -> list[str]:
         """Parse document as a markdown list"""
         return self.as_text().split(self.MARKDOWN_LIST_SEPARATOR)
 
+    @overload
+    @classmethod
+    def create(cls, name: str, content: ContentInput, /) -> Self: ...
+    @overload
+    @classmethod
+    def create(cls, name: str, *, content: ContentInput) -> Self: ...
+    @overload
+    @classmethod
+    def create(cls, name: str, description: str | None, content: ContentInput, /) -> Self: ...
+    @overload
+    @classmethod
+    def create(cls, name: str, description: str | None, *, content: ContentInput) -> Self: ...
+
     @classmethod
     def create(
         cls,
         name: str,
-        description: str | None,
-        content: bytes | str | BaseModel | list[str] | Any,
+        description: ContentInput = None,
+        content: ContentInput = None,
     ) -> Self:
         """Create a document from a name, description, and content"""
+        if content is None:
+            if description is None:
+                raise ValueError(f"Unsupported content type: {type(content)} for {name}")
+            content = description
+            description = None
+        else:
+            assert description is None or isinstance(description, str)
+
         is_yaml_extension = name.endswith(".yaml") or name.endswith(".yml")
         is_json_extension = name.endswith(".json")
         is_markdown_extension = name.endswith(".md")
@@ -252,6 +329,14 @@ class Document(BaseModel, ABC):
             content = content.encode("utf-8")
         elif is_str_list and is_markdown_extension:
             return cls.create_as_markdown_list(name, description, content)  # type: ignore[arg-type]
+        elif isinstance(content, list) and all(isinstance(item, BaseModel) for item in content):
+            # Handle list[BaseModel] for JSON/YAML files
+            if is_yaml_extension:
+                return cls.create_as_yaml(name, description, content)
+            elif is_json_extension:
+                return cls.create_as_json(name, description, content)
+            else:
+                raise ValueError(f"list[BaseModel] requires .json or .yaml extension, got {name}")
         elif is_yaml_extension:
             return cls.create_as_yaml(name, description, content)
         elif is_json_extension:
@@ -261,6 +346,7 @@ class Document(BaseModel, ABC):
 
         return cls(name=name, description=description, content=content)
 
+    @final
     @classmethod
     def create_as_markdown_list(cls, name: str, description: str | None, items: list[str]) -> Self:
         """Create a document from a name, description, and list of strings"""
@@ -273,15 +359,19 @@ class Document(BaseModel, ABC):
         content = Document.MARKDOWN_LIST_SEPARATOR.join(cleaned_items)
         return cls.create(name, description, content)
 
+    @final
     @classmethod
     def create_as_json(cls, name: str, description: str | None, data: Any) -> Self:
         """Create a document from a name, description, and JSON data"""
         assert name.endswith(".json"), f"Document name must end with .json: {name}"
         if isinstance(data, BaseModel):
             data = data.model_dump(mode="json")
+        elif isinstance(data, list) and all(isinstance(item, BaseModel) for item in data):
+            data = [item.model_dump(mode="json") for item in data]
         content = json.dumps(data, indent=2).encode("utf-8")
         return cls.create(name, description, content)
 
+    @final
     @classmethod
     def create_as_yaml(cls, name: str, description: str | None, data: Any) -> Self:
         """Create a document from a name, description, and YAML data"""
@@ -289,16 +379,18 @@ class Document(BaseModel, ABC):
             f"Document name must end with .yaml or .yml: {name}"
         )
         if isinstance(data, BaseModel):
-            data = data.model_dump()
+            data = data.model_dump(mode="json")
+        elif isinstance(data, list) and all(isinstance(item, BaseModel) for item in data):
+            data = [item.model_dump(mode="json") for item in data]
         yaml = YAML()
         yaml.indent(mapping=2, sequence=4, offset=2)
-        from io import BytesIO
 
         stream = BytesIO()
         yaml.dump(data, stream)
         content = stream.getvalue()
         return cls.create(name, description, content)
 
+    @final
     def serialize_model(self) -> dict[str, Any]:
         """Serialize document to a dictionary with proper encoding."""
         result = {
@@ -327,6 +419,7 @@ class Document(BaseModel, ABC):
 
         return result
 
+    @final
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
         """Deserialize document from dictionary."""

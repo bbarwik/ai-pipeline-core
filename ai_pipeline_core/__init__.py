@@ -6,6 +6,7 @@ from .documents import (
     DocumentList,
     FlowDocument,
     TaskDocument,
+    TemporaryDocument,
     canonical_name_key,
     sanitize_url,
 )
@@ -32,7 +33,7 @@ from .prompt_manager import PromptManager
 from .settings import settings
 from .tracing import TraceInfo, TraceLevel, trace
 
-__version__ = "0.1.8"
+__version__ = "0.1.9"
 
 __all__ = [
     # Config/Settings
@@ -49,6 +50,7 @@ __all__ = [
     "DocumentList",
     "FlowDocument",
     "TaskDocument",
+    "TemporaryDocument",
     "canonical_name_key",
     "sanitize_url",
     # Flow/Task

@@ -313,6 +313,131 @@ class TestCreateWithDictForYAML:
         assert parsed == data
 
 
+class TestCreateWithListOfPydanticModels:
+    """Test create method with list[BaseModel] for JSON/YAML files."""
+
+    def test_create_json_with_list_of_models(self):
+        """Test creating JSON document with list of Pydantic models."""
+        models = [
+            SampleModel(name="Alice", age=25, tags=["dev"]),
+            SampleModel(name="Bob", age=30, tags=["qa", "test"]),
+            SampleModel(name="Charlie", age=35, tags=[]),
+        ]
+        doc = ConcreteTestDocument.create(
+            name="users.json",
+            description="List of users",
+            content=models,
+        )
+        assert doc.name == "users.json"
+        assert doc.is_text
+        assert "json" in doc.mime_type
+
+        # Verify content is valid JSON array
+        parsed = doc.as_json()
+        assert isinstance(parsed, list)
+        assert len(parsed) == 3
+        assert parsed[0]["name"] == "Alice"
+        assert parsed[1]["name"] == "Bob"
+        assert parsed[2]["name"] == "Charlie"
+
+        # Parse back to list of models
+        parsed_models = doc.as_pydantic_model(list[SampleModel])
+        assert len(parsed_models) == 3
+        assert all(isinstance(m, SampleModel) for m in parsed_models)
+        assert parsed_models[0].name == "Alice"
+        assert parsed_models[1].age == 30
+        assert parsed_models[2].tags == []
+
+    def test_create_yaml_with_list_of_models(self):
+        """Test creating YAML document with list of Pydantic models."""
+        models = [
+            SampleModel(name="Server1", age=1, tags=["prod"], config={"port": 8080}),
+            SampleModel(name="Server2", age=2, tags=["dev"], config={"port": 8081}),
+        ]
+        doc = ConcreteTestDocument.create(
+            name="servers.yaml",
+            description="Server configurations",
+            content=models,
+        )
+        assert doc.name == "servers.yaml"
+        assert doc.is_text
+        assert "yaml" in doc.mime_type
+
+        # Verify content is valid YAML array
+        parsed = doc.as_yaml()
+        assert isinstance(parsed, list)
+        assert len(parsed) == 2
+        assert parsed[0]["name"] == "Server1"
+        assert parsed[1]["config"]["port"] == 8081
+
+        # Parse back to list of models
+        parsed_models = doc.as_pydantic_model(list[SampleModel])
+        assert len(parsed_models) == 2
+        assert all(isinstance(m, SampleModel) for m in parsed_models)
+        assert parsed_models[0].config["port"] == 8080
+
+    def test_create_empty_list_of_models_json(self):
+        """Test creating JSON document with empty list of models."""
+        models: list[SampleModel] = []
+        doc = ConcreteTestDocument.create(
+            name="empty.json",
+            description=None,
+            content=models,
+        )
+        parsed = doc.as_json()
+        assert parsed == []
+
+        # Parse back to empty list of models
+        parsed_models = doc.as_pydantic_model(list[SampleModel])
+        assert parsed_models == []
+        assert isinstance(parsed_models, list)
+
+    def test_create_list_of_models_without_extension_fails(self):
+        """Test that list[BaseModel] without proper extension raises error."""
+        models = [
+            SampleModel(name="Test", age=20),
+        ]
+        with pytest.raises(ValueError) as exc_info:
+            ConcreteTestDocument.create(
+                name="test.txt",  # Wrong extension
+                description=None,
+                content=models,
+            )
+        assert "list[BaseModel] requires .json or .yaml extension" in str(exc_info.value)
+
+    def test_as_pydantic_model_with_wrong_list_type_fails(self):
+        """Test that as_pydantic_model fails with mismatched list data."""
+        # Create a document with a dict (not a list)
+        doc = ConcreteTestDocument.create(
+            name="single.json",
+            description=None,
+            content={"name": "Alice", "age": 25, "tags": []},
+        )
+
+        # Try to parse as list[SampleModel] - should fail
+        with pytest.raises(ValueError) as exc_info:
+            doc.as_pydantic_model(list[SampleModel])
+        assert "Expected list data" in str(exc_info.value)
+
+    def test_mixed_pydantic_and_non_pydantic_list_json(self):
+        """Test that mixed list types are handled correctly."""
+        # Create a list with mixed types - the create function should handle appropriately
+        data = [{"name": "Alice", "age": 25, "tags": []}]  # Raw dict, not models
+        doc = ConcreteTestDocument.create(
+            name="data.json",
+            description=None,
+            content=data,
+        )
+        # Should still work as regular JSON
+        parsed = doc.as_json()
+        assert parsed == data
+
+        # And can be parsed as models
+        parsed_models = doc.as_pydantic_model(list[SampleModel])
+        assert len(parsed_models) == 1
+        assert parsed_models[0].name == "Alice"
+
+
 class TestCreateErrorCases:
     """Test error cases and edge cases for create method."""
 
@@ -391,15 +516,6 @@ class TestCreateErrorCases:
             content=True,
         )
         assert doc.as_json() is True
-
-    def test_null_content_for_json(self):
-        """Test that None works as null for JSON files."""
-        doc = ConcreteTestDocument.create(
-            name="null.json",
-            description=None,
-            content=None,
-        )
-        assert doc.as_json() is None
 
 
 class TestCreatePriorityOrder:

@@ -5,7 +5,7 @@ import jinja2
 
 from ai_pipeline_core.logging import get_pipeline_logger
 
-from .exceptions import PromptNotFoundError, PromptRenderError
+from .exceptions import PromptError, PromptNotFoundError, PromptRenderError
 
 logger = get_pipeline_logger(__name__)
 
@@ -28,6 +28,12 @@ class PromptManager:
 
         # Start from the directory containing the calling file
         current_path = Path(current_dir).resolve()
+        if not current_path.exists():
+            raise PromptError(
+                f"PromptManager expected __file__ (a valid file path), "
+                f"but got {current_dir!r}. Did you pass __name__ instead?"
+            )
+
         if current_path.is_file():
             current_path = current_path.parent
 
