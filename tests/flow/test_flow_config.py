@@ -234,3 +234,67 @@ class TestFlowConfigValidation:
         # Should be able to use the class normally
         assert ValidFlowConfig.get_output_document_type() == OutputDoc
         assert ValidFlowConfig.get_input_document_types() == [InputDoc1, InputDoc2]
+
+    def test_output_document_types_plural_raises_error(self):
+        """Test that using OUTPUT_DOCUMENT_TYPES (plural) raises helpful error."""
+
+        with pytest.raises(TypeError) as exc_info:
+
+            class InvalidPluralConfig(FlowConfig):  # pyright: ignore[reportUnusedClass]
+                """Flow config using wrong field name."""
+
+                INPUT_DOCUMENT_TYPES = [InputDoc1]
+                OUTPUT_DOCUMENT_TYPES = [OutputDoc]  # Wrong - should be singular
+
+        error_msg = str(exc_info.value)
+        assert "Found 'OUTPUT_DOCUMENT_TYPES'" in error_msg
+        assert "expected 'OUTPUT_DOCUMENT_TYPE'" in error_msg
+        assert "Please use the correct field name" in error_msg
+
+    def test_input_document_type_singular_raises_error(self):
+        """Test that using INPUT_DOCUMENT_TYPE (singular) raises helpful error."""
+
+        with pytest.raises(TypeError) as exc_info:
+
+            class InvalidSingularConfig(FlowConfig):  # pyright: ignore[reportUnusedClass]
+                """Flow config using wrong field name."""
+
+                INPUT_DOCUMENT_TYPE = InputDoc1  # Wrong - should be plural
+                OUTPUT_DOCUMENT_TYPE = OutputDoc
+
+        error_msg = str(exc_info.value)
+        assert "Found 'INPUT_DOCUMENT_TYPE'" in error_msg
+        assert "expected 'INPUT_DOCUMENT_TYPES'" in error_msg
+        assert "Please use the correct field name" in error_msg
+
+    def test_extra_document_field_raises_error(self):
+        """Test that adding extra document-related fields raises error."""
+
+        with pytest.raises(TypeError) as exc_info:
+
+            class InvalidExtraFieldConfig(FlowConfig):  # pyright: ignore[reportUnusedClass]
+                """Flow config with extra field."""
+
+                INPUT_DOCUMENT_TYPES = [InputDoc1]
+                OUTPUT_DOCUMENT_TYPE = OutputDoc
+                EXTRA_DOCUMENT_FIELD = "not allowed"  # Extra field
+
+        error_msg = str(exc_info.value)
+        assert "Invalid field 'EXTRA_DOCUMENT_FIELD'" in error_msg
+        assert "Only 'INPUT_DOCUMENT_TYPES' and 'OUTPUT_DOCUMENT_TYPE' are allowed" in error_msg
+
+    def test_non_document_uppercase_fields_allowed(self):
+        """Test that uppercase fields not containing DOCUMENT are allowed."""
+
+        # This should not raise - non-document fields are allowed
+        class ConfigWithOtherFields(FlowConfig):
+            """Flow config with other uppercase fields."""
+
+            INPUT_DOCUMENT_TYPES = [InputDoc1]
+            OUTPUT_DOCUMENT_TYPE = OutputDoc
+            SOME_OTHER_CONFIG = "allowed"  # This is OK - doesn't contain DOCUMENT
+            MAX_RETRIES = 3  # This is OK too
+
+        assert ConfigWithOtherFields.get_output_document_type() == OutputDoc
+        assert ConfigWithOtherFields.SOME_OTHER_CONFIG == "allowed"
+        assert ConfigWithOtherFields.MAX_RETRIES == 3

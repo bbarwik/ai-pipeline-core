@@ -8,10 +8,10 @@ Tiny wrappers around Prefect's public ``@task`` and ``@flow`` that add our
 Why this exists
 ---------------
 Prefect tasks/flows are awaitable at runtime, but their public type stubs
-don’t declare that clearly. We therefore:
+don't declare that clearly. We therefore:
 
 1) Return the **real Prefect objects** (so you keep every Prefect method).
-2) Type them as small Protocols that say “this is awaitable and has common
+2) Type them as small Protocols that say "this is awaitable and has common
    helpers like `.submit`/`.map`”.
 
 This keeps Pyright happy without altering runtime behavior and avoids
@@ -38,14 +38,24 @@ Rules
 • Your decorated function **must** be ``async def``.
 • ``@pipeline_flow`` functions must accept at least:
   (project_name: str, documents: DocumentList, flow_options: FlowOptions | subclass).
-• Both wrappers return the same Prefect objects you’d get from Prefect directly.
+• Both wrappers return the same Prefect objects you'd get from Prefect directly.
 """
 
 from __future__ import annotations
 
 import datetime
 import inspect
-from typing import Any, Callable, Coroutine, Iterable, Protocol, TypeVar, Union, cast, overload
+from typing import (
+    Any,
+    Callable,
+    Coroutine,
+    Iterable,
+    Protocol,
+    TypeVar,
+    Union,
+    cast,
+    overload,
+)
 
 from prefect.assets import Asset
 from prefect.cache_policies import CachePolicy
@@ -220,9 +230,10 @@ def pipeline_task(
                 f"@pipeline_task target '{_callable_name(fn, 'task')}' must be 'async def'"
             )
 
+        fname = _callable_name(fn, "task")
         traced_fn = trace(
             level=trace_level,
-            name=name or _callable_name(fn, "task"),
+            name=name or fname,
             ignore_input=trace_ignore_input,
             ignore_output=trace_ignore_output,
             ignore_inputs=trace_ignore_inputs,
@@ -233,14 +244,14 @@ def pipeline_task(
         return cast(
             _TaskLike[R_co],
             task_decorator(
-                name=name,
+                name=name or fname,
                 description=description,
                 tags=tags,
                 version=version,
                 cache_policy=cache_policy,
                 cache_key_fn=cache_key_fn,
                 cache_expiration=cache_expiration,
-                task_run_name=task_run_name,
+                task_run_name=task_run_name or name or fname,
                 retries=0 if retries is None else retries,
                 retry_delay_seconds=retry_delay_seconds,
                 retry_jitter_factor=retry_jitter_factor,
@@ -264,7 +275,7 @@ def pipeline_task(
 
 
 # --------------------------------------------------------------------------- #
-# @pipeline_flow — async-only, traced, returns Prefect’s flow wrapper
+# @pipeline_flow — async-only, traced, returns Prefect's flow wrapper
 # --------------------------------------------------------------------------- #
 @overload
 def pipeline_flow(__fn: _DocumentsFlowCallable[FO_contra], /) -> _FlowLike[FO_contra]: ...
@@ -344,7 +355,7 @@ def pipeline_flow(
             **kwargs
         ) -> DocumentList
 
-    Returns the same callable object Prefect’s ``@flow`` would return.
+    Returns the same callable object Prefect's ``@flow`` would return.
     """
     flow_decorator: Callable[..., Any] = _prefect_flow
 
@@ -373,6 +384,10 @@ def pipeline_flow(
                 )
             return result
 
+        # Preserve the original function name for Prefect
+        _wrapper.__name__ = fname
+        _wrapper.__qualname__ = getattr(fn, "__qualname__", fname)
+
         traced = trace(
             level=trace_level,
             name=name or fname,
@@ -386,9 +401,9 @@ def pipeline_flow(
         return cast(
             _FlowLike[FO_contra],
             flow_decorator(
-                name=name,
+                name=name or fname,
                 version=version,
-                flow_run_name=flow_run_name,
+                flow_run_name=flow_run_name or name or fname,
                 retries=0 if retries is None else retries,
                 retry_delay_seconds=retry_delay_seconds,
                 task_runner=task_runner,

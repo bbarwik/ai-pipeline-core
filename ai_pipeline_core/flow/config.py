@@ -22,6 +22,33 @@ class FlowConfig(ABC):
         if cls.__name__ == "FlowConfig":
             return
 
+        # Check for invalid field names (common mistakes)
+        allowed_fields = {"INPUT_DOCUMENT_TYPES", "OUTPUT_DOCUMENT_TYPE"}
+        class_attrs = {name for name in dir(cls) if not name.startswith("_") and name.isupper()}
+
+        # Find fields that look like they might be mistakes
+        suspicious_fields = class_attrs - allowed_fields
+        common_mistakes = {
+            "OUTPUT_DOCUMENT_TYPES": "OUTPUT_DOCUMENT_TYPE",
+            "INPUT_DOCUMENT_TYPE": "INPUT_DOCUMENT_TYPES",
+        }
+
+        for field in suspicious_fields:
+            # Skip inherited attributes from parent classes
+            if any(hasattr(base, field) for base in cls.__bases__):
+                continue
+
+            if field in common_mistakes:
+                raise TypeError(
+                    f"FlowConfig {cls.__name__}: Found '{field}' but expected "
+                    f"'{common_mistakes[field]}'. Please use the correct field name."
+                )
+            elif "DOCUMENT" in field:
+                raise TypeError(
+                    f"FlowConfig {cls.__name__}: Invalid field '{field}'. "
+                    f"Only 'INPUT_DOCUMENT_TYPES' and 'OUTPUT_DOCUMENT_TYPE' are allowed."
+                )
+
         # Ensure required attributes are defined
         if not hasattr(cls, "INPUT_DOCUMENT_TYPES"):
             raise TypeError(f"FlowConfig {cls.__name__} must define INPUT_DOCUMENT_TYPES")

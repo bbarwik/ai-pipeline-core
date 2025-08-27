@@ -12,6 +12,7 @@ from typing import (
     ClassVar,
     Literal,
     Self,
+    TypeGuard,
     TypeVar,
     cast,
     final,
@@ -36,6 +37,20 @@ from .mime_type import (
 
 TModel = TypeVar("TModel", bound=BaseModel)
 ContentInput = bytes | str | BaseModel | list[str] | Any
+
+
+def _is_str_list(content: Any) -> TypeGuard[list[str]]:
+    """Type guard to check if content is list[str]."""
+    if not isinstance(content, list):
+        return False
+    return all(isinstance(item, str) for item in content)  # type: ignore[misc]
+
+
+def _is_basemodel_list(content: Any) -> TypeGuard[list[BaseModel]]:
+    """Type guard to check if content is list[BaseModel]."""
+    if not isinstance(content, list):
+        return False
+    return all(isinstance(item, BaseModel) for item in content)  # type: ignore[misc]
 
 
 class Document(BaseModel, ABC):
@@ -258,7 +273,8 @@ class Document(BaseModel, ABC):
 
     def as_yaml(self) -> Any:
         """Parse document as YAML"""
-        return YAML().load(self.as_text())
+        yaml = YAML()
+        return yaml.load(self.as_text())  # type: ignore[no-untyped-call, no-any-return]
 
     def as_json(self) -> Any:
         """Parse document as JSON"""
@@ -280,7 +296,9 @@ class Document(BaseModel, ABC):
             if not isinstance(data, list):
                 raise ValueError(f"Expected list data for {model_type}, got {type(data)}")
             item_type = get_args(model_type)[0]
-            return [item_type.model_validate(item) for item in data]
+            # Type guard for list case
+            result_list = [item_type.model_validate(item) for item in data]  # type: ignore[attr-defined]
+            return cast(list[TModel], result_list)
 
         # At this point model_type must be type[TModel], not type[list[TModel]]
         single_model = cast(type[TModel], model_type)
@@ -322,14 +340,14 @@ class Document(BaseModel, ABC):
         is_yaml_extension = name.endswith(".yaml") or name.endswith(".yml")
         is_json_extension = name.endswith(".json")
         is_markdown_extension = name.endswith(".md")
-        is_str_list = isinstance(content, list) and all(isinstance(item, str) for item in content)
+
         if isinstance(content, bytes):
             pass
         elif isinstance(content, str):
             content = content.encode("utf-8")
-        elif is_str_list and is_markdown_extension:
-            return cls.create_as_markdown_list(name, description, content)  # type: ignore[arg-type]
-        elif isinstance(content, list) and all(isinstance(item, BaseModel) for item in content):
+        elif _is_str_list(content) and is_markdown_extension:
+            return cls.create_as_markdown_list(name, description, content)
+        elif _is_basemodel_list(content):
             # Handle list[BaseModel] for JSON/YAML files
             if is_yaml_extension:
                 return cls.create_as_yaml(name, description, content)
@@ -366,7 +384,8 @@ class Document(BaseModel, ABC):
         assert name.endswith(".json"), f"Document name must end with .json: {name}"
         if isinstance(data, BaseModel):
             data = data.model_dump(mode="json")
-        elif isinstance(data, list) and all(isinstance(item, BaseModel) for item in data):
+        elif _is_basemodel_list(data):
+            # Now data is typed as list[BaseModel]
             data = [item.model_dump(mode="json") for item in data]
         content = json.dumps(data, indent=2).encode("utf-8")
         return cls.create(name, description, content)
@@ -380,13 +399,14 @@ class Document(BaseModel, ABC):
         )
         if isinstance(data, BaseModel):
             data = data.model_dump(mode="json")
-        elif isinstance(data, list) and all(isinstance(item, BaseModel) for item in data):
+        elif _is_basemodel_list(data):
+            # Now data is typed as list[BaseModel]
             data = [item.model_dump(mode="json") for item in data]
         yaml = YAML()
-        yaml.indent(mapping=2, sequence=4, offset=2)
+        yaml.indent(mapping=2, sequence=4, offset=2)  # type: ignore[no-untyped-call]
 
         stream = BytesIO()
-        yaml.dump(data, stream)
+        yaml.dump(data, stream)  # type: ignore[no-untyped-call]
         content = stream.getvalue()
         return cls.create(name, description, content)
 
@@ -424,15 +444,21 @@ class Document(BaseModel, ABC):
     def from_dict(cls, data: dict[str, Any]) -> Self:
         """Deserialize document from dictionary."""
         # Extract content and encoding
-        content_str = data.get("content", "")
+        content_raw = data.get("content", "")
         content_encoding = data.get("content_encoding", "utf-8")
 
         # Decode content based on encoding
+        content: bytes
         if content_encoding == "base64":
-            content = base64.b64decode(content_str)
-        else:
+            assert isinstance(content_raw, str), "base64 content must be string"
+            content = base64.b64decode(content_raw)
+        elif isinstance(content_raw, str):
             # Default to UTF-8
-            content = content_str.encode("utf-8")
+            content = content_raw.encode("utf-8")
+        elif isinstance(content_raw, bytes):
+            content = content_raw
+        else:
+            raise ValueError(f"Invalid content type: {type(content_raw)}")
 
         # Create document with the required fields
         return cls(
