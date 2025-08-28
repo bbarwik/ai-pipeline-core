@@ -1,3 +1,11 @@
+"""AI message handling for LLM interactions.
+
+@public
+
+Provides AIMessages container for managing conversations with mixed content types
+including text, documents, and model responses.
+"""
+
 import base64
 import hashlib
 import json
@@ -13,13 +21,55 @@ from ai_pipeline_core.documents import Document
 from .model_response import ModelResponse
 
 AIMessageType = str | Document | ModelResponse
+"""Type for messages in AIMessages container.
+
+@public
+
+Represents the allowed types for conversation messages:
+- str: Plain text messages
+- Document: Structured document content
+- ModelResponse: LLM generation responses
+"""
 
 
 class AIMessages(list[AIMessageType]):
+    """Container for AI conversation messages supporting mixed types.
+    
+    @public
+    
+    This class extends list to manage conversation messages between user
+    and AI, supporting text, Document objects, and ModelResponse instances.
+    Messages are converted to OpenAI-compatible format for LLM interactions.
+    
+    Example:
+        >>> messages = AIMessages()
+        >>> messages.append("What is the capital of France?")
+        >>> messages.append(ModelResponse(content="The capital of France is Paris."))
+        >>> prompt = messages.to_prompt()
+    """
+
     def get_last_message(self) -> AIMessageType:
+        """Get the last message in the conversation.
+        
+        @public
+
+        Returns:
+            The last message in the conversation, which can be a string,
+            Document, or ModelResponse.
+        """
         return self[-1]
 
     def get_last_message_as_str(self) -> str:
+        """Get the last message as a string, raising if not a string.
+        
+        @public
+
+        Returns:
+            The last message as a string.
+
+        Raises:
+            ValueError: If the last message is not a string.
+        """
         last_message = self.get_last_message()
         if isinstance(last_message, str):
             return last_message
@@ -29,7 +79,10 @@ class AIMessages(list[AIMessageType]):
         """Convert AIMessages to OpenAI-compatible format.
 
         Returns:
-            List of ChatCompletionMessageParam for OpenAI API
+            List of ChatCompletionMessageParam for OpenAI API.
+
+        Raises:
+            ValueError: If message type is not supported.
         """
         messages: list[ChatCompletionMessageParam] = []
 
@@ -46,7 +99,11 @@ class AIMessages(list[AIMessageType]):
         return messages
 
     def to_tracing_log(self) -> list[str]:
-        """Convert AIMessages to a list of strings for tracing."""
+        """Convert AIMessages to a list of strings for tracing.
+
+        Returns:
+            List of string representations for tracing logs.
+        """
         messages: list[str] = []
         for message in self:
             if isinstance(message, Document):
@@ -61,20 +118,27 @@ class AIMessages(list[AIMessageType]):
         return messages
 
     def get_prompt_cache_key(self, system_prompt: str | None = None) -> str:
+        """Generate cache key for message set.
+
+        Args:
+            system_prompt: Optional system prompt to include in cache key.
+
+        Returns:
+            SHA256 hash as hex string for cache key.
+        """
         if not system_prompt:
             system_prompt = ""
         return hashlib.sha256((system_prompt + json.dumps(self.to_prompt())).encode()).hexdigest()
 
     @staticmethod
     def document_to_prompt(document: Document) -> list[ChatCompletionContentPartParam]:
-        """
-        Convert a document to prompt format for LLM consumption.
+        """Convert a document to prompt format for LLM consumption.
 
         Args:
-            document: The document to convert
+            document: The document to convert.
 
         Returns:
-            List of chat completion content parts for the prompt
+            List of chat completion content parts for the prompt.
         """
         prompt: list[ChatCompletionContentPartParam] = []
 
@@ -88,9 +152,8 @@ class AIMessages(list[AIMessageType]):
 
         # Handle text documents
         if document.is_text:
-            content_text = (
-                f"{header_text}<content>\n{document.as_text()}\n</content>\n</document>\n"
-            )
+            text_content = document.content.decode("utf-8")
+            content_text = f"{header_text}<content>\n{text_content}\n</content>\n</document>\n"
             prompt.append({"type": "text", "text": content_text})
             return prompt
 
@@ -102,12 +165,10 @@ class AIMessages(list[AIMessageType]):
             return []
 
         # Add header for binary content
-        prompt.append(
-            {
-                "type": "text",
-                "text": f"{header_text}<content>\n",
-            }
-        )
+        prompt.append({
+            "type": "text",
+            "text": f"{header_text}<content>\n",
+        })
 
         # Encode binary content
         base64_content = base64.b64encode(document.content).decode("utf-8")
@@ -115,19 +176,15 @@ class AIMessages(list[AIMessageType]):
 
         # Add appropriate content type
         if document.is_pdf:
-            prompt.append(
-                {
-                    "type": "file",
-                    "file": {"file_data": data_uri},
-                }
-            )
+            prompt.append({
+                "type": "file",
+                "file": {"file_data": data_uri},
+            })
         else:  # is_image
-            prompt.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": data_uri, "detail": "high"},
-                }
-            )
+            prompt.append({
+                "type": "image_url",
+                "image_url": {"url": data_uri, "detail": "high"},
+            })
 
         # Close the document tag
         prompt.append({"type": "text", "text": "</content>\n</document>\n"})

@@ -194,9 +194,9 @@ class TestRunPipelines:
         async def flow1(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
-            return DocumentList(
-                [SimpleInputDocument(name="intermediate.txt", content=b"intermediate")]
-            )
+            return DocumentList([
+                SimpleInputDocument(name="intermediate.txt", content=b"intermediate")
+            ])
 
         async def flow2(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
@@ -401,12 +401,10 @@ class TestCLI:
         """Test CLI saves initial documents when start=1."""
 
         def initializer(opts: FlowOptions) -> tuple[str, DocumentList]:
-            return "test", DocumentList(
-                [
-                    SimpleInputDocument(name="init1.txt", content=b"initial1"),
-                    SimpleInputDocument(name="init2.txt", content=b"initial2"),
-                ]
-            )
+            return "test", DocumentList([
+                SimpleInputDocument(name="init1.txt", content=b"initial1"),
+                SimpleInputDocument(name="init2.txt", content=b"initial2"),
+            ])
 
         async def dummy_flow(*args, **kwargs) -> DocumentList:
             return DocumentList([])

@@ -1,3 +1,49 @@
+"""Jinja2-based prompt template management system.
+
+@public
+
+This module provides the PromptManager class for loading and rendering
+Jinja2 templates used as prompts for language models. It implements a
+smart search strategy that looks for templates in both local and shared
+directories.
+
+Search strategy:
+    1. Local directory (same as calling module)
+    2. Local 'prompts' subdirectory
+    3. Parent 'prompts' directories (up to package boundary)
+
+Key features:
+    - Automatic template discovery
+    - Jinja2 template rendering with context
+    - Smart path resolution (.jinja2/.jinja extension handling)
+    - Clear error messages for missing templates
+
+Example:
+    >>> from ai_pipeline_core.prompt_manager import PromptManager
+    >>>
+    >>> # In your module file
+    >>> pm = PromptManager(__file__)
+    >>>
+    >>> # Render a template
+    >>> prompt = pm.get(
+    ...     "analyze.jinja2",
+    ...     document=doc,
+    ...     instructions="Extract key points"
+    ... )
+
+Template organization:
+    project/
+    ├── my_module.py        # Can use local templates
+    ├── analyze.jinja2      # Local template (same directory)
+    └── prompts/           # Shared prompts directory
+        ├── summarize.jinja2
+        └── extract.jinja2
+
+Note:
+    Templates should use .jinja2 or .jinja extension.
+    The extension can be omitted when calling get().
+"""
+
 from pathlib import Path
 from typing import Any
 
@@ -11,18 +57,106 @@ logger = get_pipeline_logger(__name__)
 
 
 class PromptManager:
-    """A utility to load and render prompts from a structured directory.
+    """Manages Jinja2 prompt templates with smart path resolution.
+    
+    @public
 
-    Searches for 'prompts' directory in the current directory and parent directories
-    (as long as __init__.py exists in parent directories).
+    PromptManager provides a convenient interface for loading and rendering
+    Jinja2 templates used as prompts for LLMs. It automatically searches for
+    templates in multiple locations, supporting both local (module-specific)
+    and shared (project-wide) templates.
+
+    Search hierarchy:
+        1. Same directory as the calling module (for local templates)
+        2. 'prompts' subdirectory in the calling module's directory
+        3. 'prompts' directories in parent packages (up to 4 levels)
+
+    Search Stopping Rule:
+        The search traverses UP TO 4 parent levels OR until it hits a
+        directory without __init__.py (package boundary), whichever comes
+        first. This prevents searching outside the package structure.
+
+    Attributes:
+        search_paths: List of directories where templates are searched.
+        env: Jinja2 Environment configured for prompt rendering.
+
+    Example:
+        >>> # In flow/my_flow.py
+        >>> pm = PromptManager(__file__)
+        >>>
+        >>> # Uses flow/prompts/analyze.jinja2 if it exists,
+        >>> # otherwise searches parent directories
+        >>> prompt = pm.get("analyze", context=data)
+        >>>
+        >>> # Can also use templates in same directory as module
+        >>> prompt = pm.get("local_template.jinja2")
+
+    Template format:
+        Templates use standard Jinja2 syntax:
+        ```jinja2
+        Analyze the following document:
+        {{ document.name }}
+
+        {% if instructions %}
+        Instructions: {{ instructions }}
+        {% endif %}
+        ```
+
+    Note:
+        - Autoescape is disabled for prompts (raw text output)
+        - Whitespace control is enabled (trim_blocks, lstrip_blocks)
+
+    Template Inheritance:
+        Templates support standard Jinja2 inheritance. Templates are searched
+        in order of search_paths, so templates in earlier paths override later ones.
+        Precedence (first match wins):
+        1. Same directory as module
+        2. Module's prompts/ subdirectory
+        3. Parent prompts/ directories (nearest to farthest)
+        - Templates are cached by Jinja2 for performance
     """
 
     def __init__(self, current_dir: str, prompts_dir: str = "prompts"):
-        """Initialize PromptManager with the current file path.
+        """Initialize PromptManager with smart template discovery.
+        
+        @public
+
+        Sets up the Jinja2 environment with a FileSystemLoader that searches
+        multiple directories for templates. The search starts from the calling
+        module's location and extends to parent package directories.
 
         Args:
-            current_dir: The __file__ path of the calling module (required)
-            prompts_dir: Name of the prompts directory to search for (default: "prompts")
+            current_dir: The __file__ path of the calling module. Must be
+                        a valid file path (not __name__). Used as the
+                        starting point for template discovery.
+            prompts_dir: Name of the prompts subdirectory to search for
+                        in each package level. Defaults to "prompts".
+
+        Raises:
+            PromptError: If current_dir is not a valid file path (e.g.,
+                        if __name__ was passed instead of __file__).
+
+        Note:
+            Search behavior - Given a module at /project/flows/my_flow.py:
+            1. /project/flows/ (local templates)
+            2. /project/flows/prompts/ (if exists)
+            3. /project/prompts/ (if /project has __init__.py)
+
+            Search stops when no __init__.py is found (package boundary).
+
+        Example:
+            >>> # Correct usage
+            >>> pm = PromptManager(__file__)
+            >>>
+            >>> # Custom prompts directory name
+            >>> pm = PromptManager(__file__, prompts_dir="templates")
+            >>>
+            >>> # Common mistake (will raise PromptError)
+            >>> pm = PromptManager(__name__)  # Wrong!
+
+        Note:
+            The search is limited to 4 parent levels to prevent
+            excessive filesystem traversal.
         """
         search_paths: list[Path] = []
 
@@ -80,17 +214,72 @@ class PromptManager:
         )
 
     def get(self, prompt_path: str, **kwargs: Any) -> str:
-        """
-        Renders a specific prompt with the given context.
+        """Load and render a Jinja2 template with the given context.
+        
+        @public
+
+        Searches for the template in all configured search paths and renders
+        it with the provided context variables. Automatically tries adding
+        .jinja2 or .jinja extensions if the file is not found.
 
         Args:
-            prompt_path: The path to the prompt file relative to the `prompts`
-                         directory (e.g., 'step_01_process_inputs/summarize_document.jinja2').
-                         The .jinja2 extension will be added automatically if missing.
-            **kwargs: Variables to be injected into the template.
+            prompt_path: Path to the template file, relative to any search
+                        directory. Can be a simple filename ("analyze")
+                        or include subdirectories ("tasks/summarize").
+                        Extensions (.jinja2, .jinja) are optional.
+            **kwargs: Context variables passed to the template. These become
+                     available as variables within the Jinja2 template.
 
         Returns:
-            The rendered prompt string.
+            The rendered template as a string, ready to be sent to an LLM.
+
+        Raises:
+            PromptNotFoundError: If the template file cannot be found in
+                               any search path.
+            PromptRenderError: If the template contains errors or if
+                              rendering fails (e.g., missing variables,
+                              syntax errors).
+
+        Note:
+            Template resolution - Given prompt_path="analyze":
+            1. Try "analyze" as-is
+            2. Try "analyze.jinja2"
+            3. Try "analyze.jinja"
+
+            The first matching file is used.
+
+        Example:
+            >>> pm = PromptManager(__file__)
+            >>>
+            >>> # Simple rendering
+            >>> prompt = pm.get("summarize", text="Long document...")
+            >>>
+            >>> # With complex context
+            >>> prompt = pm.get(
+            ...     "analyze",
+            ...     document=doc,
+            ...     max_length=500,
+            ...     style="technical",
+            ...     options={"include_metadata": True}
+            ... )
+            >>>
+            >>> # Nested template path
+            >>> prompt = pm.get("flows/extraction/extract_entities")
+
+        Template example:
+            ```jinja2
+            Summarize the following text in {{ max_length }} words:
+
+            {{ text }}
+
+            {% if style %}
+            Style: {{ style }}
+            {% endif %}
+            ```
+
+        Note:
+            All Jinja2 features are available: loops, conditionals,
+            filters, macros, inheritance, etc.
         """
         try:
             template = self.env.get_template(prompt_path)

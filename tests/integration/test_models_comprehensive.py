@@ -137,14 +137,12 @@ async def test_llm_model_text_file_attachment(model: ModelName):
         name="file2.md", content=b"This file contains number eight hundred twenty two"
     )
 
-    messages = AIMessages(
-        [
-            "There will be 2 files included and then a task in the last message",
-            doc1,
-            doc2,
-            "What is the sum of the numbers in the attached files?",
-        ]
-    )
+    messages = AIMessages([
+        "There will be 2 files included and then a task in the last message",
+        doc1,
+        doc2,
+        "What is the sum of the numbers in the attached files?",
+    ])
 
     try:
         response = await generate(model=model, messages=messages)
@@ -173,13 +171,11 @@ async def test_llm_model_image_file_attachment(model: ModelName):
 
     image_doc = ConcreteFlowDocument(name="test_image.png", content=test_image_path.read_bytes())
 
-    messages = AIMessages(
-        [
-            "There will be an image included and then a task in the last message",
-            image_doc,
-            "What is on the image? Describe what you see.",
-        ]
-    )
+    messages = AIMessages([
+        "There will be an image included and then a task in the last message",
+        image_doc,
+        "What is on the image? Describe what you see.",
+    ])
 
     try:
         response = await generate(model=model, messages=messages)
@@ -231,13 +227,11 @@ async def test_llm_model_pdf_file_attachment(model: ModelName):
 
     pdf_doc = ConcreteFlowDocument(name="test_pdf.pdf", content=test_pdf_path.read_bytes())
 
-    messages = AIMessages(
-        [
-            "There will be a PDF file included and then a task in the last message",
-            pdf_doc,
-            "What is this PDF about? What are the main topics or keywords mentioned?",
-        ]
-    )
+    messages = AIMessages([
+        "There will be a PDF file included and then a task in the last message",
+        pdf_doc,
+        "What is this PDF about? What are the main topics or keywords mentioned?",
+    ])
 
     try:
         response = await generate(model=model, messages=messages)
@@ -273,13 +267,11 @@ async def test_llm_model_conversation_context(model: ModelName):
         )
 
         # Follow-up with context
-        messages2 = AIMessages(
-            [
-                "My name is Alice. Remember this name.",
-                response1,
-                "What is my name?",
-            ]
-        )
+        messages2 = AIMessages([
+            "My name is Alice. Remember this name.",
+            response1,
+            "What is my name?",
+        ])
 
         response2 = await generate(
             model=model, messages=messages2, options=ModelOptions(max_completion_tokens=1000)

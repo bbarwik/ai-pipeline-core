@@ -61,6 +61,7 @@ class TestTraceInfo:
 class TestTraceDecorator:
     """Test trace decorator functionality."""
 
+    @patch.dict(os.environ, {"LMNR_DEBUG": "true"})  # Enable debug tracing
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
     def test_basic_sync_function(self, mock_init: Mock, mock_observe: Mock) -> None:
@@ -77,6 +78,7 @@ class TestTraceDecorator:
         # Observe should have been called
         mock_observe.assert_called()
 
+    @patch.dict(os.environ, {"LMNR_DEBUG": "true"})  # Enable debug tracing
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
     async def test_basic_async_function(self, mock_init: Mock, mock_observe: Mock) -> None:
@@ -93,6 +95,7 @@ class TestTraceDecorator:
 
         mock_observe.assert_called()
 
+    @patch.dict(os.environ, {"LMNR_DEBUG": "true"})  # Enable debug tracing
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
     def test_custom_name(self, mock_init: Mock, mock_observe: Mock) -> None:
@@ -115,7 +118,7 @@ class TestTraceDecorator:
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
     def test_debug_level_with_env_false(self, mock_init: Mock, mock_observe: Mock) -> None:
-        """Test level='debug' with LMNR_DEBUG=false should trace."""
+        """Test level='debug' with LMNR_DEBUG=false should NOT trace."""
         mock_observe.return_value = lambda f: f
 
         @trace(level="debug")
@@ -125,14 +128,15 @@ class TestTraceDecorator:
         result = test_func()
         assert result == "result"
 
-        # Observe SHOULD have been called (traces when LMNR_DEBUG is not "true")
-        mock_observe.assert_called()
+        # Observe should NOT have been called (doesn't trace when LMNR_DEBUG != "true")
+        mock_observe.assert_not_called()
 
     @patch.dict(os.environ, {"LMNR_DEBUG": "true"})
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
     def test_debug_level_with_env_true(self, mock_init: Mock, mock_observe: Mock) -> None:
-        """Test level='debug' with LMNR_DEBUG=true should NOT trace."""
+        """Test level='debug' with LMNR_DEBUG=true should trace."""
+        mock_observe.return_value = lambda f: f
 
         @trace(level="debug")
         def test_func():
@@ -141,9 +145,10 @@ class TestTraceDecorator:
         result = test_func()
         assert result == "result"
 
-        # Observe should NOT have been called (doesn't trace when LMNR_DEBUG is "true")
-        mock_observe.assert_not_called()
+        # Observe SHOULD have been called (traces when LMNR_DEBUG is "true")
+        mock_observe.assert_called()
 
+    @patch.dict(os.environ, {"LMNR_DEBUG": "true"})  # Enable debug tracing
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
     def test_ignore_flags(self, mock_init: Mock, mock_observe: Mock) -> None:
@@ -166,6 +171,7 @@ class TestTraceDecorator:
         assert call_kwargs["ignore_output"] is True
         assert call_kwargs["ignore_inputs"] == ["password", "secret"]
 
+    @patch.dict(os.environ, {"LMNR_DEBUG": "true"})  # Enable debug tracing
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
     def test_formatters(self, mock_init: Mock, mock_observe: Mock) -> None:
@@ -188,6 +194,7 @@ class TestTraceDecorator:
         assert call_kwargs["input_formatter"] == input_fmt
         assert call_kwargs["output_formatter"] == output_fmt
 
+    @patch.dict(os.environ, {"LMNR_DEBUG": "true"})  # Enable debug tracing
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
     def test_trace_info_injection(self, mock_init: Mock, mock_observe: Mock) -> None:
@@ -223,6 +230,7 @@ class TestTraceDecorator:
 
         assert str(original_sig) == str(traced_sig)
 
+    @patch.dict(os.environ, {"LMNR_DEBUG": "true"})  # Enable debug tracing
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
     def test_multiple_decorators(self, mock_init: Mock, mock_observe: Mock) -> None:
@@ -250,6 +258,7 @@ class TestTraceDecorator:
 
         assert mock_observe.call_count == 3
 
+    @patch.dict(os.environ, {"LMNR_DEBUG": "true"})  # Enable debug tracing
     @patch("ai_pipeline_core.tracing.observe")
     @patch("ai_pipeline_core.tracing.Laminar.initialize")
     def test_trace_info_with_metadata(self, mock_init: Mock, mock_observe: Mock) -> None:

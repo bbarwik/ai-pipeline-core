@@ -1,21 +1,78 @@
-"""Flow configuration base class."""
+"""Flow configuration system for type-safe pipeline definitions.
+
+@public
+
+This module provides the FlowConfig abstract base class that enforces
+type safety for flow inputs and outputs in the pipeline system.
+"""
 
 from abc import ABC
 from typing import Any, ClassVar
 
 from ai_pipeline_core.documents import DocumentList, FlowDocument
+from ai_pipeline_core.exceptions import DocumentValidationError
 
 
 class FlowConfig(ABC):
-    """
-    Configuration for a flow. It makes flow easier to implement and test.
+    """Abstract base class for type-safe flow configuration.
+    
+    @public
+
+    FlowConfig defines the contract for flow inputs and outputs, ensuring
+    type safety and preventing circular dependencies in pipeline flows.
+    Each flow must have a corresponding FlowConfig subclass that specifies
+    its input document types and output document type.
+
+    Class Variables:
+        INPUT_DOCUMENT_TYPES: List of FlowDocument types this flow accepts
+        OUTPUT_DOCUMENT_TYPE: Single FlowDocument type this flow produces
+
+    Validation Rules:
+        - INPUT_DOCUMENT_TYPES and OUTPUT_DOCUMENT_TYPE must be defined
+        - OUTPUT_DOCUMENT_TYPE cannot be in INPUT_DOCUMENT_TYPES (prevents cycles)
+        - Field names must be exact (common typos are detected)
+
+    Example:
+        >>> class ProcessingFlowConfig(FlowConfig):
+        ...     INPUT_DOCUMENT_TYPES = [RawDataDocument, ConfigDocument]
+        ...     OUTPUT_DOCUMENT_TYPE = ProcessedDataDocument
+
+        >>> # Use with flow:
+        >>> if ProcessingFlowConfig.has_input_documents(docs):
+        ...     input_docs = ProcessingFlowConfig.get_input_documents(docs)
+        ...     output = await process_flow(input_docs)
+        ...     ProcessingFlowConfig.validate_output_documents(output)
+
+    Note:
+        - Validation happens at class definition time
+        - Helps catch configuration errors early
+        - Used by simple_runner to manage document flow
     """
 
     INPUT_DOCUMENT_TYPES: ClassVar[list[type[FlowDocument]]]
     OUTPUT_DOCUMENT_TYPE: ClassVar[type[FlowDocument]]
 
     def __init_subclass__(cls, **kwargs: Any):
-        """Validate that OUTPUT_DOCUMENT_TYPE is not in INPUT_DOCUMENT_TYPES."""
+        """Validate flow configuration at subclass definition time.
+
+        Performs comprehensive validation when a FlowConfig subclass is defined:
+        1. Checks for common field name mistakes (typos)
+        2. Ensures required fields are defined
+        3. Prevents circular dependencies (output != input)
+
+        Args:
+            **kwargs: Additional arguments for parent __init_subclass__.
+
+        Raises:
+            TypeError: If configuration violates any validation rules:
+                      - Missing required fields
+                      - Incorrect field names
+                      - Circular dependency detected
+
+        Note:
+            This runs at class definition time, not instantiation,
+            providing immediate feedback during development.
+        """
         super().__init_subclass__(**kwargs)
 
         # Skip validation for the abstract base class itself
@@ -64,22 +121,55 @@ class FlowConfig(ABC):
 
     @classmethod
     def get_input_document_types(cls) -> list[type[FlowDocument]]:
-        """
-        Get the input document types for the flow.
+        """Get the list of input document types this flow accepts.
+
+        Returns:
+            List of FlowDocument subclasses that this flow requires
+            as input.
+
+        Example:
+            >>> types = MyFlowConfig.get_input_document_types()
+            >>> print([t.__name__ for t in types])
+            ['InputDoc', 'ConfigDoc']
         """
         return cls.INPUT_DOCUMENT_TYPES
 
     @classmethod
     def get_output_document_type(cls) -> type[FlowDocument]:
-        """
-        Get the output document type for the flow.
+        """Get the output document type this flow produces.
+
+        Returns:
+            Single FlowDocument subclass that this flow outputs.
+
+        Example:
+            >>> output_type = MyFlowConfig.get_output_document_type()
+            >>> print(output_type.__name__)
+            'ProcessedDataDocument'
         """
         return cls.OUTPUT_DOCUMENT_TYPE
 
     @classmethod
     def has_input_documents(cls, documents: DocumentList) -> bool:
-        """
-        Check if the flow has all required input documents.
+        """Check if all required input documents are present.
+
+        Verifies that the document list contains at least one instance
+        of each required input document type.
+
+        Args:
+            documents: DocumentList to check for required inputs.
+
+        Returns:
+            True if all required document types are present,
+            False if any are missing.
+
+        Example:
+            >>> docs = DocumentList([input_doc, config_doc])
+            >>> if MyFlowConfig.has_input_documents(docs):
+            ...     # Safe to proceed with flow
+            ...     pass
+
+        Note:
+            Use this before get_input_documents() to avoid exceptions.
         """
         for doc_cls in cls.INPUT_DOCUMENT_TYPES:
             if not any(isinstance(doc, doc_cls) for doc in documents):
@@ -88,8 +178,29 @@ class FlowConfig(ABC):
 
     @classmethod
     def get_input_documents(cls, documents: DocumentList) -> DocumentList:
-        """
-        Get the input documents for the flow.
+        """Extract and return all required input documents.
+
+        Filters the provided document list to return only documents
+        matching the required input types. Returns all matching documents,
+        not just the first of each type.
+
+        Args:
+            documents: DocumentList containing mixed document types.
+
+        Returns:
+            DocumentList containing only the required input documents.
+
+        Raises:
+            ValueError: If any required document type is missing.
+
+        Example:
+            >>> all_docs = DocumentList([input1, input2, other_doc])
+            >>> input_docs = MyFlowConfig.get_input_documents(all_docs)
+            >>> len(input_docs)  # Contains only input1 and input2
+            2
+
+        Note:
+            Call has_input_documents() first to check availability.
         """
         input_documents = DocumentList()
         for doc_cls in cls.INPUT_DOCUMENT_TYPES:
@@ -100,25 +211,65 @@ class FlowConfig(ABC):
         return input_documents
 
     @classmethod
-    def validate_output_documents(cls, documents: DocumentList) -> None:
+    def validate_output_documents(cls, documents: Any) -> None:
+        """Validate that output documents match the expected type.
+
+        Ensures all documents in the list are instances of the
+        declared OUTPUT_DOCUMENT_TYPE.
+
+        Args:
+            documents: DocumentList to validate.
+
+        Raises:
+            DocumentValidationError: If documents is not a DocumentList or if any
+                document has incorrect type.
+
+        Example:
+            >>> output = DocumentList([ProcessedDoc(...)])
+            >>> MyFlowConfig.validate_output_documents(output)
+            >>> # No exception means valid
+
+        Note:
+            Used internally by create_and_validate_output().
+            Uses explicit exceptions for validation (works with python -O).
         """
-        Validate the output documents of the flow.
-        """
-        assert isinstance(documents, DocumentList), "Documents must be a DocumentList"
+        if not isinstance(documents, DocumentList):
+            raise DocumentValidationError("Documents must be a DocumentList")
+        
         output_document_class = cls.get_output_document_type()
 
-        invalid = [type(d).__name__ for d in documents if not isinstance(d, output_document_class)]
-        assert not invalid, (
-            "Documents must be of the correct type. "
-            f"Expected: {output_document_class.__name__}, Got invalid: {invalid}"
-        )
+        for doc in documents:
+            if not isinstance(doc, output_document_class):
+                raise DocumentValidationError(
+                    f"Document '{doc.name}' has incorrect type. "
+                    f"Expected: {output_document_class.__name__}, "
+                    f"Got: {type(doc).__name__}"
+                )
 
     @classmethod
     def create_and_validate_output(
         cls, output: FlowDocument | list[FlowDocument] | DocumentList
     ) -> DocumentList:
-        """
-        Create the output documents for the flow.
+        """Create and validate flow output documents.
+
+        Convenience method that wraps output in a DocumentList if needed
+        and validates it matches the expected output type.
+
+        Args:
+            output: Single document, list of documents, or DocumentList.
+
+        Returns:
+            Validated DocumentList containing the output documents.
+
+        Example:
+            >>> # Accept flexible input formats
+            >>> output1 = MyFlowConfig.create_and_validate_output(single_doc)
+            >>> output2 = MyFlowConfig.create_and_validate_output([doc1, doc2])
+            >>> output3 = MyFlowConfig.create_and_validate_output(doc_list)
+
+        Note:
+            This is typically used at the end of a flow to ensure
+            output consistency.
         """
         documents: DocumentList
         if isinstance(output, FlowDocument):

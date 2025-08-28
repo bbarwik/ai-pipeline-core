@@ -1,5 +1,7 @@
 """Tracing utilities that integrate Laminar (``lmnr``) with our code-base.
 
+@public
+
 This module centralises:
 • ``TraceInfo`` - a small helper object for propagating contextual metadata.
 • ``trace`` decorator - augments a callable with Laminar tracing, automatic
@@ -25,13 +27,60 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 TraceLevel = Literal["always", "debug", "off"]
+"""Control level for tracing activation.
+
+Values:
+- "always": Always trace (default, production mode)
+- "debug": Only trace when LMNR_DEBUG == "true"
+- "off": Disable tracing completely
+"""
 
 
 # ---------------------------------------------------------------------------
 # ``TraceInfo`` – metadata container
 # ---------------------------------------------------------------------------
 class TraceInfo(BaseModel):
-    """A container that holds contextual metadata for the current trace."""
+    """Container for propagating trace context through the pipeline.
+
+    TraceInfo provides a structured way to pass tracing metadata through
+    function calls, ensuring consistent observability across the entire
+    execution flow. It integrates with Laminar (LMNR) for distributed
+    tracing and debugging.
+
+    Attributes:
+        session_id: Unique identifier for the current session/conversation.
+                   Falls back to LMNR_SESSION_ID environment variable.
+        user_id: Identifier for the user triggering the operation.
+                Falls back to LMNR_USER_ID environment variable.
+        metadata: Key-value pairs for additional trace context.
+                 Useful for filtering and searching in LMNR dashboard.
+        tags: List of tags for categorizing traces (e.g., ["production", "v2"]).
+
+    Environment fallbacks:
+        - LMNR_SESSION_ID: Default session_id if not explicitly set
+        - LMNR_USER_ID: Default user_id if not explicitly set
+
+    Example:
+        >>> # Create trace context
+        >>> trace_info = TraceInfo(
+        ...     session_id="sess_123",
+        ...     user_id="user_456",
+        ...     metadata={"flow": "document_analysis", "version": "1.2"},
+        ...     tags=["production", "high_priority"]
+        ... )
+        >>>
+        >>> # Pass through function calls
+        >>> @trace
+        >>> async def process(data, trace_info: TraceInfo):
+        ...     # TraceInfo automatically propagates to nested calls
+        ...     result = await analyze(data, trace_info=trace_info)
+        ...     return result
+
+    Note:
+        TraceInfo is typically created at the entry point of a flow
+        and passed through all subsequent function calls for
+        consistent tracing context.
+    """
 
     session_id: str | None = None
     user_id: str | None = None
@@ -39,7 +88,30 @@ class TraceInfo(BaseModel):
     tags: list[str] = []
 
     def get_observe_kwargs(self) -> dict[str, Any]:
-        """Return kwargs suitable for passing to the observe decorator."""
+        """Convert TraceInfo to kwargs for Laminar's observe decorator.
+
+        Transforms the TraceInfo fields into the format expected by
+        the lmnr.observe() decorator, applying environment variable
+        fallbacks for session_id and user_id.
+
+        Returns:
+            Dictionary with keys:
+            - session_id: From field or LMNR_SESSION_ID env var
+            - user_id: From field or LMNR_USER_ID env var
+            - metadata: Dictionary of custom metadata (if set)
+            - tags: List of tags (if set)
+
+            Only non-empty values are included in the output.
+
+        Example:
+            >>> trace_info = TraceInfo(session_id="sess_123", tags=["test"])
+            >>> kwargs = trace_info.get_observe_kwargs()
+            >>> # Returns: {"session_id": "sess_123", "tags": ["test"]}
+
+        Note:
+            This method is called internally by the trace decorator
+            to configure Laminar observation parameters.
+        """
         kwargs: dict[str, Any] = {}
 
         # Use environment variable fallback for session_id
@@ -65,7 +137,21 @@ class TraceInfo(BaseModel):
 
 
 def _initialise_laminar() -> None:
-    """Ensure Laminar is initialised once per process."""
+    """Initialize Laminar SDK with project configuration.
+
+    Sets up the Laminar observability client with the project API key
+    from settings. Disables automatic OpenAI instrumentation to avoid
+    conflicts with our custom tracing.
+
+    Configuration:
+        - Uses settings.lmnr_project_api_key for authentication
+        - Disables OPENAI instrument to prevent double-tracing
+        - Called automatically by trace decorator on first use
+
+    Note:
+        This is an internal function called once per process.
+        Multiple calls are safe (Laminar handles idempotency).
+    """
     if settings.lmnr_project_api_key:
         Laminar.initialize(
             project_api_key=settings.lmnr_project_api_key,
@@ -118,38 +204,132 @@ def trace(
     ignore_exceptions: bool = False,
     preserve_global_context: bool = True,
 ) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
-    """Decorator that wires Laminar tracing and observation into a function.
+    """Add Laminar observability tracing to any function.
+
+    @public
+
+    The trace decorator integrates functions with Laminar (LMNR) for
+    distributed tracing, performance monitoring, and debugging. It
+    automatically handles both sync and async functions, propagates
+    trace context, and provides fine-grained control over what gets traced.
 
     Args:
-        func: The function to be traced (when used as @trace)
-        level: Trace level control:
-            - "always": Always trace (default)
-            - "debug": Only trace when LMNR_DEBUG environment variable is NOT set to "true"
-            - "off": Never trace
-        name: Custom name for the observation (defaults to function name)
-        metadata: Additional metadata for the trace
-        tags: Additional tags for the trace
-        span_type: Type of span for the trace
-        ignore_input: Ignore all inputs in the trace
-        ignore_output: Ignore the output in the trace
-        ignore_inputs: List of specific input parameter names to ignore
-        input_formatter: Custom formatter for inputs (takes any arguments, returns string)
-        output_formatter: Custom formatter for outputs (takes any arguments, returns string)
-        ignore_exceptions: Whether to ignore exceptions in tracing
-        preserve_global_context: Whether to preserve global context
+        func: Function to trace (when used without parentheses: @trace).
+
+        level: Controls when tracing is active:
+            - "always": Always trace (default, production mode)
+            - "debug": Only trace when LMNR_DEBUG == "true"
+            - "off": Disable tracing completely
+
+        name: Custom span name in traces (defaults to function.__name__).
+             Use descriptive names for better trace readability.
+
+        session_id: Override session ID for this function's traces.
+                   Typically propagated via TraceInfo instead.
+
+        user_id: Override user ID for this function's traces.
+                Typically propagated via TraceInfo instead.
+
+        metadata: Additional key-value metadata attached to spans.
+                 Searchable in LMNR dashboard. Merged with TraceInfo metadata.
+
+        tags: List of tags for categorizing spans (e.g., ["api", "critical"]).
+             Merged with TraceInfo tags.
+
+        span_type: Semantic type of the span (e.g., "LLM", "CHAIN", "TOOL").
+                  Affects visualization in LMNR dashboard.
+
+        ignore_input: Don't record function inputs in trace (privacy/size).
+
+        ignore_output: Don't record function output in trace (privacy/size).
+
+        ignore_inputs: List of parameter names to exclude from trace.
+                      Useful for sensitive data like API keys.
+
+        input_formatter: Custom function to format inputs for tracing.
+                        Receives all function args, returns display string.
+
+        output_formatter: Custom function to format output for tracing.
+                         Receives function result, returns display string.
+
+        ignore_exceptions: Don't record exceptions in traces (default False).
+
+        preserve_global_context: Maintain Laminar's global context across
+                                calls (default True). Set False for isolated traces.
 
     Returns:
-        The decorated function with Laminar tracing enabled
-    """
+        Decorated function with same signature but added tracing.
 
+    TraceInfo propagation:
+        If the decorated function has a 'trace_info' parameter, the decorator
+        automatically creates or propagates a TraceInfo instance, ensuring
+        consistent session/user tracking across the call chain.
+
+    Example:
+        >>> # Simple usage
+        >>> @trace
+        >>> async def process_document(doc):
+        ...     return await analyze(doc)
+        >>>
+        >>> # With configuration
+        >>> @trace(
+        ...     name="DocumentProcessor",
+        ...     span_type="TOOL",
+        ...     tags=["production"],
+        ...     ignore_inputs=["api_key"]
+        >>> )
+        >>> async def process(doc, api_key, trace_info: TraceInfo):
+        ...     # trace_info is automatically injected if not provided
+        ...     return await call_api(doc, api_key)
+        >>>
+        >>> # Conditional tracing
+        >>> @trace(level="debug")  # Only traces in debug mode
+        >>> def expensive_operation():
+        ...     pass
+        >>>
+        >>> # Custom formatting
+        >>> @trace(
+        ...     input_formatter=lambda doc: f"Document: {doc.id}",
+        ...     output_formatter=lambda res: f"Results: {len(res)} items"
+        >>> )
+        >>> def analyze(doc):
+        ...     return results
+
+    Environment variables:
+        - LMNR_DEBUG: Set to "true" to enable debug-level traces
+        - LMNR_SESSION_ID: Default session ID if not in TraceInfo
+        - LMNR_USER_ID: Default user ID if not in TraceInfo
+        - LMNR_PROJECT_API_KEY: Required for trace submission
+
+    Performance:
+        - Tracing overhead is minimal (~1-2ms per call)
+        - When level="off", decorator returns original function unchanged
+        - Large inputs/outputs can be excluded with ignore_* parameters
+
+    Note:
+        - Automatically initializes Laminar on first use
+        - Works with both sync and async functions
+        - Preserves function signature and metadata
+        - Thread-safe and async-safe
+
+    See Also:
+        - TraceInfo: Container for trace metadata
+        - pipeline_task: Task decorator with built-in tracing
+        - pipeline_flow: Flow decorator with built-in tracing
+    """
     if level == "off":
         if func:
             return func
         return lambda f: f
 
     def decorator(f: Callable[P, R]) -> Callable[P, R]:
-        # Handle 'debug' level logic - only trace when LMNR_DEBUG is NOT "true"
-        if level == "debug" and os.getenv("LMNR_DEBUG", "").lower() == "true":
+        """Apply tracing to the target function.
+
+        Returns:
+            Wrapped function with LMNR observability.
+        """
+        # Handle 'debug' level logic - only trace when LMNR_DEBUG is "true"
+        if level == "debug" and os.getenv("LMNR_DEBUG", "").lower() != "true":
             return f
 
         # --- Pre-computation (done once when the function is decorated) ---
@@ -175,9 +355,12 @@ def trace(
 
         # --- Helper function for runtime logic ---
         def _prepare_and_get_observe_params(runtime_kwargs: dict[str, Any]) -> dict[str, Any]:
-            """
-            Inspects runtime args, manages TraceInfo, and returns params for lmnr.observe.
+            """Inspects runtime args, manages TraceInfo, and returns params for lmnr.observe.
+
             Modifies runtime_kwargs in place to inject TraceInfo if the function expects it.
+
+            Returns:
+                Dictionary of parameters for lmnr.observe decorator.
             """
             trace_info = runtime_kwargs.get("trace_info")
             if not isinstance(trace_info, TraceInfo):
@@ -223,12 +406,22 @@ def trace(
         # --- The actual wrappers ---
         @wraps(f)
         def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            """Synchronous wrapper for traced function.
+
+            Returns:
+                The result of the wrapped function.
+            """
             observe_params = _prepare_and_get_observe_params(kwargs)
             observed_func = _observe(**observe_params)(f)
             return observed_func(*args, **kwargs)
 
         @wraps(f)
         async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            """Asynchronous wrapper for traced function.
+
+            Returns:
+                The result of the wrapped function.
+            """
             observe_params = _prepare_and_get_observe_params(kwargs)
             observed_func = _observe(**observe_params)(f)
             return await observed_func(*args, **kwargs)

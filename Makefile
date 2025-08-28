@@ -1,4 +1,5 @@
 .PHONY: help install install-dev test test-cov test-showcase lint format typecheck clean pre-commit
+.PHONY: docs-check docs-build docs-open docstrings-check docstrings-cover
 
 help:
 	@echo "Available commands:"
@@ -12,6 +13,13 @@ help:
 	@echo "  typecheck      Run type checking with basedpyright"
 	@echo "  clean          Remove build artifacts and cache files"
 	@echo "  pre-commit     Run pre-commit hooks on all files"
+	@echo ""
+	@echo "Documentation commands:"
+	@echo "  docstrings-check  Check docstring style and correctness (D/DOC)"
+	@echo "  docstrings-cover  Check docstring coverage (100% required)"
+	@echo "  docs-build        Generate API.md documentation"
+	@echo "  docs-check        Verify API.md is up-to-date"
+	@echo "  docs-open         Generate and open API.md"
 
 install:
 	pip install -e .
@@ -66,3 +74,18 @@ clean:
 
 pre-commit:
 	pre-commit run --all-files
+
+docstrings-check:
+	ruff check --select D,DOC .
+
+docstrings-cover:
+	interrogate -v --fail-under 100 ai_pipeline_core
+
+docs-build:
+	pydoc-markdown
+
+docs-check: docs-build
+	@git diff --quiet -- API.md || (echo "API.md is stale. Commit regenerated file."; exit 1)
+
+docs-open: docs-build
+	@command -v xdg-open >/dev/null && xdg-open API.md || open API.md || true

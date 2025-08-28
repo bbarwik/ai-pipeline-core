@@ -141,12 +141,15 @@ class TestFlowConfigMethods:
         wrong = WrongOutputDoc(name="wrong.txt", content=b"wrong")
         documents = DocumentList([out1, wrong])
 
-        with pytest.raises(AssertionError) as exc_info:
+        from ai_pipeline_core.exceptions import DocumentValidationError
+
+        with pytest.raises(DocumentValidationError) as exc_info:
             TestFlowConfig.validate_output_documents(documents)
 
         error_msg = str(exc_info.value)
-        assert "Documents must be of the correct type" in error_msg
+        assert "incorrect type" in error_msg
         assert "Expected: OutputDoc" in error_msg
+        assert "Got: WrongOutputDoc" in error_msg
         assert "WrongOutputDoc" in error_msg
 
     def test_validate_output_documents_not_document_list(self):
@@ -154,7 +157,9 @@ class TestFlowConfigMethods:
         out1 = OutputDoc(name="out1.txt", content=b"output1")
         regular_list = [out1]  # Not a DocumentList
 
-        with pytest.raises(AssertionError) as exc_info:
+        from ai_pipeline_core.exceptions import DocumentValidationError
+
+        with pytest.raises(DocumentValidationError) as exc_info:
             TestFlowConfig.validate_output_documents(regular_list)  # type: ignore
 
         assert "Documents must be a DocumentList" in str(exc_info.value)
@@ -167,18 +172,21 @@ class TestFlowConfigMethods:
         TestFlowConfig.validate_output_documents(documents)
 
     def test_validate_output_documents_mixed_invalid(self):
-        """Test validation error message includes all invalid types."""
+        """Test validation stops at first invalid type."""
         out1 = OutputDoc(name="out1.txt", content=b"output1")
         wrong1 = WrongOutputDoc(name="wrong1.txt", content=b"wrong1")
         wrong2 = InputDoc1(name="wrong2.txt", content=b"wrong2")
         documents = DocumentList([out1, wrong1, wrong2])
 
-        with pytest.raises(AssertionError) as exc_info:
+        from ai_pipeline_core.exceptions import DocumentValidationError
+
+        with pytest.raises(DocumentValidationError) as exc_info:
             TestFlowConfig.validate_output_documents(documents)
 
         error_msg = str(exc_info.value)
+        # Should fail on the first wrong document
+        assert "wrong1.txt" in error_msg
         assert "WrongOutputDoc" in error_msg
-        assert "InputDoc1" in error_msg
 
 
 class SingleInputFlowConfig(FlowConfig):
@@ -208,7 +216,6 @@ class TestFlowConfigValidation:
 
     def test_output_type_not_in_input_types_raises_error(self):
         """Test that OUTPUT_DOCUMENT_TYPE cannot be in INPUT_DOCUMENT_TYPES."""
-
         with pytest.raises(TypeError) as exc_info:
 
             class InvalidFlowConfig(FlowConfig):  # pyright: ignore[reportUnusedClass]
@@ -237,7 +244,6 @@ class TestFlowConfigValidation:
 
     def test_output_document_types_plural_raises_error(self):
         """Test that using OUTPUT_DOCUMENT_TYPES (plural) raises helpful error."""
-
         with pytest.raises(TypeError) as exc_info:
 
             class InvalidPluralConfig(FlowConfig):  # pyright: ignore[reportUnusedClass]
@@ -253,7 +259,6 @@ class TestFlowConfigValidation:
 
     def test_input_document_type_singular_raises_error(self):
         """Test that using INPUT_DOCUMENT_TYPE (singular) raises helpful error."""
-
         with pytest.raises(TypeError) as exc_info:
 
             class InvalidSingularConfig(FlowConfig):  # pyright: ignore[reportUnusedClass]
@@ -269,7 +274,6 @@ class TestFlowConfigValidation:
 
     def test_extra_document_field_raises_error(self):
         """Test that adding extra document-related fields raises error."""
-
         with pytest.raises(TypeError) as exc_info:
 
             class InvalidExtraFieldConfig(FlowConfig):  # pyright: ignore[reportUnusedClass]

@@ -116,12 +116,10 @@ class TestCoreModelsIntegration:
     @pytest.mark.asyncio
     async def test_model_structured_generation(self, model: ModelName):
         """Test structured generation for models that support it."""
-        messages = AIMessages(
-            [
-                "Answer this math question with a simple response. What is 5 times 3? "
-                "Provide your answer and confidence level from 0 to 1."
-            ]
-        )
+        messages = AIMessages([
+            "Answer this math question with a simple response. What is 5 times 3? "
+            "Provide your answer and confidence level from 0 to 1."
+        ])
         options = ModelOptions(max_completion_tokens=1000)
 
         try:

@@ -41,6 +41,8 @@ Issues = "https://github.com/bbarwik/ai-pipeline-core/issues"
 dev = [
     "basedpyright>=1.31.2",
     "bump2version>=1.0.1",
+    "interrogate>=1.5.0",
+    "pydoc-markdown>=4.8.0",
     "pre-commit>=4.3.0",
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=5.0.0",
@@ -73,16 +75,24 @@ skip_covered = false
 # Configuration for the Ruff linter and formatter
 line-length = 100
 target-version = "py312"
+preview = true  # Required for DOC (pydoclint-derived) rules
 
 [tool.ruff.lint]
 # Select the rules you want to enforce. 'E' and 'F' are standard.
 # 'I' is for import sorting. 'TID' is for banned imports. 'T20' is for print detection.
-select = ["E", "F", "I", "TID252", "T20"]
-# extend-select = ["PLC0415"]  # Disabled - conflicts with CLAUDE.md rule about no imports inside functions
+# 'D' is for docstring enforcement. 'DOC' is for docstring content validation.
+select = ["E", "F", "I", "TID252", "T20", "D", "DOC"]
+extend-select = ["PLC0415"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-# Allow print statements in test files
-"tests/**/*.py" = ["T20"]
+# Exclude tests from documentation requirements and allow print statements and imports inside functions
+"tests/**/*.py" = ["T20", "D", "DOC", "PLC0415"]
+# Exclude examples and documentation helpers from documentation requirements
+"examples/**/*.py" = ["D", "DOC", "PLC0415"]
+"dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
 # Allow print statements in CLI for user-facing error messages
 "ai_pipeline_core/simple_runner/cli.py" = ["T20"]
 
@@ -96,6 +106,22 @@ ban-relative-imports = "parents"
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "logging".msg = "Use from ai_pipeline_core.logging import get_pipeline_logger instead of import logging"
+
+[tool.interrogate]
+fail-under = 100
+verbose = 1
+exclude = ["tests", "examples", ".venv", "venv", "build", "dist"]
+ignore-init-method = true
+ignore-init-module = false
+ignore-magic = true
+ignore-module = false
+ignore-nested-functions = true
+ignore-nested-classes = true
+ignore-overloaded-functions = true
+ignore-private = true
+ignore-property-decorators = true
+ignore-semiprivate = true
+ignore-setters = true
 
 [tool.basedpyright]
 # Python version to target

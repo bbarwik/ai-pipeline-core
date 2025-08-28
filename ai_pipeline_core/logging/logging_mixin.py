@@ -1,4 +1,7 @@
-"""Logging mixin for consistent logging across components using Prefect logging"""
+"""Logging mixin for consistent logging across components using Prefect logging.
+
+@public
+"""
 
 import contextlib
 import time
@@ -12,8 +15,9 @@ from prefect.logging import get_logger
 
 
 class LoggerMixin:
-    """
-    Mixin class that provides consistent logging functionality using Prefect's logging system
+    """Mixin class that provides consistent logging functionality using Prefect's logging system.
+    
+    @public
 
     Automatically uses appropriate logger based on context:
     - get_run_logger() when in flow/task context
@@ -30,7 +34,11 @@ class LoggerMixin:
         return get_logger(self._logger_name or self.__class__.__module__)
 
     def _get_run_logger(self):
-        """Attempt to get Prefect run logger."""
+        """Attempt to get Prefect run logger.
+
+        Returns:
+            The Prefect run logger if in a flow/task context, None otherwise.
+        """
         # Intentionally broad: Must handle any exception when checking context
         with contextlib.suppress(Exception):
             if FlowRunContext.get() or TaskRunContext.get():
@@ -38,28 +46,27 @@ class LoggerMixin:
         return None
 
     def log_debug(self, message: str, **kwargs: Any) -> None:
-        """Log debug message with optional context"""
+        """Log debug message with optional context."""
         self.logger.debug(message, extra=kwargs)
 
     def log_info(self, message: str, **kwargs: Any) -> None:
-        """Log info message with optional context"""
+        """Log info message with optional context."""
         self.logger.info(message, extra=kwargs)
 
     def log_warning(self, message: str, **kwargs: Any) -> None:
-        """Log warning message with optional context"""
+        """Log warning message with optional context."""
         self.logger.warning(message, extra=kwargs)
 
     def log_error(self, message: str, exc_info: bool = False, **kwargs: Any) -> None:
-        """Log error message with optional exception info"""
+        """Log error message with optional exception info."""
         self.logger.error(message, exc_info=exc_info, extra=kwargs)
 
     def log_critical(self, message: str, exc_info: bool = False, **kwargs: Any) -> None:
-        """Log critical message with optional exception info"""
+        """Log critical message with optional exception info."""
         self.logger.critical(message, exc_info=exc_info, extra=kwargs)
 
     def log_with_context(self, level: str, message: str, context: Dict[str, Any]) -> None:
-        """
-        Log message with structured context
+        """Log message with structured context.
 
         Args:
             level: Log level (debug, info, warning, error, critical)
@@ -83,13 +90,13 @@ class LoggerMixin:
 
 
 class StructuredLoggerMixin(LoggerMixin):
-    """
-    Extended mixin for structured logging with Prefect
+    """Extended mixin for structured logging with Prefect.
+    
+    @public
     """
 
     def log_event(self, event: str, **kwargs: Any) -> None:
-        """
-        Log a structured event
+        """Log a structured event.
 
         Args:
             event: Event name
@@ -104,8 +111,7 @@ class StructuredLoggerMixin(LoggerMixin):
         self.logger.info(event, extra={"event": event, "structured": True, **kwargs})
 
     def log_metric(self, metric_name: str, value: float, unit: str = "", **tags: Any) -> None:
-        """
-        Log a metric value
+        """Log a metric value.
 
         Args:
             metric_name: Name of the metric
@@ -129,8 +135,7 @@ class StructuredLoggerMixin(LoggerMixin):
         )
 
     def log_span(self, operation: str, duration_ms: float, **attributes: Any) -> None:
-        """
-        Log a span (operation with duration)
+        """Log a span (operation with duration).
 
         Args:
             operation: Operation name
@@ -153,8 +158,7 @@ class StructuredLoggerMixin(LoggerMixin):
 
     @contextmanager
     def log_operation(self, operation: str, **context: Any) -> Generator[None, None, None]:
-        """
-        Context manager for logging operations with timing
+        """Context manager for logging operations with timing.
 
         Args:
             operation: Operation name
@@ -188,36 +192,34 @@ class StructuredLoggerMixin(LoggerMixin):
 
 
 class PrefectLoggerMixin(StructuredLoggerMixin):
-    """
-    Enhanced mixin specifically for Prefect flows and tasks
-    """
+    """Enhanced mixin specifically for Prefect flows and tasks."""
 
     def log_flow_start(self, flow_name: str, parameters: Dict[str, Any]) -> None:
-        """Log flow start with parameters"""
+        """Log flow start with parameters."""
         self.log_event("flow_started", flow_name=flow_name, parameters=parameters)
 
     def log_flow_end(self, flow_name: str, status: str, duration_ms: float) -> None:
-        """Log flow completion"""
+        """Log flow completion."""
         self.log_event(
             "flow_completed", flow_name=flow_name, status=status, duration_ms=duration_ms
         )
 
     def log_task_start(self, task_name: str, inputs: Dict[str, Any]) -> None:
-        """Log task start with inputs"""
+        """Log task start with inputs."""
         self.log_event("task_started", task_name=task_name, inputs=inputs)
 
     def log_task_end(self, task_name: str, status: str, duration_ms: float) -> None:
-        """Log task completion"""
+        """Log task completion."""
         self.log_event(
             "task_completed", task_name=task_name, status=status, duration_ms=duration_ms
         )
 
     def log_retry(self, operation: str, attempt: int, max_attempts: int, error: str) -> None:
-        """Log retry attempt"""
+        """Log retry attempt."""
         self.log_warning(
             f"Retrying {operation}", attempt=attempt, max_attempts=max_attempts, error=error
         )
 
     def log_checkpoint(self, checkpoint_name: str, **data: Any) -> None:
-        """Log a checkpoint in processing"""
+        """Log a checkpoint in processing."""
         self.log_info(f"Checkpoint: {checkpoint_name}", checkpoint=checkpoint_name, **data)

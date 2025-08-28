@@ -166,7 +166,7 @@ Base class for all document types. Cannot be instantiated directly.
 - `get_base_type() -> Literal["flow", "task"]` - Must be implemented by subclasses
 
 **Instance Methods:**
-- `as_text() -> str` - Decode as UTF-8 (raises ValueError if not text)
+- `text -> str` - Decode as UTF-8 property (raises ValueError if not text)
 - `as_yaml() -> Any` - Parse using ruamel.yaml
 - `as_json() -> Any` - Parse using json.loads
 - `as_pydantic_model(model_type: type[T]) -> T` - Parse and validate as Pydantic model
@@ -798,5 +798,5 @@ async def test_function():
 - Don't import `logging` directly - use `get_pipeline_logger()`
 - Don't pass raw strings/bytes between tasks - use Documents
 - Don't hardcode model names - pass via FlowOptions
-- Don't manually serialize Pydantic models - use `Document.create()`
+- Don't manually serialize Pydantic models - use Document constructor
 - Don't mix pipeline decorators with clean Prefect decorators

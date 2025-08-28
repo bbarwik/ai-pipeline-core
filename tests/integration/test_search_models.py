@@ -50,13 +50,11 @@ class TestSearchModelsIntegration:
     @pytest.mark.asyncio
     async def test_search_model_with_search_query(self, model: ModelName):
         """Test search models with queries that might trigger search."""
-        messages = AIMessages(
-            [
-                "What is the current weather in San Francisco? "
-                "If you can search the internet, please do so. "
-                "Otherwise, just tell me you cannot search."
-            ]
-        )
+        messages = AIMessages([
+            "What is the current weather in San Francisco? "
+            "If you can search the internet, please do so. "
+            "Otherwise, just tell me you cannot search."
+        ])
         options = ModelOptions(max_completion_tokens=2000, search_context_size="high")
 
         try:
@@ -86,13 +84,11 @@ class TestSearchModelsIntegration:
     @pytest.mark.asyncio
     async def test_search_model_recent_events(self, model: ModelName):
         """Test search models with queries about recent events."""
-        messages = AIMessages(
-            [
-                "Search for who was elected to be Pope in 2025. "
-                "Find the name of this person from search results. "
-                "If you cannot search, say 'I cannot search the internet'."
-            ]
-        )
+        messages = AIMessages([
+            "Search for who was elected to be Pope in 2025. "
+            "Find the name of this person from search results. "
+            "If you cannot search, say 'I cannot search the internet'."
+        ])
         options = ModelOptions(max_completion_tokens=3000, search_context_size="high")
 
         try:

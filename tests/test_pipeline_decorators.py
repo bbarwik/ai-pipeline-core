@@ -338,7 +338,6 @@ class TestPipelineFlowDecorator:
 
     async def test_flow_invalid_signature(self):
         """Test @pipeline_flow with invalid signature."""
-
         with pytest.raises(TypeError, match="must accept"):
 
             @pipeline_flow  # type: ignore[arg-type]

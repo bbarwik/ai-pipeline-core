@@ -19,6 +19,13 @@ repos:
       args: [--fix, --exit-non-zero-on-fix]
     - id: ruff-format
 
+- repo: https://github.com/econchick/interrogate
+  rev: 1.7.0
+  hooks:
+    - id: interrogate
+      args: [--fail-under=100, -v, ai_pipeline_core]
+      pass_filenames: false
+
 - repo: local
   hooks:
     - id: basedpyright
@@ -28,3 +35,10 @@ repos:
       types: [python]
       pass_filenames: false
       fail_fast: true
+
+    - id: build-api-md
+      name: build API.md with Pydoc-Markdown
+      entry: bash -c 'pydoc-markdown && git diff --quiet -- API.md'
+      language: system
+      pass_filenames: false
+      files: \.py$

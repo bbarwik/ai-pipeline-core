@@ -131,14 +131,12 @@ class TestModelResponse:
             ],
         )
 
-        response.set_headers(
-            {
-                "x-litellm-call-id": "litellm-123",
-                "x-litellm-response-cost": "0.003",
-                "x-litellm-model-id": "model-456",
-                "x-litellm-custom": "value",
-            }
-        )
+        response.set_headers({
+            "x-litellm-call-id": "litellm-123",
+            "x-litellm-response-cost": "0.003",
+            "x-litellm-model-id": "model-456",
+            "x-litellm-custom": "value",
+        })
 
         metadata = response.get_laminar_metadata()
 

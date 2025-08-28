@@ -1,17 +1,15 @@
-"""
-Example demonstrating AI Pipeline Core logging capabilities
-"""
+"""Example demonstrating AI Pipeline Core logging capabilities"""
 
 import asyncio
 import time
 from typing import List
 
+from ai_pipeline_core.logging_config import setup_logging
+from ai_pipeline_core.logging_mixin import LoggerMixin, PrefectLoggerMixin, StructuredLoggerMixin
 from prefect import flow, task
 from prefect.logging import get_logger, get_run_logger
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logging_config import setup_logging
-from ai_pipeline_core.logging_mixin import LoggerMixin, PrefectLoggerMixin, StructuredLoggerMixin
 
 # Initialize logging
 setup_logging(level="INFO")
@@ -25,7 +23,6 @@ class DocumentProcessor(LoggerMixin):
 
     def process(self, document: Document) -> str:
         """Process a document with comprehensive logging"""
-
         # Log with context
         self.log_info(
             f"Processing document: {document.name}",
@@ -66,7 +63,6 @@ class LLMService(StructuredLoggerMixin):
 
     async def generate_text(self, model: str, prompt: str, max_tokens: int = 100) -> str:
         """Generate text with detailed metrics logging"""
-
         # Use context manager for operation timing
         with self.log_operation("llm_generation", model=model, max_tokens=max_tokens):
             # Log structured event
@@ -104,7 +100,6 @@ class PipelineOrchestrator(PrefectLoggerMixin):
     @task(name="validate-documents", log_prints=True)
     async def validate_documents(self, documents: List[Document]) -> List[Document]:
         """Validate documents with task-level logging"""
-
         logger = get_run_logger()
 
         # Log task start
@@ -130,7 +125,6 @@ class PipelineOrchestrator(PrefectLoggerMixin):
         self, document: Document, processor: DocumentProcessor
     ) -> str:
         """Process a single document with retry handling"""
-
         logger = get_run_logger()
 
         try:
@@ -146,7 +140,6 @@ class PipelineOrchestrator(PrefectLoggerMixin):
     @flow(name="document-pipeline", log_prints=True)
     async def run_pipeline(self, documents: List[Document]) -> dict:
         """Main pipeline flow with comprehensive logging"""
-
         logger = get_run_logger()
 
         # Log flow start
@@ -212,7 +205,6 @@ class PipelineOrchestrator(PrefectLoggerMixin):
 # Example 4: Module-level logging (outside flow/task context)
 def demonstrate_module_logging():
     """Example of logging outside Prefect context"""
-
     # Get module logger
     logger = get_logger("ai_pipeline_core.example")
 
@@ -286,7 +278,6 @@ class AdvancedLoggingExamples:
 
 async def main():
     """Run all examples"""
-
     logger = get_logger("ai_pipeline_core.example")
 
     logger.info("=" * 60)

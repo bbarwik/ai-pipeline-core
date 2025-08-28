@@ -1,4 +1,10 @@
-"""MIME type detection utilities for documents"""
+"""@internal MIME type detection utilities for documents.
+
+This module provides functions for detecting and validating MIME types
+from document content and filenames. It uses a hybrid approach combining
+extension-based detection for known formats and content analysis via
+python-magic for unknown files.
+"""
 
 import magic
 
@@ -34,15 +40,45 @@ EXTENSION_MIME_MAP = {
 
 
 def detect_mime_type(content: bytes, name: str) -> str:
-    """Detect MIME type from content and filename
+    r"""Detect MIME type from document content and filename.
 
-    Uses a hybrid approach:
-    1. Check for empty content
-    2. Try extension-based detection for known formats
-    3. Fall back to magic content detection
-    4. Final fallback to application/octet-stream
+    Uses a multi-stage detection strategy for maximum accuracy:
+    1. Returns 'application/x-empty' for empty content
+    2. Uses extension-based detection for known formats (most reliable)
+    3. Falls back to python-magic content analysis
+    4. Final fallback to extension or 'application/octet-stream'
+
+    Args:
+        content: Document content as bytes.
+        name: Filename with extension.
+
+    Returns:
+        MIME type string (e.g., 'text/plain', 'application/json').
+        Never returns None or empty string.
+
+    Fallback behavior:
+        - Empty content: 'application/x-empty'
+        - Unknown extension with binary content: 'application/octet-stream'
+        - Magic library failure: Falls back to extension or 'application/octet-stream'
+
+    Performance:
+        Only the first 1024 bytes are analyzed for content detection.
+        Extension-based detection is O(1) lookup.
+
+    Note:
+        Extension-based detection is preferred for text formats as
+        content analysis can sometimes misidentify structured text.
+
+    Example:
+        >>> detect_mime_type(b'{"key": "value"}', "data.json")
+        'application/json'
+        >>> detect_mime_type(b'Hello World', "text.txt")
+        'text/plain'
+        >>> detect_mime_type(b'', "empty.txt")
+        'application/x-empty'
+        >>> detect_mime_type(b'\\x89PNG', "image.xyz")
+        'image/png'  # Magic detects PNG despite wrong extension
     """
-
     # Check for empty content
     if len(content) == 0:
         return "application/x-empty"
@@ -69,16 +105,60 @@ def detect_mime_type(content: bytes, name: str) -> str:
 
 
 def mime_type_from_extension(name: str) -> str:
-    """Get MIME type based on file extension
+    """Get MIME type based solely on file extension.
 
-    Legacy function kept for compatibility
+    Simple extension-based MIME type detection without content analysis.
+    This is a legacy function maintained for backward compatibility.
+
+    Args:
+        name: Filename with extension.
+
+    Returns:
+        MIME type based on extension, or 'application/octet-stream'
+        if extension is unknown.
+
+    Note:
+        Prefer detect_mime_type() for more accurate detection.
+        This function only checks the file extension.
+
+    Example:
+        >>> mime_type_from_extension("document.pdf")
+        'application/pdf'
+        >>> mime_type_from_extension("unknown.xyz")
+        'application/octet-stream'
     """
     ext = name.lower().split(".")[-1] if "." in name else ""
     return EXTENSION_MIME_MAP.get(ext, "application/octet-stream")
 
 
 def is_text_mime_type(mime_type: str) -> bool:
-    """Check if MIME type represents text content"""
+    """Check if MIME type represents text-based content.
+
+    Determines if content can be safely decoded as text.
+    Includes common text formats and structured text like JSON/YAML.
+
+    Args:
+        mime_type: MIME type string to check.
+
+    Returns:
+        True if MIME type indicates text content, False otherwise.
+
+    Recognized as text:
+        - Any type starting with 'text/'
+        - application/json
+        - application/xml
+        - application/javascript
+        - application/yaml
+        - application/x-yaml
+
+    Example:
+        >>> is_text_mime_type('text/plain')
+        True
+        >>> is_text_mime_type('application/json')
+        True
+        >>> is_text_mime_type('image/png')
+        False
+    """
     text_types = [
         "text/",
         "application/json",
@@ -91,20 +171,98 @@ def is_text_mime_type(mime_type: str) -> bool:
 
 
 def is_json_mime_type(mime_type: str) -> bool:
-    """Check if MIME type is JSON"""
+    """Check if MIME type is JSON.
+
+    Args:
+        mime_type: MIME type string to check.
+
+    Returns:
+        True if MIME type is 'application/json', False otherwise.
+
+    Note:
+        Only matches exact 'application/json', not variants like
+        'application/ld+json' or 'application/vnd.api+json'.
+
+    Example:
+        >>> is_json_mime_type('application/json')
+        True
+        >>> is_json_mime_type('text/json')  # Not standard JSON MIME
+        False
+    """
     return mime_type == "application/json"
 
 
 def is_yaml_mime_type(mime_type: str) -> bool:
-    """Check if MIME type is YAML"""
+    """Check if MIME type is YAML.
+
+    Recognizes both standard YAML MIME types.
+
+    Args:
+        mime_type: MIME type string to check.
+
+    Returns:
+        True if MIME type is YAML, False otherwise.
+
+    Recognized types:
+        - application/yaml (standard)
+        - application/x-yaml (legacy)
+
+    Example:
+        >>> is_yaml_mime_type('application/yaml')
+        True
+        >>> is_yaml_mime_type('application/x-yaml')
+        True
+    """
     return mime_type == "application/yaml" or mime_type == "application/x-yaml"
 
 
 def is_pdf_mime_type(mime_type: str) -> bool:
-    """Check if MIME type is PDF"""
+    """Check if MIME type is PDF.
+
+    Args:
+        mime_type: MIME type string to check.
+
+    Returns:
+        True if MIME type is 'application/pdf', False otherwise.
+
+    Note:
+        PDF documents require special handling in the LLM module
+        and are supported by certain vision-capable models.
+
+    Example:
+        >>> is_pdf_mime_type('application/pdf')
+        True
+        >>> is_pdf_mime_type('text/plain')
+        False
+    """
     return mime_type == "application/pdf"
 
 
 def is_image_mime_type(mime_type: str) -> bool:
-    """Check if MIME type is an image"""
+    """Check if MIME type represents an image.
+
+    Args:
+        mime_type: MIME type string to check.
+
+    Returns:
+        True if MIME type starts with 'image/', False otherwise.
+
+    Recognized formats:
+        Any MIME type starting with 'image/' including:
+        - image/png
+        - image/jpeg
+        - image/gif
+        - image/webp
+        - image/svg+xml
+
+    Note:
+        Image documents are automatically encoded for vision-capable
+        LLM models in the AIMessages.document_to_prompt() method.
+
+    Example:
+        >>> is_image_mime_type('image/png')
+        True
+        >>> is_image_mime_type('application/pdf')
+        False
+    """
     return mime_type.startswith("image/")

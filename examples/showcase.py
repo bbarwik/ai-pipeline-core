@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Complete showcase of ai_pipeline_core features (v0.1.10)
+"""Complete showcase of ai_pipeline_core features (v0.1.10)
 
 This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
   • Settings configuration
@@ -206,12 +205,10 @@ async def analyze_with_advanced_tracing(
     sensitive_data: str = "secret",
 ) -> TextAnalysis:
     # Use AIMessages with different content types
-    messages = AIMessages(
-        [
-            doc,  # Document automatically converted
-            "Analyze this document thoroughly",
-        ]
-    )
+    messages = AIMessages([
+        doc,  # Document automatically converted
+        "Analyze this document thoroughly",
+    ])
 
     response = await llm.generate_structured(
         model=model,
@@ -253,7 +250,6 @@ async def stage1_flow(
     project_name: str, documents: DocumentList, flow_options: ShowcaseFlowOptions
 ) -> DocumentList:
     """First stage: analyze input documents."""
-
     # Validate inputs using FlowConfig
     config = Stage1Config()
     input_docs = config.get_input_documents(documents)
@@ -269,9 +265,7 @@ async def stage1_flow(
         logger.info(f"Processing {canonical}: {doc.name}")
 
         # Load prompt template
-        prompt = prompts.get(
-            "showcase.jinja2", text=doc.as_text(), temperature=flow_options.temperature
-        )
+        prompt = prompts.get("showcase.jinja2", text=doc.text, temperature=flow_options.temperature)
 
         # Demonstrate different generate modes
         if flow_options.enable_structured:
@@ -281,9 +275,9 @@ async def stage1_flow(
             )
 
             # Create document using smart factory with Pydantic model
-            output = AnalysisDocument.create(
-                f"analysis_{doc.id}.json",
-                "Structured analysis result",
+            output = AnalysisDocument(
+                name=f"analysis_{doc.id}.json",
+                description="Structured analysis result",
                 content=analysis,  # Pydantic model auto-serialized to JSON
             )
         else:
@@ -304,9 +298,9 @@ async def stage1_flow(
             logger.info(f"Tokens: {response.usage.total_tokens if response.usage else 'N/A'}")
 
             # Create text document
-            output = AnalysisDocument.create(
-                f"analysis_{doc.id}.txt",
-                "Text analysis result",
+            output = AnalysisDocument(
+                name=f"analysis_{doc.id}.txt",
+                description="Text analysis result",
                 content=response.content,
             )
 
@@ -321,7 +315,6 @@ async def stage2_flow(
     project_name: str, documents: DocumentList, flow_options: ShowcaseFlowOptions
 ) -> DocumentList:
     """Second stage: enhance analysis documents."""
-
     config = Stage2Config()
     input_docs = config.get_input_documents(documents)
 
@@ -333,7 +326,7 @@ async def stage2_flow(
 
         # Demonstrate various document methods
         if doc.is_text:
-            content = doc.as_text()
+            content = doc.text
         elif doc.mime_type.startswith("application/json"):
             content = str(doc.as_json())
         else:
@@ -352,11 +345,23 @@ async def stage2_flow(
                 data = doc.as_json()
                 data["enhanced"] = True
                 data["safe_name"] = safe_name
-                output = EnhancedDocument.create_as_json(doc.name, "Enhanced analysis", data=data)
+                output = EnhancedDocument(
+                    name=doc.name.replace('.', '_enhanced.'),
+                    description="Enhanced analysis",
+                    content=data  # Will be auto-serialized to JSON
+                )
             except Exception:
-                output = EnhancedDocument.create(doc.name, "Enhanced text", content=enhanced)
+                output = EnhancedDocument(
+                    name=doc.name.replace('.', '_enhanced.'),
+                    description="Enhanced text",
+                    content=enhanced
+                )
         else:
-            output = EnhancedDocument.create(doc.name, "Enhanced text", enhanced)
+            output = EnhancedDocument(
+                name=doc.name.replace('.', '_enhanced.'),
+                description="Enhanced text",
+                content=enhanced
+            )
 
         outputs.append(output)
 
@@ -402,39 +407,37 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
     ]
 
     # Create temporary document to demonstrate TemporaryDocument usage
-    temp_doc = TemporaryDocument.create(
-        "temp_demo.txt",
-        "Demo of TemporaryDocument",
+    temp_doc = TemporaryDocument(
+        name="temp_demo.txt",
+        description="Demo of TemporaryDocument",
         content="This demonstrates the new TemporaryDocument class",
     )
     logger.info(f"Created TemporaryDocument: {temp_doc.name} (type: {temp_doc.base_type})")
 
-    docs = DocumentList(
-        [
-            InputDocument.create(
-                "input.txt",
-                "Sample input document",
-                content="""AI Pipeline Core is a powerful async library for building
+    docs = DocumentList([
+        InputDocument(
+            name="input.txt",
+            description="Sample input document",
+            content="""AI Pipeline Core is a powerful async library for building
             production-grade AI pipelines with strong typing, observability,
             and Prefect integration.""",
-            ),
-            InputDocument.create_as_json(
-                "data.json",
-                "Sample JSON data",
-                data={
-                    "project": "ai-pipeline-core",
-                    "version": "0.1.10",
-                    "features": ["async", "typed", "observable"],
-                    "models": [m.model_dump() for m in sample_models],  # Include list demo
-                },
-            ),
-            InputDocument.create_as_yaml(
-                "config.yaml",
-                "Sample configuration",
-                data={"model": "gpt-5-mini", "temperature": 0.7, "max_tokens": 2000},
-            ),
-        ]
-    )
+        ),
+        InputDocument(
+            name="data.json",
+            description="Sample JSON data",
+            content={
+                "project": "ai-pipeline-core",
+                "version": "0.1.10",
+                "features": ["async", "typed", "observable"],
+                "models": [m.model_dump() for m in sample_models],  # Include list demo
+            },
+        ),
+        InputDocument(
+            name="config.yaml",
+            description="Sample configuration",
+            content={"model": "gpt-5-mini", "temperature": 0.7, "max_tokens": 2000},
+        ),
+    ])
 
     return "showcase-project", docs
 

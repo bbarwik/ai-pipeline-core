@@ -1,12 +1,26 @@
+"""Utility functions for document handling.
+
+Provides helper functions for URL sanitization, naming conventions,
+and canonical key generation used throughout the document system.
+"""
+
 import re
 from typing import Any, Iterable, Type
 from urllib.parse import urlparse
 
 
 def sanitize_url(url: str) -> str:
-    """
-    Sanitize URL or query string for use in filenames.
+    """Sanitize URL or query string for use in filenames.
+    
+    @public
+
     Removes or replaces characters that are invalid in filenames.
+
+    Args:
+        url: The URL or query string to sanitize.
+
+    Returns:
+        A sanitized string safe for use as a filename.
     """
     # Remove protocol if it's a URL
     if url.startswith(("http://", "https://")):
@@ -35,7 +49,14 @@ def sanitize_url(url: str) -> str:
 
 
 def camel_to_snake(name: str) -> str:
-    """Convert CamelCase (incl. acronyms) to snake_case."""
+    """Convert CamelCase (incl. acronyms) to snake_case.
+
+    Args:
+        name: The CamelCase string to convert.
+
+    Returns:
+        The converted snake_case string.
+    """
     s1 = re.sub(r"(.)([A-Z][a-z0-9]+)", r"\1_\2", name)
     s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1)
     return s2.replace("__", "_").strip("_").lower()
@@ -47,17 +68,28 @@ def canonical_name_key(
     max_parent_suffixes: int = 3,
     extra_suffixes: Iterable[str] = (),
 ) -> str:
-    """
-    Produce a canonical snake_case key from a class or name by:
+    """Produce a canonical snake_case key from a class or name.
+    
+    @public
+
+    Process:
       1) Starting with the class name (or given string),
       2) Stripping any trailing parent class names (up to `max_parent_suffixes` from the MRO),
       3) Stripping any `extra_suffixes`,
       4) Converting to snake_case.
 
-    Examples (given typical MROs):
-      FinalReportDocument(WorkflowDocument -> Document) -> 'final_report'
-      FooWorkflowDocument(WorkflowDocument -> Document) -> 'foo'
-      BarFlow(Config -> Base -> Flow) -> 'bar'
+    Args:
+        obj_or_name: A class or string to convert.
+        max_parent_suffixes: Maximum number of parent classes to consider for suffix removal.
+        extra_suffixes: Additional suffixes to strip.
+
+    Returns:
+        The canonical snake_case name.
+
+    Examples:
+        FinalReportDocument(WorkflowDocument -> Document) -> 'final_report'
+        FooWorkflowDocument(WorkflowDocument -> Document) -> 'foo'
+        BarFlow(Config -> Base -> Flow) -> 'bar'
     """
     name = obj_or_name.__name__ if isinstance(obj_or_name, type) else str(obj_or_name)
 
