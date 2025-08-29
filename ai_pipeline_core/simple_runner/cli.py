@@ -1,35 +1,4 @@
-"""Command-line interface for simple pipeline execution.
-
-This module provides the CLI functionality for running AI pipelines
-from the command line. It handles argument parsing, environment setup,
-and flow execution with proper error handling and tracing.
-
-Key features:
-    - Automatic CLI generation from FlowOptions classes
-    - Positional and named argument support
-    - Environment detection (test vs production)
-    - LMNR tracing integration
-    - Graceful error handling with helpful messages
-
-Usage:
-    In your module's __main__.py:
-    >>> from ai_pipeline_core.simple_runner import run_cli
-    >>> from my_flows import MyFlow, MyConfig, MyOptions
-    >>>
-    >>> if __name__ == "__main__":
-    ...     run_cli(
-    ...         flows=[MyFlow],
-    ...         flow_configs=[(MyConfig, MyOptions)],
-    ...         options_cls=MyOptions
-    ...     )
-
-    Then from command line:
-    $ python -m my_module ./working_dir --temperature 0.7 --model gpt-5
-
-Note:
-    CLI arguments are automatically converted to kebab-case
-    (e.g., max_tokens becomes --max-tokens).
-"""
+"""Command-line interface for simple pipeline execution."""
 
 from __future__ import annotations
 
@@ -124,44 +93,6 @@ def run_cli(
     trace_name: str | None = None,
 ) -> None:
     """Execute pipeline flows from command-line arguments.
-    
-    @public
-
-    Main entry point for CLI-based pipeline execution. Parses command-line
-    arguments into FlowOptions, sets up the execution environment, and
-    runs the specified flows in sequence.
-
-    Args:
-        flows: Sequence of flow classes to execute in order.
-              Each flow must be decorated with @pipeline_flow.
-
-        flow_configs: Sequence of (ConfigClass, OptionsClass) tuples
-                     that define configuration for each flow.
-
-        options_cls: FlowOptions subclass that defines CLI arguments.
-                    Fields in this class become CLI flags automatically.
-
-        initializer: Optional function to create initial documents
-                    before pipeline execution. Receives parsed options
-                    and returns (project_name, documents) tuple.
-
-        trace_name: Optional name for LMNR trace span. If provided,
-                   entire pipeline execution is traced.
-
-    CLI arguments (automatic):
-        working_directory: Required positional argument. Directory for
-                         input/output documents and intermediate results.
-
-        --project-name: Optional. Name for the project/pipeline run.
-                       Defaults to working directory name.
-
-        --start: Optional. Starting step (1-based) for partial execution.
-                Default is 1 (first flow).
-
-        --end: Optional. Ending step (1-based) for partial execution.
-              Default is None (run all flows).
-
-        Additional flags are generated from options_cls fields.
 
     Environment setup:
         - Initializes logging system

@@ -12,9 +12,17 @@ A high-performance, type-safe Python library for building AI-powered data proces
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/ai-pipeline-core.svg)](https://pypi.org/project/ai-pipeline-core/)
 
 > [!NOTE]
-> **Beta Release**
+> **Beta Release - v0.1.10**
 >
-> This library is in beta. While actively used in production systems, the API may still evolve. We follow semantic versioning for releases.
+> This library is in beta. While actively used in production systems, the API is stabilizing.
+>
+> **New in v0.1.10:**
+> - Comprehensive API documentation (API.md)
+> - Fixed mutable defaults in llm.generate()
+> - Document constructors require keyword arguments
+> - Improved DocumentList.filter_by_type (uses isinstance)
+> - Better error messages with DocumentValidationError
+> - Deprecation warnings for legacy patterns
 
 ## Overview
 
@@ -30,9 +38,9 @@ AI Pipeline Core provides a robust foundation for building production-grade AI p
 
 ### 🚀 Performance First
 - Fully asynchronous I/O operations
-- Intelligent caching for LLM context
+- Intelligent caching for LLM context (saves 50-90% tokens)
 - Streaming support for large documents
-- Automatic retry with exponential backoff
+- Automatic retry with fixed delay (configurable)
 
 ### 🔒 Type Safety
 - Pydantic models for all data structures
@@ -83,12 +91,12 @@ make install-dev  # Installs pre-commit hooks
 
 ### Basic Document Processing
 ```python
-from ai_pipeline_core.documents import Document, FlowDocument
+from ai_pipeline_core.documents import Document, FlowDocument, TemporaryDocument
 from ai_pipeline_core.llm import generate_structured, AIMessages, ModelOptions
 from pydantic import BaseModel
 
 class InputDocument(FlowDocument):
-    """Custom document type for your flow"""
+    """Custom document type for your flow (persisted across runs)"""
     def get_type(self) -> str:
         return "input"
 
@@ -98,13 +106,25 @@ class AnalysisResult(BaseModel):
     key_points: list[str]
 
 async def process_document(doc: Document):
+    # NEW in v0.1.10: Document constructors require keyword arguments
+    temp_doc = TemporaryDocument(
+        name="temp.txt",
+        description="Temporary processing",
+        content="Intermediate data"
+    )
+
     # Generate AI response with structured output
+    # NEW: Fixed mutable defaults - context and options now default to None
     response = await generate_structured(
-        model="gemini-2.5-pro",  # Model is required first parameter
-        response_format=AnalysisResult,  # Pydantic model class
-        context=AIMessages([doc]),  # Cached context
-        messages=AIMessages(["Analyze this document"]),  # Dynamic messages
-        options=ModelOptions(max_completion_tokens=5000)  # Optional options
+        model="gemini-2.5-pro",
+        response_format=AnalysisResult,
+        context=AIMessages([doc]),  # Static context cached for 120s
+        messages="Analyze this document",  # Can be string or AIMessages
+        options=ModelOptions(
+            max_completion_tokens=5000,
+            retries=3,  # Fixed delay retry (not exponential)
+            retry_delay_seconds=10
+        )
     )
     return response.parsed
 ```
@@ -164,20 +184,21 @@ async def main():
     )
 ```
 
-### Clean Prefect Decorators
+### Pipeline Decorators vs Clean Prefect
 ```python
-# Import clean Prefect decorators without tracing
-from ai_pipeline_core.prefect import flow, task
-
-# Or use pipeline decorators with tracing
+# ALWAYS prefer pipeline decorators for production code
 from ai_pipeline_core import pipeline_flow, pipeline_task
 
-@task  # Clean Prefect task (supports both sync and async)
-def compute(x: int) -> int:
+@pipeline_task(trace_level="always")  # With LMNR tracing (async only)
+async def compute_traced(x: int) -> int:
     return x * 2
 
-@pipeline_task(trace_level="always")  # With tracing (async only)
-async def compute_traced(x: int) -> int:
+# Only use clean Prefect decorators for very specific edge cases
+# where pipeline decorators cannot be used (NOT RECOMMENDED)
+from ai_pipeline_core.prefect import flow, task
+
+@task  # Clean Prefect task (no tracing) - AVOID
+def compute(x: int) -> int:
     return x * 2
 ```
 
@@ -187,17 +208,25 @@ async def compute_traced(x: int) -> int:
 The foundation for all data handling. Documents are immutable, type-safe wrappers around content with automatic MIME type detection.
 
 ```python
-from ai_pipeline_core.documents import Document, DocumentList
-
-# Documents handle encoding/decoding automatically
-doc = MyDocument(
-    name="report.pdf",
-    content=pdf_bytes,
-    description="Q3 Financial Report"
+from ai_pipeline_core.documents import (
+    FlowDocument,      # Persisted across flow runs
+    TaskDocument,      # Temporary within task execution
+    TemporaryDocument, # Never persisted (NEW in v0.1.9+)
+    DocumentList       # Type-safe container
 )
 
-# Type-safe document collections
-docs = DocumentList([doc1, doc2])
+# NEW in v0.1.10: Documents require keyword arguments
+doc = MyDocument(
+    name="report.pdf",        # Required: filename
+    content=pdf_bytes,         # Required: bytes or auto-converted
+    description="Q3 Report"    # Optional: human-readable description
+)
+
+# Type-safe document collections with validation
+docs = DocumentList([doc1, doc2], validate_duplicates=True)
+
+# NEW: filter_by_type now uses isinstance (includes subclasses)
+flow_docs = docs.filter_by_type(FlowDocument)  # Gets all FlowDocument subclasses
 ```
 
 ### LLM Module
@@ -221,12 +250,13 @@ class YourPydanticModel(BaseModel):
 
 # Get structured Pydantic model responses
 result = await generate_structured(
-    model="gemini-2.5-pro",  # Model is required first parameter
-    response_format=YourPydanticModel,  # Pydantic model class for structured output
-    context=AIMessages(),  # Optional context (cached)
-    messages=AIMessages(["Your prompt here"]),  # Required messages
-    options=ModelOptions(
+    model="gemini-2.5-pro",
+    response_format=YourPydanticModel,  # Pydantic model class
+    context=None,  # NEW: Defaults to None instead of empty AIMessages()
+    messages="Your prompt here",  # Can be string or AIMessages
+    options=ModelOptions(  # NEW: Defaults to None if not provided
         retries=3,
+        retry_delay_seconds=10,  # Fixed delay (not exponential)
         timeout=30,
         max_completion_tokens=10000
     )
@@ -438,19 +468,49 @@ For learning purposes, see [CLAUDE.md](CLAUDE.md) for our comprehensive coding s
 
 ## Documentation
 
+- **[API.md](API.md) - Complete API reference** (NEW in v0.1.10)
 - [CLAUDE.md](CLAUDE.md) - Detailed coding standards and architecture guide
+- [Guide for AI](docs/guide_for_ai.md) - Instructions for AI assistants using this codebase
+
+### API Documentation Generation
+
+The API.md file is automatically generated from source code using pydoc-markdown with a custom Jinja2 template:
+
+```bash
+make docs-build  # Generate API.md from source code
+make docs-check  # Verify API.md is up-to-date
+```
+
+**How it works:**
+1. **@public tags**: Only code elements with `@public` in their docstrings are included
+2. **Smart filtering**: Modules without @public tags are still shown if they contain @public members
+3. **Project-agnostic**: The template automatically detects the package name
+4. **Template**: `docs/api_template.jinja2` - A concise 105-line Jinja2 template
+
+The template uses recursive macros to handle the module/class/function hierarchy and ensures proper document structure with consistent formatting.
 
 ## Examples
 
 ### In This Repository
-- [showcase.py](examples/showcase.py) - Complete example demonstrating all core features including the CLI runner
+- **[showcase.py](examples/showcase.py) - Complete example demonstrating ALL features** (UPDATED for v0.1.10)
+  - Shows all exports from ai_pipeline_core.__init__
+  - Demonstrates latest API patterns and best practices
+  - Includes CLI runner with custom options
+
   ```bash
-  # Run the showcase example with CLI
+  # Run the showcase example with defaults
+  python examples/showcase.py ./output
+
+  # With custom options
   python examples/showcase.py ./output --temperature 0.7 --batch-size 5
 
-  # Show help
+  # Skip first stage (start from stage 2)
+  python examples/showcase.py ./output --start 2
+
+  # Show all available options
   python examples/showcase.py --help
   ```
+
 - [showcase.jinja2](examples/showcase.jinja2) - Example Jinja2 prompt template
 
 ### Real-World Application
@@ -489,8 +549,8 @@ Built with:
 ## Stability Notice
 
 **Current Version**: 0.1.10
-**Status**: Internal Preview
-**API Stability**: Unstable - Breaking changes expected
-**Recommended Use**: Learning and reference only
+**Status**: Beta Release
+**API Stability**: Stabilizing - API documentation now available
+**Recommended Use**: Production-ready for most use cases
 
 For production use, please fork this repository and maintain your own stable version.

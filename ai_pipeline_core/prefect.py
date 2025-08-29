@@ -1,7 +1,5 @@
 """Prefect core features for pipeline orchestration.
 
-@public
-
 This module provides clean re-exports of essential Prefect functionality.
 
 IMPORTANT: You should NEVER use the `task` and `flow` decorators directly

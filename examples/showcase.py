@@ -2,23 +2,47 @@
 """Complete showcase of ai_pipeline_core features (v0.1.10)
 
 This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
-  • Settings configuration
-  • Logging system (LoggerMixin, StructuredLoggerMixin)
-  • Document system (Document, FlowDocument, TaskDocument, DocumentList)
-  • Flow configuration (FlowConfig, FlowOptions)
-  • Pipeline decorators (pipeline_flow, pipeline_task)
+  • Settings configuration with environment variables and .env files
+  • Logging system (LoggerMixin, StructuredLoggerMixin) with Prefect integration
+  • Document system with immutable, type-safe documents:
+    - Document: Abstract base with MIME detection and content validation
+    - FlowDocument: Persisted across flow runs
+    - TaskDocument: Temporary within task execution
+    - TemporaryDocument: Never persisted (NEW in v0.1.9+)
+    - DocumentList: Type-safe container with validation
+  • Flow configuration (FlowConfig, FlowOptions) for type-safe pipelines
+  • Pipeline decorators (pipeline_flow, pipeline_task) with LMNR tracing
   • Prefect utilities (flow, task, prefect_test_harness, disable_run_logger)
-  • LLM module (generate, generate_structured, AIMessages, ModelOptions, etc.)
-  • Tracing (trace, TraceLevel, TraceInfo)
-  • PromptManager for Jinja2 templates
+  • LLM module with smart caching and structured outputs:
+    - generate/generate_structured with context caching
+    - AIMessages supporting mixed content types
+    - ModelOptions with retry and timeout configuration
+    - ModelResponse with cost tracking metadata
+  • Tracing (trace, TraceLevel, TraceInfo) for observability
+  • PromptManager for Jinja2 templates with smart path resolution
   • Simple runner module (run_cli, run_pipeline, load/save documents)
+
+Key API Changes in v0.1.10:
+  - Document constructors now require keyword arguments (name=, content=, description=)
+  - Mutable defaults fixed in llm.generate (context/options now default to None)
+  - DocumentList.filter_by_type now uses isinstance (includes subclasses)
+  - FlowConfig validation uses explicit exceptions (not assertions)
+  - Deprecation warning for legacy Document constructor
 
 Prerequisites:
   - OPENAI_API_KEY and OPENAI_BASE_URL configured (can be set in .env)
   - Optional: LMNR_PROJECT_API_KEY for tracing
+  - Optional: PREFECT_API_URL for remote orchestration
 
 Usage:
+  # Basic usage with defaults
+  python examples/showcase.py ./output
+
+  # With custom options
   python examples/showcase.py ./output --temperature 0.7 --batch-size 5
+
+  # Skip first stage
+  python examples/showcase.py ./output --start 2
 
 Tip: Set PREFECT_LOGGING_LEVEL=INFO for richer logs and LMNR_DEBUG=true for more detailed tracing
 """
@@ -31,6 +55,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, Field
 
 # Import ALL exports from ai_pipeline_core.__init__
+# Note: These are the public exports as of v0.1.10
 from ai_pipeline_core import (
     AIMessages,
     Document,
@@ -205,20 +230,27 @@ async def analyze_with_advanced_tracing(
     sensitive_data: str = "secret",
 ) -> TextAnalysis:
     # Use AIMessages with different content types
+    # NEW: AIMessages supports Documents, strings, and ModelResponse objects
     messages = AIMessages([
-        doc,  # Document automatically converted
+        doc,  # Document automatically converted to prompt format
         "Analyze this document thoroughly",
     ])
 
+    # NEW in v0.1.10: Fixed mutable defaults - context and options default to None
     response = await llm.generate_structured(
         model=model,
         response_format=TextAnalysis,
         messages=messages,
+        # Context parameter now defaults to None instead of empty AIMessages()
+        context=None,  # Optional: Add static context for caching
         options=ModelOptions(
             system_prompt="You are an expert analyst",
             max_completion_tokens=2000,
             reasoning_effort="high",
             service_tier="default",
+            # Retry with fixed delay (not exponential backoff)
+            retries=3,
+            retry_delay_seconds=10,
         ),
     )
 
@@ -275,17 +307,19 @@ async def stage1_flow(
             )
 
             # Create document using smart factory with Pydantic model
-            output = AnalysisDocument(
+            output = AnalysisDocument.create(
                 name=f"analysis_{doc.id}.json",
                 description="Structured analysis result",
                 content=analysis,  # Pydantic model auto-serialized to JSON
             )
         else:
-            # Raw text generation
+            # Raw text generation with context caching
+            # NEW: Context caching saves 50-90% tokens on repeated calls
             response: ModelResponse = await llm.generate(
                 flow_options.small_model,
-                context=AIMessages([doc]),  # Context for caching
-                messages=prompt,
+                context=AIMessages([doc]),  # Static context cached for 120 seconds
+                messages=prompt,  # Dynamic messages not cached
+                # Options now defaults to None if not provided
                 options=ModelOptions(
                     max_completion_tokens=1000,
                     reasoning_effort=flow_options.reasoning_effort,
@@ -298,7 +332,7 @@ async def stage1_flow(
             logger.info(f"Tokens: {response.usage.total_tokens if response.usage else 'N/A'}")
 
             # Create text document
-            output = AnalysisDocument(
+            output = AnalysisDocument.create(
                 name=f"analysis_{doc.id}.txt",
                 description="Text analysis result",
                 content=response.content,
@@ -322,7 +356,12 @@ async def stage2_flow(
 
     for doc in input_docs:
         # Create temporary task document (demonstrates task documents are allowed but not persisted)
-        TempProcessingDocument(name="temp.txt", content=b"temporary processing data")
+        temp_task_doc = TempProcessingDocument.create(
+            name="temp.txt",
+            description="Temporary processing data for demonstration",
+            content="This document exists only during task execution",
+        )
+        logger.debug(f"Created temporary task document: {temp_task_doc.id}")
 
         # Demonstrate various document methods
         if doc.is_text:
@@ -345,22 +384,22 @@ async def stage2_flow(
                 data = doc.as_json()
                 data["enhanced"] = True
                 data["safe_name"] = safe_name
-                output = EnhancedDocument(
-                    name=doc.name.replace('.', '_enhanced.'),
+                output = EnhancedDocument.create(
+                    name=doc.name.replace(".", "_enhanced."),
                     description="Enhanced analysis",
-                    content=data  # Will be auto-serialized to JSON
+                    content=data,  # Will be auto-serialized to JSON
                 )
             except Exception:
-                output = EnhancedDocument(
-                    name=doc.name.replace('.', '_enhanced.'),
+                output = EnhancedDocument.create(
+                    name=doc.name.replace(".", "_enhanced."),
                     description="Enhanced text",
-                    content=enhanced
+                    content=enhanced,
                 )
         else:
-            output = EnhancedDocument(
-                name=doc.name.replace('.', '_enhanced.'),
+            output = EnhancedDocument.create(
+                name=doc.name.replace(".", "_enhanced."),
                 description="Enhanced text",
-                content=enhanced
+                content=enhanced,
             )
 
         outputs.append(output)
@@ -407,7 +446,7 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
     ]
 
     # Create temporary document to demonstrate TemporaryDocument usage
-    temp_doc = TemporaryDocument(
+    temp_doc = TemporaryDocument.create(
         name="temp_demo.txt",
         description="Demo of TemporaryDocument",
         content="This demonstrates the new TemporaryDocument class",
@@ -415,14 +454,14 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
     logger.info(f"Created TemporaryDocument: {temp_doc.name} (type: {temp_doc.base_type})")
 
     docs = DocumentList([
-        InputDocument(
+        InputDocument.create(
             name="input.txt",
             description="Sample input document",
             content="""AI Pipeline Core is a powerful async library for building
             production-grade AI pipelines with strong typing, observability,
             and Prefect integration.""",
         ),
-        InputDocument(
+        InputDocument.create(
             name="data.json",
             description="Sample JSON data",
             content={
@@ -432,7 +471,7 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
                 "models": [m.model_dump() for m in sample_models],  # Include list demo
             },
         ),
-        InputDocument(
+        InputDocument.create(
             name="config.yaml",
             description="Sample configuration",
             content={"model": "gpt-5-mini", "temperature": 0.7, "max_tokens": 2000},

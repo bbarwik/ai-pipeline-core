@@ -30,7 +30,7 @@ class TestConstructorWithBytes:
     def test_constructor_with_bytes_content(self):
         """Test constructing document with raw bytes."""
         content = b"Hello, World!"
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="test.txt",
             description="Test document",
             content=content,
@@ -42,7 +42,7 @@ class TestConstructorWithBytes:
 
     def test_constructor_with_empty_bytes(self):
         """Test constructing document with empty bytes."""
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="empty.txt",
             description=None,
             content=b"",
@@ -53,7 +53,7 @@ class TestConstructorWithBytes:
     def test_constructor_with_binary_bytes(self):
         """Test constructing document with binary content."""
         content = b"\x00\x01\x02\x03\xff\xfe"
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="binary.dat",
             description="Binary data",
             content=content,
@@ -68,7 +68,7 @@ class TestConstructorWithString:
     def test_constructor_with_string_content(self):
         """Test constructing document with string content."""
         content = "Hello, World! 你好世界 🌍"
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="test.txt",
             description="Unicode text",
             content=content,
@@ -79,7 +79,7 @@ class TestConstructorWithString:
 
     def test_constructor_with_empty_string(self):
         """Test constructing document with empty string."""
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="empty.txt",
             description=None,
             content="",
@@ -93,7 +93,7 @@ class TestConstructorWithString:
         content = """Line 1
 Line 2
 Line 3"""
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="multiline.txt",
             description="Multiline content",
             content=content,
@@ -111,7 +111,7 @@ class TestConstructorWithListForMarkdown:
             "# Section 2\nContent for section 2",
             "# Section 3\nContent for section 3",
         ]
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="sections.md",
             description="Markdown sections",
             content=items,
@@ -129,7 +129,7 @@ class TestConstructorWithListForMarkdown:
 
     def test_constructor_markdown_with_empty_list(self):
         """Test constructing markdown document with empty list."""
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="empty.md",
             description="Empty markdown",
             content=[],
@@ -141,7 +141,7 @@ class TestConstructorWithListForMarkdown:
     def test_constructor_markdown_with_single_item_list(self):
         """Test constructing markdown document with single item list."""
         items = ["Single item content"]
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="single.md",
             description=None,
             content=items,
@@ -152,7 +152,7 @@ class TestConstructorWithListForMarkdown:
         """Test that non-markdown files with list content raise an error."""
         items = ["item1", "item2"]
         with pytest.raises(ValueError) as exc_info:
-            ConcreteTestDocument(
+            ConcreteTestDocument.create(
                 name="test.txt",  # Not .md extension
                 description=None,
                 content=items,
@@ -172,7 +172,7 @@ class TestConstructorWithDictForJSON:
             "tags": ["python", "ai"],
             "active": True,
         }
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="data.json",
             description="JSON data",
             content=data,
@@ -197,7 +197,7 @@ class TestConstructorWithDictForJSON:
             tags=["developer", "python"],
             config={"debug": True, "timeout": 30},
         )
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="model.json",
             description="Model data",
             content=model,
@@ -213,7 +213,7 @@ class TestConstructorWithDictForJSON:
     def test_constructor_json_with_nested_dict(self):
         """Test constructing JSON document with nested dictionary."""
         data = {"level1": {"level2": {"level3": {"value": "deep"}}}}
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="nested.json",
             description=None,
             content=data,
@@ -224,7 +224,7 @@ class TestConstructorWithDictForJSON:
     def test_constructor_json_with_list(self):
         """Test constructing JSON document with list (not string list)."""
         data = [1, 2, 3, {"key": "value"}]
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="array.json",
             description="JSON array",
             content=data,
@@ -252,7 +252,7 @@ class TestConstructorWithDictForYAML:
                 "ttl": 300,
             },
         }
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="config.yaml",
             description="YAML config",
             content=data,
@@ -273,7 +273,7 @@ class TestConstructorWithDictForYAML:
     def test_constructor_yml_extension(self):
         """Test constructing YAML document with .yml extension."""
         data = {"test": "value", "number": 42}
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="config.yml",
             description=None,
             content=data,
@@ -289,7 +289,7 @@ class TestConstructorWithDictForYAML:
             tags=["yaml", "config"],
             config={"environment": "production"},
         )
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="model.yaml",
             description="Model as YAML",
             content=model,
@@ -304,7 +304,7 @@ class TestConstructorWithDictForYAML:
     def test_constructor_yaml_with_list(self):
         """Test constructing YAML document with list."""
         data = ["item1", "item2", "item3"]
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="list.yaml",
             description="YAML list",
             content=data,
@@ -323,7 +323,7 @@ class TestConstructorWithListOfPydanticModels:
             SampleModel(name="Bob", age=30, tags=["qa", "test"]),
             SampleModel(name="Charlie", age=35, tags=[]),
         ]
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="users.json",
             description="List of users",
             content=models,
@@ -354,7 +354,7 @@ class TestConstructorWithListOfPydanticModels:
             SampleModel(name="Server1", age=1, tags=["prod"], config={"port": 8080}),
             SampleModel(name="Server2", age=2, tags=["dev"], config={"port": 8081}),
         ]
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="servers.yaml",
             description="Server configurations",
             content=models,
@@ -379,7 +379,7 @@ class TestConstructorWithListOfPydanticModels:
     def test_constructor_empty_list_of_models_json(self):
         """Test constructing JSON document with empty list of models."""
         models: list[SampleModel] = []
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="empty.json",
             description=None,
             content=models,
@@ -398,7 +398,7 @@ class TestConstructorWithListOfPydanticModels:
             SampleModel(name="Test", age=20),
         ]
         with pytest.raises(ValueError) as exc_info:
-            ConcreteTestDocument(
+            ConcreteTestDocument.create(
                 name="test.txt",  # Wrong extension
                 description=None,
                 content=models,
@@ -408,7 +408,7 @@ class TestConstructorWithListOfPydanticModels:
     def test_as_pydantic_model_with_wrong_list_type_fails(self):
         """Test that as_pydantic_model fails with mismatched list data."""
         # Create a document with a dict (not a list)
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="single.json",
             description=None,
             content={"name": "Alice", "age": 25, "tags": []},
@@ -423,7 +423,7 @@ class TestConstructorWithListOfPydanticModels:
         """Test that mixed list types are handled correctly."""
         # Create a list with mixed types - the constructor should handle appropriately
         data = [{"name": "Alice", "age": 25, "tags": []}]  # Raw dict, not models
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="data.json",
             description=None,
             content=data,
@@ -445,7 +445,7 @@ class TestConstructorErrorCases:
         """Test that unsupported content types raise an error."""
         # Dict without .json or .yaml extension
         with pytest.raises(ValueError) as exc_info:
-            ConcreteTestDocument(
+            ConcreteTestDocument.create(
                 name="test.txt",
                 description=None,
                 content={"key": "value"},
@@ -455,26 +455,31 @@ class TestConstructorErrorCases:
 
     def test_unsupported_object_type(self):
         """Test that arbitrary objects raise an error."""
+        from typing import cast
 
         class CustomClass:
             pass
 
         obj = CustomClass()
         with pytest.raises(ValueError) as exc_info:
-            ConcreteTestDocument(
+            # Cast to str to satisfy type checker, but it will still fail at runtime
+            ConcreteTestDocument.create(
                 name="test.txt",
                 description=None,
-                content=obj,
+                content=cast(str, obj),
             )
         assert "Unsupported content type" in str(exc_info.value)
 
     def test_none_content_raises_error(self):
         """Test that None content raises an error."""
+        from typing import cast
+
         with pytest.raises(ValueError) as exc_info:
-            ConcreteTestDocument(
+            # Cast None to str to satisfy type checker, but it will still fail at runtime
+            ConcreteTestDocument.create(
                 name="test.txt",
                 description=None,
-                content=None,
+                content=cast(str, None),
             )
         assert "Unsupported content type" in str(exc_info.value)
         assert "NoneType" in str(exc_info.value)
@@ -483,39 +488,15 @@ class TestConstructorErrorCases:
         """Test that mixed-type lists are rejected for markdown."""
         mixed_list = ["string", 123, "another string"]
         with pytest.raises(ValueError) as exc_info:
-            ConcreteTestDocument(
+            ConcreteTestDocument.create(
                 name="test.md",
                 description=None,
                 content=mixed_list,
             )
         assert "Unsupported content type" in str(exc_info.value)
 
-    def test_numeric_content_for_json(self):
-        """Test that numeric content works for JSON files."""
-        # Single number should work for JSON
-        doc = ConcreteTestDocument(
-            name="number.json",
-            description=None,
-            content=42,
-        )
-        assert doc.as_json() == 42
-
-        # Float should also work
-        doc2 = ConcreteTestDocument(
-            name="float.json",
-            description=None,
-            content=3.14159,
-        )
-        assert doc2.as_json() == 3.14159
-
-    def test_boolean_content_for_json(self):
-        """Test that boolean content works for JSON files."""
-        doc = ConcreteTestDocument(
-            name="bool.json",
-            description=None,
-            content=True,
-        )
-        assert doc.as_json() is True
+    # Removed test_numeric_content_for_json and test_boolean_content_for_json
+    # as int/float/bool are not supported content types for create method
 
 
 class TestConstructorPriorityOrder:
@@ -525,7 +506,7 @@ class TestConstructorPriorityOrder:
         """Test that bytes content is used directly regardless of extension."""
         # Even with .json extension, bytes should be used directly
         content = b"not valid json"
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="test.json",
             description=None,
             content=content,
@@ -536,7 +517,7 @@ class TestConstructorPriorityOrder:
         """Test that string content is converted to bytes regardless of extension."""
         # Even with .json extension, string should be converted to bytes
         content = "plain text, not JSON"
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="test.json",
             description=None,
             content=content,
@@ -546,7 +527,7 @@ class TestConstructorPriorityOrder:
     def test_list_markdown_before_yaml_json(self):
         """Test that list[str] with .md extension uses markdown list."""
         items = ["item1", "item2"]
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="test.md",
             description=None,
             content=items,
@@ -557,7 +538,7 @@ class TestConstructorPriorityOrder:
     def test_yaml_extension_with_dict(self):
         """Test that .yaml extension with dict uses YAML serialization."""
         data = {"key": "value"}
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="test.yaml",
             description=None,
             content=data,
@@ -570,7 +551,7 @@ class TestConstructorPriorityOrder:
     def test_json_extension_with_dict(self):
         """Test that .json extension with dict uses JSON serialization."""
         data = {"key": "value"}
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="test.json",
             description=None,
             content=data,
@@ -598,7 +579,7 @@ class TestConstructorIntegration:
         }
 
         # Create document
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="data.json",
             description="Test data",
             content=original_data,
@@ -634,7 +615,7 @@ class TestConstructorIntegration:
         }
 
         # Create document
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="config.yaml",
             description="Server config",
             content=original_data,
@@ -653,7 +634,7 @@ class TestConstructorIntegration:
         ]
 
         # Create document
-        doc = ConcreteTestDocument(
+        doc = ConcreteTestDocument.create(
             name="chapters.md",
             description="Book chapters",
             content=original_items,

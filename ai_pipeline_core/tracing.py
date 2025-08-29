@@ -29,6 +29,8 @@ R = TypeVar("R")
 TraceLevel = Literal["always", "debug", "off"]
 """Control level for tracing activation.
 
+@public
+
 Values:
 - "always": Always trace (default, production mode)
 - "debug": Only trace when LMNR_DEBUG == "true"

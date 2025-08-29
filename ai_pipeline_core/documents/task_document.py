@@ -6,14 +6,14 @@ This module provides the TaskDocument abstract base class for documents
 that exist only during Prefect task execution and are not persisted.
 """
 
-from typing import Any, Literal, final
+from typing import Literal, final
 
 from .document import Document
 
 
 class TaskDocument(Document):
     """Abstract base class for temporary documents within task execution.
-    
+
     @public
 
     TaskDocument is used for intermediate data that exists only during
@@ -28,48 +28,93 @@ class TaskDocument(Document):
     - Used for intermediate processing results
     - More memory-efficient for temporary data
 
-    Usage:
-        Always subclass TaskDocument for temporary document types:
+    Creating TaskDocuments:
+        **Use the `create` classmethod** for most use cases. It handles automatic
+        conversion of various content types. Only use __init__ when you have bytes.
 
-        >>> class TempProcessingDoc(TaskDocument):
-        ...     def get_type(self) -> str:
-        ...         return "temp_processing"
-        >>> doc = TempProcessingDoc(name="temp.json", content=b'{}')
+        >>> from enum import StrEnum
+        >>>
+        >>> # Simple task document:
+        >>> class TempDoc(TaskDocument):
+        ...     pass
+        >>>
+        >>> # With restricted files:
+        >>> class CacheDoc(TaskDocument):
+        ...     class FILES(StrEnum):
+        ...         CACHE = "cache.json"
+        ...         INDEX = "index.dat"
+        >>>
+        >>> # RECOMMENDED - automatic conversion:
+        >>> doc = TempDoc.create(name="temp.json", content={"status": "processing"})
+        >>> doc = CacheDoc.create(name="cache.json", content={"data": [1, 2, 3]})
+
+    Use Cases:
+        - Intermediate transformation results
+        - Temporary buffers during processing
+        - Task-local cache data
+        - Processing status documents
 
     Note:
         - Cannot instantiate TaskDocument directly - must subclass
         - Not saved by simple_runner utilities
-        - Useful for data transformations within tasks
         - Reduces I/O overhead for temporary data
+        - No additional abstract methods to implement
 
     See Also:
         FlowDocument: For documents that persist across flow runs
         TemporaryDocument: Alternative for non-persistent documents
     """
 
-    def __init__(self, **data: Any) -> None:
-        """Initialize a TaskDocument instance.
+    def __init__(
+        self,
+        *,
+        name: str,
+        content: bytes,
+        description: str | None = None,
+    ) -> None:
+        """Initialize a TaskDocument with raw bytes content.
+
+        Important:
+            **Most users should use the `create` classmethod instead of __init__.**
+            The create method provides automatic content conversion for various types
+            (str, dict, list, Pydantic models) while __init__ only accepts bytes.
 
         Prevents direct instantiation of the abstract TaskDocument class.
         TaskDocument must be subclassed for specific temporary document types.
 
         Args:
-            **data: Keyword arguments for name, description, and content fields.
+            name: Document filename (required, keyword-only)
+            content: Document content as raw bytes (required, keyword-only)
+            description: Optional human-readable description (keyword-only)
 
         Raises:
             TypeError: If attempting to instantiate TaskDocument directly
                       instead of using a concrete subclass.
 
         Example:
-            >>> # This will raise TypeError:
-            >>> doc = TaskDocument(name="temp.txt", content=b"data")
-            >>> # This is correct:
-            >>> class MyTaskDoc(TaskDocument): ...
-            >>> doc = MyTaskDoc(name="temp.txt", content=b"data")
+            >>> from enum import StrEnum
+            >>>
+            >>> # Simple subclass:
+            >>> class MyTaskDoc(TaskDocument):
+            ...     pass
+            >>>
+            >>> # With FILES restriction:
+            >>> class TempProcessDoc(TaskDocument):
+            ...     class FILES(StrEnum):
+            ...         BUFFER = "buffer.bin"
+            ...         STATUS = "status.json"
+            >>>
+            >>> # Direct constructor - only for bytes:
+            >>> doc = MyTaskDoc(name="temp.bin", content=b"raw data")
+            >>>
+            >>> # RECOMMENDED - use create for automatic conversion:
+            >>> doc = TempProcessDoc.create(name="status.json", content={"percent": 50})
+            >>> # This would raise DocumentNameError:
+            >>> # doc = TempProcessDoc.create(name="other.json", content={})
         """
         if type(self) is TaskDocument:
             raise TypeError("Cannot instantiate abstract TaskDocument class directly")
-        super().__init__(**data)
+        super().__init__(name=name, content=content, description=description)
 
     @final
     def get_base_type(self) -> Literal["task"]:

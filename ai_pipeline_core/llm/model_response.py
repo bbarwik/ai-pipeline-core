@@ -18,15 +18,16 @@ T = TypeVar("T", bound=BaseModel)
 
 class ModelResponse(ChatCompletion):
     """Enhanced response wrapper for LLM text generation.
-    
+
     @public
 
-    Binary compatible with OpenAI ChatCompletion response format. All LLM provider
+    Structurally compatible with OpenAI ChatCompletion response format. All LLM provider
     responses are normalized to this format by LiteLLM proxy, ensuring consistent
     interface across providers (OpenAI, Anthropic, Google, Grok, etc.).
 
     Additional Attributes:
-        headers: HTTP response headers including cost information.
+        headers: HTTP response headers including cost information. Only populated
+                when using our client; will be empty dict if deserializing from JSON.
         model_options: Configuration used for this generation.
 
     Key Properties:
@@ -36,6 +37,7 @@ class ModelResponse(ChatCompletion):
         id: Unique response ID (inherited).
 
     Example:
+        >>> from ai_pipeline_core.llm import generate
         >>> response = await generate("gpt-5", messages="Hello")
         >>> print(response.content)  # Generated text
         >>> print(response.usage.total_tokens)  # Token count
@@ -86,7 +88,7 @@ class ModelResponse(ChatCompletion):
     @property
     def content(self) -> str:
         """Get the generated text content.
-        
+
         @public
 
         Convenience property for accessing the first choice's message
@@ -224,10 +226,10 @@ class ModelResponse(ChatCompletion):
 
 class StructuredModelResponse(ModelResponse, Generic[T]):
     """Response wrapper for structured/typed LLM output.
-    
+
     @public
 
-    Binary compatible with OpenAI ChatCompletion response format. Extends ModelResponse
+    Structurally compatible with OpenAI ChatCompletion response format. Extends ModelResponse
     with type-safe access to parsed Pydantic model instances.
 
     Type Parameter:
@@ -235,11 +237,12 @@ class StructuredModelResponse(ModelResponse, Generic[T]):
 
     Additional Features:
         - Type-safe access to parsed Pydantic model
-        - Automatic extraction from ParsedChatCompletion
+        - Automatically parses structured JSON output from model response
         - All features of ModelResponse (cost, metadata, etc.)
 
     Example:
         >>> from pydantic import BaseModel
+        >>> from ai_pipeline_core.llm import generate_structured
         >>>
         >>> class Analysis(BaseModel):
         ...     sentiment: float
@@ -304,7 +307,7 @@ class StructuredModelResponse(ModelResponse, Generic[T]):
     @property
     def parsed(self) -> T:
         """Get the parsed Pydantic model instance.
-        
+
         @public
 
         Provides type-safe access to the structured output that was

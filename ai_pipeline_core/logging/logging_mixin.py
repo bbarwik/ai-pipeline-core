@@ -16,7 +16,7 @@ from prefect.logging import get_logger
 
 class LoggerMixin:
     """Mixin class that provides consistent logging functionality using Prefect's logging system.
-    
+
     @public
 
     Automatically uses appropriate logger based on context:
@@ -91,7 +91,7 @@ class LoggerMixin:
 
 class StructuredLoggerMixin(LoggerMixin):
     """Extended mixin for structured logging with Prefect.
-    
+
     @public
     """
 

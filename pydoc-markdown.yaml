@@ -8,18 +8,19 @@ processors:
   - type: smart
   - type: crossref
   - type: filter
-    documented_only: true          # only items that actually have docstrings
-    exclude_private: true          # drop leading-underscore names by default
-    exclude_special: true          # hide dunders like __init__ (opt-in with class docs instead)
-    skip_empty_modules: true
-    do_not_filter_modules: true    # always keep modules; we'll filter their members
-    # Only include things that explicitly opt in with @public in the docstring.
-    expression: |
-      obj.docstring is not None and "@public" in obj.docstring.content
+    documented_only: true
+    do_not_filter_modules: true
 
 renderer:
-  type: markdown
-  filename: API.md
-  render_toc: true
-  render_module_header: true
-  render_toc_title: "ai-pipeline-core API"
+  type: jinja2
+  build_directory: .
+  renders:
+    - template: docs/api_template.jinja2
+      produces:
+        API:
+          modules:
+            - "ai_pipeline_core*"
+      jinja2_environment_settings:
+        autoescape: false
+        trim_blocks: false
+        lstrip_blocks: false

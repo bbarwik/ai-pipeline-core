@@ -222,7 +222,7 @@ async def generate(
     options: ModelOptions | None = None,
 ) -> ModelResponse:
     """Generate text response from a language model.
-    
+
     @public
 
     Main entry point for LLM text generation with smart context caching.
@@ -279,18 +279,16 @@ async def generate(
         - Context caching saves ~50-90% tokens on repeated calls
         - First call: full token cost
         - Subsequent calls (within 120s): only messages tokens
-        - Retry adds 10s delay between attempts
+        - Default retry delay is 10s (configurable via ModelOptions.retry_delay_seconds)
 
-    Caching Implementation:
-        Context caching uses OpenAI's native cache_control with ephemeral TTL.
-        The cache is managed by the LLM provider (not locally stored).
-        Cache key is generated from context hash via get_prompt_cache_key().
-        TTL is fixed at 120 seconds and not configurable (provider limitation).
+    Caching:
+        Context is cached by the LLM provider with a fixed 120-second TTL.
+        The cache is based on the content hash and reduces token usage significantly.
 
     Note:
-        - Context is traced but ignored in logs for brevity
+        - Context argument is ignored by the tracer to avoid recording large data
         - All models are accessed via LiteLLM proxy
-        - Automatic retry with fixed delay (default 10s between attempts)
+        - Automatic retry with configurable delay between attempts
         - Cost tracking via response headers
 
     See Also:
@@ -300,7 +298,7 @@ async def generate(
     """
     if isinstance(messages, str):
         messages = AIMessages([messages])
-    
+
     if context is None:
         context = AIMessages()
     if options is None:
@@ -326,7 +324,7 @@ async def generate_structured(
     options: ModelOptions | None = None,
 ) -> StructuredModelResponse[T]:
     """Generate structured output conforming to a Pydantic model.
-    
+
     @public
 
     Type-safe generation that returns validated Pydantic model instances.
@@ -347,9 +345,10 @@ async def generate_structured(
         - All fields from regular ModelResponse (content, usage, etc.)
 
     Raises:
-        ValueError: If model doesn't support structured output or parsing fails.
+        TypeError: If response_format is not a Pydantic model class.
+        ValueError: If model doesn't support structured output or no parsed content returned.
         LLMError: If generation fails after retries.
-        TypeError: If response cannot be converted to response_format.
+        ValidationError: If response cannot be parsed into response_format.
 
     Example:
         >>> from pydantic import BaseModel, Field
@@ -371,11 +370,11 @@ async def generate_structured(
         ...     print(f"- {point}")
 
     Supported models:
-        Most modern models support structured output:
-        - OpenAI: gpt-4o-mini and above
-        - Anthropic: All Claude 3+ models
+        Support varies by provider and model. Generally includes:
+        - OpenAI: GPT-4 and newer models
+        - Anthropic: Claude 3+ models
         - Google: Gemini Pro models
-        - Others via LiteLLM compatibility
+        Check provider documentation for specific model support.
 
     Performance:
         - Structured output may use more tokens than free text
@@ -383,8 +382,8 @@ async def generate_structured(
         - Validation overhead is minimal (Pydantic is fast)
 
     Note:
-        - response_format is automatically added to options
-        - The model is instructed to follow the schema exactly
+        - Pydantic model is converted to JSON Schema for the API
+        - The model generates JSON matching the schema
         - Validation happens automatically via Pydantic
         - Use Field() descriptions to guide generation
 
@@ -397,7 +396,7 @@ async def generate_structured(
         context = AIMessages()
     if options is None:
         options = ModelOptions()
-    
+
     options.response_format = response_format
 
     if isinstance(messages, str):

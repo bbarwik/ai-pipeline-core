@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 def sanitize_url(url: str) -> str:
     """Sanitize URL or query string for use in filenames.
-    
+
     @public
 
     Removes or replaces characters that are invalid in filenames.
@@ -69,7 +69,7 @@ def canonical_name_key(
     extra_suffixes: Iterable[str] = (),
 ) -> str:
     """Produce a canonical snake_case key from a class or name.
-    
+
     @public
 
     Process:

@@ -42,7 +42,7 @@ dev = [
     "basedpyright>=1.31.2",
     "bump2version>=1.0.1",
     "interrogate>=1.5.0",
-    "pydoc-markdown>=4.8.0",
+    "pydoc-markdown[jinja]>=4.8.0",
     "pre-commit>=4.3.0",
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=5.0.0",
@@ -83,6 +83,8 @@ preview = true  # Required for DOC (pydoclint-derived) rules
 # 'D' is for docstring enforcement. 'DOC' is for docstring content validation.
 select = ["E", "F", "I", "TID252", "T20", "D", "DOC"]
 extend-select = ["PLC0415"]
+# Ignore DOC502 - false positives with section headers in docstrings
+ignore = ["DOC502"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

@@ -15,7 +15,7 @@ from ai_pipeline_core.exceptions import DocumentValidationError
 
 class FlowConfig(ABC):
     """Abstract base class for type-safe flow configuration.
-    
+
     @public
 
     FlowConfig defines the contract for flow inputs and outputs, ensuring
@@ -235,7 +235,7 @@ class FlowConfig(ABC):
         """
         if not isinstance(documents, DocumentList):
             raise DocumentValidationError("Documents must be a DocumentList")
-        
+
         output_document_class = cls.get_output_document_type()
 
         for doc in documents:

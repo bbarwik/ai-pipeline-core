@@ -18,7 +18,7 @@ T = TypeVar("T", bound="FlowOptions")
 
 class FlowOptions(BaseSettings):
     """Base configuration settings for AI pipeline flows.
-    
+
     @public
 
     FlowOptions provides runtime configuration for pipeline flows,

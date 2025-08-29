@@ -199,7 +199,7 @@ async def run_pipeline(
     Runs a flow function with automatic document loading, validation,
     and saving. The flow receives input documents from the filesystem
     and saves its output for subsequent flows.
-    
+
     The execution proceeds through these steps:
     1. Load input documents from output_dir subdirectories
     2. Validate input documents against config requirements

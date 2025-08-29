@@ -13,8 +13,8 @@ from .document import Document
 
 @final
 class TemporaryDocument(Document):
-    """Concrete document class for data that is never persisted.
-    
+    r"""Concrete document class for data that is never persisted.
+
     @public
 
     TemporaryDocument is a final (non-subclassable) document type for
@@ -29,20 +29,39 @@ class TemporaryDocument(Document):
     - Useful for transient data like API responses or intermediate calculations
     - Ignored by simple_runner save operations
 
-    Usage:
-        Can be instantiated directly without subclassing:
+    Creating TemporaryDocuments:
+        **Use the `create` classmethod** for most use cases. It handles automatic
+        conversion of various content types. Only use __init__ when you have bytes.
 
-        >>> doc = TemporaryDocument(
+        >>> # RECOMMENDED - automatic conversion:
+        >>> doc = TemporaryDocument.create(
         ...     name="api_response.json",
-        ...     content=b'{"status": "ok"}'
+        ...     content={"status": "ok", "data": [1, 2, 3]}
         ... )
-        >>> doc.is_temporary  # True
+        >>> doc = TemporaryDocument.create(
+        ...     name="credentials.txt",
+        ...     content="secret_token_xyz"
+        ... )
+        >>>
+        >>> # Direct constructor - only for bytes:
+        >>> doc = TemporaryDocument(
+        ...     name="binary.dat",
+        ...     content=b"\x00\x01\x02"
+        ... )
+        >>>
+        >>> doc.is_temporary  # Always True
+
+    Use Cases:
+        - API responses that shouldn't be cached
+        - Sensitive credentials or tokens
+        - Intermediate calculations
+        - Temporary transformations
+        - Data explicitly marked as non-persistent
 
     Note:
         - This is a final class and cannot be subclassed
         - Use when you explicitly want to prevent persistence
         - Useful for sensitive data that shouldn't be written to disk
-        - API responses, credentials, or intermediate calculations
 
     See Also:
         FlowDocument: For documents that persist across flow runs

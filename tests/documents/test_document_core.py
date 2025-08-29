@@ -354,7 +354,7 @@ class TestMarkdownListHelpers:
         ]
         # Join items with separator
         content = Document.MARKDOWN_LIST_SEPARATOR.join(items)
-        doc = ConcreteTestFlowDocument(
+        doc = ConcreteTestFlowDocument.create(
             name="list.md",
             description="basic join",
             content=content,
@@ -376,7 +376,7 @@ class TestMarkdownListHelpers:
             "keep --- here",  # separator in text should remain
         ]
         content = Document.MARKDOWN_LIST_SEPARATOR.join(items)
-        doc = ConcreteTestFlowDocument(
+        doc = ConcreteTestFlowDocument.create(
             name="list.md",
             description=None,
             content=content,
@@ -392,7 +392,7 @@ class TestMarkdownListHelpers:
             "text with --- embedded",
         ]
         content = Document.MARKDOWN_LIST_SEPARATOR.join(items)
-        doc = ConcreteTestFlowDocument(
+        doc = ConcreteTestFlowDocument.create(
             name="roundtrip.md",
             description="roundtrip",
             content=content,
@@ -405,7 +405,7 @@ class TestDocumentConstructor:
 
     def test_constructor_with_str_content(self):
         text = "Hello ✨"
-        doc = ConcreteTestFlowDocument(
+        doc = ConcreteTestFlowDocument.create(
             name="greeting.txt",
             description="str content",
             content=text,
@@ -432,13 +432,13 @@ class TestDocumentConstructor:
     def test_constructor_validation_applies(self):
         # Name validation still applies through constructor
         with pytest.raises(DocumentNameError):
-            ConcreteTestFlowDocument(name="../hack.txt", description=None, content="x")
+            ConcreteTestFlowDocument.create(name="../hack.txt", description=None, content="x")
 
         # Size validation applies too (using SmallDocument)
-        doc_ok = SmallDocument(name="ok.txt", description=None, content="12345")
+        doc_ok = SmallDocument.create(name="ok.txt", description=None, content="12345")
         assert doc_ok.size == 5
         with pytest.raises(DocumentSizeError):
-            SmallDocument(name="big.txt", description=None, content="12345678901")
+            SmallDocument.create(name="big.txt", description=None, content="12345678901")
 
 
 class TestNewDocumentMethods:
@@ -512,7 +512,9 @@ debug: true
         import json
 
         doc = ConcreteTestFlowDocument(
-            name="test.json", description="JSON from dict", content=json.dumps(data, indent=2)
+            name="test.json",
+            description="JSON from dict",
+            content=json.dumps(data, indent=2).encode(),
         )
 
         assert doc.name == "test.json"
@@ -543,7 +545,7 @@ debug: true
         doc = ConcreteTestFlowDocument(
             name="user.json",
             description="User data",
-            content=json.dumps(user.model_dump(mode="json"), indent=2),
+            content=json.dumps(user.model_dump(mode="json"), indent=2).encode(),
         )
 
         assert doc.name == "user.json"
@@ -558,7 +560,11 @@ debug: true
 
         # Create JSON document directly
         data = {"key": "value"}
-        doc = ConcreteTestFlowDocument(name="test.json", description=None, content=json.dumps(data))
+        doc = ConcreteTestFlowDocument(
+            name="test.json",
+            description=None,
+            content=json.dumps(data).encode(),
+        )
         assert doc.as_json() == data
 
     def test_create_yaml_with_dict(self):
@@ -649,7 +655,7 @@ debug: true
         json_doc = ConcreteTestFlowDocument(
             name="data.json",
             description=None,
-            content=json.dumps(original.model_dump(mode="json"), indent=2),
+            content=json.dumps(original.model_dump(mode="json"), indent=2).encode(),
         )
         json_model = json_doc.as_pydantic_model(DataModel)
         assert json_model == original
@@ -671,30 +677,33 @@ class TestParsedMethod:
     def test_parsed_str_roundtrip(self):
         """Test that str content roundtrips correctly."""
         original = "Hello, World! 🌍"
-        doc = ConcreteTestFlowDocument(name="test.txt", content=original)
-        assert doc.parsed(str) == original
+        doc = ConcreteTestFlowDocument.create(name="test.txt", content=original)
+        assert doc.parse(str) == original
 
     def test_parsed_bytes_roundtrip(self):
         """Test that bytes content roundtrips correctly."""
         original = b"Binary \x00\xff\xfe data"
         doc = ConcreteTestFlowDocument(name="data.bin", content=original)
-        assert doc.parsed(bytes) == original
+        assert doc.parse(bytes) == original
 
     def test_parsed_json_dict_roundtrip(self):
         """Test that dict → JSON → dict roundtrips correctly."""
         import json
 
         original = {"name": "test", "values": [1, 2, 3], "nested": {"key": "value"}}
-        doc = ConcreteTestFlowDocument(name="data.json", content=json.dumps(original, indent=2))
-        assert doc.parsed(dict) == original
+        doc = ConcreteTestFlowDocument(
+            name="data.json",
+            content=json.dumps(original, indent=2).encode(),
+        )
+        assert doc.parse(dict) == original
 
     def test_parsed_json_list_roundtrip(self):
         """Test that list → JSON → list roundtrips correctly."""
         import json
 
         original = [1, 2, {"key": "value"}, "text"]
-        doc = ConcreteTestFlowDocument(name="array.json", content=json.dumps(original))
-        assert doc.parsed(list) == original
+        doc = ConcreteTestFlowDocument(name="array.json", content=json.dumps(original).encode())
+        assert doc.parse(list) == original
 
     def test_parsed_yaml_dict_roundtrip(self):
         """Test that dict → YAML → dict roundtrips correctly."""
@@ -708,7 +717,7 @@ class TestParsedMethod:
         yaml.dump(original, stream)
 
         doc = ConcreteTestFlowDocument(name="config.yaml", content=stream.getvalue())
-        assert doc.parsed(dict) == original
+        assert doc.parse(dict) == original
 
     def test_parsed_yaml_with_yml_extension(self):
         """Test that .yml extension works with parsed()."""
@@ -722,14 +731,14 @@ class TestParsedMethod:
         yaml.dump(original, stream)
 
         doc = ConcreteTestFlowDocument(name="config.yml", content=stream.getvalue())
-        assert doc.parsed(dict) == original
+        assert doc.parse(dict) == original
 
     def test_parsed_markdown_list_roundtrip(self):
         """Test that list → markdown → list roundtrips correctly."""
         original = ["First item\nwith lines", "Second item", "Third item"]
         content = Document.MARKDOWN_LIST_SEPARATOR.join(original)
-        doc = ConcreteTestFlowDocument(name="items.md", content=content)
-        assert doc.parsed(list) == original
+        doc = ConcreteTestFlowDocument.create(name="items.md", content=content)
+        assert doc.parse(list) == original
 
     def test_parsed_pydantic_model_json(self):
         """Test parsing JSON to Pydantic model."""
@@ -743,8 +752,11 @@ class TestParsedMethod:
             active: bool = True
 
         original = UserModel(name="Alice", age=30)
-        doc = ConcreteTestFlowDocument(name="user.json", content=json.dumps(original.model_dump()))
-        parsed = doc.parsed(UserModel)
+        doc = ConcreteTestFlowDocument(
+            name="user.json",
+            content=json.dumps(original.model_dump()).encode(),
+        )
+        parsed = doc.parse(UserModel)
         assert parsed == original
         assert isinstance(parsed, UserModel)
 
@@ -766,50 +778,50 @@ class TestParsedMethod:
         yaml.dump(original.model_dump(), stream)
 
         doc = ConcreteTestFlowDocument(name="config.yaml", content=stream.getvalue())
-        parsed = doc.parsed(ConfigModel)
+        parsed = doc.parse(ConfigModel)
         assert parsed == original
         assert isinstance(parsed, ConfigModel)
 
     def test_parsed_unsupported_type(self):
         """Test that unsupported types raise ValueError."""
-        doc = ConcreteTestFlowDocument(name="test.txt", content="text")
+        doc = ConcreteTestFlowDocument.create(name="test.txt", content="text")
 
         with pytest.raises(ValueError, match="Unsupported type"):
-            doc.parsed(int)
+            doc.parse(int)
 
         with pytest.raises(ValueError, match="Unsupported type"):
-            doc.parsed(float)
+            doc.parse(float)
 
     def test_parsed_wrong_extension_for_type(self):
         """Test that wrong extension for requested type raises error."""
-        doc = ConcreteTestFlowDocument(name="test.txt", content="not json")
+        doc = ConcreteTestFlowDocument.create(name="test.txt", content="not json")
 
         # .txt file cannot be parsed as dict without being JSON/YAML
         with pytest.raises(ValueError):
-            doc.parsed(dict)
+            doc.parse(dict)
 
     def test_parsed_binary_as_str(self):
         """Test that binary content can be decoded to str."""
         doc = ConcreteTestFlowDocument(name="test.bin", content=b"Hello UTF-8")
-        assert doc.parsed(str) == "Hello UTF-8"
+        assert doc.parse(str) == "Hello UTF-8"
 
     def test_parsed_edge_cases(self):
         """Test edge cases for parsed method."""
         # Empty string
-        doc1 = ConcreteTestFlowDocument(name="empty.txt", content="")
-        assert doc1.parsed(str) == ""
-        assert doc1.parsed(bytes) == b""
+        doc1 = ConcreteTestFlowDocument.create(name="empty.txt", content="")
+        assert doc1.parse(str) == ""
+        assert doc1.parse(bytes) == b""
 
         # Empty JSON array
         import json
 
-        doc2 = ConcreteTestFlowDocument(name="empty.json", content=json.dumps([]))
-        assert doc2.parsed(list) == []
+        doc2 = ConcreteTestFlowDocument(name="empty.json", content=json.dumps([]).encode())
+        assert doc2.parse(list) == []
 
         # Empty JSON object
-        doc3 = ConcreteTestFlowDocument(name="empty.json", content=json.dumps({}))
-        assert doc3.parsed(dict) == {}
+        doc3 = ConcreteTestFlowDocument(name="empty.json", content=json.dumps({}).encode())
+        assert doc3.parse(dict) == {}
 
         # Single item markdown list
-        doc4 = ConcreteTestFlowDocument(name="single.md", content="Only item")
-        assert doc4.parsed(list) == ["Only item"]
+        doc4 = ConcreteTestFlowDocument.create(name="single.md", content="Only item")
+        assert doc4.parse(list) == ["Only item"]

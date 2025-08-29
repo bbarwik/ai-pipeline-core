@@ -9,7 +9,6 @@ in AI pipelines. Documents are immutable Pydantic models that wrap binary conten
 import base64
 import hashlib
 import json
-import warnings
 from abc import ABC, abstractmethod
 from base64 import b32encode
 from enum import StrEnum
@@ -28,7 +27,13 @@ from typing import (
     overload,
 )
 
-from pydantic import BaseModel, ConfigDict, ValidationInfo, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+)
 from ruamel.yaml import YAML
 
 from ai_pipeline_core.documents.utils import canonical_name_key
@@ -47,8 +52,8 @@ ContentInput = str | bytes | dict[str, Any] | list[Any] | BaseModel
 
 
 class Document(BaseModel, ABC):
-    """Abstract base class for all documents in the AI Pipeline Core system.
-    
+    r"""Abstract base class for all documents in the AI Pipeline Core system.
+
     @public
 
     Document is the fundamental data abstraction for all content flowing through
@@ -74,6 +79,17 @@ class Document(BaseModel, ABC):
         description: Optional human-readable description
         content: Raw document content as bytes
 
+    Creating Documents:
+        **Use the `create` classmethod** for most use cases. It accepts various
+        content types (str, dict, list, BaseModel) and converts them automatically.
+        Only use __init__ directly when you already have bytes content.
+
+        >>> # RECOMMENDED: Use create for automatic conversion
+        >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
+        >>>
+        >>> # Direct constructor: Only for bytes
+        >>> doc = MyDocument(name="data.bin", content=b"\x00\x01\x02")
+
     Warning:
         - Document subclasses should NOT start with 'Test' prefix (pytest conflict)
         - Cannot instantiate Document directly - use FlowDocument or TaskDocument
@@ -88,29 +104,39 @@ class Document(BaseModel, ABC):
         5. Store metadata in flow_options or pass through TraceInfo
 
     Example:
+        >>> from enum import StrEnum
+        >>>
+        >>> # Simple document:
         >>> class MyDocument(FlowDocument):
-        ...     def get_type(self) -> str:
-        ...         return "my_doc"
-        >>> doc = MyDocument(name="data.json", content=b'{"key": "value"}')
+        ...     pass
+        >>>
+        >>> # Document with file restrictions:
+        >>> class ConfigDocument(FlowDocument):
+        ...     class FILES(StrEnum):
+        ...         CONFIG = "config.yaml"
+        ...         SETTINGS = "settings.json"
+        >>>
+        >>> # RECOMMENDED: Use create for automatic conversion
+        >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
         >>> print(doc.is_text)  # True
         >>> data = doc.as_json()  # {'key': 'value'}
     """
 
     MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024
     """Maximum allowed content size in bytes (default 25MB).
-    
+
     @public
     """
-    
+
     DESCRIPTION_EXTENSION: ClassVar[str] = ".description.md"
     """File extension for description files.
-    
+
     @public
     """
-    
+
     MARKDOWN_LIST_SEPARATOR: ClassVar[str] = "\n\n---\n\n"
     """Separator for markdown list items.
-    
+
     @public
     """
 
@@ -157,49 +183,143 @@ class Document(BaseModel, ABC):
                 f"{', '.join(sorted(extras))}. Only {', '.join(sorted(allowed))} are allowed."
             )
 
-    def __init__(self, **data: Any) -> None:
-        """Initialize a Document instance.
-        
+    @overload
+    @classmethod
+    def create(cls, *, name: str, content: bytes, description: str | None = None) -> Self: ...
+
+    @overload
+    @classmethod
+    def create(cls, *, name: str, content: str, description: str | None = None) -> Self: ...
+
+    @overload
+    @classmethod
+    def create(
+        cls, *, name: str, content: dict[str, Any], description: str | None = None
+    ) -> Self: ...
+
+    @overload
+    @classmethod
+    def create(cls, *, name: str, content: list[Any], description: str | None = None) -> Self: ...
+
+    @overload
+    @classmethod
+    def create(cls, *, name: str, content: BaseModel, description: str | None = None) -> Self: ...
+
+    @classmethod
+    def create(cls, *, name: str, content: ContentInput, description: str | None = None) -> Self:
+        r"""Create a Document with automatic content type conversion (recommended).
+
         @public
 
-        Prevents direct instantiation of the abstract Document class.
-        Content can be passed as either str or bytes (automatically converted to bytes).
-        Handles legacy signature where content was passed as description.
+        This is the **recommended way to create documents**. It accepts various
+        content types and automatically converts them to bytes based on the file
+        extension. Use the `parse` method to reverse this conversion.
 
         Args:
-            **data: Keyword arguments for fields:
-                - name (str): Document filename
-                - description (str | None): Optional description (or content in legacy)
-                - content (str | bytes | None): Content (automatically converted to bytes)
+            name: Document filename (required, keyword-only).
+                  Extension determines serialization:
+                  - .json → JSON serialization
+                  - .yaml/.yml → YAML serialization
+                  - .md → Markdown list joining (for list[str])
+                  - Others → UTF-8 encoding (for str)
+            content: Document content in various formats (required, keyword-only):
+                - bytes: Used directly without conversion
+                - str: Encoded to UTF-8 bytes
+                - dict[str, Any]: Serialized to JSON (.json) or YAML (.yaml/.yml)
+                - list[str]: Joined with separator for .md, else JSON/YAML
+                - list[BaseModel]: Serialized to JSON or YAML based on extension
+                - BaseModel: Serialized to JSON or YAML based on extension
+            description: Optional human-readable description (keyword-only)
+
+        Returns:
+            New Document instance with content converted to bytes
+
+        Raises:
+            ValueError: If content type is not supported for the file extension
+            DocumentNameError: If filename violates validation rules
+            DocumentSizeError: If content exceeds MAX_CONTENT_SIZE
+
+        Note:
+            All conversions are reversible using the `parse` method.
+            For example: MyDocument.create(name="data.json", content={"key": "value"}).parse(dict)
+            returns the original dictionary {"key": "value"}.
+
+        Example:
+            >>> # String content
+            >>> doc = MyDocument.create(name="test.txt", content="Hello World")
+            >>> doc.content  # b'Hello World'
+            >>> doc.parse(str)  # "Hello World"
+
+            >>> # Dictionary to JSON
+            >>> doc = MyDocument.create(name="config.json", content={"key": "value"})
+            >>> doc.content  # b'{"key": "value", ...}'
+            >>> doc.parse(dict)  # {"key": "value"}
+
+            >>> # Pydantic model to YAML
+            >>> from pydantic import BaseModel
+            >>> class Config(BaseModel):
+            ...     host: str
+            ...     port: int
+            >>> config = Config(host="localhost", port=8080)
+            >>> doc = MyDocument.create(name="config.yaml", content=config)
+            >>> doc.parse(Config)  # Returns Config instance
+
+            >>> # List to Markdown
+            >>> items = ["Section 1", "Section 2"]
+            >>> doc = MyDocument.create(name="sections.md", content=items)
+            >>> doc.parse(list)  # ["Section 1", "Section 2"]
+        """
+        # Use model_validate to leverage the existing validator logic
+        temp = cls.model_validate({"name": name, "content": content, "description": description})
+        # Now construct with type-checker-friendly call (bytes only)
+        return cls(name=temp.name, content=temp.content, description=temp.description)
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        content: bytes,
+        description: str | None = None,
+    ) -> None:
+        """Initialize a Document instance with raw bytes content.
+
+        @public
+
+        Important:
+            **Most users should use the `create` classmethod instead of __init__.**
+            The create method provides automatic content conversion for various types
+            (str, dict, list, Pydantic models) while __init__ only accepts bytes.
+
+        This constructor accepts only bytes content for type safety. It prevents
+        direct instantiation of the abstract Document class.
+
+        Args:
+            name: Document filename (required, keyword-only)
+            content: Document content as raw bytes (required, keyword-only)
+            description: Optional human-readable description (keyword-only)
 
         Raises:
             TypeError: If attempting to instantiate Document directly.
 
         Example:
-            >>> doc = MyDocument(name="test.txt", content="Hello World")
+            >>> # Direct constructor - only for bytes content:
+            >>> doc = MyDocument(name="test.txt", content=b"Hello World")
             >>> doc.content  # b'Hello World'
-            >>> # Legacy: content as description
-            >>> doc = MyDocument(name="test.txt", description=b"data", content=None)
-            >>> doc.content  # b'data'
+
+            >>> # RECOMMENDED: Use create for automatic conversion:
+            >>> doc = MyDocument.create(name="text.txt", content="Hello World")
+            >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
+            >>> doc = MyDocument.create(name="config.yaml", content=my_model)
+            >>> doc = MyDocument.create(name="items.md", content=["item1", "item2"])
+
+        See Also:
+            create: Recommended factory method with automatic type conversion
+            parse: Method to reverse the conversion done by create
         """
         if type(self) is Document:
             raise TypeError("Cannot instantiate abstract Document class directly")
 
-        # Handle legacy signature where content was passed as description
-        if data.get("content") is None and data.get("description") is not None:
-            desc = data["description"]
-            if not isinstance(desc, str):
-                # If description is not a string, it's actually content in legacy format
-                warnings.warn(
-                    "Passing content as 'description' parameter is deprecated and will be "
-                    "removed in v0.2.0. Use 'content' parameter instead.",
-                    DeprecationWarning,
-                    stacklevel=2
-                )
-                data["content"] = desc
-                data["description"] = None
-
-        super().__init__(**data)
+        super().__init__(name=name, content=content, description=description)
 
     name: str
     description: str | None = None
@@ -234,7 +354,7 @@ class Document(BaseModel, ABC):
     @property
     def base_type(self) -> Literal["flow", "task", "temporary"]:
         """Get the document's base type.
-        
+
         @public
 
         Property alias for get_base_type() providing a cleaner API.
@@ -249,7 +369,7 @@ class Document(BaseModel, ABC):
     @property
     def is_flow(self) -> bool:
         """Check if this is a flow document.
-        
+
         @public
 
         Flow documents persist across Prefect flow runs and are saved
@@ -264,7 +384,7 @@ class Document(BaseModel, ABC):
     @property
     def is_task(self) -> bool:
         """Check if this is a task document.
-        
+
         @public
 
         Task documents are temporary within Prefect task execution
@@ -279,7 +399,7 @@ class Document(BaseModel, ABC):
     @property
     def is_temporary(self) -> bool:
         """Check if this is a temporary document.
-        
+
         @public
 
         Temporary documents are never persisted and exist only
@@ -330,7 +450,7 @@ class Document(BaseModel, ABC):
     @classmethod
     def validate_file_name(cls, name: str) -> None:
         """Validate that a file name matches allowed patterns.
-        
+
         @public
 
         This method provides a hook for enforcing file naming conventions.
@@ -404,32 +524,35 @@ class Document(BaseModel, ABC):
     @field_validator("content", mode="before")
     @classmethod
     def validate_content(cls, v: Any, info: ValidationInfo) -> bytes:
-        """Pydantic validator for document content.
+        """Pydantic validator that converts various content types to bytes.
 
-        Intelligently converts various content types to bytes:
-        - str: UTF-8 encoding
-        - bytes: passed through
-        - dict: JSON or YAML based on extension
-        - list: Markdown list for .md, JSON/YAML otherwise
-        - Pydantic models: JSON or YAML serialization
-        - Numbers/booleans: JSON serialization for .json files
+        This validator is called automatically during model construction and
+        handles the intelligent type conversion that powers the `create` method.
+        It determines the appropriate serialization based on file extension.
 
-        Ensures content doesn't exceed MAX_CONTENT_SIZE (default 25MB).
+        Conversion Strategy:
+            1. bytes → Passthrough (no conversion)
+            2. str → UTF-8 encoding
+            3. dict/BaseModel + .json → JSON serialization (indented)
+            4. dict/BaseModel + .yaml/.yml → YAML serialization
+            5. list[str] + .md → Join with markdown separator
+            6. list[Any] + .json/.yaml → JSON/YAML array
+            7. int/float/bool + .json → JSON primitive
 
         Args:
-            v: The content to validate (any supported type).
-            info: Pydantic validation info context.
+            v: Content to validate (any supported type)
+            info: Validation context containing other field values
 
         Returns:
-            The validated content as bytes.
+            Content converted to bytes
 
         Raises:
-            DocumentSizeError: If content exceeds MAX_CONTENT_SIZE.
-            ValueError: If content type is not supported.
+            DocumentSizeError: If content exceeds MAX_CONTENT_SIZE
+            ValueError: If content type unsupported for file extension
 
         Note:
-            - Automatically handles type conversion based on file extension
-            - Subclasses can customize MAX_CONTENT_SIZE class variable
+            This validator enables create() to accept multiple types while
+            ensuring __init__ only receives bytes for type safety.
         """
         # Get the name from validation context if available
         name = ""
@@ -572,7 +695,7 @@ class Document(BaseModel, ABC):
     @property
     def id(self) -> str:
         """Get a short unique identifier for the document.
-        
+
         @public
 
         Returns the first 6 characters of the base32-encoded SHA256 hash,
@@ -598,7 +721,7 @@ class Document(BaseModel, ABC):
     @cached_property
     def sha256(self) -> str:
         """Get the full SHA256 hash of the document content.
-        
+
         @public
 
         Computes and caches the SHA256 hash of the content,
@@ -624,7 +747,7 @@ class Document(BaseModel, ABC):
     @property
     def size(self) -> int:
         """Get the size of the document content.
-        
+
         @public
 
         Returns:
@@ -658,7 +781,7 @@ class Document(BaseModel, ABC):
     @property
     def mime_type(self) -> str:
         """Get the document's MIME type.
-        
+
         @public
 
         Primary property for accessing MIME type information.
@@ -676,7 +799,7 @@ class Document(BaseModel, ABC):
     @property
     def is_text(self) -> bool:
         """Check if document contains text content.
-        
+
         @public
 
         Returns:
@@ -692,7 +815,7 @@ class Document(BaseModel, ABC):
     @property
     def is_pdf(self) -> bool:
         """Check if document is a PDF file.
-        
+
         @public
 
         Returns:
@@ -707,7 +830,7 @@ class Document(BaseModel, ABC):
     @property
     def is_image(self) -> bool:
         """Check if document is an image file.
-        
+
         @public
 
         Returns:
@@ -738,70 +861,88 @@ class Document(BaseModel, ABC):
 
     @property
     def text(self) -> str:
-        """Get document content as text string.
-        
+        """Get document content as UTF-8 text string.
+
         @public
 
-        Decodes the bytes content as UTF-8 text. Only works
-        for text-based documents.
+        Decodes the bytes content as UTF-8 text. Only available for
+        text-based documents (check is_text property first).
 
         Returns:
             UTF-8 decoded string.
 
         Raises:
-            ValueError: If document is not text-based (check is_text first).
+            ValueError: If document is not text (is_text == False).
 
         Example:
-            >>> doc = MyDocument(name="data.txt", content=b"Hello")
-            >>> doc.text
-            'Hello'
+            >>> doc = MyDocument.create(name="data.txt", content="Hello \u2728")
+            >>> if doc.is_text:
+            ...     print(doc.text)  # "Hello \u2728"
+
+            >>> # Binary document raises error:
+            >>> binary_doc = MyDocument(name="image.png", content=png_bytes)
+            >>> binary_doc.text  # Raises ValueError
         """
         if not self.is_text:
             raise ValueError(f"Document is not text: {self.name}")
         return self.content.decode("utf-8")
 
     def as_yaml(self) -> Any:
-        """Parse document content as YAML.
-        
+        r"""Parse document content as YAML.
+
         @public
 
-        Converts text content to Python objects using YAML parser.
-        Document must be text-based.
+        Parses the document's text content as YAML and returns Python objects.
+        Uses ruamel.yaml which is safe by default (no code execution).
 
         Returns:
-            Parsed YAML data (dict, list, or scalar).
+            Parsed YAML data: dict, list, str, int, float, bool, or None.
 
-        Note:
-            Raises ValueError if document is not text (from text property).
-            Uses ruamel.yaml which is safe by default (no arbitrary code execution).
+        Raises:
+            ValueError: If document is not text-based.
+            YAMLError: If content is not valid YAML.
 
         Example:
-            >>> doc = MyDocument(name="config.yaml", content=b"key: value")
-            >>> doc.as_yaml()
-            {'key': 'value'}
+            >>> # From dict content
+            >>> doc = MyDocument.create(name="config.yaml", content={
+            ...     "server": {"host": "localhost", "port": 8080}
+            ... })
+            >>> doc.as_yaml()  # {'server': {'host': 'localhost', 'port': 8080}}
+
+            >>> # From YAML string
+            >>> doc2 = MyDocument(name="simple.yml", content=b"key: value\nitems:\n  - a\n  - b")
+            >>> doc2.as_yaml()  # {'key': 'value', 'items': ['a', 'b']}
         """
         yaml = YAML()
         return yaml.load(self.text)  # type: ignore[no-untyped-call, no-any-return]
 
     def as_json(self) -> Any:
         """Parse document content as JSON.
-        
+
         @public
 
-        Converts text content to Python objects using JSON parser.
-        Document must be text-based.
+        Parses the document's text content as JSON and returns Python objects.
+        Document must contain valid JSON text.
 
         Returns:
-            Parsed JSON data (dict, list, or scalar).
+            Parsed JSON data: dict, list, str, int, float, bool, or None.
 
-        Note:
-            Raises ValueError if document is not text (from text property).
-            Raises JSONDecodeError if content is not valid JSON (from json.loads()).
+        Raises:
+            ValueError: If document is not text-based.
+            JSONDecodeError: If content is not valid JSON.
 
         Example:
-            >>> doc = MyDocument(name="data.json", content=b'{"key": "value"}')
-            >>> doc.as_json()
-            {'key': 'value'}
+            >>> # From dict content
+            >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
+            >>> doc.as_json()  # {'key': 'value'}
+
+            >>> # From JSON string
+            >>> doc2 = MyDocument(name="array.json", content=b'[1, 2, 3]')
+            >>> doc2.as_json()  # [1, 2, 3]
+
+            >>> # Invalid JSON
+            >>> bad_doc = MyDocument(name="bad.json", content=b"not json")
+            >>> bad_doc.as_json()  # Raises JSONDecodeError
         """
         return json.loads(self.text)
 
@@ -814,32 +955,46 @@ class Document(BaseModel, ABC):
     def as_pydantic_model(
         self, model_type: type[TModel] | type[list[TModel]]
     ) -> TModel | list[TModel]:
-        """Parse document content as a Pydantic model.
-        
+        """Parse document content as Pydantic model with validation.
+
         @public
 
-        Converts JSON or YAML content to validated Pydantic model instances.
-        Supports both single models and lists of models.
+        Parses JSON or YAML content and validates it against a Pydantic model.
+        Automatically detects format based on MIME type. Supports both single
+        models and lists of models.
 
         Args:
-            model_type: The Pydantic model class or list[ModelClass] to parse into.
+            model_type: Pydantic model class to validate against.
+                Can be either:
+                - type[Model] for single model
+                - type[list[Model]] for list of models
 
         Returns:
             Validated Pydantic model instance or list of instances.
 
         Raises:
-            ValueError: If document is not text or data doesn't match expected type.
-
-        Note:
-            May raise ValidationError from Pydantic if data doesn't validate against the model.
+            ValueError: If document is not text or type mismatch.
+            ValidationError: If data doesn't match model schema.
+            JSONDecodeError/YAMLError: If content parsing fails.
 
         Example:
-            >>> class Config(BaseModel):
-            ...     key: str
-            >>> doc = MyDocument(name="config.json", content=b'{"key": "value"}')
-            >>> config = doc.as_pydantic_model(Config)
-            >>> config.key
-            'value'
+            >>> from pydantic import BaseModel
+            >>>
+            >>> class User(BaseModel):
+            ...     name: str
+            ...     age: int
+            >>>
+            >>> # Single model
+            >>> doc = MyDocument.create(name="user.json",
+            ...     content={"name": "Alice", "age": 30})
+            >>> user = doc.as_pydantic_model(User)
+            >>> print(user.name)  # "Alice"
+            >>>
+            >>> # List of models
+            >>> doc2 = MyDocument.create(name="users.json",
+            ...     content=[{"name": "Bob", "age": 25}, {"name": "Eve", "age": 28}])
+            >>> users = doc2.as_pydantic_model(list[User])
+            >>> print(len(users))  # 2
         """
         data = self.as_yaml() if is_yaml_mime_type(self.mime_type) else self.as_json()
 
@@ -856,68 +1011,83 @@ class Document(BaseModel, ABC):
         return single_model.model_validate(data)
 
     def as_markdown_list(self) -> list[str]:
-        r"""Parse document as a markdown-separated list.
-        
+        r"""Parse document as markdown-separated list of sections.
+
         @public
 
-        Splits text content by the MARKDOWN_LIST_SEPARATOR
-        (default: "\n\n---\n\n") to extract list items.
+        Splits text content using MARKDOWN_LIST_SEPARATOR ("\n\n---\n\n").
+        Designed for markdown documents with multiple sections.
 
         Returns:
-            List of string items.
+            List of string sections (preserves whitespace within sections).
 
-        Note:
-            Raises ValueError if document is not text (from text property).
+        Raises:
+            ValueError: If document is not text-based.
 
         Example:
-            >>> content = "Item 1\n\n---\n\nItem 2"
-            >>> doc = MyDocument(name="list.md", content=content.encode())
-            >>> doc.as_markdown_list()
-            ['Item 1', 'Item 2']
+            >>> # Using create with list
+            >>> sections = ["# Chapter 1\nIntroduction", "# Chapter 2\nDetails"]
+            >>> doc = MyDocument.create(name="book.md", content=sections)
+            >>> doc.as_markdown_list()  # Returns original sections
+
+            >>> # Manual creation with separator
+            >>> content = "Part 1\n\n---\n\nPart 2\n\n---\n\nPart 3"
+            >>> doc2 = MyDocument(name="parts.md", content=content.encode())
+            >>> doc2.as_markdown_list()  # ['Part 1', 'Part 2', 'Part 3']
         """
         return self.text.split(self.MARKDOWN_LIST_SEPARATOR)
 
-    def parsed(self, type_: type[Any]) -> Any:
-        r"""Parse document content based on file extension and requested type.
-        
+    def parse(self, type_: type[Any]) -> Any:
+        r"""Parse document content to original type (reverses create conversion).
+
         @public
 
-        Intelligently parses content based on the document's file extension
-        and converts to the requested type. This is designed to be the inverse
-        of document creation, so that Document(name=n, content=x).parsed(type(x)) == x.
+        This method reverses the automatic conversion performed by the `create`
+        classmethod. It intelligently parses the bytes content based on the
+        document's file extension and converts to the requested type.
+
+        Designed for roundtrip conversion:
+            >>> original = {"key": "value"}
+            >>> doc = MyDocument.create(name="data.json", content=original)
+            >>> restored = doc.parse(dict)
+            >>> assert restored == original  # True
 
         Args:
             type_: Target type to parse content into. Supported types:
-                - bytes: Returns raw content
-                - str: Returns decoded text
-                - dict: Parses JSON/YAML based on extension
-                - list: For .md files, splits by markdown separator
-                - BaseModel subclasses: Parses and validates JSON/YAML
+                - bytes: Returns raw content (no conversion)
+                - str: Decodes UTF-8 text
+                - dict: Parses JSON (.json) or YAML (.yaml/.yml)
+                - list: Splits markdown (.md) or parses JSON/YAML
+                - BaseModel subclasses: Validates JSON/YAML into model
 
         Returns:
-            Parsed content in the requested type.
+            Content parsed to the requested type.
 
         Raises:
-            ValueError: If the type is not supported or content cannot be parsed.
+            ValueError: If type is unsupported or parsing fails.
+
+        Extension Rules:
+            - .json → JSON parsing for dict/list/BaseModel
+            - .yaml/.yml → YAML parsing for dict/list/BaseModel
+            - .md + list → Split by markdown separator
+            - Any + str → UTF-8 decode
+            - Any + bytes → Raw content
 
         Example:
             >>> # String content
-            >>> doc = MyDocument(name="test.txt", content="Hello")
-            >>> doc.parsed(str)
+            >>> doc = MyDocument(name="test.txt", content=b"Hello")
+            >>> doc.parse(str)
             'Hello'
 
             >>> # JSON content
-            >>> import json
-            >>> data = {"key": "value"}
-            >>> doc = MyDocument(name="data.json", content=json.dumps(data))
-            >>> doc.parsed(dict)
-            {'key': 'value'}
+            >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
+            >>> doc.parse(dict)  # Returns {'key': 'value'}
 
             >>> # Markdown list
             >>> items = ["Item 1", "Item 2"]
-            >>> content = "\n\n---\n\n".join(items)
+            >>> content = "\n\n---\n\n".join(items).encode()
             >>> doc = MyDocument(name="list.md", content=content)
-            >>> doc.parsed(list)
+            >>> doc.parse(list)
             ['Item 1', 'Item 2']
         """
         # Handle basic types
@@ -993,27 +1163,34 @@ class Document(BaseModel, ABC):
 
     @final
     def serialize_model(self) -> dict[str, Any]:
-        """Serialize document to a dictionary for storage or transmission.
+        """Serialize document to dictionary for storage or transmission.
 
-        Creates a complete representation of the document including
-        metadata and properly encoded content. Text content uses UTF-8,
-        binary content uses base64 encoding.
+        Creates a complete JSON-serializable representation of the document
+        with all metadata and properly encoded content. Automatically chooses
+        the most appropriate encoding (UTF-8 for text, base64 for binary).
 
         Returns:
-            Dictionary containing:
-            - name: Document filename
-            - description: Optional description
-            - base_type: "flow", "task", or "temporary"
-            - size: Content size in bytes
-            - id: Short hash identifier
-            - sha256: Full content hash
-            - mime_type: Detected MIME type
-            - content: Encoded content string
-            - content_encoding: "utf-8" or "base64"
+            Dictionary with the following keys:
+                - name: Document filename (str)
+                - description: Optional description (str | None)
+                - base_type: Persistence type - "flow", "task", or "temporary" (str)
+                - size: Content size in bytes (int)
+                - id: Short hash identifier, first 6 chars of SHA256 (str)
+                - sha256: Full SHA256 hash in base32 encoding (str)
+                - mime_type: Detected MIME type (str)
+                - content: Encoded content (str)
+                - content_encoding: Either "utf-8" or "base64" (str)
 
-        Note:
-            Text files with encoding issues use UTF-8 with replacement
-            characters rather than failing.
+        Encoding Strategy:
+            - Text files (text/*, application/json, etc.) → UTF-8 string
+            - Binary files (images, PDFs, etc.) → Base64 string
+            - Invalid UTF-8 in text files → UTF-8 with replacement chars
+
+        Example:
+            >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
+            >>> serialized = doc.serialize_model()
+            >>> serialized["content_encoding"]  # "utf-8"
+            >>> serialized["mime_type"]  # "application/json"
         """
         result = {
             "name": self.name,
@@ -1044,29 +1221,39 @@ class Document(BaseModel, ABC):
     @final
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
-        """Deserialize a document from a dictionary representation.
+        r"""Deserialize document from dictionary (inverse of serialize_model).
 
-        Reconstructs a document from the dictionary format produced
-        by serialize_model(). Handles both UTF-8 and base64 encoded
-        content.
+        Reconstructs a Document instance from the dictionary format produced
+        by serialize_model(). Automatically handles content decoding based on
+        the content_encoding field.
 
         Args:
-            data: Dictionary containing serialized document data.
-                  Must have 'name' and 'content' keys at minimum.
+            data: Dictionary containing serialized document. Required keys:
+                - name: Document filename (str)
+                - content: Encoded content (str or bytes)
+                Optional keys:
+                - description: Document description (str | None)
+                - content_encoding: "utf-8" or "base64" (defaults to "utf-8")
 
         Returns:
-            New document instance.
+            New Document instance with restored content.
 
         Raises:
-            ValueError: If content type is invalid.
+            ValueError: If content type is invalid or base64 decoding fails
+            KeyError: If required keys are missing from data dictionary
 
         Note:
-            May raise KeyError if required keys are missing from the data dictionary.
+            Provides roundtrip guarantee with serialize_model().
+            Content and name are preserved exactly.
 
         Example:
-            >>> serialized = doc.serialize_model()
-            >>> restored = MyDocument.from_dict(serialized)
-            >>> assert restored.content == doc.content
+            >>> data = {
+            ...     "name": "config.yaml",
+            ...     "content": "key: value\n",
+            ...     "content_encoding": "utf-8",
+            ...     "description": "Config file"
+            ... }
+            >>> doc = MyDocument.from_dict(data)
         """
         # Extract content and encoding
         content_raw = data.get("content", "")

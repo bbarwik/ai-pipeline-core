@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 class ModelOptions(BaseModel):
     """Configuration options for LLM generation requests.
-    
+
     @public
 
     ModelOptions encapsulates all configuration parameters for model
@@ -23,17 +23,20 @@ class ModelOptions(BaseModel):
     Attributes:
         temperature: Controls randomness in generation (0.0-2.0).
                     Lower values = more deterministic, higher = more creative.
-                    None uses model default (usually 1.0).
+                    If None, the parameter is omitted from the API call,
+                    causing the provider to use its own default (often 1.0).
 
         system_prompt: System-level instructions for the model.
                       Sets the model's behavior and persona.
 
         search_context_size: Web search result depth for search-enabled models.
+                           Literal["low", "medium", "high"] | None
                            "low": Minimal context (~1-2 results)
                            "medium": Moderate context (~3-5 results)
                            "high": Extensive context (~6+ results)
 
-        reasoning_effort: Reasoning intensity for O1-style models.
+        reasoning_effort: Reasoning intensity for models with explicit reasoning.
+                         Literal["low", "medium", "high"] | None
                          "low": Quick reasoning
                          "medium": Balanced reasoning
                          "high": Deep, thorough reasoning
@@ -56,8 +59,9 @@ class ModelOptions(BaseModel):
         max_completion_tokens: Maximum tokens to generate.
                               None uses model default.
 
-        response_format: Pydantic model for structured output.
-                        Set automatically by generate_structured().
+        response_format: Pydantic model class for structured output.
+                        Pass a Pydantic model; the client converts it to JSON Schema.
+                        Set automatically by generate_structured(). Provider support varies.
 
     Example:
         >>> # Basic configuration

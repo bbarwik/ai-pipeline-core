@@ -1,44 +1,9 @@
-"""Pipeline decorators for Prefect integration.
+"""Pipeline decorators with Prefect integration and tracing.
 
 @public
 
-Tiny wrappers around Prefect's public ``@task`` and ``@flow`` that add our
-``trace`` decorator and **require async functions**.
-
-Why this exists
----------------
-Prefect tasks/flows are awaitable at runtime, but their public type stubs
-don't declare that clearly. We therefore:
-
-1) Return the **real Prefect objects** (so you keep every Prefect method).
-2) Type them as small Protocols that say "this is awaitable and has common
-   helpers like `.submit`/`.map`”.
-
-This keeps Pyright happy without altering runtime behavior and avoids
-leaking advanced typing constructs (like ``ParamSpec``) that confuse tools
-that introspect callables (e.g., Pydantic).
-
-Quick start
------------
-from ai_pipeline_core.pipeline import pipeline_task, pipeline_flow
-from ai_pipeline_core.documents import DocumentList
-from ai_pipeline_core.flow.options import FlowOptions
-
-@pipeline_task
-async def add(x: int, y: int) -> int:
-    return x + y
-
-@pipeline_flow
-async def my_flow(project_name: str, docs: DocumentList, opts: FlowOptions) -> DocumentList:
-    await add(1, 2)  # awaitable and typed
-    return docs
-
-Rules
------
-• Your decorated function **must** be ``async def``.
-• ``@pipeline_flow`` functions must accept at least:
-  (project_name: str, documents: DocumentList, flow_options: FlowOptions | subclass).
-• Both wrappers return the same Prefect objects you'd get from Prefect directly.
+Wrappers around Prefect's @task and @flow that add Laminar tracing
+and enforce async-only execution for consistency.
 """
 
 from __future__ import annotations
@@ -293,7 +258,7 @@ def pipeline_task(
     asset_deps: list[str | Asset] | None = None,
 ) -> _TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], _TaskLike[R_co]]:
     """Decorate an async function as a traced Prefect task.
-    
+
     @public
 
     Wraps an async function with both Prefect task functionality and
@@ -373,10 +338,10 @@ def pipeline_task(
 
     def _apply(fn: Callable[..., Coroutine[Any, Any, R_co]]) -> _TaskLike[R_co]:
         """Apply pipeline_task decorator to async function.
-        
+
         Returns:
             Wrapped task with tracing and Prefect functionality.
-        
+
         Raises:
             TypeError: If function is not async.
         """
@@ -500,7 +465,7 @@ def pipeline_flow(
     on_running: list[FlowStateHook[Any, Any]] | None = None,
 ) -> _FlowLike[FO_contra] | Callable[[_DocumentsFlowCallable[FO_contra]], _FlowLike[FO_contra]]:
     """Decorate an async flow for document processing.
-    
+
     @public
 
     Wraps an async function as a Prefect flow with tracing and type safety.
@@ -600,10 +565,10 @@ def pipeline_flow(
 
     def _apply(fn: _DocumentsFlowCallable[FO_contra]) -> _FlowLike[FO_contra]:
         """Apply pipeline_flow decorator to flow function.
-        
+
         Returns:
             Wrapped flow with tracing and Prefect functionality.
-            
+
         Raises:
             TypeError: If function is not async, doesn't have required
                       parameters, or doesn't return DocumentList.

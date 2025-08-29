@@ -34,23 +34,30 @@ Represents the allowed types for conversation messages:
 
 class AIMessages(list[AIMessageType]):
     """Container for AI conversation messages supporting mixed types.
-    
+
     @public
-    
+
     This class extends list to manage conversation messages between user
     and AI, supporting text, Document objects, and ModelResponse instances.
     Messages are converted to OpenAI-compatible format for LLM interactions.
-    
+
+    Conversion Rules:
+        - str: Becomes {"role": "user", "content": text}
+        - Document: Becomes {"role": "user", "content": structured_content}
+        - ModelResponse: Becomes {"role": "assistant", "content": response.content}
+
     Example:
+        >>> from ai_pipeline_core.llm import generate
         >>> messages = AIMessages()
         >>> messages.append("What is the capital of France?")
-        >>> messages.append(ModelResponse(content="The capital of France is Paris."))
-        >>> prompt = messages.to_prompt()
+        >>> response = await generate("gpt-5", messages=messages)
+        >>> messages.append(response)  # Add the actual response
+        >>> prompt = messages.to_prompt()  # Convert to OpenAI format
     """
 
     def get_last_message(self) -> AIMessageType:
         """Get the last message in the conversation.
-        
+
         @public
 
         Returns:
@@ -61,7 +68,7 @@ class AIMessages(list[AIMessageType]):
 
     def get_last_message_as_str(self) -> str:
         """Get the last message as a string, raising if not a string.
-        
+
         @public
 
         Returns:
@@ -78,11 +85,26 @@ class AIMessages(list[AIMessageType]):
     def to_prompt(self) -> list[ChatCompletionMessageParam]:
         """Convert AIMessages to OpenAI-compatible format.
 
+        @public
+
+        Transforms the message list into the format expected by OpenAI API.
+        Each message type is converted according to its role and content.
+
         Returns:
-            List of ChatCompletionMessageParam for OpenAI API.
+            List of ChatCompletionMessageParam dicts with 'role' and 'content' keys.
+            Ready to be passed to generate() or OpenAI API directly.
 
         Raises:
             ValueError: If message type is not supported.
+
+        Example:
+            >>> messages = AIMessages(["Hello", response, "Follow up"])
+            >>> prompt = messages.to_prompt()
+            >>> # Result: [
+            >>> #   {"role": "user", "content": "Hello"},
+            >>> #   {"role": "assistant", "content": "..."},
+            >>> #   {"role": "user", "content": "Follow up"}
+            >>> # ]
         """
         messages: list[ChatCompletionMessageParam] = []
 

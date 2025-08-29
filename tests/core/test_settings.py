@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from ai_pipeline_core.settings import Settings, settings
 
@@ -129,12 +130,14 @@ LMNR_PROJECT_API_KEY=lmnr-from-file
         """Test that Settings uses proper Pydantic configuration."""
         s = Settings()
 
-        # Settings should be mutable by default (unless frozen)
-        s.openai_api_key = "new-key"
-        assert s.openai_api_key == "new-key"
+        # Settings should be immutable (frozen=True)
+        with pytest.raises(ValidationError) as exc_info:
+            s.openai_api_key = "new-key"
+        assert "frozen" in str(exc_info.value).lower()
 
     def test_model_config_attributes(self):
         """Test that model_config is properly set."""
         assert Settings.model_config.get("env_file") == ".env"
         assert Settings.model_config.get("env_file_encoding") == "utf-8"
         assert Settings.model_config.get("extra") == "ignore"
+        assert Settings.model_config.get("frozen") is True

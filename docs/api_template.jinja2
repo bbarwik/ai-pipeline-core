@@ -1,0 +1,105 @@
+{% macro codeblock(lang='python') -%}
+```{{ lang }}
+{{ caller() | trim }}
+```
+{%- endmacro -%}
+{% macro sig(obj) -%}
+{%- set t = obj.__class__.__name__ -%}
+{%- if t == 'Class' -%}
+class {{ obj.name }}{% if obj.bases %}({{ obj.bases|join(', ') }}){% endif %}
+{%- elif t == 'Function' -%}
+{% for d in (obj.decorations or []) %}@{{ d.name }}{{ d.args or '' }}
+{% endfor -%}
+{%- if obj.modifiers and 'async' in obj.modifiers %}async {% endif -%}
+def {{ obj.name }}{{ obj|format_function_signature }}
+{%- else -%}
+{{ obj.name }}{% if obj.datatype %}: {{ obj.datatype }}{% endif %}{% if obj.value is not none %} = {{ obj.value }}{% endif %}
+{%- endif -%}
+{%- endmacro -%}
+{% macro clean(s) -%}
+{%- set lines = (s or '').splitlines() -%}
+{%- set ns = namespace(prev_blank=false) -%}
+{%- for raw in lines -%}
+  {%- set line = raw.rstrip() -%}
+  {%- if line.strip() != '@public' -%}
+    {%- set is_blank = (line.strip() == '') -%}
+    {%- if not (is_blank and ns.prev_blank) -%}
+      {{- line -}}
+      {%- if not loop.last %}{{- '\n' -}}{%- endif -%}
+    {%- endif -%}
+    {%- set ns.prev_blank = is_blank -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+{% macro pub(obj) -%}
+  {%- if obj.docstring and '@public' in obj.docstring.content -%}true{%- else -%}false{%- endif -%}
+{%- endmacro -%}
+{% macro has_pub_child(obj) -%}
+{%- for m in obj.members if pub(m) == 'true' -%}true{%- endfor -%}
+{%- endmacro -%}
+{% macro should_show(m) -%}
+{%- if pub(m) == 'true' or has_pub_child(m) == 'true' -%}true
+{%- else -%}
+  {%- for c in m.members if c.__class__.__name__ == 'Class' and has_pub_child(c) == 'true' -%}true{%- endfor -%}
+{%- endif -%}
+{%- endmacro -%}
+{% macro render(obj, parent='', lvl=3) -%}
+{%- set pfx = (parent + '.') if parent else '' -%}
+{{ '#' * lvl }} {{ pfx }}{{ obj.name }}
+
+{% call codeblock() %}{{ sig(obj) }}{% endcall %}
+
+{{ clean(obj.docstring.content).strip() if obj.docstring else '' }}
+{% endmacro %}
+{%- set pkg = '' -%}
+{%- for m in modules if '.' not in m.name -%}
+  {%- set pkg = m.name -%}
+{%- endfor -%}
+{%- if not pkg and modules -%}
+  {%- set pkg = modules[0].name.split('.')[0] -%}
+{%- endif -%}
+# {{ pkg | replace('_', '-') }} API Reference
+
+## Navigation Guide
+
+**For Humans:**
+- Use `grep -n '^##' API.md` to list all main sections with line numbers
+- Use `grep -n '^###' API.md` to list all classes and functions
+- Use `grep -n '^####' API.md` to list all methods and properties
+- Search for specific features: `grep -n -i "ClassName" API.md` or `grep -n -i "function_name" API.md`
+
+**For AI Assistants:**
+- Use the Grep tool with pattern `^##` to list all module sections (e.g., `^## {{ pkg }}.module`)
+- Use pattern `^###` to find all classes and functions (e.g., `### ClassName`, `### function_name`)
+- Use pattern `^####` to find all methods (e.g., `#### ClassName.method_name`)
+- For specific lookups, use patterns like `class AIMessages` or `def generate` with output_mode="content" and -n=true for line numbers
+- Use -C flag (context lines) to see surrounding content: `pattern="AIMessages", -C=5`
+- Navigate directly to line numbers using Read tool with offset parameter once you know the location
+{% for module in modules %}
+{%- if should_show(module).strip() == 'true' -%}
+{%- set has_pub = pub(module) == 'true' %}
+
+## {{ module.name }}
+{% if has_pub %}
+{{ clean(module.docstring.content).strip() if module.docstring else '' }}
+{% endif %}
+
+{%- for v in module.members if v.__class__.__name__ == 'Variable' and pub(v) == 'true' %}
+{{ render(v) }}
+{%- endfor %}
+{%- for c in module.members if c.__class__.__name__ == 'Class' -%}
+{%- if pub(c) == 'true' or has_pub_child(c) == 'true' %}
+{{ render(c) }}
+{%- for v in c.members if v.__class__.__name__ == 'Variable' and pub(v) == 'true' %}
+{{ render(v, c.name, 4) }}
+{%- endfor %}
+{%- for m in c.members if m.__class__.__name__ == 'Function' and pub(m) == 'true' %}
+{{ render(m, c.name, 4) }}
+{%- endfor %}
+{%- endif -%}
+{%- endfor %}
+{%- for f in module.members if f.__class__.__name__ == 'Function' and pub(f) == 'true' %}
+{{ render(f) }}
+{%- endfor %}
+{%- endif -%}
+{%- endfor -%}

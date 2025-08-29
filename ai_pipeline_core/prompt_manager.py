@@ -58,7 +58,7 @@ logger = get_pipeline_logger(__name__)
 
 class PromptManager:
     """Manages Jinja2 prompt templates with smart path resolution.
-    
+
     @public
 
     PromptManager provides a convenient interface for loading and rendering
@@ -69,12 +69,7 @@ class PromptManager:
     Search hierarchy:
         1. Same directory as the calling module (for local templates)
         2. 'prompts' subdirectory in the calling module's directory
-        3. 'prompts' directories in parent packages (up to 4 levels)
-
-    Search Stopping Rule:
-        The search traverses UP TO 4 parent levels OR until it hits a
-        directory without __init__.py (package boundary), whichever comes
-        first. This prevents searching outside the package structure.
+        3. 'prompts' directories in parent packages (up to package boundary)
 
     Attributes:
         search_paths: List of directories where templates are searched.
@@ -116,9 +111,9 @@ class PromptManager:
         - Templates are cached by Jinja2 for performance
     """
 
-    def __init__(self, current_dir: str, prompts_dir: str = "prompts"):
+    def __init__(self, current_file: str, prompts_dir: str = "prompts"):
         """Initialize PromptManager with smart template discovery.
-        
+
         @public
 
         Sets up the Jinja2 environment with a FileSystemLoader that searches
@@ -126,14 +121,14 @@ class PromptManager:
         module's location and extends to parent package directories.
 
         Args:
-            current_dir: The __file__ path of the calling module. Must be
-                        a valid file path (not __name__). Used as the
-                        starting point for template discovery.
+            current_file: The __file__ path of the calling module. Must be
+                         a valid file path (not __name__). Used as the
+                         starting point for template discovery.
             prompts_dir: Name of the prompts subdirectory to search for
                         in each package level. Defaults to "prompts".
 
         Raises:
-            PromptError: If current_dir is not a valid file path (e.g.,
+            PromptError: If current_file is not a valid file path (e.g.,
                         if __name__ was passed instead of __file__).
 
         Note:
@@ -161,11 +156,11 @@ class PromptManager:
         search_paths: list[Path] = []
 
         # Start from the directory containing the calling file
-        current_path = Path(current_dir).resolve()
+        current_path = Path(current_file).resolve()
         if not current_path.exists():
             raise PromptError(
                 f"PromptManager expected __file__ (a valid file path), "
-                f"but got {current_dir!r}. Did you pass __name__ instead?"
+                f"but got {current_file!r}. Did you pass __name__ instead?"
             )
 
         if current_path.is_file():
@@ -215,7 +210,7 @@ class PromptManager:
 
     def get(self, prompt_path: str, **kwargs: Any) -> str:
         """Load and render a Jinja2 template with the given context.
-        
+
         @public
 
         Searches for the template in all configured search paths and renders

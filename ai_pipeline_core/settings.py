@@ -47,7 +47,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     """Core configuration for AI Pipeline external services.
-    
+
     @public
 
     Settings provides type-safe configuration management with automatic
@@ -93,7 +93,12 @@ class Settings(BaseSettings):
         Check for empty values before using service-specific settings.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        frozen=True,  # Settings are immutable after initialization
+    )
 
     # LLM API Configuration
     openai_base_url: str = ""

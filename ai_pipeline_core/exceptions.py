@@ -9,7 +9,7 @@ All exceptions inherit from PipelineCoreError, providing a consistent error hand
 
 class PipelineCoreError(Exception):
     """Base exception for all AI Pipeline Core errors.
-    
+
     @public
     """
 
@@ -18,7 +18,7 @@ class PipelineCoreError(Exception):
 
 class DocumentError(PipelineCoreError):
     """Base exception for document-related errors.
-    
+
     @public
     """
 
@@ -27,7 +27,7 @@ class DocumentError(PipelineCoreError):
 
 class DocumentValidationError(DocumentError):
     """Raised when document validation fails.
-    
+
     @public
     """
 
@@ -36,7 +36,7 @@ class DocumentValidationError(DocumentError):
 
 class DocumentSizeError(DocumentValidationError):
     """Raised when document content exceeds MAX_CONTENT_SIZE limit.
-    
+
     @public
     """
 
@@ -45,7 +45,7 @@ class DocumentSizeError(DocumentValidationError):
 
 class DocumentNameError(DocumentValidationError):
     """Raised when document name contains invalid characters or patterns.
-    
+
     @public
     """
 
@@ -54,7 +54,7 @@ class DocumentNameError(DocumentValidationError):
 
 class LLMError(PipelineCoreError):
     """Raised when LLM generation fails after all retries.
-    
+
     @public
     """
 
@@ -63,7 +63,7 @@ class LLMError(PipelineCoreError):
 
 class PromptError(PipelineCoreError):
     """Base exception for prompt template errors.
-    
+
     @public
     """
 
@@ -72,7 +72,7 @@ class PromptError(PipelineCoreError):
 
 class PromptRenderError(PromptError):
     """Raised when Jinja2 template rendering fails.
-    
+
     @public
     """
 
@@ -81,7 +81,7 @@ class PromptRenderError(PromptError):
 
 class PromptNotFoundError(PromptError):
     """Raised when prompt template file is not found in search paths.
-    
+
     @public
     """
 
@@ -90,7 +90,7 @@ class PromptNotFoundError(PromptError):
 
 class MimeTypeError(DocumentError):
     """Raised when MIME type detection or validation fails.
-    
+
     @public
     """
 
