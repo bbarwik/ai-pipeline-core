@@ -30,17 +30,45 @@ jobs:
       - id: detect
         name: Detect if version changed in last commit
         run: |
+          CURRENT_VERSION="${{ steps.read.outputs.version }}"
+          TAG_EXISTS=$(git tag -l "v$CURRENT_VERSION" | wc -l)
+
+          # If tag already exists, don't release
+          if [ "$TAG_EXISTS" -gt 0 ]; then
+            echo "Tag v$CURRENT_VERSION already exists, skipping release"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Check if there's a parent commit (not the first commit)
           if git rev-parse HEAD^ >/dev/null 2>&1; then
-            # Has parent commit, check for changes
+            # Has parent commit, check if version actually changed
             if git diff --name-only HEAD^..HEAD | grep -q "pyproject.toml"; then
-              echo "changed=true" >> "$GITHUB_OUTPUT"
+              # pyproject.toml changed, now check if version changed
+              PREV_VERSION=$(git show HEAD^:pyproject.toml | python - <<'PY'
+          import tomllib,sys
+          try:
+              data=tomllib.loads(sys.stdin.read())
+              print(data["project"]["version"])
+          except:
+              print("0.0.0")
+          PY
+              )
+              if [ "$CURRENT_VERSION" != "$PREV_VERSION" ]; then
+                echo "Version changed from $PREV_VERSION to $CURRENT_VERSION"
+                echo "changed=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "Version unchanged at $CURRENT_VERSION"
+                echo "changed=false" >> "$GITHUB_OUTPUT"
+              fi
             else
+              echo "pyproject.toml not changed"
               echo "changed=false" >> "$GITHUB_OUTPUT"
             fi
           else
             # First commit in repo, check if pyproject.toml exists
             if [ -f "pyproject.toml" ]; then
+              echo "First commit with pyproject.toml"
               echo "changed=true" >> "$GITHUB_OUTPUT"
             else
               echo "changed=false" >> "$GITHUB_OUTPUT"
