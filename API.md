@@ -28,45 +28,75 @@ system designed for production use.
 The framework enforces best practices through strong typing (Pydantic), automatic retries,
 cost tracking, and distributed tracing. All I/O operations are async for maximum throughput.
 
+CRITICAL IMPORT RULE:
+Always import from the top-level package:
+# CORRECT:
+from ai_pipeline_core import llm, pipeline_flow, FlowDocument, DocumentList
+
+# WRONG - Never import from submodules:
+from ai_pipeline_core.llm import generate  # NO!
+from ai_pipeline_core.documents import FlowDocument  # NO!
+
+FRAMEWORK RULES (90% Use Cases):
+1. Decorators: Use @trace, @pipeline_task, @pipeline_flow WITHOUT parameters
+2. Logging: Use get_pipeline_logger(__name__) - NEVER print() or logging module
+3. LLM calls: Use AIMessages or str. Wrap Documents in AIMessages; do not call .text yourself
+4. Options: Omit ModelOptions unless specifically needed (defaults are optimal)
+5. Documents: Create with just name and content - skip description
+6. FlowConfig: OUTPUT_DOCUMENT_TYPE must differ from all INPUT_DOCUMENT_TYPES
+7. Initialization: PromptManager and logger at module scope, not in functions
+8. DocumentList: Use default constructor - no validation flags needed
+9. setup_logging(): Only in application main(), never at import time
+
+Messages parameter type: AIMessages or str. Do not pass Document or DocumentList directly.
+
 Core Capabilities:
-    - **Document Processing**: Type-safe handling of text, JSON, YAML, PDFs, and images
-    - **LLM Integration**: Unified interface to any model via LiteLLM with caching
-    - **Structured Output**: Type-safe generation with Pydantic model validation
-    - **Workflow Orchestration**: Prefect-based flows and tasks with retries
-    - **Observability**: Distributed tracing via Laminar (LMNR) for debugging
-    - **Local Development**: Simple runner for testing without infrastructure
+- **Document Processing**: Type-safe handling of text, JSON, YAML, PDFs, and images
+- **LLM Integration**: Unified interface to any model via LiteLLM with caching
+- **Structured Output**: Type-safe generation with Pydantic model validation
+- **Workflow Orchestration**: Prefect-based flows and tasks with retries
+- **Observability**: Distributed tracing via Laminar (LMNR) for debugging
+- **Local Development**: Simple runner for testing without infrastructure
 
 Quick Start:
-    >>> from ai_pipeline_core import pipeline_flow, FlowDocument, DocumentList
-    >>> from ai_pipeline_core.flow import FlowOptions
-    >>> from ai_pipeline_core.llm import generate
-    >>>
-    >>> class OutputDoc(FlowDocument):
-    ...     '''Analysis result document.'''
-    >>>
-    >>> @pipeline_flow
-    >>> async def analyze_flow(
-    ...     project_name: str,
-    ...     documents: DocumentList,
-    ...     flow_options: FlowOptions
-    ... ) -> DocumentList:
-    ...     response = await generate(
-    ...         model="gpt-5",
-    ...         messages=documents[0].text
-    ...     )
-    ...     result = OutputDoc.create(
-    ...         name="analysis.txt",
-    ...         content=response.content
-    ...     )
-    ...     return DocumentList([result])
+>>> from ai_pipeline_core import (
+...     pipeline_flow, FlowDocument, DocumentList, FlowOptions, llm, AIMessages
+... )
+>>>
+>>> class OutputDoc(FlowDocument):
+...     '''Analysis result document.'''
+>>>
+>>> @pipeline_flow
+>>> async def analyze_flow(
+...     project_name: str,
+...     documents: DocumentList,
+...     flow_options: FlowOptions
+... ) -> DocumentList:
+...     # Messages accept AIMessages or str. Wrap documents: AIMessages([doc])
+...     response = await llm.generate(
+...         model="gpt-5",
+...         messages=AIMessages([documents[0]])
+...     )
+...     result = OutputDoc.create(
+...         name="analysis.txt",
+...         content=response.content
+...     )
+...     return DocumentList([result])
 
 Environment Variables (when using LiteLLM proxy):
-    - OPENAI_BASE_URL: LiteLLM proxy endpoint (e.g., http://localhost:4000)
-    - OPENAI_API_KEY: API key for LiteLLM proxy
+- OPENAI_BASE_URL: LiteLLM proxy endpoint (e.g., http://localhost:4000)
+- OPENAI_API_KEY: API key for LiteLLM proxy
+
+Note: LiteLLM proxy uses OpenAI-compatible API format, hence the OPENAI_*
+variable names are correct regardless of which LLM provider you're using.
 
 Optional Environment Variables:
-    - PREFECT_API_URL: Prefect server for orchestration
-    - LMNR_PROJECT_API_KEY: Laminar (LMNR) API key for tracing
+- PREFECT_API_URL: Prefect server for orchestration
+- PREFECT_API_KEY: Prefect API authentication key
+- LMNR_PROJECT_API_KEY: Laminar (LMNR) API key for tracing
+- LMNR_DEBUG: Set to "true" to enable debug-level traces
+- LMNR_SESSION_ID: Default session ID for traces
+- LMNR_USER_ID: Default user ID for traces
 
 
 ## ai_pipeline_core.exceptions
@@ -172,7 +202,8 @@ class ModelResponse(ChatCompletion)
 
 Enhanced response wrapper for LLM text generation.
 
-Structurally compatible with OpenAI ChatCompletion response format. All LLM provider
+Inherits from OpenAI Python library's ChatCompletion class (openai.types.chat.ChatCompletion),
+making it structurally compatible with OpenAI's response format. All LLM provider
 responses are normalized to this format by LiteLLM proxy, ensuring consistent
 interface across providers (OpenAI, Anthropic, Google, Grok, etc.).
 
@@ -189,11 +220,12 @@ id: Unique response ID (inherited).
 
 **Example**:
 
-  >>> from ai_pipeline_core.llm import generate
-  >>> response = await generate("gpt-5", messages="Hello")
+  >>> from ai_pipeline_core import llm
+  >>> response = await llm.generate("gpt-5", messages="Hello")
   >>> print(response.content)  # Generated text
   >>> print(response.usage.total_tokens)  # Token count
   >>> print(response.headers.get("x-litellm-response-cost"))  # Cost
+  >>> # Note: In production code, use get_pipeline_logger instead of print
 
 **Notes**:
 
@@ -218,7 +250,8 @@ content. Returns empty string if no content available.
 
 **Example**:
 
-  >>> response = await generate("gpt-5", messages="Hello")
+  >>> from ai_pipeline_core import llm
+  >>> response = await llm.generate("gpt-5", messages="Hello")
   >>> text = response.content  # Direct access to generated text
 
 ### StructuredModelResponse
@@ -243,13 +276,13 @@ Additional Features:
 **Example**:
 
   >>> from pydantic import BaseModel
-  >>> from ai_pipeline_core.llm import generate_structured
+  >>> from ai_pipeline_core import llm
   >>>
   >>> class Analysis(BaseModel):
   ...     sentiment: float
   ...     summary: str
   >>>
-  >>> response = await generate_structured(
+  >>> response = await llm.generate_structured(
   ...     "gpt-5",
   ...     response_format=Analysis,
   ...     messages="Analyze: ..."
@@ -343,15 +376,26 @@ Messages are converted to OpenAI-compatible format for LLM interactions.
 
 Conversion Rules:
 - str: Becomes {"role": "user", "content": text}
-- Document: Becomes {"role": "user", "content": structured_content}
+- Document: Becomes {"role": "user", "content": document_content}
+(automatically handles text, images, PDFs based on MIME type)
 - ModelResponse: Becomes {"role": "assistant", "content": response.content}
+
+Note: Document conversion is automatic. Text content becomes user text messages.
+Images are sent to vision-capable models (non-vision models will raise ValueError).
+PDFs are attached when supported by the model, otherwise a text extraction
+fallback is used. LiteLLM proxy handles the specific encoding requirements
+for each provider.
+
+IMPORTANT: Although AIMessages can contain Document entries, the LLM client functions
+expect `messages` to be `AIMessages` or `str`. If you start from a Document or a list
+of Documents, build AIMessages first (e.g., `AIMessages([doc])` or `AIMessages(docs)`).
 
 **Example**:
 
-  >>> from ai_pipeline_core.llm import generate
+  >>> from ai_pipeline_core import llm
   >>> messages = AIMessages()
   >>> messages.append("What is the capital of France?")
-  >>> response = await generate("gpt-5", messages=messages)
+  >>> response = await llm.generate("gpt-5", messages=messages)
   >>> messages.append(response)  # Add the actual response
   >>> prompt = messages.to_prompt()  # Convert to OpenAI format
 
@@ -384,6 +428,17 @@ Get the last message as a string, raising if not a string.
 
 - `ValueError` - If the last message is not a string.
 
+  Safer Pattern:
+  Instead of catching ValueError, check type first:
+  >>> messages = AIMessages([user_msg, response, followup])
+  >>> last = messages.get_last_message()
+  >>> if isinstance(last, str):
+  ...     text = last
+  >>> elif isinstance(last, ModelResponse):
+  ...     text = last.content
+  >>> elif isinstance(last, Document):
+  ...     text = last.text if last.is_text else "<binary>"
+
 #### AIMessages.to_prompt
 
 ```python
@@ -397,8 +452,9 @@ Each message type is converted according to its role and content.
 
 **Returns**:
 
-  List of ChatCompletionMessageParam dicts with 'role' and 'content' keys.
-  Ready to be passed to generate() or OpenAI API directly.
+  List of ChatCompletionMessageParam dicts (from openai.types.chat)
+  with 'role' and 'content' keys. Ready to be passed to generate()
+  or OpenAI API directly.
 
 **Raises**:
 
@@ -432,7 +488,7 @@ ModelName: TypeAlias = Literal[
     # Search models
     "gemini-2.5-flash-search",
     "sonar-pro-search",
-    "gpt-4o-search",
+    "gpt-4o-search",  # Note: gpt-4o-search is correct (not a typo)
     "grok-3-mini-search",
 ]
 ```
@@ -442,6 +498,9 @@ Type-safe model name identifiers.
 Provides compile-time validation and IDE autocompletion for supported
 language model names. Used throughout the library to prevent typos
 and ensure only valid models are referenced.
+
+Note: These are example common model names as of Q3 2025. Actual availability
+depends on your LiteLLM proxy configuration and provider access.
 
 Model categories:
 Core models (gemini-2.5-pro, gpt-5, grok-4):
@@ -465,14 +524,14 @@ To add custom models for type safety:
 
 **Example**:
 
-  >>> from ai_pipeline_core.llm import generate, ModelName
+  >>> from ai_pipeline_core import llm, ModelName
   >>>
   >>> # Type-safe model selection
   >>> model: ModelName = "gpt-5"  # IDE autocomplete works
-  >>> response = await generate(model, messages="Hello")
+  >>> response = await llm.generate(model, messages="Hello")
   >>>
   >>> # Also accepts string for custom models
-  >>> response = await generate("custom-model-v2", messages="Hello")
+  >>> response = await llm.generate("custom-model-v2", messages="Hello")
   >>>
   >>> # Custom type safety
   >>> from typing import Literal
@@ -487,8 +546,8 @@ To add custom models for type safety:
 
 **See Also**:
 
-  - ai_pipeline_core.llm.generate: Main generation function
-  - ai_pipeline_core.llm.ModelOptions: Model configuration
+  - llm.generate: Main generation function
+  - ModelOptions: Model configuration options
 
 
 ## ai_pipeline_core.llm.model_options
@@ -526,11 +585,13 @@ advanced features. All fields are optional with sensible defaults.
 - `"medium"` - Moderate context (~3-5 results)
 - `"high"` - Extensive context (~6+ results)
 
-- `reasoning_effort` - Reasoning intensity for models with explicit reasoning.
+- `reasoning_effort` - Reasoning intensity for models that support explicit reasoning.
   Literal["low", "medium", "high"] | None
 - `"low"` - Quick reasoning
 - `"medium"` - Balanced reasoning
 - `"high"` - Deep, thorough reasoning
+- `Note` - Availability and effect vary by provider and model. Only models
+  that expose an explicit reasoning control will honor this parameter.
 
 - `retries` - Number of retry attempts on failure (default: 3).
 
@@ -538,14 +599,15 @@ advanced features. All fields are optional with sensible defaults.
 
 - `timeout` - Maximum seconds to wait for response (default: 300).
 
-- `service_tier` - OpenAI API tier selection for performance/cost trade-offs.
+- `service_tier` - API tier selection for performance/cost trade-offs.
 - `"auto"` - Let API choose
 - `"default"` - Standard tier
 - `"flex"` - Flexible (cheaper, may be slower)
 - `"scale"` - Scaled performance
 - `"priority"` - Priority processing
-- `Note` - Only OpenAI models support this. Other providers
-  (Anthropic, Google, Grok) silently ignore this parameter.
+- `Note` - Service tiers are correct as of Q3 2025. Only OpenAI models
+  support this parameter. Other providers (Anthropic, Google, Grok)
+  silently ignore it.
 
 - `max_completion_tokens` - Maximum tokens to generate.
   None uses model default.
@@ -574,7 +636,7 @@ advanced features. All fields are optional with sensible defaults.
   ...     max_completion_tokens=2000
   ... )
   >>>
-  >>> # For reasoning models (O1 series)
+  >>> # For reasoning models
   >>> options = ModelOptions(
   ...     reasoning_effort="high",  # Deep reasoning
   ...     timeout=600  # More time for complex reasoning
@@ -584,7 +646,7 @@ advanced features. All fields are optional with sensible defaults.
 
   - Not all options apply to all models
   - search_context_size only works with search models
-  - reasoning_effort only works with O1-style models
+  - reasoning_effort only works with models that support explicit reasoning
   - response_format is set internally by generate_structured()
 
 
@@ -613,14 +675,20 @@ Main entry point for LLM text generation with smart context caching.
 The context/messages split enables efficient token usage by caching
 expensive static content separately from dynamic queries.
 
+Best Practices:
+1. OPTIONS: Omit in 90% of cases - defaults are optimized
+2. MESSAGES: Use AIMessages or str - wrap Documents in AIMessages
+3. CONTEXT vs MESSAGES: Use context for static/cacheable, messages for dynamic
+
 **Arguments**:
 
 - `model` - Model to use (e.g., "gpt-5", "gemini-2.5-pro", "grok-4").
   Can be ModelName literal or any string for custom models.
 - `context` - Static context to cache (documents, examples, instructions).
   Defaults to None (empty context). Cached for 120 seconds.
-- `messages` - Dynamic messages/queries. Can be a single string or AIMessages.
-  Converted to AIMessages if string.
+- `messages` - Dynamic messages/queries. AIMessages or str ONLY.
+  Do not pass Document or DocumentList directly.
+  If string, converted to AIMessages internally.
 - `options` - Model configuration (temperature, retries, timeout, etc.).
   Defaults to None (uses ModelOptions() with standard settings).
 
@@ -637,22 +705,48 @@ expensive static content separately from dynamic queries.
 - `ValueError` - If model is empty or messages are invalid.
 - `LLMError` - If generation fails after all retries.
 
+  Document Handling:
+  Wrap Documents in AIMessages - DO NOT pass directly or convert to .text:
+
+  # CORRECT - wrap Document in AIMessages
+  response = await llm.generate("gpt-5", messages=AIMessages([my_document]))
+
+  # WRONG - don't pass Document directly
+  response = await llm.generate("gpt-5", messages=my_document)  # NO!
+
+  # WRONG - don't convert to string yourself
+  response = await llm.generate("gpt-5", messages=my_document.text)  # NO!
+
+  Context vs Messages Strategy:
+- `context` - Static, reusable content (cached 120 seconds)
+  - Large documents, instructions, examples
+  - Same across multiple calls
+
+- `messages` - Dynamic, query-specific content
+  - User questions, current conversation turn
+  - Changes every call
+
 **Example**:
 
-  >>> # Simple generation
-  >>> response = await generate(
-  ...     model="gpt-5",
-  ...     messages="Explain quantum computing"
-  ... )
-  >>> print(response.content)
+  >>> # Simple case - no options needed (90% of cases)
+  >>> response = await llm.generate("gpt-5", messages="Explain quantum computing")
+  >>> print(response.content)  # In production, use get_pipeline_logger instead of print
 
-  >>> # With context caching
-  >>> context = AIMessages([large_document])
-  >>> response = await generate(
-  ...     model="gemini-2.5-pro",
-  ...     context=context,  # Cached for efficiency
-  ...     messages="Summarize the key points",
-  ...     options=ModelOptions(temperature=0.7)
+  >>> # With context caching for efficiency
+  >>> # Context and messages are both AIMessages or str; wrap any Documents
+  >>> static_doc = AIMessages([large_document, "few-shot example: ..."])
+  >>>
+  >>> # First call: caches context
+  >>> r1 = await llm.generate("gpt-5", context=static_doc, messages="Summarize")
+  >>>
+  >>> # Second call: reuses cache, saves tokens!
+  >>> r2 = await llm.generate("gpt-5", context=static_doc, messages="Key points?")
+
+  >>> # AVOID unnecessary options (defaults are optimal)
+  >>> response = await llm.generate(
+  ...     "gpt-5",
+  ...     messages="Hello",
+  ...     options=ModelOptions(temperature=0.7)  # Default is probably fine!
   ... )
 
   >>> # Multi-turn conversation
@@ -661,7 +755,7 @@ expensive static content separately from dynamic queries.
   ...     previous_response,
   ...     "Can you give an example?"
   ... ])
-  >>> response = await generate("gpt-5", messages=messages)
+  >>> response = await llm.generate("gpt-5", messages=messages)
 
   Performance:
   - Context caching saves ~50-90% tokens on repeated calls
@@ -670,8 +764,10 @@ expensive static content separately from dynamic queries.
   - Default retry delay is 10s (configurable via ModelOptions.retry_delay_seconds)
 
   Caching:
-  Context is cached by the LLM provider with a fixed 120-second TTL.
-  The cache is based on the content hash and reduces token usage significantly.
+  When enabled in your LiteLLM proxy and supported by the upstream provider,
+  context messages may be cached (typical TTL ~120s) to reduce token usage on
+  repeated calls. Savings depend on provider and payload; treat this as an
+  optimization, not a guarantee. Cache behavior varies by proxy configuration.
 
 **Notes**:
 
@@ -698,6 +794,11 @@ Generate structured output conforming to a Pydantic model.
 Type-safe generation that returns validated Pydantic model instances.
 Uses OpenAI's structured output feature for guaranteed schema compliance.
 
+Best Practices (same as generate):
+1. OPTIONS: Omit in 90% of cases - defaults are optimized
+2. MESSAGES: Use AIMessages or str - wrap Documents in AIMessages
+3. CONTEXT vs MESSAGES: Use context for static/cacheable, messages for dynamic
+
 **Arguments**:
 
 - `model` - Model to use (must support structured output).
@@ -705,7 +806,8 @@ Uses OpenAI's structured output feature for guaranteed schema compliance.
   The model will generate JSON matching this schema.
 - `context` - Static context to cache (documents, schemas, examples).
   Defaults to None (empty AIMessages).
-- `messages` - Dynamic prompts/queries. String or AIMessages.
+- `messages` - Dynamic prompts/queries. AIMessages or str ONLY.
+  Do not pass Document or DocumentList directly.
 - `options` - Model configuration. response_format is set automatically.
 
 **Returns**:
@@ -730,7 +832,7 @@ Uses OpenAI's structured output feature for guaranteed schema compliance.
   ...     sentiment: float = Field(ge=-1, le=1)
   ...     key_points: list[str] = Field(max_length=5)
   >>>
-  >>> response = await generate_structured(
+  >>> response = await llm.generate_structured(
   ...     model="gpt-5",
   ...     response_format=Analysis,
   ...     messages="Analyze this product review: ..."
@@ -789,9 +891,9 @@ Key features:
 
 **Example**:
 
-  >>> from ai_pipeline_core.prompt_manager import PromptManager
+  >>> from ai_pipeline_core import PromptManager
   >>>
-  >>> # In your module file
+  >>> # Initialize at module level (not inside functions)
   >>> pm = PromptManager(__file__)
   >>>
   >>> # Render a template
@@ -839,8 +941,14 @@ Search hierarchy:
 
 **Example**:
 
+  >>> # BEST PRACTICE: Instantiate at module scope (top level), not inside functions
   >>> # In flow/my_flow.py
-  >>> pm = PromptManager(__file__)
+  >>> from ai_pipeline_core import PromptManager
+  >>> pm = PromptManager(__file__)  # Module-level initialization
+  >>>
+  >>> # WRONG - Don't instantiate inside handlers or hot paths:
+  >>> # async def process():
+  >>> #     pm = PromptManager(__file__)  # NO! Creates new instance each call
   >>>
   >>> # Uses flow/prompts/analyze.jinja2 if it exists,
   >>> # otherwise searches parent directories
@@ -893,6 +1001,7 @@ module's location and extends to parent package directories.
   starting point for template discovery.
 - `prompts_dir` - Name of the prompts subdirectory to search for
   in each package level. Defaults to "prompts".
+  Do not pass prompts_dir='prompts' because it is already the default.
 
 **Raises**:
 
@@ -1006,10 +1115,10 @@ it with the provided context variables. Automatically tries adding
 
 Tracing utilities that integrate Laminar (``lmnr``) with our code-base.
 
-This module centralises:
-• ``TraceInfo`` - a small helper object for propagating contextual metadata.
-• ``trace`` decorator - augments a callable with Laminar tracing, automatic
-``observe`` instrumentation, and optional support for test runs.
+This module centralizes:
+- ``TraceInfo`` - a small helper object for propagating contextual metadata.
+- ``trace`` decorator - augments a callable with Laminar tracing, automatic
+  ``observe`` instrumentation, and optional support for test runs.
 
 ### TraceLevel
 
@@ -1036,6 +1145,10 @@ The trace decorator integrates functions with Laminar (LMNR) for
 distributed tracing, performance monitoring, and debugging. It
 automatically handles both sync and async functions, propagates
 trace context, and provides fine-grained control over what gets traced.
+
+USAGE GUIDELINE - Defaults First:
+In 90% of cases, use WITHOUT any parameters.
+The defaults are optimized for most use cases.
 
 **Arguments**:
 
@@ -1093,26 +1206,25 @@ trace context, and provides fine-grained control over what gets traced.
 
 **Example**:
 
-  >>> # Simple usage
+  >>> # RECOMMENDED - No parameters needed for most cases!
   >>> @trace
   >>> async def process_document(doc):
   ...     return await analyze(doc)
   >>>
-  >>> # With configuration
-  >>> @trace(
-  ...     name="DocumentProcessor",
-  ...     span_type="TOOL",
-  ...     tags=["production"],
-  ...     ignore_inputs=["api_key"]
-  >>> )
-  >>> async def process(doc, api_key, trace_info: TraceInfo):
-  ...     # trace_info is automatically injected if not provided
-  ...     return await call_api(doc, api_key)
-  >>>
-  >>> # Conditional tracing
-  >>> @trace(level="debug")  # Only traces in debug mode
-  >>> def expensive_operation():
+  >>> # With parameters (RARE - only when specifically needed):
+  >>> @trace(level="debug")  # Only for debug-specific tracing
+  >>> async def debug_operation():
   ...     pass
+
+  >>> @trace(ignore_inputs=["api_key"])  # Only for sensitive data
+  >>> async def api_call(data, api_key):
+  ...     return await external_api(data, api_key)
+  >>>
+  >>> # AVOID unnecessary configuration - defaults handle:
+  >>> # - Automatic naming from function name
+  >>> # - Standard trace level ("always")
+  >>> # - Full input/output capture
+  >>> # - Proper span type inference
   >>>
   >>> # Custom formatting
   >>> @trace(
@@ -1224,6 +1336,10 @@ type safety and preventing circular dependencies in pipeline flows.
 Each flow must have a corresponding FlowConfig subclass that specifies
 its input document types and output document type.
 
+CRITICAL RULE: OUTPUT_DOCUMENT_TYPE must NEVER be in INPUT_DOCUMENT_TYPES!
+This prevents circular dependencies as flows chain together.
+Each flow transforms input types to a DIFFERENT output type.
+
 Class Variables:
 INPUT_DOCUMENT_TYPES: List of FlowDocument types this flow accepts
 OUTPUT_DOCUMENT_TYPE: Single FlowDocument type this flow produces
@@ -1233,17 +1349,21 @@ Validation Rules:
 - OUTPUT_DOCUMENT_TYPE cannot be in INPUT_DOCUMENT_TYPES (prevents cycles)
 - Field names must be exact (common typos are detected)
 
+Why this matters:
+Flows connect in pipelines where one flow's output becomes another's input.
+Same input/output types would create infinite loops or circular dependencies.
+
 **Example**:
 
+  >>> # CORRECT - Different output type from inputs
   >>> class ProcessingFlowConfig(FlowConfig):
-  ...     INPUT_DOCUMENT_TYPES = [RawDataDocument, ConfigDocument]
-  ...     OUTPUT_DOCUMENT_TYPE = ProcessedDataDocument
+  ...     INPUT_DOCUMENT_TYPES = [RawDataDocument]
+  ...     OUTPUT_DOCUMENT_TYPE = ProcessedDocument  # Different type!
 
-  >>> # Use with flow:
-  >>> if ProcessingFlowConfig.has_input_documents(docs):
-  ...     input_docs = ProcessingFlowConfig.get_input_documents(docs)
-  ...     output = await process_flow(input_docs)
-  ...     ProcessingFlowConfig.validate_output_documents(output)
+  >>> # WRONG - Will raise TypeError
+  >>> class BadConfig(FlowConfig):
+  ...     INPUT_DOCUMENT_TYPES = [DataDocument]
+  ...     OUTPUT_DOCUMENT_TYPE = DataDocument  # SAME TYPE - NOT ALLOWED!
 
 **Notes**:
 
@@ -1269,6 +1389,10 @@ Decorate an async function as a traced Prefect task.
 
 Wraps an async function with both Prefect task functionality and
 LMNR tracing. The function MUST be async (declared with 'async def').
+
+Best Practice - Use Defaults:
+For 90% of use cases, use this decorator WITHOUT any parameters.
+Only specify parameters when you have EXPLICIT requirements.
 
 **Arguments**:
 
@@ -1318,16 +1442,23 @@ LMNR tracing. The function MUST be async (declared with 'async def').
 
 **Example**:
 
+  >>> # RECOMMENDED - No parameters needed!
   >>> @pipeline_task
   >>> async def process_document(doc: Document) -> Document:
   ...     result = await analyze(doc)
   ...     return result
   >>>
-  >>> # With parameters
-  >>> @pipeline_task(retries=3, timeout_seconds=30)
-  >>> async def fetch_data(url: str) -> dict:
-  ...     async with httpx.AsyncClient() as client:
-  ...         return (await client.get(url)).json()
+  >>> # With parameters (only when necessary):
+  >>> @pipeline_task(retries=5)  # Only for known flaky operations
+  >>> async def unreliable_api_call(url: str) -> dict:
+  ...     # This API fails often, needs extra retries
+  ...     return await fetch_with_retry(url)
+  >>>
+  >>> # AVOID specifying defaults - they're already optimal:
+  >>> # - Automatic task naming
+  >>> # - Standard retry policy
+  >>> # - Sensible timeout
+  >>> # - Full observability
 
   Performance:
   - Task decoration overhead: ~1-2ms
@@ -1356,14 +1487,21 @@ Decorate an async flow for document processing.
 Wraps an async function as a Prefect flow with tracing and type safety.
 The decorated function MUST be async and follow the required signature.
 
+Best Practice - Use Defaults:
+For 90% of use cases, use this decorator WITHOUT any parameters.
+Only specify parameters when you have EXPLICIT requirements.
+
 Required function signature:
 async def flow_fn(
 project_name: str,         # Project/pipeline identifier
 documents: DocumentList,   # Input documents to process
 flow_options: FlowOptions, # Configuration (or subclass)
-*args,                     # Additional positional args
-**kwargs                   # Additional keyword args
+*args,                     # Additional positional args for custom parameters
+**kwargs                   # Additional keyword args for custom parameters
 ) -> DocumentList             # Must return DocumentList
+
+Note: *args and **kwargs allow for defining custom parameters on your flow
+function, which can be passed during execution for flow-specific needs.
 
 **Arguments**:
 
@@ -1408,8 +1546,9 @@ flow_options: FlowOptions, # Configuration (or subclass)
 
 **Example**:
 
-  >>> from ai_pipeline_core.flow.options import FlowOptions
+  >>> from ai_pipeline_core import FlowOptions
   >>>
+  >>> # RECOMMENDED - No parameters needed!
   >>> @pipeline_flow
   >>> async def analyze_documents(
   ...     project_name: str,
@@ -1423,19 +1562,20 @@ flow_options: FlowOptions, # Configuration (or subclass)
   ...         results.append(result)
   ...     return DocumentList(results)
   >>>
-  >>> # With custom options subclass
-  >>> class MyOptions(FlowOptions):
-  ...     model: str = "gpt-5"
-  >>>
-  >>> @pipeline_flow(retries=2, timeout_seconds=300)
-  >>> async def custom_flow(
+  >>> # With parameters (only when necessary):
+  >>> @pipeline_flow(retries=2)  # Only for flows that need retry logic
+  >>> async def critical_flow(
   ...     project_name: str,
   ...     documents: DocumentList,
-  ...     flow_options: MyOptions,  # Subclass works
-  ...     extra_param: str = "default"
+  ...     flow_options: FlowOptions
   >>> ) -> DocumentList:
-  ...     # Flow implementation
-  ...     return documents
+  ...     # Critical processing that might fail
+  ...     return await process_critical(documents)
+  >>>
+  >>> # AVOID specifying defaults - they're already optimal:
+  >>> # - Automatic flow naming
+  >>> # - Standard retry policy
+  >>> # - Full observability
 
 **Notes**:
 
@@ -1489,6 +1629,9 @@ Setup logging for the AI Pipeline Core library.
 
 Initializes logging configuration for the pipeline system.
 
+IMPORTANT: Call setup_logging exactly once in your application entry point
+(for example, in main()). Do not call at import time or in library modules.
+
 **Arguments**:
 
 - `config_path` - Optional path to YAML logging configuration file.
@@ -1496,8 +1639,15 @@ Initializes logging configuration for the pipeline system.
 
 **Example**:
 
-  >>> setup_logging()
-  >>> setup_logging(level="DEBUG")
+  >>> # In your main.py or application entry point:
+  >>> def main():
+  ...     setup_logging()  # Call once at startup
+  ...     # Your application code here
+  ...
+  >>> # Or with custom level:
+  >>> if __name__ == "__main__":
+  ...     setup_logging(level="DEBUG")
+  ...     run_application()
 
 ### get_pipeline_logger
 
@@ -1532,7 +1682,7 @@ Prefer get_pipeline_logger instead of logging.getLogger to ensure proper integra
 
 **Example**:
 
-  >>> from ai_pipeline_core.logging import get_pipeline_logger
+  >>> from ai_pipeline_core import get_pipeline_logger
   >>> logger = get_pipeline_logger(__name__)
   >>> logger.info("Processing started")
 
@@ -1549,9 +1699,13 @@ class LoggerMixin
 
 Mixin class that provides consistent logging functionality using Prefect's logging system.
 
+Note for users: In your code, always obtain loggers via get_pipeline_logger(__name__).
+The mixin's internal behavior routes to the appropriate backend; you should not call
+logging.getLogger directly.
+
 Automatically uses appropriate logger based on context:
-- get_run_logger() when in flow/task context
-- get_logger() when outside flow/task context
+- prefect.get_run_logger() when in flow/task context
+- Internal routing when outside flow/task context
 
 ### StructuredLoggerMixin
 
@@ -1703,7 +1857,7 @@ Key characteristics:
 - Exists only during task execution
 - Garbage collected after task completes
 - Used for intermediate processing results
-- More memory-efficient for temporary data
+- Reduces persistent I/O for temporary data
 
 Creating TaskDocuments:
 **Use the `create` classmethod** for most use cases. It handles automatic
@@ -1761,8 +1915,35 @@ Abstract base class for all documents in the AI Pipeline Core system.
 
 Document is the fundamental data abstraction for all content flowing through
 pipelines. It provides automatic encoding, MIME type detection, serialization,
-and validation. All documents must be subclassed from FlowDocument, TaskDocument,
-or TemporaryDocument based on their persistence requirements.
+and validation. All documents must be subclassed from FlowDocument or TaskDocument
+based on their persistence requirements. TemporaryDocument is a special concrete
+class that can be instantiated directly (not abstract).
+
+VALIDATION IS AUTOMATIC - Do not add manual validation!
+Size validation, name validation, and MIME type detection are built-in.
+The framework handles all standard validations internally.
+
+# WRONG - These checks already happen automatically:
+if document.size > document.MAX_CONTENT_SIZE:
+raise DocumentSizeError(...)  # NO! Already handled
+document.validate_file_name(document.name)  # NO! Automatic
+
+Best Practices:
+- Use create() classmethod for automatic type conversion (90% of cases)
+- Omit description parameter unless truly needed for metadata
+- When using LLM functions, pass AIMessages or str. Wrap any Document values
+in AIMessages([...]). Do not call .text yourself
+
+Standard Usage:
+>>> # CORRECT - minimal parameters
+>>> doc = MyDocument.create(name="data.json", content={"key": "value"})
+
+>>> # AVOID - unnecessary description
+>>> doc = MyDocument.create(
+...     name="data.json",
+...     content={"key": "value"},
+...     description="This is data"  # Usually not needed!
+... )
 
 Key features:
 - Immutable by default (frozen Pydantic model)
@@ -1797,8 +1978,9 @@ MARKDOWN_LIST_SEPARATOR: Separator for markdown list items
 **Warnings**:
 
   - Document subclasses should NOT start with 'Test' prefix (pytest conflict)
-  - Cannot instantiate Document directly - use FlowDocument or TaskDocument
+  - Cannot instantiate Document directly - must subclass FlowDocument or TaskDocument
   - Cannot add custom fields - only name, description, content are allowed
+  - Document is an abstract class and cannot be instantiated directly
 
   Metadata Attachment Patterns:
   Since custom fields are not allowed, use these patterns for metadata:
@@ -1855,7 +2037,7 @@ Separator for markdown list items.
 
 ```python
 @classmethod
-def create(cls, *, name: str, content: ContentInput, description: str | None = None) -> Self
+def create(cls, *, name: str, content: str | bytes | dict[str, Any] | list[Any] | BaseModel, description: str | None = None) -> Self
 ```
 
 Create a Document with automatic content type conversion (recommended).
@@ -1863,6 +2045,9 @@ Create a Document with automatic content type conversion (recommended).
 This is the **recommended way to create documents**. It accepts various
 content types and automatically converts them to bytes based on the file
 extension. Use the `parse` method to reverse this conversion.
+
+Best Practice (90% of cases):
+Only provide name and content. The description parameter is RARELY needed.
 
 **Arguments**:
 
@@ -1879,7 +2064,8 @@ extension. Use the `parse` method to reverse this conversion.
   - list[str]: Joined with separator for .md, else JSON/YAML
   - list[BaseModel]: Serialized to JSON or YAML based on extension
   - BaseModel: Serialized to JSON or YAML based on extension
-- `description` - Optional human-readable description (keyword-only)
+- `description` - Optional description - USUALLY OMIT THIS (defaults to None).
+  Only use when meaningful metadata helps downstream processing
 
 **Returns**:
 
@@ -1899,15 +2085,22 @@ extension. Use the `parse` method to reverse this conversion.
 
 **Example**:
 
-  >>> # String content
+  >>> # CORRECT - no description needed (90% of cases)
   >>> doc = MyDocument.create(name="test.txt", content="Hello World")
   >>> doc.content  # b'Hello World'
   >>> doc.parse(str)  # "Hello World"
 
-  >>> # Dictionary to JSON
+  >>> # CORRECT - Dictionary to JSON, no description
   >>> doc = MyDocument.create(name="config.json", content={"key": "value"})
   >>> doc.content  # b'{"key": "value", ...}'
   >>> doc.parse(dict)  # {"key": "value"}
+
+  >>> # AVOID unless description adds real value
+  >>> doc = MyDocument.create(
+  ...     name="config.json",
+  ...     content={"key": "value"},
+  ...     description="Config file"  # Usually redundant!
+  ... )
 
   >>> # Pydantic model to YAML
   >>> from pydantic import BaseModel
@@ -2043,9 +2236,23 @@ def validate_file_name(cls, name: str) -> None
 
 Validate that a file name matches allowed patterns.
 
-This method provides a hook for enforcing file naming conventions.
-By default, it checks against the FILES enum if defined.
-Subclasses can override for custom validation logic.
+DO NOT OVERRIDE this method if you define a FILES enum!
+The validation is automatic when FILES enum is present.
+
+# CORRECT - FILES enum provides automatic validation:
+class MyDocument(FlowDocument):
+class FILES(StrEnum):
+CONFIG = "config.yaml"  # Validation happens automatically!
+
+# WRONG - Unnecessary override:
+class MyDocument(FlowDocument):
+class FILES(StrEnum):
+CONFIG = "config.yaml"
+
+def validate_file_name(cls, name):  # DON'T DO THIS!
+pass  # Validation already happens via FILES enum
+
+Only override for custom validation logic BEYOND FILES enum constraints.
 
 **Arguments**:
 
@@ -2059,12 +2266,7 @@ Subclasses can override for custom validation logic.
 
   - If FILES enum is defined, name must exactly match one of the values
   - If FILES is not defined, any name is allowed
-  - Override in subclasses for regex patterns or other conventions
-
-**See Also**:
-
-  - get_expected_files: Returns list of allowed file names
-  - validate_name: Pydantic validator for security checks
+  - Override in subclasses ONLY for custom regex patterns or logic
 
 #### Document.id
 
@@ -2114,10 +2316,14 @@ deduplication and integrity verification.
   Full SHA256 hash as base32-encoded uppercase string.
 
   Why Base32 Instead of Hex:
-  - Base32 is case-insensitive (safer for filesystems)
+  - Base32 is case-insensitive, avoiding issues with different file systems
+  and AI interactions where casing might be inconsistent
   - More compact than hex (52 chars vs 64 chars for SHA-256)
+  - Contains more information per character than hex (5 bits vs 4 bits)
   - Safe for URLs without encoding
-  - Compatible with systems that have case-insensitive paths
+  - Compatible with case-insensitive file systems
+  - Avoids confusion in AI interactions where models might change casing
+  - Not base64 because we want consistent uppercase for all uses
 
 **Notes**:
 
@@ -2153,16 +2359,16 @@ def mime_type(self) -> str
 Get the document's MIME type.
 
 Primary property for accessing MIME type information.
-Currently delegates to detected_mime_type but provides
-a stable API for future enhancements.
+Automatically detects MIME type based on file extension and content.
 
 **Returns**:
 
-  MIME type string.
+  MIME type string (e.g., "text/plain", "application/json").
 
 **Notes**:
 
-  Prefer this over detected_mime_type for general use.
+  MIME type detection uses extension-based detection for known
+  text formats and content analysis for binary formats.
 
 #### Document.is_text
 
@@ -2176,7 +2382,7 @@ Check if document contains text content.
 **Returns**:
 
   True if MIME type indicates text content
-  (text/*, application/json, application/yaml, etc.),
+  (text/*, application/json, application/x-yaml, text/yaml, etc.),
   False otherwise.
 
 **Notes**:
@@ -2536,6 +2742,7 @@ are never persisted, regardless of context.
 ### TemporaryDocument
 
 ```python
+@final
 class TemporaryDocument(Document)
 ```
 
@@ -2549,7 +2756,7 @@ which are abstract, TemporaryDocument can be instantiated directly.
 Key characteristics:
 - Never persisted to file system
 - Can be instantiated directly (not abstract)
-- Cannot be subclassed (marked as @final)
+- Cannot be subclassed (annotated with Python's @final decorator in code)
 - Useful for transient data like API responses or intermediate calculations
 - Ignored by simple_runner save operations
 
@@ -2608,10 +2815,19 @@ Type-safe container for Document objects.
 
 Specialized list with validation and filtering for documents.
 
+Best Practice: Use default constructor in 90% of cases. Only enable
+validate_same_type or validate_duplicates when you explicitly need them.
+
 **Example**:
 
-  >>> docs = DocumentList(validate_same_type=True)
+  >>> # RECOMMENDED - default constructor for most cases
+  >>> docs = DocumentList([doc1, doc2])
+  >>> # Or empty initialization
+  >>> docs = DocumentList()
   >>> docs.append(MyDocument(name="file.txt", content=b"data"))
+  >>>
+  >>> # Only use validation flags when specifically needed:
+  >>> docs = DocumentList(validate_same_type=True)  # Rare use case
   >>> doc = docs.get_by_name("file.txt")
 
 #### DocumentList.__init__

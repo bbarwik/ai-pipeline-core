@@ -229,13 +229,19 @@ async def generate(
     The context/messages split enables efficient token usage by caching
     expensive static content separately from dynamic queries.
 
+    Best Practices:
+        1. OPTIONS: Omit in 90% of cases - defaults are optimized
+        2. MESSAGES: Use AIMessages or str - wrap Documents in AIMessages
+        3. CONTEXT vs MESSAGES: Use context for static/cacheable, messages for dynamic
+
     Args:
         model: Model to use (e.g., "gpt-5", "gemini-2.5-pro", "grok-4").
                Can be ModelName literal or any string for custom models.
         context: Static context to cache (documents, examples, instructions).
                 Defaults to None (empty context). Cached for 120 seconds.
-        messages: Dynamic messages/queries. Can be a single string or AIMessages.
-                 Converted to AIMessages if string.
+        messages: Dynamic messages/queries. AIMessages or str ONLY.
+                 Do not pass Document or DocumentList directly.
+                 If string, converted to AIMessages internally.
         options: Model configuration (temperature, retries, timeout, etc.).
                 Defaults to None (uses ModelOptions() with standard settings).
 
@@ -250,21 +256,47 @@ async def generate(
         ValueError: If model is empty or messages are invalid.
         LLMError: If generation fails after all retries.
 
-    Example:
-        >>> # Simple generation
-        >>> response = await generate(
-        ...     model="gpt-5",
-        ...     messages="Explain quantum computing"
-        ... )
-        >>> print(response.content)
+    Document Handling:
+        Wrap Documents in AIMessages - DO NOT pass directly or convert to .text:
 
-        >>> # With context caching
-        >>> context = AIMessages([large_document])
-        >>> response = await generate(
-        ...     model="gemini-2.5-pro",
-        ...     context=context,  # Cached for efficiency
-        ...     messages="Summarize the key points",
-        ...     options=ModelOptions(temperature=0.7)
+        # CORRECT - wrap Document in AIMessages
+        response = await llm.generate("gpt-5", messages=AIMessages([my_document]))
+
+        # WRONG - don't pass Document directly
+        response = await llm.generate("gpt-5", messages=my_document)  # NO!
+
+        # WRONG - don't convert to string yourself
+        response = await llm.generate("gpt-5", messages=my_document.text)  # NO!
+
+    Context vs Messages Strategy:
+        context: Static, reusable content (cached 120 seconds)
+            - Large documents, instructions, examples
+            - Same across multiple calls
+
+        messages: Dynamic, query-specific content
+            - User questions, current conversation turn
+            - Changes every call
+
+    Example:
+        >>> # Simple case - no options needed (90% of cases)
+        >>> response = await llm.generate("gpt-5", messages="Explain quantum computing")
+        >>> print(response.content)  # In production, use get_pipeline_logger instead of print
+
+        >>> # With context caching for efficiency
+        >>> # Context and messages are both AIMessages or str; wrap any Documents
+        >>> static_doc = AIMessages([large_document, "few-shot example: ..."])
+        >>>
+        >>> # First call: caches context
+        >>> r1 = await llm.generate("gpt-5", context=static_doc, messages="Summarize")
+        >>>
+        >>> # Second call: reuses cache, saves tokens!
+        >>> r2 = await llm.generate("gpt-5", context=static_doc, messages="Key points?")
+
+        >>> # AVOID unnecessary options (defaults are optimal)
+        >>> response = await llm.generate(
+        ...     "gpt-5",
+        ...     messages="Hello",
+        ...     options=ModelOptions(temperature=0.7)  # Default is probably fine!
         ... )
 
         >>> # Multi-turn conversation
@@ -273,7 +305,7 @@ async def generate(
         ...     previous_response,
         ...     "Can you give an example?"
         ... ])
-        >>> response = await generate("gpt-5", messages=messages)
+        >>> response = await llm.generate("gpt-5", messages=messages)
 
     Performance:
         - Context caching saves ~50-90% tokens on repeated calls
@@ -282,8 +314,10 @@ async def generate(
         - Default retry delay is 10s (configurable via ModelOptions.retry_delay_seconds)
 
     Caching:
-        Context is cached by the LLM provider with a fixed 120-second TTL.
-        The cache is based on the content hash and reduces token usage significantly.
+        When enabled in your LiteLLM proxy and supported by the upstream provider,
+        context messages may be cached (typical TTL ~120s) to reduce token usage on
+        repeated calls. Savings depend on provider and payload; treat this as an
+        optimization, not a guarantee. Cache behavior varies by proxy configuration.
 
     Note:
         - Context argument is ignored by the tracer to avoid recording large data
@@ -330,13 +364,19 @@ async def generate_structured(
     Type-safe generation that returns validated Pydantic model instances.
     Uses OpenAI's structured output feature for guaranteed schema compliance.
 
+    Best Practices (same as generate):
+        1. OPTIONS: Omit in 90% of cases - defaults are optimized
+        2. MESSAGES: Use AIMessages or str - wrap Documents in AIMessages
+        3. CONTEXT vs MESSAGES: Use context for static/cacheable, messages for dynamic
+
     Args:
         model: Model to use (must support structured output).
         response_format: Pydantic model class defining the output schema.
                         The model will generate JSON matching this schema.
         context: Static context to cache (documents, schemas, examples).
                 Defaults to None (empty AIMessages).
-        messages: Dynamic prompts/queries. String or AIMessages.
+        messages: Dynamic prompts/queries. AIMessages or str ONLY.
+                 Do not pass Document or DocumentList directly.
         options: Model configuration. response_format is set automatically.
 
     Returns:
@@ -358,7 +398,7 @@ async def generate_structured(
         ...     sentiment: float = Field(ge=-1, le=1)
         ...     key_points: list[str] = Field(max_length=5)
         >>>
-        >>> response = await generate_structured(
+        >>> response = await llm.generate_structured(
         ...     model="gpt-5",
         ...     response_format=Analysis,
         ...     messages="Analyze this product review: ..."

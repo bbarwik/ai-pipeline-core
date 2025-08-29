@@ -35,11 +35,13 @@ class ModelOptions(BaseModel):
                            "medium": Moderate context (~3-5 results)
                            "high": Extensive context (~6+ results)
 
-        reasoning_effort: Reasoning intensity for models with explicit reasoning.
+        reasoning_effort: Reasoning intensity for models that support explicit reasoning.
                          Literal["low", "medium", "high"] | None
                          "low": Quick reasoning
                          "medium": Balanced reasoning
                          "high": Deep, thorough reasoning
+                         Note: Availability and effect vary by provider and model. Only models
+                         that expose an explicit reasoning control will honor this parameter.
 
         retries: Number of retry attempts on failure (default: 3).
 
@@ -47,14 +49,15 @@ class ModelOptions(BaseModel):
 
         timeout: Maximum seconds to wait for response (default: 300).
 
-        service_tier: OpenAI API tier selection for performance/cost trade-offs.
+        service_tier: API tier selection for performance/cost trade-offs.
                      "auto": Let API choose
                      "default": Standard tier
                      "flex": Flexible (cheaper, may be slower)
                      "scale": Scaled performance
                      "priority": Priority processing
-                     Note: Only OpenAI models support this. Other providers
-                     (Anthropic, Google, Grok) silently ignore this parameter.
+                     Note: Service tiers are correct as of Q3 2025. Only OpenAI models
+                     support this parameter. Other providers (Anthropic, Google, Grok)
+                     silently ignore it.
 
         max_completion_tokens: Maximum tokens to generate.
                               None uses model default.
@@ -82,7 +85,7 @@ class ModelOptions(BaseModel):
         ...     max_completion_tokens=2000
         ... )
         >>>
-        >>> # For reasoning models (O1 series)
+        >>> # For reasoning models
         >>> options = ModelOptions(
         ...     reasoning_effort="high",  # Deep reasoning
         ...     timeout=600  # More time for complex reasoning
@@ -91,7 +94,7 @@ class ModelOptions(BaseModel):
     Note:
         - Not all options apply to all models
         - search_context_size only works with search models
-        - reasoning_effort only works with O1-style models
+        - reasoning_effort only works with models that support explicit reasoning
         - response_format is set internally by generate_structured()
     """
 

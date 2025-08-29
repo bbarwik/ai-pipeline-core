@@ -24,7 +24,7 @@ ModelName: TypeAlias = Literal[
     # Search models
     "gemini-2.5-flash-search",
     "sonar-pro-search",
-    "gpt-4o-search",
+    "gpt-4o-search",  # Note: gpt-4o-search is correct (not a typo)
     "grok-3-mini-search",
 ]
 """Type-safe model name identifiers.
@@ -34,6 +34,9 @@ ModelName: TypeAlias = Literal[
 Provides compile-time validation and IDE autocompletion for supported
 language model names. Used throughout the library to prevent typos
 and ensure only valid models are referenced.
+
+Note: These are example common model names as of Q3 2025. Actual availability
+depends on your LiteLLM proxy configuration and provider access.
 
 Model categories:
     Core models (gemini-2.5-pro, gpt-5, grok-4):
@@ -56,14 +59,14 @@ Extending with custom models:
     3. Or simply use strings: model = "any-model-via-litellm"
 
 Example:
-    >>> from ai_pipeline_core.llm import generate, ModelName
+    >>> from ai_pipeline_core import llm, ModelName
     >>>
     >>> # Type-safe model selection
     >>> model: ModelName = "gpt-5"  # IDE autocomplete works
-    >>> response = await generate(model, messages="Hello")
+    >>> response = await llm.generate(model, messages="Hello")
     >>>
     >>> # Also accepts string for custom models
-    >>> response = await generate("custom-model-v2", messages="Hello")
+    >>> response = await llm.generate("custom-model-v2", messages="Hello")
     >>>
     >>> # Custom type safety
     >>> from typing import Literal
@@ -76,6 +79,6 @@ Note:
     custom or newer models accessed via LiteLLM proxy.
 
 See Also:
-    - ai_pipeline_core.llm.generate: Main generation function
-    - ai_pipeline_core.llm.ModelOptions: Model configuration
+    - llm.generate: Main generation function
+    - ModelOptions: Model configuration options
 """

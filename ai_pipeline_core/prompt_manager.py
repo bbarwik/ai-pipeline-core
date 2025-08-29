@@ -19,9 +19,9 @@ Key features:
     - Clear error messages for missing templates
 
 Example:
-    >>> from ai_pipeline_core.prompt_manager import PromptManager
+    >>> from ai_pipeline_core import PromptManager
     >>>
-    >>> # In your module file
+    >>> # Initialize at module level (not inside functions)
     >>> pm = PromptManager(__file__)
     >>>
     >>> # Render a template
@@ -76,8 +76,14 @@ class PromptManager:
         env: Jinja2 Environment configured for prompt rendering.
 
     Example:
+        >>> # BEST PRACTICE: Instantiate at module scope (top level), not inside functions
         >>> # In flow/my_flow.py
-        >>> pm = PromptManager(__file__)
+        >>> from ai_pipeline_core import PromptManager
+        >>> pm = PromptManager(__file__)  # Module-level initialization
+        >>>
+        >>> # WRONG - Don't instantiate inside handlers or hot paths:
+        >>> # async def process():
+        >>> #     pm = PromptManager(__file__)  # NO! Creates new instance each call
         >>>
         >>> # Uses flow/prompts/analyze.jinja2 if it exists,
         >>> # otherwise searches parent directories
@@ -126,6 +132,7 @@ class PromptManager:
                          starting point for template discovery.
             prompts_dir: Name of the prompts subdirectory to search for
                         in each package level. Defaults to "prompts".
+                        Do not pass prompts_dir='prompts' because it is already the default.
 
         Raises:
             PromptError: If current_file is not a valid file path (e.g.,

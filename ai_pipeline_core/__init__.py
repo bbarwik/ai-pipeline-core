@@ -9,6 +9,28 @@ system designed for production use.
 The framework enforces best practices through strong typing (Pydantic), automatic retries,
 cost tracking, and distributed tracing. All I/O operations are async for maximum throughput.
 
+CRITICAL IMPORT RULE:
+    Always import from the top-level package:
+        # CORRECT:
+        from ai_pipeline_core import llm, pipeline_flow, FlowDocument, DocumentList
+
+        # WRONG - Never import from submodules:
+        from ai_pipeline_core.llm import generate  # NO!
+        from ai_pipeline_core.documents import FlowDocument  # NO!
+
+FRAMEWORK RULES (90% Use Cases):
+    1. Decorators: Use @trace, @pipeline_task, @pipeline_flow WITHOUT parameters
+    2. Logging: Use get_pipeline_logger(__name__) - NEVER print() or logging module
+    3. LLM calls: Use AIMessages or str. Wrap Documents in AIMessages; do not call .text yourself
+    4. Options: Omit ModelOptions unless specifically needed (defaults are optimal)
+    5. Documents: Create with just name and content - skip description
+    6. FlowConfig: OUTPUT_DOCUMENT_TYPE must differ from all INPUT_DOCUMENT_TYPES
+    7. Initialization: PromptManager and logger at module scope, not in functions
+    8. DocumentList: Use default constructor - no validation flags needed
+    9. setup_logging(): Only in application main(), never at import time
+
+Messages parameter type: AIMessages or str. Do not pass Document or DocumentList directly.
+
 Core Capabilities:
     - **Document Processing**: Type-safe handling of text, JSON, YAML, PDFs, and images
     - **LLM Integration**: Unified interface to any model via LiteLLM with caching
@@ -18,9 +40,9 @@ Core Capabilities:
     - **Local Development**: Simple runner for testing without infrastructure
 
 Quick Start:
-    >>> from ai_pipeline_core import pipeline_flow, FlowDocument, DocumentList
-    >>> from ai_pipeline_core.flow import FlowOptions
-    >>> from ai_pipeline_core.llm import generate
+    >>> from ai_pipeline_core import (
+    ...     pipeline_flow, FlowDocument, DocumentList, FlowOptions, llm, AIMessages
+    ... )
     >>>
     >>> class OutputDoc(FlowDocument):
     ...     '''Analysis result document.'''
@@ -31,9 +53,10 @@ Quick Start:
     ...     documents: DocumentList,
     ...     flow_options: FlowOptions
     ... ) -> DocumentList:
-    ...     response = await generate(
+    ...     # Messages accept AIMessages or str. Wrap documents: AIMessages([doc])
+    ...     response = await llm.generate(
     ...         model="gpt-5",
-    ...         messages=documents[0].text
+    ...         messages=AIMessages([documents[0]])
     ...     )
     ...     result = OutputDoc.create(
     ...         name="analysis.txt",
@@ -45,9 +68,16 @@ Environment Variables (when using LiteLLM proxy):
     - OPENAI_BASE_URL: LiteLLM proxy endpoint (e.g., http://localhost:4000)
     - OPENAI_API_KEY: API key for LiteLLM proxy
 
+    Note: LiteLLM proxy uses OpenAI-compatible API format, hence the OPENAI_*
+    variable names are correct regardless of which LLM provider you're using.
+
 Optional Environment Variables:
     - PREFECT_API_URL: Prefect server for orchestration
+    - PREFECT_API_KEY: Prefect API authentication key
     - LMNR_PROJECT_API_KEY: Laminar (LMNR) API key for tracing
+    - LMNR_DEBUG: Set to "true" to enable debug-level traces
+    - LMNR_SESSION_ID: Default session ID for traces
+    - LMNR_USER_ID: Default user ID for traces
 """
 
 from . import llm

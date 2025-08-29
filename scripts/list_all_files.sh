@@ -28,16 +28,17 @@ IGNORE_PATTERNS=(
     ".devcontainer/*"
     "tests/test_data/*"
     "test_data/*"
-    "Makefile"
     "License"
     "LICENSE"
     ".gitignore"
     ".gitattributes"
     ".env.example"
-    "examples/*"
     "scripts/*"
-    "docs/*"
     "dependencies_docs/*"
+    "tests/*"
+    "CLAUDE.md"
+    "Makefile"
+    "API.md"
 )
 
 # Helper: return 0 if the given file path should be ignored

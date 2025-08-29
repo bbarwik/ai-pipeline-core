@@ -21,7 +21,8 @@ class ModelResponse(ChatCompletion):
 
     @public
 
-    Structurally compatible with OpenAI ChatCompletion response format. All LLM provider
+    Inherits from OpenAI Python library's ChatCompletion class (openai.types.chat.ChatCompletion),
+    making it structurally compatible with OpenAI's response format. All LLM provider
     responses are normalized to this format by LiteLLM proxy, ensuring consistent
     interface across providers (OpenAI, Anthropic, Google, Grok, etc.).
 
@@ -37,11 +38,12 @@ class ModelResponse(ChatCompletion):
         id: Unique response ID (inherited).
 
     Example:
-        >>> from ai_pipeline_core.llm import generate
-        >>> response = await generate("gpt-5", messages="Hello")
+        >>> from ai_pipeline_core import llm
+        >>> response = await llm.generate("gpt-5", messages="Hello")
         >>> print(response.content)  # Generated text
         >>> print(response.usage.total_tokens)  # Token count
         >>> print(response.headers.get("x-litellm-response-cost"))  # Cost
+        >>> # Note: In production code, use get_pipeline_logger instead of print
 
     Note:
         This class maintains full compatibility with ChatCompletion
@@ -98,7 +100,8 @@ class ModelResponse(ChatCompletion):
             Generated text from the first choice, or empty string.
 
         Example:
-            >>> response = await generate("gpt-5", messages="Hello")
+            >>> from ai_pipeline_core import llm
+            >>> response = await llm.generate("gpt-5", messages="Hello")
             >>> text = response.content  # Direct access to generated text
         """
         return self.choices[0].message.content or ""
@@ -159,7 +162,7 @@ class ModelResponse(ChatCompletion):
             - model_options.*: Configuration used
 
         Example:
-            >>> response = await generate(...)
+            >>> response = await llm.generate(...)
             >>> metadata = response.get_laminar_metadata()
             >>> print(f"Cost: ${metadata.get('gen_ai.cost', 0)}")
             >>> print(f"Tokens: {metadata.get('gen_ai.usage.total_tokens')}")
@@ -242,13 +245,13 @@ class StructuredModelResponse(ModelResponse, Generic[T]):
 
     Example:
         >>> from pydantic import BaseModel
-        >>> from ai_pipeline_core.llm import generate_structured
+        >>> from ai_pipeline_core import llm
         >>>
         >>> class Analysis(BaseModel):
         ...     sentiment: float
         ...     summary: str
         >>>
-        >>> response = await generate_structured(
+        >>> response = await llm.generate_structured(
         ...     "gpt-5",
         ...     response_format=Analysis,
         ...     messages="Analyze: ..."

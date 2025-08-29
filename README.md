@@ -62,7 +62,7 @@ AI Pipeline Core provides a robust foundation for building production-grade AI p
 
 ### 🤖 Advanced LLM Features
 - Search-enabled models (Perplexity Sonar, Gemini Flash Search)
-- Reasoning models support (O1 series)
+- Reasoning models support
 - Structured output with Pydantic models
 - Dynamic model selection based on task
 

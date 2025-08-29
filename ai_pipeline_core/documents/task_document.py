@@ -26,7 +26,7 @@ class TaskDocument(Document):
     - Exists only during task execution
     - Garbage collected after task completes
     - Used for intermediate processing results
-    - More memory-efficient for temporary data
+    - Reduces persistent I/O for temporary data
 
     Creating TaskDocuments:
         **Use the `create` classmethod** for most use cases. It handles automatic

@@ -6,6 +6,8 @@
 {% macro sig(obj) -%}
 {%- set t = obj.__class__.__name__ -%}
 {%- if t == 'Class' -%}
+{% for d in (obj.decorations or []) %}@{{ d.name }}{{ d.args or '' }}
+{% endfor -%}
 class {{ obj.name }}{% if obj.bases %}({{ obj.bases|join(', ') }}){% endif %}
 {%- elif t == 'Function' -%}
 {% for d in (obj.decorations or []) %}@{{ d.name }}{{ d.args or '' }}

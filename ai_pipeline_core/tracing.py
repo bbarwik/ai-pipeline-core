@@ -2,10 +2,10 @@
 
 @public
 
-This module centralises:
-• ``TraceInfo`` - a small helper object for propagating contextual metadata.
-• ``trace`` decorator - augments a callable with Laminar tracing, automatic
-``observe`` instrumentation, and optional support for test runs.
+This module centralizes:
+- ``TraceInfo`` - a small helper object for propagating contextual metadata.
+- ``trace`` decorator - augments a callable with Laminar tracing, automatic
+  ``observe`` instrumentation, and optional support for test runs.
 """
 
 from __future__ import annotations
@@ -61,6 +61,10 @@ class TraceInfo(BaseModel):
     Environment fallbacks:
         - LMNR_SESSION_ID: Default session_id if not explicitly set
         - LMNR_USER_ID: Default user_id if not explicitly set
+        - LMNR_DEBUG: Controls debug-level tracing when set to "true"
+
+        Note: These variables are read directly by the tracing layer and are
+        not part of the Settings configuration.
 
     Example:
         >>> # Create trace context
@@ -215,6 +219,10 @@ def trace(
     automatically handles both sync and async functions, propagates
     trace context, and provides fine-grained control over what gets traced.
 
+    USAGE GUIDELINE - Defaults First:
+        In 90% of cases, use WITHOUT any parameters.
+        The defaults are optimized for most use cases.
+
     Args:
         func: Function to trace (when used without parentheses: @trace).
 
@@ -268,26 +276,25 @@ def trace(
         consistent session/user tracking across the call chain.
 
     Example:
-        >>> # Simple usage
+        >>> # RECOMMENDED - No parameters needed for most cases!
         >>> @trace
         >>> async def process_document(doc):
         ...     return await analyze(doc)
         >>>
-        >>> # With configuration
-        >>> @trace(
-        ...     name="DocumentProcessor",
-        ...     span_type="TOOL",
-        ...     tags=["production"],
-        ...     ignore_inputs=["api_key"]
-        >>> )
-        >>> async def process(doc, api_key, trace_info: TraceInfo):
-        ...     # trace_info is automatically injected if not provided
-        ...     return await call_api(doc, api_key)
-        >>>
-        >>> # Conditional tracing
-        >>> @trace(level="debug")  # Only traces in debug mode
-        >>> def expensive_operation():
+        >>> # With parameters (RARE - only when specifically needed):
+        >>> @trace(level="debug")  # Only for debug-specific tracing
+        >>> async def debug_operation():
         ...     pass
+
+        >>> @trace(ignore_inputs=["api_key"])  # Only for sensitive data
+        >>> async def api_call(data, api_key):
+        ...     return await external_api(data, api_key)
+        >>>
+        >>> # AVOID unnecessary configuration - defaults handle:
+        >>> # - Automatic naming from function name
+        >>> # - Standard trace level ("always")
+        >>> # - Full input/output capture
+        >>> # - Proper span type inference
         >>>
         >>> # Custom formatting
         >>> @trace(

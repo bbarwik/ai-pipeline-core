@@ -6,7 +6,7 @@ Provides a Prefect-integrated logging facade for unified logging across pipeline
 Prefer get_pipeline_logger instead of logging.getLogger to ensure proper integration.
 
 Example:
-    >>> from ai_pipeline_core.logging import get_pipeline_logger
+    >>> from ai_pipeline_core import get_pipeline_logger
     >>> logger = get_pipeline_logger(__name__)
     >>> logger.info("Processing started")
 """

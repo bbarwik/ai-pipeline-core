@@ -48,7 +48,6 @@ from .mime_type import (
 )
 
 TModel = TypeVar("TModel", bound=BaseModel)
-ContentInput = str | bytes | dict[str, Any] | list[Any] | BaseModel
 
 
 class Document(BaseModel, ABC):
@@ -58,8 +57,35 @@ class Document(BaseModel, ABC):
 
     Document is the fundamental data abstraction for all content flowing through
     pipelines. It provides automatic encoding, MIME type detection, serialization,
-    and validation. All documents must be subclassed from FlowDocument, TaskDocument,
-    or TemporaryDocument based on their persistence requirements.
+    and validation. All documents must be subclassed from FlowDocument or TaskDocument
+    based on their persistence requirements. TemporaryDocument is a special concrete
+    class that can be instantiated directly (not abstract).
+
+    VALIDATION IS AUTOMATIC - Do not add manual validation!
+        Size validation, name validation, and MIME type detection are built-in.
+        The framework handles all standard validations internally.
+
+        # WRONG - These checks already happen automatically:
+        if document.size > document.MAX_CONTENT_SIZE:
+            raise DocumentSizeError(...)  # NO! Already handled
+        document.validate_file_name(document.name)  # NO! Automatic
+
+    Best Practices:
+        - Use create() classmethod for automatic type conversion (90% of cases)
+        - Omit description parameter unless truly needed for metadata
+        - When using LLM functions, pass AIMessages or str. Wrap any Document values
+          in AIMessages([...]). Do not call .text yourself
+
+    Standard Usage:
+        >>> # CORRECT - minimal parameters
+        >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
+
+        >>> # AVOID - unnecessary description
+        >>> doc = MyDocument.create(
+        ...     name="data.json",
+        ...     content={"key": "value"},
+        ...     description="This is data"  # Usually not needed!
+        ... )
 
     Key features:
     - Immutable by default (frozen Pydantic model)
@@ -92,8 +118,9 @@ class Document(BaseModel, ABC):
 
     Warning:
         - Document subclasses should NOT start with 'Test' prefix (pytest conflict)
-        - Cannot instantiate Document directly - use FlowDocument or TaskDocument
+        - Cannot instantiate Document directly - must subclass FlowDocument or TaskDocument
         - Cannot add custom fields - only name, description, content are allowed
+        - Document is an abstract class and cannot be instantiated directly
 
     Metadata Attachment Patterns:
         Since custom fields are not allowed, use these patterns for metadata:
@@ -206,7 +233,13 @@ class Document(BaseModel, ABC):
     def create(cls, *, name: str, content: BaseModel, description: str | None = None) -> Self: ...
 
     @classmethod
-    def create(cls, *, name: str, content: ContentInput, description: str | None = None) -> Self:
+    def create(
+        cls,
+        *,
+        name: str,
+        content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
+        description: str | None = None,
+    ) -> Self:
         r"""Create a Document with automatic content type conversion (recommended).
 
         @public
@@ -214,6 +247,9 @@ class Document(BaseModel, ABC):
         This is the **recommended way to create documents**. It accepts various
         content types and automatically converts them to bytes based on the file
         extension. Use the `parse` method to reverse this conversion.
+
+        Best Practice (90% of cases):
+            Only provide name and content. The description parameter is RARELY needed.
 
         Args:
             name: Document filename (required, keyword-only).
@@ -229,7 +265,8 @@ class Document(BaseModel, ABC):
                 - list[str]: Joined with separator for .md, else JSON/YAML
                 - list[BaseModel]: Serialized to JSON or YAML based on extension
                 - BaseModel: Serialized to JSON or YAML based on extension
-            description: Optional human-readable description (keyword-only)
+            description: Optional description - USUALLY OMIT THIS (defaults to None).
+                        Only use when meaningful metadata helps downstream processing
 
         Returns:
             New Document instance with content converted to bytes
@@ -245,15 +282,22 @@ class Document(BaseModel, ABC):
             returns the original dictionary {"key": "value"}.
 
         Example:
-            >>> # String content
+            >>> # CORRECT - no description needed (90% of cases)
             >>> doc = MyDocument.create(name="test.txt", content="Hello World")
             >>> doc.content  # b'Hello World'
             >>> doc.parse(str)  # "Hello World"
 
-            >>> # Dictionary to JSON
+            >>> # CORRECT - Dictionary to JSON, no description
             >>> doc = MyDocument.create(name="config.json", content={"key": "value"})
             >>> doc.content  # b'{"key": "value", ...}'
             >>> doc.parse(dict)  # {"key": "value"}
+
+            >>> # AVOID unless description adds real value
+            >>> doc = MyDocument.create(
+            ...     name="config.json",
+            ...     content={"key": "value"},
+            ...     description="Config file"  # Usually redundant!
+            ... )
 
             >>> # Pydantic model to YAML
             >>> from pydantic import BaseModel
@@ -453,9 +497,23 @@ class Document(BaseModel, ABC):
 
         @public
 
-        This method provides a hook for enforcing file naming conventions.
-        By default, it checks against the FILES enum if defined.
-        Subclasses can override for custom validation logic.
+        DO NOT OVERRIDE this method if you define a FILES enum!
+        The validation is automatic when FILES enum is present.
+
+        # CORRECT - FILES enum provides automatic validation:
+        class MyDocument(FlowDocument):
+            class FILES(StrEnum):
+                CONFIG = "config.yaml"  # Validation happens automatically!
+
+        # WRONG - Unnecessary override:
+        class MyDocument(FlowDocument):
+            class FILES(StrEnum):
+                CONFIG = "config.yaml"
+
+            def validate_file_name(cls, name):  # DON'T DO THIS!
+                pass  # Validation already happens via FILES enum
+
+        Only override for custom validation logic BEYOND FILES enum constraints.
 
         Args:
             name: The file name to validate.
@@ -466,11 +524,7 @@ class Document(BaseModel, ABC):
         Note:
             - If FILES enum is defined, name must exactly match one of the values
             - If FILES is not defined, any name is allowed
-            - Override in subclasses for regex patterns or other conventions
-
-        See Also:
-            - get_expected_files: Returns list of allowed file names
-            - validate_name: Pydantic validator for security checks
+            - Override in subclasses ONLY for custom regex patterns or logic
         """
         allowed = cls.get_expected_files()
         if not allowed:
@@ -732,10 +786,14 @@ class Document(BaseModel, ABC):
             Full SHA256 hash as base32-encoded uppercase string.
 
         Why Base32 Instead of Hex:
-            - Base32 is case-insensitive (safer for filesystems)
+            - Base32 is case-insensitive, avoiding issues with different file systems
+              and AI interactions where casing might be inconsistent
             - More compact than hex (52 chars vs 64 chars for SHA-256)
+            - Contains more information per character than hex (5 bits vs 4 bits)
             - Safe for URLs without encoding
-            - Compatible with systems that have case-insensitive paths
+            - Compatible with case-insensitive file systems
+            - Avoids confusion in AI interactions where models might change casing
+            - Not base64 because we want consistent uppercase for all uses
 
         Note:
             This is computed once and cached for performance.
@@ -785,14 +843,14 @@ class Document(BaseModel, ABC):
         @public
 
         Primary property for accessing MIME type information.
-        Currently delegates to detected_mime_type but provides
-        a stable API for future enhancements.
+        Automatically detects MIME type based on file extension and content.
 
         Returns:
-            MIME type string.
+            MIME type string (e.g., "text/plain", "application/json").
 
         Note:
-            Prefer this over detected_mime_type for general use.
+            MIME type detection uses extension-based detection for known
+            text formats and content analysis for binary formats.
         """
         return self.detected_mime_type
 
@@ -804,7 +862,7 @@ class Document(BaseModel, ABC):
 
         Returns:
             True if MIME type indicates text content
-            (text/*, application/json, application/yaml, etc.),
+            (text/*, application/json, application/x-yaml, text/yaml, etc.),
             False otherwise.
 
         Note:

@@ -264,6 +264,10 @@ def pipeline_task(
     Wraps an async function with both Prefect task functionality and
     LMNR tracing. The function MUST be async (declared with 'async def').
 
+    Best Practice - Use Defaults:
+        For 90% of use cases, use this decorator WITHOUT any parameters.
+        Only specify parameters when you have EXPLICIT requirements.
+
     Args:
         __fn: Function to decorate (when used without parentheses).
 
@@ -309,16 +313,23 @@ def pipeline_task(
         task methods (submit, map, etc.).
 
     Example:
+        >>> # RECOMMENDED - No parameters needed!
         >>> @pipeline_task
         >>> async def process_document(doc: Document) -> Document:
         ...     result = await analyze(doc)
         ...     return result
         >>>
-        >>> # With parameters
-        >>> @pipeline_task(retries=3, timeout_seconds=30)
-        >>> async def fetch_data(url: str) -> dict:
-        ...     async with httpx.AsyncClient() as client:
-        ...         return (await client.get(url)).json()
+        >>> # With parameters (only when necessary):
+        >>> @pipeline_task(retries=5)  # Only for known flaky operations
+        >>> async def unreliable_api_call(url: str) -> dict:
+        ...     # This API fails often, needs extra retries
+        ...     return await fetch_with_retry(url)
+        >>>
+        >>> # AVOID specifying defaults - they're already optimal:
+        >>> # - Automatic task naming
+        >>> # - Standard retry policy
+        >>> # - Sensible timeout
+        >>> # - Full observability
 
     Performance:
         - Task decoration overhead: ~1-2ms
@@ -471,14 +482,21 @@ def pipeline_flow(
     Wraps an async function as a Prefect flow with tracing and type safety.
     The decorated function MUST be async and follow the required signature.
 
+    Best Practice - Use Defaults:
+        For 90% of use cases, use this decorator WITHOUT any parameters.
+        Only specify parameters when you have EXPLICIT requirements.
+
     Required function signature:
         async def flow_fn(
             project_name: str,         # Project/pipeline identifier
             documents: DocumentList,   # Input documents to process
             flow_options: FlowOptions, # Configuration (or subclass)
-            *args,                     # Additional positional args
-            **kwargs                   # Additional keyword args
+            *args,                     # Additional positional args for custom parameters
+            **kwargs                   # Additional keyword args for custom parameters
         ) -> DocumentList             # Must return DocumentList
+
+    Note: *args and **kwargs allow for defining custom parameters on your flow
+    function, which can be passed during execution for flow-specific needs.
 
     Args:
         __fn: Function to decorate (when used without parentheses).
@@ -520,8 +538,9 @@ def pipeline_flow(
         while enforcing document processing conventions.
 
     Example:
-        >>> from ai_pipeline_core.flow.options import FlowOptions
+        >>> from ai_pipeline_core import FlowOptions
         >>>
+        >>> # RECOMMENDED - No parameters needed!
         >>> @pipeline_flow
         >>> async def analyze_documents(
         ...     project_name: str,
@@ -535,19 +554,20 @@ def pipeline_flow(
         ...         results.append(result)
         ...     return DocumentList(results)
         >>>
-        >>> # With custom options subclass
-        >>> class MyOptions(FlowOptions):
-        ...     model: str = "gpt-5"
-        >>>
-        >>> @pipeline_flow(retries=2, timeout_seconds=300)
-        >>> async def custom_flow(
+        >>> # With parameters (only when necessary):
+        >>> @pipeline_flow(retries=2)  # Only for flows that need retry logic
+        >>> async def critical_flow(
         ...     project_name: str,
         ...     documents: DocumentList,
-        ...     flow_options: MyOptions,  # Subclass works
-        ...     extra_param: str = "default"
+        ...     flow_options: FlowOptions
         >>> ) -> DocumentList:
-        ...     # Flow implementation
-        ...     return documents
+        ...     # Critical processing that might fail
+        ...     return await process_critical(documents)
+        >>>
+        >>> # AVOID specifying defaults - they're already optimal:
+        >>> # - Automatic flow naming
+        >>> # - Standard retry policy
+        >>> # - Full observability
 
     Note:
         - Flow is wrapped with both Prefect and LMNR tracing

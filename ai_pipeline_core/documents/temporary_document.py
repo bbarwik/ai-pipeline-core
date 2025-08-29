@@ -25,7 +25,7 @@ class TemporaryDocument(Document):
     Key characteristics:
     - Never persisted to file system
     - Can be instantiated directly (not abstract)
-    - Cannot be subclassed (marked as @final)
+    - Cannot be subclassed (annotated with Python's @final decorator in code)
     - Useful for transient data like API responses or intermediate calculations
     - Ignored by simple_runner save operations
 

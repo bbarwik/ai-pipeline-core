@@ -148,13 +148,23 @@ def setup_logging(config_path: Optional[Path] = None, level: Optional[str] = Non
 
     Initializes logging configuration for the pipeline system.
 
+    IMPORTANT: Call setup_logging exactly once in your application entry point
+    (for example, in main()). Do not call at import time or in library modules.
+
     Args:
         config_path: Optional path to YAML logging configuration file.
         level: Optional log level override (INFO, DEBUG, WARNING, etc.).
 
     Example:
-        >>> setup_logging()
-        >>> setup_logging(level="DEBUG")
+        >>> # In your main.py or application entry point:
+        >>> def main():
+        ...     setup_logging()  # Call once at startup
+        ...     # Your application code here
+        ...
+        >>> # Or with custom level:
+        >>> if __name__ == "__main__":
+        ...     setup_logging(level="DEBUG")
+        ...     run_application()
     """
     global _logging_config
 

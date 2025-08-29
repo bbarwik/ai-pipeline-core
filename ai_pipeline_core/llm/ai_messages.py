@@ -43,14 +43,25 @@ class AIMessages(list[AIMessageType]):
 
     Conversion Rules:
         - str: Becomes {"role": "user", "content": text}
-        - Document: Becomes {"role": "user", "content": structured_content}
+        - Document: Becomes {"role": "user", "content": document_content}
+          (automatically handles text, images, PDFs based on MIME type)
         - ModelResponse: Becomes {"role": "assistant", "content": response.content}
 
+    Note: Document conversion is automatic. Text content becomes user text messages.
+    Images are sent to vision-capable models (non-vision models will raise ValueError).
+    PDFs are attached when supported by the model, otherwise a text extraction
+    fallback is used. LiteLLM proxy handles the specific encoding requirements
+    for each provider.
+
+    IMPORTANT: Although AIMessages can contain Document entries, the LLM client functions
+    expect `messages` to be `AIMessages` or `str`. If you start from a Document or a list
+    of Documents, build AIMessages first (e.g., `AIMessages([doc])` or `AIMessages(docs)`).
+
     Example:
-        >>> from ai_pipeline_core.llm import generate
+        >>> from ai_pipeline_core import llm
         >>> messages = AIMessages()
         >>> messages.append("What is the capital of France?")
-        >>> response = await generate("gpt-5", messages=messages)
+        >>> response = await llm.generate("gpt-5", messages=messages)
         >>> messages.append(response)  # Add the actual response
         >>> prompt = messages.to_prompt()  # Convert to OpenAI format
     """
@@ -76,6 +87,17 @@ class AIMessages(list[AIMessageType]):
 
         Raises:
             ValueError: If the last message is not a string.
+
+        Safer Pattern:
+            Instead of catching ValueError, check type first:
+            >>> messages = AIMessages([user_msg, response, followup])
+            >>> last = messages.get_last_message()
+            >>> if isinstance(last, str):
+            ...     text = last
+            >>> elif isinstance(last, ModelResponse):
+            ...     text = last.content
+            >>> elif isinstance(last, Document):
+            ...     text = last.text if last.is_text else "<binary>"
         """
         last_message = self.get_last_message()
         if isinstance(last_message, str):
@@ -91,8 +113,9 @@ class AIMessages(list[AIMessageType]):
         Each message type is converted according to its role and content.
 
         Returns:
-            List of ChatCompletionMessageParam dicts with 'role' and 'content' keys.
-            Ready to be passed to generate() or OpenAI API directly.
+            List of ChatCompletionMessageParam dicts (from openai.types.chat)
+            with 'role' and 'content' keys. Ready to be passed to generate()
+            or OpenAI API directly.
 
         Raises:
             ValueError: If message type is not supported.

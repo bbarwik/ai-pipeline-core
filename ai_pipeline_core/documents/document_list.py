@@ -17,9 +17,18 @@ class DocumentList(list[Document]):
 
     Specialized list with validation and filtering for documents.
 
+    Best Practice: Use default constructor in 90% of cases. Only enable
+    validate_same_type or validate_duplicates when you explicitly need them.
+
     Example:
-        >>> docs = DocumentList(validate_same_type=True)
+        >>> # RECOMMENDED - default constructor for most cases
+        >>> docs = DocumentList([doc1, doc2])
+        >>> # Or empty initialization
+        >>> docs = DocumentList()
         >>> docs.append(MyDocument(name="file.txt", content=b"data"))
+        >>>
+        >>> # Only use validation flags when specifically needed:
+        >>> docs = DocumentList(validate_same_type=True)  # Rare use case
         >>> doc = docs.get_by_name("file.txt")
     """
 

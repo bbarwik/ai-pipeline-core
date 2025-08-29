@@ -19,9 +19,13 @@ class LoggerMixin:
 
     @public
 
+    Note for users: In your code, always obtain loggers via get_pipeline_logger(__name__).
+    The mixin's internal behavior routes to the appropriate backend; you should not call
+    logging.getLogger directly.
+
     Automatically uses appropriate logger based on context:
-    - get_run_logger() when in flow/task context
-    - get_logger() when outside flow/task context
+    - prefect.get_run_logger() when in flow/task context
+    - Internal routing when outside flow/task context
     """
 
     _logger_name: Optional[str] = None

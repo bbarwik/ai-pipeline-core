@@ -23,6 +23,10 @@ class FlowConfig(ABC):
     Each flow must have a corresponding FlowConfig subclass that specifies
     its input document types and output document type.
 
+    CRITICAL RULE: OUTPUT_DOCUMENT_TYPE must NEVER be in INPUT_DOCUMENT_TYPES!
+        This prevents circular dependencies as flows chain together.
+        Each flow transforms input types to a DIFFERENT output type.
+
     Class Variables:
         INPUT_DOCUMENT_TYPES: List of FlowDocument types this flow accepts
         OUTPUT_DOCUMENT_TYPE: Single FlowDocument type this flow produces
@@ -32,16 +36,20 @@ class FlowConfig(ABC):
         - OUTPUT_DOCUMENT_TYPE cannot be in INPUT_DOCUMENT_TYPES (prevents cycles)
         - Field names must be exact (common typos are detected)
 
-    Example:
-        >>> class ProcessingFlowConfig(FlowConfig):
-        ...     INPUT_DOCUMENT_TYPES = [RawDataDocument, ConfigDocument]
-        ...     OUTPUT_DOCUMENT_TYPE = ProcessedDataDocument
+    Why this matters:
+        Flows connect in pipelines where one flow's output becomes another's input.
+        Same input/output types would create infinite loops or circular dependencies.
 
-        >>> # Use with flow:
-        >>> if ProcessingFlowConfig.has_input_documents(docs):
-        ...     input_docs = ProcessingFlowConfig.get_input_documents(docs)
-        ...     output = await process_flow(input_docs)
-        ...     ProcessingFlowConfig.validate_output_documents(output)
+    Example:
+        >>> # CORRECT - Different output type from inputs
+        >>> class ProcessingFlowConfig(FlowConfig):
+        ...     INPUT_DOCUMENT_TYPES = [RawDataDocument]
+        ...     OUTPUT_DOCUMENT_TYPE = ProcessedDocument  # Different type!
+
+        >>> # WRONG - Will raise TypeError
+        >>> class BadConfig(FlowConfig):
+        ...     INPUT_DOCUMENT_TYPES = [DataDocument]
+        ...     OUTPUT_DOCUMENT_TYPE = DataDocument  # SAME TYPE - NOT ALLOWED!
 
     Note:
         - Validation happens at class definition time
