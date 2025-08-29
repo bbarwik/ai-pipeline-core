@@ -4,15 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AI Pipeline Core is a high-performance async library for building AI pipelines with Prefect and LMNR (Laminar) tracing. It provides strong typing with Pydantic and uses LiteLLM proxy for OpenAI API compatibility.
-
-**Version 0.1.10 Updates:**
-- Full API documentation with pydoc-markdown (see API.md)
-- Fixed mutable defaults in llm.generate/generate_structured
-- Document constructors require keyword arguments
-- DocumentList.filter_by_type uses isinstance (supports subclasses)
-- Explicit DocumentValidationError instead of assertions
-- Deprecation warnings for legacy patterns
+AI Pipeline Core is a high-performance async framework for building type-safe AI pipelines with LLMs, document processing, and workflow orchestration. It combines Prefect orchestration with LMNR (Laminar) tracing, provides strong typing with Pydantic, and uses LiteLLM proxy for unified LLM access.
 
 > [!NOTE]
 > The `dependencies_docs/` directory contains guides for AI assistants on interacting with external dependencies (Prefect, LMNR, etc.), NOT user documentation for ai-pipeline-core. These files are excluded from repository listings.
@@ -75,10 +67,9 @@ make format            # Auto-format and fix code
 make typecheck         # Run basedpyright type checking
 make pre-commit        # Run all pre-commit hooks
 
-# Documentation (NEW in v0.1.10)
+# Documentation
 make docs-build         # Generate API.md using pydoc-markdown
 make docs-check         # Verify API.md is up-to-date (CI check)
-make docs-view          # Build and view documentation
 
 # Cleanup
 make clean             # Remove all build artifacts and caches
@@ -90,20 +81,13 @@ The project uses pydoc-markdown with a custom Jinja2 template to generate API.md
 
 ### Configuration Files
 - `pydoc-markdown.yaml`: Configures the documentation pipeline
-- `docs/api_template.jinja2`: Custom 105-line template for rendering
+- `docs/api_template.jinja2`: Custom template for rendering
 
 ### How It Works
 1. **@public Tags**: Add `@public` to docstrings to mark items for API documentation
 2. **Smart Module Inclusion**: Modules without @public are included if they contain @public members
 3. **Recursive Filtering**: Template recursively checks classes for @public members
 4. **Project-Agnostic**: Template auto-detects package name from module structure
-
-### Template Architecture
-The Jinja2 template (`docs/api_template.jinja2`) uses:
-- **Unified `sig` macro**: Handles signatures for classes, functions, and variables
-- **Single `render` macro**: Consistent rendering for all member types
-- **Smart `pub` detection**: Identifies @public tags in docstrings
-- **Recursive `has_pub_child`**: Finds @public members in nested structures
 
 ### Adding to API Documentation
 ```python
@@ -132,16 +116,16 @@ Foundation for all data handling. Documents are immutable Pydantic models that w
 - **Document**: Abstract base class. Handles encoding, MIME type detection, serialization. Cannot be instantiated directly.
 - **FlowDocument**: Abstract base for persistent documents in Prefect flows (survive across runs). Cannot be instantiated directly.
 - **TaskDocument**: Abstract base for temporary documents in Prefect tasks (exist only during execution). Cannot be instantiated directly.
-- **TemporaryDocument**: Concrete class for documents that are never persisted (NEW in v0.1.9+)
-- **DocumentList**: Type-validated container, not just `list[Document]` - adds validation
+- **TemporaryDocument**: Concrete class for documents that are never persisted
+- **DocumentList**: Type-validated container with filtering and retrieval methods
 
-**Critical v0.1.10 Changes**:
+**Key Features**:
 - Document constructors MUST use keyword arguments: `Document(name="file.txt", content="data", description="optional")`
-- Legacy positional arguments trigger deprecation warning
-- DocumentList.filter_by_type now uses isinstance (includes subclasses)
+- DocumentList unified API: `filter_by()` and `get_by()` for flexible filtering
 - YAML parsing uses ruamel.yaml (safe by default)
+- MIME type detection is automatic and required for AI interactions
 
-**Critical**: Each flow/task must define its own concrete document classes by inheriting from FlowDocument or TaskDocument. Never instantiate abstract classes directly. Never use raw bytes/strings - always Document classes. MIME type detection is automatic and required for AI interactions.
+**Critical**: Each flow/task must define its own concrete document classes by inheriting from FlowDocument or TaskDocument. Never instantiate abstract classes directly. Never use raw bytes/strings - always Document classes.
 
 ### LLM Module (`ai_pipeline_core/llm/`)
 All AI interactions through LiteLLM proxy (OpenAI API compatible). Built-in retry, LMNR monitoring, cost calculation.
@@ -150,15 +134,13 @@ All AI interactions through LiteLLM proxy (OpenAI API compatible). Built-in retr
 - **generate_structured()**: Returns structured Pydantic model outputs
 - **AIMessages**: Type-safe container, converts Documents to prompts automatically
 - **ModelOptions**: Config for retry, timeout, response format, system prompts
-- **Strong model typing**: Use `ModelName` type alias to prevent model name typos
+- **ModelResponse/StructuredModelResponse**: Focus on `.content` and `.parsed` properties
 
-**Critical v0.1.10 Changes**:
-- Context and options parameters now default to None (not empty instances)
+**Key Features**:
 - Context caching saves 50-90% tokens with 120s TTL
 - Retry uses FIXED delay (default 10s), NOT exponential backoff
 - Messages can be string or AIMessages
-
-**Critical**: Context/messages split is for caching efficiency. Context is expensive and rarely changes, messages are dynamic. Always use ModelOptions, never raw dicts.
+- Context/messages split is for caching efficiency
 
 ### Flow Configuration (`ai_pipeline_core/flow/`)
 Type-safe flow definitions with input/output document types.
@@ -167,6 +149,12 @@ Type-safe flow definitions with input/output document types.
 class MyFlowConfig(FlowConfig):
     INPUT_DOCUMENT_TYPES = [InputDoc1, InputDoc2]
     OUTPUT_DOCUMENT_TYPE = OutputDoc
+
+# Always finish flows with validation
+@pipeline_flow
+async def my_flow(...) -> DocumentList:
+    # ... processing ...
+    return config.create_and_validate_output(outputs)
 ```
 
 ### Prompt Manager (`ai_pipeline_core/prompt_manager.py`)
@@ -180,7 +168,17 @@ Philosophy: Prompts near their usage = easier maintenance.
 LMNR integration via `@trace` decorator. Test environment is automatically detected to avoid polluting production metrics.
 
 ### Settings (`ai_pipeline_core/settings.py`)
-Central configuration for all external services (Prefect, LMNR, OpenAI). Will be updated with deployment guide from `dependencies_docs/prefect_deployment.md`.
+Base class for application configuration. Projects should inherit from Settings to add custom configuration:
+
+```python
+from ai_pipeline_core import Settings
+
+class ProjectSettings(Settings):
+    app_name: str = "my-app"
+    debug_mode: bool = False
+
+settings = ProjectSettings()
+```
 
 ### Logging (`ai_pipeline_core/logging/`)
 Unified Prefect-integrated logging. Replaces Python's logging module entirely. Never import `logging` directly.
@@ -243,16 +241,16 @@ logger = get_pipeline_logger(__name__)
 ❌ **BAD**: `TestDocument`, `TestFlowDocument`, `TestInputDoc`
 ✅ **GOOD**: `SampleDocument`, `ExampleDocument`, `DemoDocument`, `MockDocument`
 
-## Document Constructor Rules (v0.1.10+)
+## Document Constructor Rules
 
 **CRITICAL**: Document constructors MUST use keyword arguments:
 
-❌ **BAD** (deprecated, will trigger warning):
+❌ **BAD**:
 ```python
-doc = MyDocument("file.txt", "content")  # Positional args
+doc = MyDocument("file.txt", "content")  # Positional args - NO!
 ```
 
-✅ **GOOD** (required):
+✅ **GOOD**:
 ```python
 doc = MyDocument(
     name="file.txt",
@@ -305,8 +303,8 @@ Key points:
 1. **Must define INPUT_DOCUMENT_TYPES and OUTPUT_DOCUMENT_TYPE** - These are required attributes
 2. **OUTPUT_DOCUMENT_TYPE cannot be in INPUT_DOCUMENT_TYPES** - This prevents circular dependencies
 3. Validation happens at class definition time via `__init_subclass__`
-4. **NEW in v0.1.10**: Validation uses DocumentValidationError exceptions (not assertions)
-5. **NEW**: filter_by_type uses isinstance, so subclasses are included
+4. Validation uses DocumentValidationError exceptions (not assertions)
+5. Always finish @pipeline_flow functions with `create_and_validate_output()`
 
 Example:
 ```python
@@ -322,8 +320,7 @@ class InvalidConfig(FlowConfig):
 
 ## Testing Approach
 
-- All tests must be async
-- Use `@trace(test=True)` for test tracing
+- All tests should be async
 - Mock external services (OpenAI, LMNR)
 - Test with proper Document types, not raw data
 - Coverage target: >80%
@@ -361,8 +358,8 @@ with ExitStack() as stack:
 4. Let pre-commit hooks auto-fix formatting
 5. If you can't explain it to another developer in one sentence, rewrite it
 6. If the function is longer than 20 lines, it's probably doing too much
-7. **NEW**: Add @public tags to all exported API components
-8. **NEW**: Update API.md after significant changes (`make docs-build`)
+7. Add @public tags to all exported API components
+8. Update API.md after significant changes (`make docs-build`)
 9. **Final check**: Could you delete this code? If maybe, then yes - delete it
 
 ## Final Rule
@@ -370,3 +367,9 @@ with ExitStack() as stack:
 **The best code is no code. The second best is minimal, clear, typed, async code that does exactly what's needed and nothing more.**
 
 If you're unsure whether to add code, don't add it.
+
+# important-instruction-reminders
+Do what has been asked; nothing more, nothing less.
+NEVER create files unless they're absolutely necessary for achieving your goal.
+ALWAYS prefer editing an existing file to creating a new one.
+NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.

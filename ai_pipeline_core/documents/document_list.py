@@ -29,7 +29,7 @@ class DocumentList(list[Document]):
         >>>
         >>> # Only use validation flags when specifically needed:
         >>> docs = DocumentList(validate_same_type=True)  # Rare use case
-        >>> doc = docs.get_by_name("file.txt")
+        >>> doc = docs.get_by("file.txt")  # Get by name
     """
 
     def __init__(
@@ -145,47 +145,96 @@ class DocumentList(list[Document]):
         self._validate()
         return result
 
-    def filter_by_type(self, document_type: type[Document]) -> "DocumentList":
-        """Filter documents by class type (including subclasses).
+    @overload
+    def filter_by(self, arg: str) -> "DocumentList": ...
+
+    @overload
+    def filter_by(self, arg: type[Document]) -> "DocumentList": ...
+
+    @overload
+    def filter_by(self, arg: list[type[Document]]) -> "DocumentList": ...
+
+    def filter_by(self, arg: str | type[Document] | list[type[Document]]) -> "DocumentList":
+        """Filter documents by name or type(s).
 
         @public
 
         Args:
-            document_type: The document class to filter for.
+            arg: Document name (str), single document type, or list of document types.
 
         Returns:
             New DocumentList with filtered documents.
-        """
-        return DocumentList([doc for doc in self if isinstance(doc, document_type)])
 
-    def filter_by_types(self, document_types: list[type[Document]]) -> "DocumentList":
-        """Filter documents by multiple class types.
+        Raises:
+            TypeError: If arg is not a valid type (str, Document type, or list of Document types).
+
+        Example:
+            >>> docs.filter_by("file.txt")  # Filter by name
+            >>> docs.filter_by(MyDocument)  # Filter by type
+            >>> docs.filter_by([Doc1, Doc2])  # Filter by multiple types
+        """
+        if isinstance(arg, str):
+            # Filter by name
+            return DocumentList([doc for doc in self if doc.name == arg])
+        elif isinstance(arg, type):
+            # Filter by single type (including subclasses)
+            return DocumentList([doc for doc in self if isinstance(doc, arg)])
+        elif isinstance(arg, list):  # type: ignore[reportUnnecessaryIsInstance]
+            # Filter by multiple types
+            documents = DocumentList()
+            for document_type in arg:
+                documents.extend([doc for doc in self if isinstance(doc, document_type)])
+            return documents
+        else:
+            raise TypeError(f"Invalid argument type for filter_by: {type(arg)}")
+
+    @overload
+    def get_by(self, arg: str) -> Document: ...
+
+    @overload
+    def get_by(self, arg: type[Document]) -> Document: ...
+
+    @overload
+    def get_by(self, arg: str, required: bool = True) -> Document | None: ...
+
+    @overload
+    def get_by(self, arg: type[Document], required: bool = True) -> Document | None: ...
+
+    def get_by(self, arg: str | type[Document], required: bool = True) -> Document | None:
+        """Get a single document by name or type.
 
         @public
 
         Args:
-            document_types: List of document classes to filter for.
+            arg: Document name (str) or document type.
+            required: If True, raises ValueError when not found. If False, returns None.
 
         Returns:
-            New DocumentList with filtered documents.
+            The first matching document, or None if not found and required=False.
+
+        Raises:
+            ValueError: If required=True and document not found.
+            TypeError: If arg is not a string or Document type.
+
+        Example:
+            >>> doc = docs.get_by("file.txt")  # Get by name, raises if not found
+            >>> doc = docs.get_by(MyDocument, required=False)  # Returns None if not found
         """
-        documents = DocumentList()
-        for document_type in document_types:
-            documents.extend(self.filter_by_type(document_type))
-        return documents
-
-    def get_by_name(self, name: str) -> Document | None:
-        """Find a document by filename.
-
-        @public
-
-        Args:
-            name: The document filename to search for.
-
-        Returns:
-            The first matching document, or None if not found.
-        """
-        for doc in self:
-            if doc.name == name:
-                return doc
-        return None
+        if isinstance(arg, str):
+            # Get by name
+            for doc in self:
+                if doc.name == arg:
+                    return doc
+            if required:
+                raise ValueError(f"Document with name '{arg}' not found")
+            return None
+        elif isinstance(arg, type):  # type: ignore[reportUnnecessaryIsInstance]
+            # Get by type (including subclasses)
+            for doc in self:
+                if isinstance(doc, arg):
+                    return doc
+            if required:
+                raise ValueError(f"Document of type '{arg.__name__}' not found")
+            return None
+        else:
+            raise TypeError(f"Invalid argument type for get_by: {type(arg)}")

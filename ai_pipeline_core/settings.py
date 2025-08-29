@@ -2,9 +2,9 @@
 
 @public
 
-This module provides centralized configuration management for AI Pipeline Core,
-handling all external service credentials and endpoints. Settings are loaded
-from environment variables with .env file support via pydantic-settings.
+This module provides the Settings base class for configuration management.
+Applications should inherit from Settings to create their own ProjectSettings
+class with additional configuration fields.
 
 Environment variables:
     OPENAI_BASE_URL: LiteLLM proxy endpoint (e.g., http://localhost:4000)
@@ -19,14 +19,19 @@ Configuration precedence:
     3. Default values (empty strings)
 
 Example:
-    >>> from ai_pipeline_core.settings import settings
+    >>> from ai_pipeline_core import Settings
+    >>>
+    >>> # Create your project's settings class
+    >>> class ProjectSettings(Settings):
+    ...     app_name: str = "my-app"
+    ...     debug_mode: bool = False
+    >>>
+    >>> # Create singleton instance
+    >>> settings = ProjectSettings()
     >>>
     >>> # Access configuration
     >>> print(settings.openai_base_url)
-    >>> print(settings.prefect_api_url)
-    >>>
-    >>> # Settings are frozen after initialization
-    >>> settings.openai_api_key = "new_key"  # Raises error
+    >>> print(settings.app_name)
 
 .env file format:
     OPENAI_BASE_URL=http://localhost:4000
@@ -34,9 +39,11 @@ Example:
     PREFECT_API_URL=http://localhost:4200/api
     PREFECT_API_KEY=pnu_abc123
     LMNR_PROJECT_API_KEY=lmnr_proj_xyz
+    APP_NAME=production-app
+    DEBUG_MODE=false
 
 Note:
-    Settings are loaded once at module import and frozen. There is no
+    Settings are loaded once at initialization and frozen. There is no
     built-in reload mechanism - the process must be restarted to pick up
     changes to environment variables or .env file. This is by design to
     ensure consistency during execution.
@@ -46,15 +53,29 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Core configuration for AI Pipeline external services.
+    """Base configuration class for AI Pipeline applications.
 
     @public
 
-    Settings provides type-safe configuration management with automatic
-    loading from environment variables and .env files. All settings are
-    immutable after initialization.
+    Settings is designed to be inherited by your application's configuration
+    class. It provides core AI Pipeline settings and type-safe configuration
+    management with automatic loading from environment variables and .env files.
+    All settings are immutable after initialization.
 
-    Attributes:
+    Inherit from Settings to add your application-specific configuration:
+
+        >>> from ai_pipeline_core import Settings
+        >>>
+        >>> class ProjectSettings(Settings):
+        ...     # Your custom settings
+        ...     app_name: str = "my-app"
+        ...     max_retries: int = 3
+        ...     enable_cache: bool = True
+        >>>
+        >>> # Create singleton instance for your app
+        >>> settings = ProjectSettings()
+
+    Core Attributes:
         openai_base_url: LiteLLM proxy URL for OpenAI-compatible API.
                         Required for all LLM operations. Usually
                         http://localhost:4000 for local development.
@@ -74,19 +95,9 @@ class Settings(BaseSettings):
                               for production monitoring.
 
     Configuration sources:
-        - Environment variables (OPENAI_BASE_URL, etc.)
+        - Environment variables (highest priority)
         - .env file in current directory
-        - Default empty strings if not configured
-
-    Example:
-        >>> # Typically accessed via module-level instance
-        >>> from ai_pipeline_core.settings import settings
-        >>>
-        >>> if not settings.openai_base_url:
-        ...     raise ValueError("OPENAI_BASE_URL must be configured")
-        >>>
-        >>> # Settings are frozen (immutable)
-        >>> print(settings.model_dump())  # View all settings
+        - Default values in class definition
 
     Note:
         Empty strings are used as defaults to allow optional services.
@@ -112,17 +123,6 @@ class Settings(BaseSettings):
     lmnr_project_api_key: str = ""
 
 
-# Create a single, importable instance of the settings
+# Legacy: Module-level instance for backwards compatibility
+# Applications should create their own settings instance
 settings = Settings()
-"""Global settings instance for the entire application.
-
-@public
-
-This singleton instance is created at module import and provides
-configuration to all pipeline components. Access this instance
-rather than creating new Settings objects.
-
-Example:
-    >>> from ai_pipeline_core.settings import settings
-    >>> print(f"Using LLM proxy at {settings.openai_base_url}")
-"""

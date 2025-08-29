@@ -9,12 +9,12 @@ system designed for production use.
 The framework enforces best practices through strong typing (Pydantic), automatic retries,
 cost tracking, and distributed tracing. All I/O operations are async for maximum throughput.
 
-CRITICAL IMPORT RULE:
+**CRITICAL IMPORT RULE**:
     Always import from the top-level package:
-        # CORRECT:
+        **CORRECT**:
         from ai_pipeline_core import llm, pipeline_flow, FlowDocument, DocumentList
 
-        # WRONG - Never import from submodules:
+        **WRONG** - Never import from submodules:
         from ai_pipeline_core.llm import generate  # NO!
         from ai_pipeline_core.documents import FlowDocument  # NO!
 
@@ -110,14 +110,14 @@ from .logging import get_pipeline_logger as get_logger
 from .pipeline import pipeline_flow, pipeline_task
 from .prefect import disable_run_logger, prefect_test_harness
 from .prompt_manager import PromptManager
-from .settings import settings
+from .settings import Settings
 from .tracing import TraceInfo, TraceLevel, trace
 
-__version__ = "0.1.10"
+__version__ = "0.1.11"
 
 __all__ = [
     # Config/Settings
-    "settings",
+    "Settings",
     # Logging
     "get_logger",
     "get_pipeline_logger",

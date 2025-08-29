@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Complete showcase of ai_pipeline_core features (v0.1.10)
+"""Complete showcase of ai_pipeline_core features (v0.1.11)
 
 This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
   • Settings configuration with environment variables and .env files
@@ -21,13 +21,6 @@ This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
   • Tracing (trace, TraceLevel, TraceInfo) for observability
   • PromptManager for Jinja2 templates with smart path resolution
   • Simple runner module (run_cli, run_pipeline, load/save documents)
-
-Key API Changes in v0.1.10:
-  - Document constructors now require keyword arguments (name=, content=, description=)
-  - Mutable defaults fixed in llm.generate (context/options now default to None)
-  - DocumentList.filter_by_type now uses isinstance (includes subclasses)
-  - FlowConfig validation uses explicit exceptions (not assertions)
-  - Deprecation warning for legacy Document constructor
 
 Prerequisites:
   - OPENAI_API_KEY and OPENAI_BASE_URL configured (can be set in .env)
@@ -55,7 +48,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, Field
 
 # Import ALL exports from ai_pipeline_core.__init__
-# Note: These are the public exports as of v0.1.10
+# Note: These are the public exports as of v0.1.11
 from ai_pipeline_core import (
     AIMessages,
     Document,
@@ -83,8 +76,6 @@ from ai_pipeline_core import (
     pipeline_flow,
     pipeline_task,
     sanitize_url,
-    # Settings
-    settings,
     setup_logging,
     trace,
 )
@@ -236,7 +227,6 @@ async def analyze_with_advanced_tracing(
         "Analyze this document thoroughly",
     ])
 
-    # NEW in v0.1.10: Fixed mutable defaults - context and options default to None
     response = await llm.generate_structured(
         model=model,
         response_format=TextAnalysis,
@@ -425,9 +415,7 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
     """Initialize with sample documents for CLI mode."""
     logger.info("Initializing showcase with sample data")
 
-    # Check settings
-    if not settings.openai_api_key:
-        logger.warning("OPENAI_API_KEY not set")
+    # Note: OPENAI_API_KEY should be set via environment variable or .env file
 
     # Create sample documents including list[BaseModel] demonstration
     sample_models = [
@@ -466,7 +454,7 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
             description="Sample JSON data",
             content={
                 "project": "ai-pipeline-core",
-                "version": "0.1.10",
+                "version": "0.1.11",
                 "features": ["async", "typed", "observable"],
                 "models": [m.model_dump() for m in sample_models],  # Include list demo
             },

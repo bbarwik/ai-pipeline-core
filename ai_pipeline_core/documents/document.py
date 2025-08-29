@@ -97,8 +97,6 @@ class Document(BaseModel, ABC):
 
     Class Variables:
         MAX_CONTENT_SIZE: Maximum allowed content size in bytes (default 25MB)
-        DESCRIPTION_EXTENSION: File extension for description files (.description.md)
-        MARKDOWN_LIST_SEPARATOR: Separator for markdown list items
 
     Attributes:
         name: Document filename (validated for security)
@@ -156,16 +154,10 @@ class Document(BaseModel, ABC):
     """
 
     DESCRIPTION_EXTENSION: ClassVar[str] = ".description.md"
-    """File extension for description files.
-
-    @public
-    """
+    """File extension for description files."""
 
     MARKDOWN_LIST_SEPARATOR: ClassVar[str] = "\n\n---\n\n"
-    """Separator for markdown list items.
-
-    @public
-    """
+    """Separator for markdown list items."""
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Validate subclass configuration at definition time.
@@ -399,8 +391,6 @@ class Document(BaseModel, ABC):
     def base_type(self) -> Literal["flow", "task", "temporary"]:
         """Get the document's base type.
 
-        @public
-
         Property alias for get_base_type() providing a cleaner API.
         This property cannot be overridden by subclasses.
 
@@ -413,8 +403,6 @@ class Document(BaseModel, ABC):
     @property
     def is_flow(self) -> bool:
         """Check if this is a flow document.
-
-        @public
 
         Flow documents persist across Prefect flow runs and are saved
         to the file system between pipeline steps.
@@ -429,8 +417,6 @@ class Document(BaseModel, ABC):
     def is_task(self) -> bool:
         """Check if this is a task document.
 
-        @public
-
         Task documents are temporary within Prefect task execution
         and are not persisted between pipeline steps.
 
@@ -443,8 +429,6 @@ class Document(BaseModel, ABC):
     @property
     def is_temporary(self) -> bool:
         """Check if this is a temporary document.
-
-        @public
 
         Temporary documents are never persisted and exist only
         during execution.
@@ -752,9 +736,12 @@ class Document(BaseModel, ABC):
 
         @public
 
-        Returns the first 6 characters of the base32-encoded SHA256 hash,
-        providing a compact identifier suitable for logging
-        and display purposes.
+        This ID is crucial for LLM interactions. When documents are provided to
+        LLMs via generate() or generate_structured(), their IDs are included,
+        allowing the LLM to reference documents in prompts by either name or ID.
+        The ID is content-based (derived from SHA256 hash of content only),
+        so the same content always produces the same ID. Changing the name or
+        description does NOT change the ID.
 
         Returns:
             6-character base32-encoded string (uppercase, e.g., "A7B2C9").
@@ -1073,7 +1060,7 @@ class Document(BaseModel, ABC):
 
         @public
 
-        Splits text content using MARKDOWN_LIST_SEPARATOR ("\n\n---\n\n").
+        Splits text content using markdown separator ("\n\n---\n\n").
         Designed for markdown documents with multiple sections.
 
         Returns:

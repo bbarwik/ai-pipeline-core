@@ -17,37 +17,39 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class ModelResponse(ChatCompletion):
-    """Enhanced response wrapper for LLM text generation.
+    """Response wrapper for LLM text generation.
 
     @public
 
-    Inherits from OpenAI Python library's ChatCompletion class (openai.types.chat.ChatCompletion),
-    making it structurally compatible with OpenAI's response format. All LLM provider
-    responses are normalized to this format by LiteLLM proxy, ensuring consistent
-    interface across providers (OpenAI, Anthropic, Google, Grok, etc.).
+    Primary usage is adding to AIMessages for multi-turn conversations:
 
-    Additional Attributes:
-        headers: HTTP response headers including cost information. Only populated
-                when using our client; will be empty dict if deserializing from JSON.
-        model_options: Configuration used for this generation.
+        >>> response = await llm.generate(messages=messages)
+        >>> messages.add(response)  # Add assistant response to conversation
+        >>> print(response.content)  # Access generated text
 
-    Key Properties:
-        content: Quick access to generated text content.
-        usage: Token usage statistics (inherited).
-        model: Model identifier used (inherited).
-        id: Unique response ID (inherited).
+    The two main interactions with ModelResponse:
+    1. Adding to AIMessages for conversation flow
+    2. Accessing .content property for the generated text
+
+    Almost all use cases are covered by these two patterns. Advanced features
+    like token usage and cost tracking are available but rarely needed.
 
     Example:
-        >>> from ai_pipeline_core import llm
-        >>> response = await llm.generate("gpt-5", messages="Hello")
-        >>> print(response.content)  # Generated text
-        >>> print(response.usage.total_tokens)  # Token count
-        >>> print(response.headers.get("x-litellm-response-cost"))  # Cost
-        >>> # Note: In production code, use get_pipeline_logger instead of print
+        >>> from ai_pipeline_core.llm import AIMessages, generate
+        >>>
+        >>> messages = AIMessages("Explain quantum computing")
+        >>> response = await generate(messages=messages)
+        >>>
+        >>> # Primary usage: add to conversation
+        >>> messages.add(response)
+        >>>
+        >>> # Access generated text
+        >>> print(response.content)
 
     Note:
-        This class maintains full compatibility with ChatCompletion
-        while adding pipeline-specific functionality.
+        Inherits from OpenAI's ChatCompletion for compatibility.
+        Other properties (usage, model, id) should only be accessed
+        when absolutely necessary.
     """
 
     headers: dict[str, str] = Field(default_factory=dict)
@@ -93,16 +95,20 @@ class ModelResponse(ChatCompletion):
 
         @public
 
-        Convenience property for accessing the first choice's message
-        content. Returns empty string if no content available.
+        Primary property for accessing the LLM's response text.
+        This covers 99% of use cases with ModelResponse.
 
         Returns:
-            Generated text from the first choice, or empty string.
+            Generated text from the model, or empty string if none.
 
         Example:
-            >>> from ai_pipeline_core import llm
-            >>> response = await llm.generate("gpt-5", messages="Hello")
-            >>> text = response.content  # Direct access to generated text
+            >>> response = await generate(messages="Hello")
+            >>> text = response.content  # The generated response
+            >>>
+            >>> # Common pattern: add to messages then use content
+            >>> messages.add(response)
+            >>> if "error" in response.content.lower():
+            ...     # Handle error case
         """
         return self.choices[0].message.content or ""
 
@@ -232,41 +238,37 @@ class StructuredModelResponse(ModelResponse, Generic[T]):
 
     @public
 
-    Structurally compatible with OpenAI ChatCompletion response format. Extends ModelResponse
-    with type-safe access to parsed Pydantic model instances.
+    Primary usage is adding to AIMessages and accessing .parsed property:
 
-    Type Parameter:
-        T: The Pydantic model type for the structured output.
-
-    Additional Features:
-        - Type-safe access to parsed Pydantic model
-        - Automatically parses structured JSON output from model response
-        - All features of ModelResponse (cost, metadata, etc.)
-
-    Example:
-        >>> from pydantic import BaseModel
-        >>> from ai_pipeline_core import llm
-        >>>
         >>> class Analysis(BaseModel):
         ...     sentiment: float
         ...     summary: str
         >>>
-        >>> response = await llm.generate_structured(
-        ...     "gpt-5",
+        >>> response = await generate_structured(
         ...     response_format=Analysis,
-        ...     messages="Analyze: ..."
+        ...     messages="Analyze this text..."
         ... )
         >>>
-        >>> # Type-safe access
-        >>> analysis: Analysis = response.parsed
+        >>> # Primary usage: access parsed model
+        >>> analysis = response.parsed
         >>> print(f"Sentiment: {analysis.sentiment}")
         >>>
-        >>> # Still have access to metadata
-        >>> print(f"Tokens used: {response.usage.total_tokens}")
+        >>> # Can add to messages for conversation
+        >>> messages.add(response)
+
+    The two main interactions:
+    1. Accessing .parsed property for the structured data
+    2. Adding to AIMessages for conversation continuity
+
+    These patterns cover virtually all use cases. Advanced features exist
+    but should only be used when absolutely necessary.
+
+    Type Parameter:
+        T: The Pydantic model type for the structured output.
 
     Note:
-        The parsed property provides type-safe access to the
-        validated Pydantic model instance.
+        Extends ModelResponse with type-safe parsed data access.
+        Other inherited properties should rarely be needed.
     """
 
     def __init__(
@@ -313,33 +315,35 @@ class StructuredModelResponse(ModelResponse, Generic[T]):
 
         @public
 
-        Provides type-safe access to the structured output that was
-        generated according to the specified schema.
+        Primary property for accessing structured output.
+        This is the main reason to use generate_structured().
 
         Returns:
             Validated instance of the Pydantic model type T.
 
         Raises:
-            ValueError: If no parsed content is available (should
-                       not happen in normal operation).
+            ValueError: If no parsed content available (internal error).
 
         Example:
             >>> class UserInfo(BaseModel):
             ...     name: str
             ...     age: int
             >>>
-            >>> response: StructuredModelResponse[UserInfo] = ...
-            >>> user = response.parsed  # Type is UserInfo
+            >>> response = await generate_structured(
+            ...     response_format=UserInfo,
+            ...     messages="Extract user info..."
+            ... )
+            >>>
+            >>> # Primary usage: get the parsed model
+            >>> user = response.parsed
             >>> print(f"{user.name} is {user.age} years old")
-
-        Type Safety:
-            The return type matches the type parameter T, providing
-            full IDE support and type checking.
+            >>>
+            >>> # Can also add to messages
+            >>> messages.add(response)
 
         Note:
-            This property should always return a value for properly
-            generated structured responses. ValueError indicates an
-            internal error.
+            Type-safe with full IDE support. This property covers
+            99% of structured response use cases.
         """
         if self._parsed_value is not None:
             return self._parsed_value

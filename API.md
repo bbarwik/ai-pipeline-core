@@ -28,12 +28,12 @@ system designed for production use.
 The framework enforces best practices through strong typing (Pydantic), automatic retries,
 cost tracking, and distributed tracing. All I/O operations are async for maximum throughput.
 
-CRITICAL IMPORT RULE:
+**CRITICAL IMPORT RULE**:
 Always import from the top-level package:
-# CORRECT:
+**CORRECT**:
 from ai_pipeline_core import llm, pipeline_flow, FlowDocument, DocumentList
 
-# WRONG - Never import from submodules:
+**WRONG** - Never import from submodules:
 from ai_pipeline_core.llm import generate  # NO!
 from ai_pipeline_core.documents import FlowDocument  # NO!
 
@@ -200,37 +200,39 @@ with additional metadata, cost tracking, and structured output support.
 class ModelResponse(ChatCompletion)
 ```
 
-Enhanced response wrapper for LLM text generation.
+Response wrapper for LLM text generation.
 
-Inherits from OpenAI Python library's ChatCompletion class (openai.types.chat.ChatCompletion),
-making it structurally compatible with OpenAI's response format. All LLM provider
-responses are normalized to this format by LiteLLM proxy, ensuring consistent
-interface across providers (OpenAI, Anthropic, Google, Grok, etc.).
+Primary usage is adding to AIMessages for multi-turn conversations:
 
-Additional Attributes:
-headers: HTTP response headers including cost information. Only populated
-when using our client; will be empty dict if deserializing from JSON.
-model_options: Configuration used for this generation.
+>>> response = await llm.generate(messages=messages)
+>>> messages.add(response)  # Add assistant response to conversation
+>>> print(response.content)  # Access generated text
 
-Key Properties:
-content: Quick access to generated text content.
-usage: Token usage statistics (inherited).
-model: Model identifier used (inherited).
-id: Unique response ID (inherited).
+The two main interactions with ModelResponse:
+1. Adding to AIMessages for conversation flow
+2. Accessing .content property for the generated text
+
+Almost all use cases are covered by these two patterns. Advanced features
+like token usage and cost tracking are available but rarely needed.
 
 **Example**:
 
-  >>> from ai_pipeline_core import llm
-  >>> response = await llm.generate("gpt-5", messages="Hello")
-  >>> print(response.content)  # Generated text
-  >>> print(response.usage.total_tokens)  # Token count
-  >>> print(response.headers.get("x-litellm-response-cost"))  # Cost
-  >>> # Note: In production code, use get_pipeline_logger instead of print
+  >>> from ai_pipeline_core.llm import AIMessages, generate
+  >>>
+  >>> messages = AIMessages("Explain quantum computing")
+  >>> response = await generate(messages=messages)
+  >>>
+  >>> # Primary usage: add to conversation
+  >>> messages.add(response)
+  >>>
+  >>> # Access generated text
+  >>> print(response.content)
 
 **Notes**:
 
-  This class maintains full compatibility with ChatCompletion
-  while adding pipeline-specific functionality.
+  Inherits from OpenAI's ChatCompletion for compatibility.
+  Other properties (usage, model, id) should only be accessed
+  when absolutely necessary.
 
 #### ModelResponse.content
 
@@ -241,18 +243,22 @@ def content(self) -> str
 
 Get the generated text content.
 
-Convenience property for accessing the first choice's message
-content. Returns empty string if no content available.
+Primary property for accessing the LLM's response text.
+This covers 99% of use cases with ModelResponse.
 
 **Returns**:
 
-  Generated text from the first choice, or empty string.
+  Generated text from the model, or empty string if none.
 
 **Example**:
 
-  >>> from ai_pipeline_core import llm
-  >>> response = await llm.generate("gpt-5", messages="Hello")
-  >>> text = response.content  # Direct access to generated text
+  >>> response = await generate(messages="Hello")
+  >>> text = response.content  # The generated response
+  >>>
+  >>> # Common pattern: add to messages then use content
+  >>> messages.add(response)
+  >>> if "error" in response.content.lower():
+  ...     # Handle error case
 
 ### StructuredModelResponse
 
@@ -262,43 +268,38 @@ class StructuredModelResponse(ModelResponse, Generic[T])
 
 Response wrapper for structured/typed LLM output.
 
-Structurally compatible with OpenAI ChatCompletion response format. Extends ModelResponse
-with type-safe access to parsed Pydantic model instances.
+Primary usage is adding to AIMessages and accessing .parsed property:
+
+>>> class Analysis(BaseModel):
+...     sentiment: float
+...     summary: str
+>>>
+>>> response = await generate_structured(
+...     response_format=Analysis,
+...     messages="Analyze this text..."
+... )
+>>>
+>>> # Primary usage: access parsed model
+>>> analysis = response.parsed
+>>> print(f"Sentiment: {analysis.sentiment}")
+>>>
+>>> # Can add to messages for conversation
+>>> messages.add(response)
+
+The two main interactions:
+1. Accessing .parsed property for the structured data
+2. Adding to AIMessages for conversation continuity
+
+These patterns cover virtually all use cases. Advanced features exist
+but should only be used when absolutely necessary.
 
 Type Parameter:
 T: The Pydantic model type for the structured output.
 
-Additional Features:
-- Type-safe access to parsed Pydantic model
-- Automatically parses structured JSON output from model response
-- All features of ModelResponse (cost, metadata, etc.)
-
-**Example**:
-
-  >>> from pydantic import BaseModel
-  >>> from ai_pipeline_core import llm
-  >>>
-  >>> class Analysis(BaseModel):
-  ...     sentiment: float
-  ...     summary: str
-  >>>
-  >>> response = await llm.generate_structured(
-  ...     "gpt-5",
-  ...     response_format=Analysis,
-  ...     messages="Analyze: ..."
-  ... )
-  >>>
-  >>> # Type-safe access
-  >>> analysis: Analysis = response.parsed
-  >>> print(f"Sentiment: {analysis.sentiment}")
-  >>>
-  >>> # Still have access to metadata
-  >>> print(f"Tokens used: {response.usage.total_tokens}")
-
 **Notes**:
 
-  The parsed property provides type-safe access to the
-  validated Pydantic model instance.
+  Extends ModelResponse with type-safe parsed data access.
+  Other inherited properties should rarely be needed.
 
 #### StructuredModelResponse.parsed
 
@@ -309,8 +310,8 @@ def parsed(self) -> T
 
 Get the parsed Pydantic model instance.
 
-Provides type-safe access to the structured output that was
-generated according to the specified schema.
+Primary property for accessing structured output.
+This is the main reason to use generate_structured().
 
 **Returns**:
 
@@ -318,8 +319,7 @@ generated according to the specified schema.
 
 **Raises**:
 
-- `ValueError` - If no parsed content is available (should
-  not happen in normal operation).
+- `ValueError` - If no parsed content available (internal error).
 
 **Example**:
 
@@ -327,19 +327,22 @@ generated according to the specified schema.
   ...     name: str
   ...     age: int
   >>>
-  >>> response: StructuredModelResponse[UserInfo] = ...
-  >>> user = response.parsed  # Type is UserInfo
+  >>> response = await generate_structured(
+  ...     response_format=UserInfo,
+  ...     messages="Extract user info..."
+  ... )
+  >>>
+  >>> # Primary usage: get the parsed model
+  >>> user = response.parsed
   >>> print(f"{user.name} is {user.age} years old")
-
-  Type Safety:
-  The return type matches the type parameter T, providing
-  full IDE support and type checking.
+  >>>
+  >>> # Can also add to messages
+  >>> messages.add(response)
 
 **Notes**:
 
-  This property should always return a value for properly
-  generated structured responses. ValueError indicates an
-  internal error.
+  Type-safe with full IDE support. This property covers
+  99% of structured response use cases.
 
 
 ## ai_pipeline_core.llm.ai_messages
@@ -397,20 +400,7 @@ of Documents, build AIMessages first (e.g., `AIMessages([doc])` or `AIMessages(d
   >>> messages.append("What is the capital of France?")
   >>> response = await llm.generate("gpt-5", messages=messages)
   >>> messages.append(response)  # Add the actual response
-  >>> prompt = messages.to_prompt()  # Convert to OpenAI format
-
-#### AIMessages.get_last_message
-
-```python
-def get_last_message(self) -> AIMessageType
-```
-
-Get the last message in the conversation.
-
-**Returns**:
-
-  The last message in the conversation, which can be a string,
-  Document, or ModelResponse.
+  >>> prompt = messages.get_last_message_as_str()  # Get the last message as a string
 
 #### AIMessages.get_last_message_as_str
 
@@ -439,37 +429,6 @@ Get the last message as a string, raising if not a string.
   >>> elif isinstance(last, Document):
   ...     text = last.text if last.is_text else "<binary>"
 
-#### AIMessages.to_prompt
-
-```python
-def to_prompt(self) -> list[ChatCompletionMessageParam]
-```
-
-Convert AIMessages to OpenAI-compatible format.
-
-Transforms the message list into the format expected by OpenAI API.
-Each message type is converted according to its role and content.
-
-**Returns**:
-
-  List of ChatCompletionMessageParam dicts (from openai.types.chat)
-  with 'role' and 'content' keys. Ready to be passed to generate()
-  or OpenAI API directly.
-
-**Raises**:
-
-- `ValueError` - If message type is not supported.
-
-**Example**:
-
-  >>> messages = AIMessages(["Hello", response, "Follow up"])
-  >>> prompt = messages.to_prompt()
-  >>> # Result: [
-  >>> #   {"role": "user", "content": "Hello"},
-  >>> #   {"role": "assistant", "content": "..."},
-  >>> #   {"role": "user", "content": "Follow up"}
-  >>> # ]
-
 
 ## ai_pipeline_core.llm.model_types
 
@@ -488,7 +447,7 @@ ModelName: TypeAlias = Literal[
     # Search models
     "gemini-2.5-flash-search",
     "sonar-pro-search",
-    "gpt-4o-search",  # Note: gpt-4o-search is correct (not a typo)
+    "gpt-4o-search",
     "grok-3-mini-search",
 ]
 ```
@@ -1323,6 +1282,10 @@ Flow configuration system for type-safe pipeline definitions.
 This module provides the FlowConfig abstract base class that enforces
 type safety for flow inputs and outputs in the pipeline system.
 
+Best Practice:
+    Always finish @pipeline_flow functions with create_and_validate_output()
+    to ensure type safety and proper validation of output documents.
+
 ### FlowConfig
 
 ```python
@@ -1359,6 +1322,13 @@ Same input/output types would create infinite loops or circular dependencies.
   >>> class ProcessingFlowConfig(FlowConfig):
   ...     INPUT_DOCUMENT_TYPES = [RawDataDocument]
   ...     OUTPUT_DOCUMENT_TYPE = ProcessedDocument  # Different type!
+  >>>
+  >>> # Use in @pipeline_flow - RECOMMENDED PATTERN
+  >>> @pipeline_flow(name="processing")
+  >>> async def process(config: ProcessingFlowConfig, docs: DocumentList) -> DocumentList:
+  ...     outputs = []
+  ...     # ... processing logic ...
+  ...     return config.create_and_validate_output(outputs)
 
   >>> # WRONG - Will raise TypeError
   >>> class BadConfig(FlowConfig):
@@ -1370,6 +1340,49 @@ Same input/output types would create infinite loops or circular dependencies.
   - Validation happens at class definition time
   - Helps catch configuration errors early
   - Used by simple_runner to manage document flow
+
+#### FlowConfig.create_and_validate_output
+
+```python
+@classmethod
+def create_and_validate_output(cls, output: FlowDocument | list[FlowDocument] | DocumentList) -> DocumentList
+```
+
+Create and validate flow output documents.
+
+RECOMMENDED: Always use this method at the end of @pipeline_flow functions
+to ensure type safety and proper output validation.
+
+Convenience method that wraps output in a DocumentList if needed
+and validates it matches the expected OUTPUT_DOCUMENT_TYPE.
+
+**Arguments**:
+
+- `output` - Single document, list of documents, or DocumentList.
+
+**Returns**:
+
+  Validated DocumentList containing the output documents.
+
+**Raises**:
+
+- `DocumentValidationError` - If output type doesn't match OUTPUT_DOCUMENT_TYPE.
+
+**Example**:
+
+  >>> @pipeline_flow(name="my_flow")
+  >>> async def process_flow(config: MyFlowConfig, ...) -> DocumentList:
+  >>>     outputs = []
+  >>>     # ... processing logic ...
+  >>>     outputs.append(OutputDoc(...))
+  >>>
+  >>>     # Always finish with this validation
+  >>>     return config.create_and_validate_output(outputs)
+
+**Notes**:
+
+  This is the recommended pattern for all @pipeline_flow functions.
+  It ensures type safety and catches output errors immediately.
 
 
 ## ai_pipeline_core.pipeline
@@ -1720,9 +1733,9 @@ Extended mixin for structured logging with Prefect.
 
 Core configuration settings for pipeline operations.
 
-This module provides centralized configuration management for AI Pipeline Core,
-handling all external service credentials and endpoints. Settings are loaded
-from environment variables with .env file support via pydantic-settings.
+This module provides the Settings base class for configuration management.
+Applications should inherit from Settings to create their own ProjectSettings
+class with additional configuration fields.
 
 Environment variables:
 OPENAI_BASE_URL: LiteLLM proxy endpoint (e.g., http://localhost:4000)
@@ -1738,14 +1751,19 @@ Configuration precedence:
 
 **Example**:
 
-  >>> from ai_pipeline_core.settings import settings
+  >>> from ai_pipeline_core import Settings
+  >>>
+  >>> # Create your project's settings class
+  >>> class ProjectSettings(Settings):
+  ...     app_name: str = "my-app"
+  ...     debug_mode: bool = False
+  >>>
+  >>> # Create singleton instance
+  >>> settings = ProjectSettings()
   >>>
   >>> # Access configuration
   >>> print(settings.openai_base_url)
-  >>> print(settings.prefect_api_url)
-  >>>
-  >>> # Settings are frozen after initialization
-  >>> settings.openai_api_key = "new_key"  # Raises error
+  >>> print(settings.app_name)
 
   .env file format:
   OPENAI_BASE_URL=http://localhost:4000
@@ -1753,30 +1771,15 @@ Configuration precedence:
   PREFECT_API_URL=http://localhost:4200/api
   PREFECT_API_KEY=pnu_abc123
   LMNR_PROJECT_API_KEY=lmnr_proj_xyz
+  APP_NAME=production-app
+  DEBUG_MODE=false
 
 **Notes**:
 
-  Settings are loaded once at module import and frozen. There is no
+  Settings are loaded once at initialization and frozen. There is no
   built-in reload mechanism - the process must be restarted to pick up
   changes to environment variables or .env file. This is by design to
   ensure consistency during execution.
-
-### settings
-
-```python
-settings = Settings()
-```
-
-Global settings instance for the entire application.
-
-This singleton instance is created at module import and provides
-configuration to all pipeline components. Access this instance
-rather than creating new Settings objects.
-
-**Example**:
-
-  >>> from ai_pipeline_core.settings import settings
-  >>> print(f"Using LLM proxy at {settings.openai_base_url}")
 
 ### Settings
 
@@ -1784,47 +1787,49 @@ rather than creating new Settings objects.
 class Settings(BaseSettings)
 ```
 
-Core configuration for AI Pipeline external services.
+Base configuration class for AI Pipeline applications.
 
-Settings provides type-safe configuration management with automatic
-loading from environment variables and .env files. All settings are
-immutable after initialization.
+Settings is designed to be inherited by your application's configuration
+class. It provides core AI Pipeline settings and type-safe configuration
+management with automatic loading from environment variables and .env files.
+All settings are immutable after initialization.
 
-**Attributes**:
+Inherit from Settings to add your application-specific configuration:
 
-- `openai_base_url` - LiteLLM proxy URL for OpenAI-compatible API.
-  Required for all LLM operations. Usually
-  http://localhost:4000 for local development.
+>>> from ai_pipeline_core import Settings
+>>>
+>>> class ProjectSettings(Settings):
+...     # Your custom settings
+...     app_name: str = "my-app"
+...     max_retries: int = 3
+...     enable_cache: bool = True
+>>>
+>>> # Create singleton instance for your app
+>>> settings = ProjectSettings()
 
-- `openai_api_key` - Authentication key for LiteLLM proxy. Required
-  for LLM operations. Format depends on proxy config.
+Core Attributes:
+openai_base_url: LiteLLM proxy URL for OpenAI-compatible API.
+Required for all LLM operations. Usually
+http://localhost:4000 for local development.
 
-- `prefect_api_url` - Prefect server API endpoint. Required for flow
-  deployment and remote execution. Leave empty for
-  local-only execution.
+openai_api_key: Authentication key for LiteLLM proxy. Required
+for LLM operations. Format depends on proxy config.
 
-- `prefect_api_key` - Prefect API authentication key. Required only
-  when connecting to Prefect Cloud or secured server.
+prefect_api_url: Prefect server API endpoint. Required for flow
+deployment and remote execution. Leave empty for
+local-only execution.
 
-- `lmnr_project_api_key` - Laminar (LMNR) project API key for tracing
-  and observability. Optional but recommended
-  for production monitoring.
+prefect_api_key: Prefect API authentication key. Required only
+when connecting to Prefect Cloud or secured server.
 
-  Configuration sources:
-  - Environment variables (OPENAI_BASE_URL, etc.)
-  - .env file in current directory
-  - Default empty strings if not configured
+lmnr_project_api_key: Laminar (LMNR) project API key for tracing
+and observability. Optional but recommended
+for production monitoring.
 
-**Example**:
-
-  >>> # Typically accessed via module-level instance
-  >>> from ai_pipeline_core.settings import settings
-  >>>
-  >>> if not settings.openai_base_url:
-  ...     raise ValueError("OPENAI_BASE_URL must be configured")
-  >>>
-  >>> # Settings are frozen (immutable)
-  >>> print(settings.model_dump())  # View all settings
+Configuration sources:
+- Environment variables (highest priority)
+- .env file in current directory
+- Default values in class definition
 
 **Notes**:
 
@@ -1955,8 +1960,6 @@ Key features:
 
 Class Variables:
 MAX_CONTENT_SIZE: Maximum allowed content size in bytes (default 25MB)
-DESCRIPTION_EXTENSION: File extension for description files (.description.md)
-MARKDOWN_LIST_SEPARATOR: Separator for markdown list items
 
 **Attributes**:
 
@@ -2016,22 +2019,6 @@ MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024
 ```
 
 Maximum allowed content size in bytes (default 25MB).
-
-#### Document.DESCRIPTION_EXTENSION
-
-```python
-DESCRIPTION_EXTENSION: ClassVar[str] = ".description.md"
-```
-
-File extension for description files.
-
-#### Document.MARKDOWN_LIST_SEPARATOR
-
-```python
-MARKDOWN_LIST_SEPARATOR: ClassVar[str] = "\n\n---\n\n"
-```
-
-Separator for markdown list items.
 
 #### Document.create
 
@@ -2159,74 +2146,6 @@ direct instantiation of the abstract Document class.
 - `create` - Recommended factory method with automatic type conversion
 - `parse` - Method to reverse the conversion done by create
 
-#### Document.base_type
-
-```python
-@final
-@property
-def base_type(self) -> Literal["flow", "task", "temporary"]
-```
-
-Get the document's base type.
-
-Property alias for get_base_type() providing a cleaner API.
-This property cannot be overridden by subclasses.
-
-**Returns**:
-
-  The document's base type: "flow", "task", or "temporary".
-
-#### Document.is_flow
-
-```python
-@final
-@property
-def is_flow(self) -> bool
-```
-
-Check if this is a flow document.
-
-Flow documents persist across Prefect flow runs and are saved
-to the file system between pipeline steps.
-
-**Returns**:
-
-  True if this is a FlowDocument subclass, False otherwise.
-
-#### Document.is_task
-
-```python
-@final
-@property
-def is_task(self) -> bool
-```
-
-Check if this is a task document.
-
-Task documents are temporary within Prefect task execution
-and are not persisted between pipeline steps.
-
-**Returns**:
-
-  True if this is a TaskDocument subclass, False otherwise.
-
-#### Document.is_temporary
-
-```python
-@final
-@property
-def is_temporary(self) -> bool
-```
-
-Check if this is a temporary document.
-
-Temporary documents are never persisted and exist only
-during execution.
-
-**Returns**:
-
-  True if this is a TemporaryDocument, False otherwise.
-
 #### Document.validate_file_name
 
 ```python
@@ -2278,9 +2197,12 @@ def id(self) -> str
 
 Get a short unique identifier for the document.
 
-Returns the first 6 characters of the base32-encoded SHA256 hash,
-providing a compact identifier suitable for logging
-and display purposes.
+This ID is crucial for LLM interactions. When documents are provided to
+LLMs via generate() or generate_structured(), their IDs are included,
+allowing the LLM to reference documents in prompts by either name or ID.
+The ID is content-based (derived from SHA256 hash of content only),
+so the same content always produces the same ID. Changing the name or
+description does NOT change the ID.
 
 **Returns**:
 
@@ -2578,7 +2500,7 @@ def as_markdown_list(self) -> list[str]
 
 Parse document as markdown-separated list of sections.
 
-Splits text content using MARKDOWN_LIST_SEPARATOR ("\n\n---\n\n").
+Splits text content using markdown separator ("\n\n---\n\n").
 Designed for markdown documents with multiple sections.
 
 **Returns**:
@@ -2828,7 +2750,7 @@ validate_same_type or validate_duplicates when you explicitly need them.
   >>>
   >>> # Only use validation flags when specifically needed:
   >>> docs = DocumentList(validate_same_type=True)  # Rare use case
-  >>> doc = docs.get_by_name("file.txt")
+  >>> doc = docs.get_by("file.txt")  # Get by name
 
 #### DocumentList.__init__
 
@@ -2844,50 +2766,55 @@ Initialize DocumentList.
 - `validate_same_type` - Enforce same document type.
 - `validate_duplicates` - Prevent duplicate filenames.
 
-#### DocumentList.filter_by_type
+#### DocumentList.filter_by
 
 ```python
-def filter_by_type(self, document_type: type[Document]) -> "DocumentList"
+def filter_by(self, arg: str | type[Document] | list[type[Document]]) -> "DocumentList"
 ```
 
-Filter documents by class type (including subclasses).
+Filter documents by name or type(s).
 
 **Arguments**:
 
-- `document_type` - The document class to filter for.
+- `arg` - Document name (str), single document type, or list of document types.
 
 **Returns**:
 
   New DocumentList with filtered documents.
 
-#### DocumentList.filter_by_types
+**Raises**:
+
+- `TypeError` - If arg is not a valid type (str, Document type, or list of Document types).
+
+**Example**:
+
+  >>> docs.filter_by("file.txt")  # Filter by name
+  >>> docs.filter_by(MyDocument)  # Filter by type
+  >>> docs.filter_by([Doc1, Doc2])  # Filter by multiple types
+
+#### DocumentList.get_by
 
 ```python
-def filter_by_types(self, document_types: list[type[Document]]) -> "DocumentList"
+def get_by(self, arg: str | type[Document], required: bool = True) -> Document | None
 ```
 
-Filter documents by multiple class types.
+Get a single document by name or type.
 
 **Arguments**:
 
-- `document_types` - List of document classes to filter for.
+- `arg` - Document name (str) or document type.
+- `required` - If True, raises ValueError when not found. If False, returns None.
 
 **Returns**:
 
-  New DocumentList with filtered documents.
+  The first matching document, or None if not found and required=False.
 
-#### DocumentList.get_by_name
+**Raises**:
 
-```python
-def get_by_name(self, name: str) -> Document | None
-```
+- `ValueError` - If required=True and document not found.
+- `TypeError` - If arg is not a string or Document type.
 
-Find a document by filename.
+**Example**:
 
-**Arguments**:
-
-- `name` - The document filename to search for.
-
-**Returns**:
-
-  The first matching document, or None if not found.
+  >>> doc = docs.get_by("file.txt")  # Get by name, raises if not found
+  >>> doc = docs.get_by(MyDocument, required=False)  # Returns None if not found

@@ -63,13 +63,11 @@ class AIMessages(list[AIMessageType]):
         >>> messages.append("What is the capital of France?")
         >>> response = await llm.generate("gpt-5", messages=messages)
         >>> messages.append(response)  # Add the actual response
-        >>> prompt = messages.to_prompt()  # Convert to OpenAI format
+        >>> prompt = messages.get_last_message_as_str()  # Get the last message as a string
     """
 
     def get_last_message(self) -> AIMessageType:
         """Get the last message in the conversation.
-
-        @public
 
         Returns:
             The last message in the conversation, which can be a string,
@@ -106,8 +104,6 @@ class AIMessages(list[AIMessageType]):
 
     def to_prompt(self) -> list[ChatCompletionMessageParam]:
         """Convert AIMessages to OpenAI-compatible format.
-
-        @public
 
         Transforms the message list into the format expected by OpenAI API.
         Each message type is converted according to its role and content.

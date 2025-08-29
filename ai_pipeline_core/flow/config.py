@@ -4,6 +4,10 @@
 
 This module provides the FlowConfig abstract base class that enforces
 type safety for flow inputs and outputs in the pipeline system.
+
+Best Practice:
+    Always finish @pipeline_flow functions with create_and_validate_output()
+    to ensure type safety and proper validation of output documents.
 """
 
 from abc import ABC
@@ -45,6 +49,13 @@ class FlowConfig(ABC):
         >>> class ProcessingFlowConfig(FlowConfig):
         ...     INPUT_DOCUMENT_TYPES = [RawDataDocument]
         ...     OUTPUT_DOCUMENT_TYPE = ProcessedDocument  # Different type!
+        >>>
+        >>> # Use in @pipeline_flow - RECOMMENDED PATTERN
+        >>> @pipeline_flow(name="processing")
+        >>> async def process(config: ProcessingFlowConfig, docs: DocumentList) -> DocumentList:
+        ...     outputs = []
+        ...     # ... processing logic ...
+        ...     return config.create_and_validate_output(outputs)
 
         >>> # WRONG - Will raise TypeError
         >>> class BadConfig(FlowConfig):
@@ -260,8 +271,13 @@ class FlowConfig(ABC):
     ) -> DocumentList:
         """Create and validate flow output documents.
 
+        @public
+
+        RECOMMENDED: Always use this method at the end of @pipeline_flow functions
+        to ensure type safety and proper output validation.
+
         Convenience method that wraps output in a DocumentList if needed
-        and validates it matches the expected output type.
+        and validates it matches the expected OUTPUT_DOCUMENT_TYPE.
 
         Args:
             output: Single document, list of documents, or DocumentList.
@@ -269,15 +285,22 @@ class FlowConfig(ABC):
         Returns:
             Validated DocumentList containing the output documents.
 
+        Raises:
+            DocumentValidationError: If output type doesn't match OUTPUT_DOCUMENT_TYPE.
+
         Example:
-            >>> # Accept flexible input formats
-            >>> output1 = MyFlowConfig.create_and_validate_output(single_doc)
-            >>> output2 = MyFlowConfig.create_and_validate_output([doc1, doc2])
-            >>> output3 = MyFlowConfig.create_and_validate_output(doc_list)
+            >>> @pipeline_flow(name="my_flow")
+            >>> async def process_flow(config: MyFlowConfig, ...) -> DocumentList:
+            >>>     outputs = []
+            >>>     # ... processing logic ...
+            >>>     outputs.append(OutputDoc(...))
+            >>>
+            >>>     # Always finish with this validation
+            >>>     return config.create_and_validate_output(outputs)
 
         Note:
-            This is typically used at the end of a flow to ensure
-            output consistency.
+            This is the recommended pattern for all @pipeline_flow functions.
+            It ensures type safety and catches output errors immediately.
         """
         documents: DocumentList
         if isinstance(output, FlowDocument):

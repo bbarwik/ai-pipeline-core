@@ -6,7 +6,7 @@ This module provides the TemporaryDocument class for documents that
 are never persisted, regardless of context.
 """
 
-from typing import Literal, final
+from typing import Any, Literal, final
 
 from .document import Document
 
@@ -67,6 +67,17 @@ class TemporaryDocument(Document):
         FlowDocument: For documents that persist across flow runs
         TaskDocument: For documents temporary within task execution
     """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Disallow subclassing.
+
+        Args:
+            **kwargs: Additional keyword arguments (ignored).
+
+        Raises:
+            TypeError: Always raised to prevent subclassing of `TemporaryDocument`.
+        """
+        raise TypeError("TemporaryDocument is final and cannot be subclassed")
 
     def get_base_type(self) -> Literal["temporary"]:
         """Return the base type identifier for temporary documents.

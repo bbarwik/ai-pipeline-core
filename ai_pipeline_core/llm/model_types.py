@@ -24,7 +24,7 @@ ModelName: TypeAlias = Literal[
     # Search models
     "gemini-2.5-flash-search",
     "sonar-pro-search",
-    "gpt-4o-search",  # Note: gpt-4o-search is correct (not a typo)
+    "gpt-4o-search",
     "grok-3-mini-search",
 ]
 """Type-safe model name identifiers.

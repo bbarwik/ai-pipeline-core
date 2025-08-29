@@ -128,7 +128,7 @@ jobs:
         run: |
           if [ -n "$OPENAI_API_KEY" ]; then
             echo "Running integration tests with configured API keys..."
-            pytest -v --tb=short -m "integration" --maxfail=1 --durations=10 -n 4
+            pytest -v --tb=short -m "integration" --maxfail=1 --durations=30 -n 4
           else
             # For release workflows, integration tests are required
             if [ "${{ github.event_name }}" == "workflow_call" ]; then

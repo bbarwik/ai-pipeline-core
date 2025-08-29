@@ -19,7 +19,6 @@ help:
 	@echo "  docstrings-cover  Check docstring coverage (100% required)"
 	@echo "  docs-build        Generate API.md documentation"
 	@echo "  docs-check        Verify API.md is up-to-date"
-	@echo "  docs-open         Generate and open API.md"
 
 install:
 	pip install -e .
@@ -86,6 +85,3 @@ docs-build:
 
 docs-check: docs-build
 	@git diff --quiet -- API.md || (echo "API.md is stale. Commit regenerated file."; exit 1)
-
-docs-open: docs-build
-	@command -v xdg-open >/dev/null && xdg-open API.md || open API.md || true

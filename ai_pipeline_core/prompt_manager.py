@@ -288,15 +288,9 @@ class PromptManager:
             return template.render(**kwargs)
         except jinja2.TemplateNotFound:
             # If the template wasn't found and doesn't end with .jinja2, try adding the extension
-            if not prompt_path.endswith(".jinja2"):
+            for extension in [".jinja2", ".jinja", ".j2"]:
                 try:
-                    template = self.env.get_template(prompt_path + ".jinja2")
-                    return template.render(**kwargs)
-                except jinja2.TemplateNotFound:
-                    pass  # Fall through to the original error
-            if not prompt_path.endswith(".jinja"):
-                try:
-                    template = self.env.get_template(prompt_path + ".jinja")
+                    template = self.env.get_template(prompt_path + extension)
                     return template.render(**kwargs)
                 except jinja2.TemplateNotFound:
                     pass  # Fall through to the original error
