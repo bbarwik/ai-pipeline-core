@@ -177,6 +177,38 @@ def _callable_name(obj: Any, fallback: str) -> str:
         return fallback
 
 
+def _is_already_traced(func: Callable[..., Any]) -> bool:
+    """Check if a function has already been wrapped by the trace decorator.
+
+    This checks both for the explicit __is_traced__ marker and walks
+    the __wrapped__ chain to detect nested trace decorations.
+
+    Args:
+        func: Function to check for existing trace decoration.
+
+    Returns:
+        True if the function is already traced, False otherwise.
+    """
+    # Check for explicit marker
+    if hasattr(func, "__is_traced__") and func.__is_traced__:  # type: ignore[attr-defined]
+        return True
+
+    # Walk the __wrapped__ chain to detect nested traces
+    current = func
+    depth = 0
+    max_depth = 10  # Prevent infinite loops
+
+    while hasattr(current, "__wrapped__") and depth < max_depth:
+        wrapped = current.__wrapped__  # type: ignore[attr-defined]
+        # Check if the wrapped function has the trace marker
+        if hasattr(wrapped, "__is_traced__") and wrapped.__is_traced__:  # type: ignore[attr-defined]
+            return True
+        current = wrapped
+        depth += 1
+
+    return False
+
+
 # --------------------------------------------------------------------------- #
 # @pipeline_task — async-only, traced, returns Prefect's Task object
 # --------------------------------------------------------------------------- #
@@ -263,6 +295,9 @@ def pipeline_task(
 
     Wraps an async function with both Prefect task functionality and
     LMNR tracing. The function MUST be async (declared with 'async def').
+
+    IMPORTANT: Never combine with @trace decorator - this includes tracing automatically.
+    The framework will raise TypeError if you try to use both decorators together.
 
     Best Practice - Use Defaults:
         For 90% of use cases, use this decorator WITHOUT any parameters.
@@ -354,11 +389,19 @@ def pipeline_task(
             Wrapped task with tracing and Prefect functionality.
 
         Raises:
-            TypeError: If function is not async.
+            TypeError: If function is not async or already traced.
         """
         if not inspect.iscoroutinefunction(fn):
             raise TypeError(
                 f"@pipeline_task target '{_callable_name(fn, 'task')}' must be 'async def'"
+            )
+
+        # Check if function is already traced
+        if _is_already_traced(fn):
+            raise TypeError(
+                f"@pipeline_task target '{_callable_name(fn, 'task')}' is already decorated "
+                f"with @trace. Remove the @trace decorator - @pipeline_task includes "
+                f"tracing automatically."
             )
 
         fname = _callable_name(fn, "task")
@@ -482,6 +525,9 @@ def pipeline_flow(
     Wraps an async function as a Prefect flow with tracing and type safety.
     The decorated function MUST be async and follow the required signature.
 
+    IMPORTANT: Never combine with @trace decorator - this includes tracing automatically.
+    The framework will raise TypeError if you try to use both decorators together.
+
     Best Practice - Use Defaults:
         For 90% of use cases, use this decorator WITHOUT any parameters.
         Only specify parameters when you have EXPLICIT requirements.
@@ -590,13 +636,22 @@ def pipeline_flow(
             Wrapped flow with tracing and Prefect functionality.
 
         Raises:
-            TypeError: If function is not async, doesn't have required
-                      parameters, or doesn't return DocumentList.
+            TypeError: If function is not async, already traced, doesn't have
+                      required parameters, or doesn't return DocumentList.
         """
         fname = _callable_name(fn, "flow")
 
         if not inspect.iscoroutinefunction(fn):
             raise TypeError(f"@pipeline_flow '{fname}' must be declared with 'async def'")
+
+        # Check if function is already traced
+        if _is_already_traced(fn):
+            raise TypeError(
+                f"@pipeline_flow target '{fname}' is already decorated "
+                f"with @trace. Remove the @trace decorator - @pipeline_flow includes "
+                f"tracing automatically."
+            )
+
         if len(inspect.signature(fn).parameters) < 3:
             raise TypeError(
                 f"@pipeline_flow '{fname}' must accept "

@@ -336,7 +336,25 @@ def trace(
 
         Returns:
             Wrapped function with LMNR observability.
+
+        Raises:
+            TypeError: If function is already decorated with @pipeline_task or @pipeline_flow.
         """
+        # Check if this is already a traced pipeline_task or pipeline_flow
+        # This happens when @trace is applied after @pipeline_task/@pipeline_flow
+        if hasattr(f, "__is_traced__") and f.__is_traced__:  # type: ignore[attr-defined]
+            # Check if it's a Prefect Task or Flow object (they have specific attributes)
+            # Prefect objects have certain attributes that regular functions don't
+            is_prefect_task = hasattr(f, "fn") and hasattr(f, "submit") and hasattr(f, "map")
+            is_prefect_flow = hasattr(f, "fn") and hasattr(f, "serve")
+            if is_prefect_task or is_prefect_flow:
+                fname = getattr(f, "__name__", "function")
+                raise TypeError(
+                    f"Function '{fname}' is already decorated with @pipeline_task or "
+                    f"@pipeline_flow. Remove the @trace decorator - pipeline decorators "
+                    f"include tracing automatically."
+                )
+
         # Handle 'debug' level logic - only trace when LMNR_DEBUG is "true"
         if level == "debug" and os.getenv("LMNR_DEBUG", "").lower() != "true":
             return f
@@ -436,6 +454,9 @@ def trace(
             return await observed_func(*args, **kwargs)
 
         wrapper = async_wrapper if is_coroutine else sync_wrapper
+
+        # Mark function as traced for detection by pipeline decorators
+        wrapper.__is_traced__ = True  # type: ignore[attr-defined]
 
         # Preserve the original function signature
         try:

@@ -156,7 +156,7 @@ class Document(BaseModel, ABC):
     DESCRIPTION_EXTENSION: ClassVar[str] = ".description.md"
     """File extension for description files."""
 
-    MARKDOWN_LIST_SEPARATOR: ClassVar[str] = "\n\n---\n\n"
+    MARKDOWN_LIST_SEPARATOR: ClassVar[str] = "\n\n-----------------\n\n"
     """Separator for markdown list items."""
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -254,7 +254,8 @@ class Document(BaseModel, ABC):
                 - bytes: Used directly without conversion
                 - str: Encoded to UTF-8 bytes
                 - dict[str, Any]: Serialized to JSON (.json) or YAML (.yaml/.yml)
-                - list[str]: Joined with separator for .md, else JSON/YAML
+                - list[str]: Joined with separator for .md (validates no items
+                            contain separator), else JSON/YAML
                 - list[BaseModel]: Serialized to JSON or YAML based on extension
                 - BaseModel: Serialized to JSON or YAML based on extension
             description: Optional description - USUALLY OMIT THIS (defaults to None).
@@ -264,7 +265,8 @@ class Document(BaseModel, ABC):
             New Document instance with content converted to bytes
 
         Raises:
-            ValueError: If content type is not supported for the file extension
+            ValueError: If content type is not supported for the file extension,
+                       or if markdown list items contain the separator
             DocumentNameError: If filename violates validation rules
             DocumentSizeError: If content exceeds MAX_CONTENT_SIZE
 
@@ -573,7 +575,7 @@ class Document(BaseModel, ABC):
             2. str → UTF-8 encoding
             3. dict/BaseModel + .json → JSON serialization (indented)
             4. dict/BaseModel + .yaml/.yml → YAML serialization
-            5. list[str] + .md → Join with markdown separator
+            5. list[str] + .md → Join with markdown separator (validates no items contain separator)
             6. list[Any] + .json/.yaml → JSON/YAML array
             7. int/float/bool + .json → JSON primitive
 
@@ -622,6 +624,13 @@ class Document(BaseModel, ABC):
             if name_lower.endswith(".md"):
                 # For markdown files, join with separator
                 if all(isinstance(item, str) for item in v):
+                    # Check that no string contains the separator
+                    for item in v:
+                        if cls.MARKDOWN_LIST_SEPARATOR in item:
+                            raise ValueError(
+                                f"Markdown list item cannot contain the separator "
+                                f"'{cls.MARKDOWN_LIST_SEPARATOR}' as it will mess up formatting"
+                            )
                     v = cls.MARKDOWN_LIST_SEPARATOR.join(v).encode("utf-8")
                 else:
                     raise ValueError(
@@ -1060,7 +1069,7 @@ class Document(BaseModel, ABC):
 
         @public
 
-        Splits text content using markdown separator ("\n\n---\n\n").
+        Splits text content using markdown separator ("\n\n-----------------\n\n").
         Designed for markdown documents with multiple sections.
 
         Returns:
@@ -1076,7 +1085,7 @@ class Document(BaseModel, ABC):
             >>> doc.as_markdown_list()  # Returns original sections
 
             >>> # Manual creation with separator
-            >>> content = "Part 1\n\n---\n\nPart 2\n\n---\n\nPart 3"
+            >>> content = "Part 1\n\n-----------------\n\nPart 2\n\n-----------------\n\nPart 3"
             >>> doc2 = MyDocument(name="parts.md", content=content.encode())
             >>> doc2.as_markdown_list()  # ['Part 1', 'Part 2', 'Part 3']
         """

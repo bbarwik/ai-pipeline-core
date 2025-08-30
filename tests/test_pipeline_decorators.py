@@ -464,3 +464,106 @@ class TestPipelineFlowDecorator:
         options = FlowOptions()
         result = await my_flow("project", docs, options)
         assert result == docs
+
+
+class TestDoubleTracingDetection:
+    """Test detection of double tracing with @trace and pipeline decorators."""
+
+    def test_trace_then_pipeline_task_raises_error(self):
+        """Test that @trace followed by @pipeline_task raises an error."""
+        from ai_pipeline_core import trace
+
+        with pytest.raises(TypeError, match="already decorated.*with @trace"):
+
+            @pipeline_task
+            @trace
+            async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
+                return x * 2
+
+    def test_pipeline_task_then_trace_raises_error(self):
+        """Test that @pipeline_task followed by @trace raises an error."""
+        from ai_pipeline_core import trace
+
+        # When trace is applied after pipeline_task, it should detect the marker
+        with pytest.raises(TypeError, match="already decorated with @pipeline_task"):
+
+            @trace
+            @pipeline_task
+            async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
+                return x * 2
+
+    def test_trace_then_pipeline_flow_raises_error(self):
+        """Test that @trace followed by @pipeline_flow raises an error."""
+        from ai_pipeline_core import trace
+
+        with pytest.raises(TypeError, match="already decorated.*with @trace"):
+
+            @pipeline_flow
+            @trace
+            async def my_flow(  # pyright: ignore[reportUnusedFunction]
+                project_name: str, documents: DocumentList, flow_options: FlowOptions
+            ) -> DocumentList:
+                return documents
+
+    def test_pipeline_flow_then_trace_raises_error(self):
+        """Test that @pipeline_flow followed by @trace raises an error."""
+        from ai_pipeline_core import trace
+
+        with pytest.raises(TypeError, match="already decorated with @pipeline"):
+
+            @trace
+            @pipeline_flow
+            async def my_flow(  # pyright: ignore[reportUnusedFunction]
+                project_name: str, documents: DocumentList, flow_options: FlowOptions
+            ) -> DocumentList:
+                return documents
+
+    def test_multiple_trace_then_pipeline_task_raises_error(self):
+        """Test that multiple @trace decorators followed by @pipeline_task raises an error."""
+        from ai_pipeline_core import trace
+
+        with pytest.raises(TypeError, match="already decorated.*with @trace"):
+
+            @pipeline_task
+            @trace
+            @trace
+            async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
+                return x * 2
+
+    def test_trace_with_params_then_pipeline_task_raises_error(self):
+        """Test that @trace with parameters followed by @pipeline_task raises an error."""
+        from ai_pipeline_core import trace
+
+        with pytest.raises(TypeError, match="already decorated.*with @trace"):
+
+            @pipeline_task
+            @trace(level="always")  # Use "always" to ensure trace is applied
+            async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
+                return x * 2
+
+    async def test_normal_pipeline_task_still_works(self):
+        """Test that normal @pipeline_task without @trace still works."""
+
+        @pipeline_task
+        async def my_task(x: int) -> int:
+            return x * 3
+
+        result = await my_task(5)
+        assert result == 15
+
+    async def test_normal_pipeline_flow_still_works(self):
+        """Test that normal @pipeline_flow without @trace still works."""
+
+        class SampleDoc(FlowDocument):
+            pass
+
+        @pipeline_flow
+        async def my_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return documents
+
+        docs = DocumentList([SampleDoc(name="test.txt", content=b"test")])
+        options = FlowOptions()
+        result = await my_flow("project", docs, options)
+        assert result == docs

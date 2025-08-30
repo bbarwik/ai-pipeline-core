@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Complete showcase of ai_pipeline_core features (v0.1.11)
+"""Complete showcase of ai_pipeline_core features (v0.1.12)
 
 This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
   • Settings configuration with environment variables and .env files
@@ -48,7 +48,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, Field
 
 # Import ALL exports from ai_pipeline_core.__init__
-# Note: These are the public exports as of v0.1.11
+# Note: These are the public exports as of v0.1.12
 from ai_pipeline_core import (
     AIMessages,
     Document,
@@ -454,7 +454,7 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
             description="Sample JSON data",
             content={
                 "project": "ai-pipeline-core",
-                "version": "0.1.11",
+                "version": "0.1.12",
                 "features": ["async", "typed", "observable"],
                 "models": [m.model_dump() for m in sample_models],  # Include list demo
             },

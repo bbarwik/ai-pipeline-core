@@ -11,7 +11,7 @@ Best Practice:
 """
 
 from abc import ABC
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Iterable
 
 from ai_pipeline_core.documents import DocumentList, FlowDocument
 from ai_pipeline_core.exceptions import DocumentValidationError
@@ -267,7 +267,7 @@ class FlowConfig(ABC):
 
     @classmethod
     def create_and_validate_output(
-        cls, output: FlowDocument | list[FlowDocument] | DocumentList
+        cls, output: FlowDocument | Iterable[FlowDocument] | DocumentList
     ) -> DocumentList:
         """Create and validate flow output documents.
 
@@ -280,7 +280,7 @@ class FlowConfig(ABC):
         and validates it matches the expected OUTPUT_DOCUMENT_TYPE.
 
         Args:
-            output: Single document, list of documents, or DocumentList.
+            output: Single document, iterable of documents, or DocumentList.
 
         Returns:
             Validated DocumentList containing the output documents.
@@ -308,7 +308,7 @@ class FlowConfig(ABC):
         elif isinstance(output, DocumentList):
             documents = output
         else:
-            assert isinstance(output, list)
-            documents = DocumentList(output)  # type: ignore[arg-type]
+            # Handle any iterable of FlowDocuments
+            documents = DocumentList(list(output))  # type: ignore[arg-type]
         cls.validate_output_documents(documents)
         return documents

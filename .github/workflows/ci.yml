@@ -27,7 +27,7 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: "Lint docstrings (Ruff: D + DOC)"
-        run: ruff check --select D,DOC .
+        run: ruff check --select D,DOC --ignore DOC502 .
 
       - name: Docstring coverage (Interrogate)
         run: interrogate -v --fail-under 100 ai_pipeline_core

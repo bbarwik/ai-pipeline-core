@@ -281,6 +281,7 @@ doc = MyDocument(
 18. **No defensive programming** - Trust the types
 19. **No mutable default arguments** - Use None and initialize in function
 20. **No direct use of prefect task/flow** - Use pipeline_task/pipeline_flow
+21. **No combining @trace with @pipeline_task/@pipeline_flow** - Pipeline decorators include tracing automatically. The framework will raise TypeError if you try to combine them
 
 ## Prefect Integration Notes
 

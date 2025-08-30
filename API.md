@@ -1345,7 +1345,7 @@ Same input/output types would create infinite loops or circular dependencies.
 
 ```python
 @classmethod
-def create_and_validate_output(cls, output: FlowDocument | list[FlowDocument] | DocumentList) -> DocumentList
+def create_and_validate_output(cls, output: FlowDocument | Iterable[FlowDocument] | DocumentList) -> DocumentList
 ```
 
 Create and validate flow output documents.
@@ -1358,7 +1358,7 @@ and validates it matches the expected OUTPUT_DOCUMENT_TYPE.
 
 **Arguments**:
 
-- `output` - Single document, list of documents, or DocumentList.
+- `output` - Single document, iterable of documents, or DocumentList.
 
 **Returns**:
 
@@ -1402,6 +1402,9 @@ Decorate an async function as a traced Prefect task.
 
 Wraps an async function with both Prefect task functionality and
 LMNR tracing. The function MUST be async (declared with 'async def').
+
+IMPORTANT: Never combine with @trace decorator - this includes tracing automatically.
+The framework will raise TypeError if you try to use both decorators together.
 
 Best Practice - Use Defaults:
 For 90% of use cases, use this decorator WITHOUT any parameters.
@@ -1499,6 +1502,9 @@ Decorate an async flow for document processing.
 
 Wraps an async function as a Prefect flow with tracing and type safety.
 The decorated function MUST be async and follow the required signature.
+
+IMPORTANT: Never combine with @trace decorator - this includes tracing automatically.
+The framework will raise TypeError if you try to use both decorators together.
 
 Best Practice - Use Defaults:
 For 90% of use cases, use this decorator WITHOUT any parameters.
@@ -2048,7 +2054,8 @@ Only provide name and content. The description parameter is RARELY needed.
   - bytes: Used directly without conversion
   - str: Encoded to UTF-8 bytes
   - dict[str, Any]: Serialized to JSON (.json) or YAML (.yaml/.yml)
-  - list[str]: Joined with separator for .md, else JSON/YAML
+  - list[str]: Joined with separator for .md (validates no items
+  contain separator), else JSON/YAML
   - list[BaseModel]: Serialized to JSON or YAML based on extension
   - BaseModel: Serialized to JSON or YAML based on extension
 - `description` - Optional description - USUALLY OMIT THIS (defaults to None).
@@ -2060,7 +2067,8 @@ Only provide name and content. The description parameter is RARELY needed.
 
 **Raises**:
 
-- `ValueError` - If content type is not supported for the file extension
+- `ValueError` - If content type is not supported for the file extension,
+  or if markdown list items contain the separator
 - `DocumentNameError` - If filename violates validation rules
 - `DocumentSizeError` - If content exceeds MAX_CONTENT_SIZE
 
@@ -2500,7 +2508,7 @@ def as_markdown_list(self) -> list[str]
 
 Parse document as markdown-separated list of sections.
 
-Splits text content using markdown separator ("\n\n---\n\n").
+Splits text content using markdown separator ("\n\n-----------------\n\n").
 Designed for markdown documents with multiple sections.
 
 **Returns**:
@@ -2519,7 +2527,7 @@ Designed for markdown documents with multiple sections.
   >>> doc.as_markdown_list()  # Returns original sections
 
   >>> # Manual creation with separator
-  >>> content = "Part 1\n\n---\n\nPart 2\n\n---\n\nPart 3"
+  >>> content = "Part 1\n\n-----------------\n\nPart 2\n\n-----------------\n\nPart 3"
   >>> doc2 = MyDocument(name="parts.md", content=content.encode())
   >>> doc2.as_markdown_list()  # ['Part 1', 'Part 2', 'Part 3']
 

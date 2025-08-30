@@ -186,6 +186,18 @@ class TestCreateMethod:
         parsed_items = doc.as_markdown_list()
         assert parsed_items == items
 
+    def test_create_with_list_containing_separator_raises_error(self):
+        """Test that creating a markdown list with separator in items raises error."""
+        separator = Document.MARKDOWN_LIST_SEPARATOR
+        items = [
+            "# Section 1",
+            f"# Section with separator {separator} inside",  # This should cause an error
+            "# Section 3",
+        ]
+
+        with pytest.raises(ValueError, match="cannot contain the separator"):
+            ConcreteTestDocument.create(name="sections.md", content=items)
+
     def test_create_with_list_of_models_json(self):
         """Test create with list of Pydantic models for JSON file."""
 
