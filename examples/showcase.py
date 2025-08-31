@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Complete showcase of ai_pipeline_core features (v0.1.12)
+"""Complete showcase of ai_pipeline_core features (v0.1.13)
 
 This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
   • Settings configuration with environment variables and .env files

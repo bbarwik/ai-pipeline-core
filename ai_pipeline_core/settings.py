@@ -94,6 +94,9 @@ class Settings(BaseSettings):
                               and observability. Optional but recommended
                               for production monitoring.
 
+        lmnr_debug: Debug mode flag for Laminar tracing. Set to "true" to
+                   enable debug-level traces. Empty string by default.
+
     Configuration sources:
         - Environment variables (highest priority)
         - .env file in current directory
@@ -121,6 +124,7 @@ class Settings(BaseSettings):
 
     # Observability
     lmnr_project_api_key: str = ""
+    lmnr_debug: str = ""
 
 
 # Legacy: Module-level instance for backwards compatibility

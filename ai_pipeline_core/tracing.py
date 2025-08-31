@@ -356,7 +356,8 @@ def trace(
                 )
 
         # Handle 'debug' level logic - only trace when LMNR_DEBUG is "true"
-        if level == "debug" and os.getenv("LMNR_DEBUG", "").lower() != "true":
+        debug_value = settings.lmnr_debug or os.getenv("LMNR_DEBUG", "")
+        if level == "debug" and debug_value.lower() != "true":
             return f
 
         # --- Pre-computation (done once when the function is decorated) ---

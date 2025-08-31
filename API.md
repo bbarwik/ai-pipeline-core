@@ -1832,6 +1832,9 @@ lmnr_project_api_key: Laminar (LMNR) project API key for tracing
 and observability. Optional but recommended
 for production monitoring.
 
+lmnr_debug: Debug mode flag for Laminar tracing. Set to "true" to
+enable debug-level traces. Empty string by default.
+
 Configuration sources:
 - Environment variables (highest priority)
 - .env file in current directory
