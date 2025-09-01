@@ -201,6 +201,23 @@ class TestPipelineTaskDecorator:
 
         assert isinstance(my_task2, Task)
 
+    async def test_task_with_trace_cost(self):
+        """Test @pipeline_task with trace_cost parameter."""
+        from unittest.mock import patch
+
+        with patch("ai_pipeline_core.pipeline.set_trace_cost") as mock_set_cost:
+
+            @pipeline_task(trace_cost=0.025)
+            async def my_task(x: int) -> int:
+                return x * 2
+
+            assert isinstance(my_task, Task)
+            result = await my_task(5)
+            assert result == 10
+
+            # Verify that set_trace_cost was called with the correct value
+            mock_set_cost.assert_called_once_with(0.025)
+
 
 class TestPipelineFlowDecorator:
     """Test the pipeline_flow decorator functionality."""
@@ -464,6 +481,78 @@ class TestPipelineFlowDecorator:
         options = FlowOptions()
         result = await my_flow("project", docs, options)
         assert result == docs
+
+    async def test_flow_with_trace_cost(self):
+        """Test @pipeline_flow with trace_cost parameter."""
+        from unittest.mock import patch
+
+        class SampleDocument(FlowDocument):
+            pass
+
+        with patch("ai_pipeline_core.pipeline.set_trace_cost") as mock_set_cost:
+
+            @pipeline_flow(trace_cost=0.15)
+            async def my_flow(
+                project_name: str, documents: DocumentList, flow_options: FlowOptions
+            ) -> DocumentList:
+                return documents
+
+            assert isinstance(my_flow, Flow)
+            docs = DocumentList([SampleDocument(name="test.txt", content=b"test")])
+            options = FlowOptions()
+            result = await my_flow("project", docs, options)
+            assert result == docs
+
+            # Verify that set_trace_cost was called with the correct value
+            mock_set_cost.assert_called_once_with(0.15)
+
+
+class TestSyncFunctionRejection:
+    """Test rejection of sync functions with pipeline decorators."""
+
+    def test_sync_function_with_pipeline_task_raises_error(self):
+        """Test that @pipeline_task on sync function raises TypeError."""
+        from typing import Any, cast
+
+        with pytest.raises(TypeError, match="must be 'async def'"):
+
+            @cast(Any, pipeline_task)
+            def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
+                return x * 2
+
+    def test_sync_function_with_pipeline_task_with_params_raises_error(self):
+        """Test that @pipeline_task with params on sync function raises TypeError."""
+        from typing import Any, cast
+
+        with pytest.raises(TypeError, match="must be 'async def'"):
+
+            @cast(Any, pipeline_task(retries=3, trace_level="debug"))
+            def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
+                return x * 2
+
+    def test_sync_function_with_pipeline_flow_raises_error(self):
+        """Test that @pipeline_flow on sync function raises TypeError."""
+        from typing import Any, cast
+
+        with pytest.raises(TypeError, match="must be declared with 'async def'"):
+
+            @cast(Any, pipeline_flow)
+            def sync_flow(  # pyright: ignore[reportUnusedFunction]
+                project_name: str, documents: DocumentList, flow_options: FlowOptions
+            ) -> DocumentList:
+                return documents
+
+    def test_sync_function_with_pipeline_flow_with_params_raises_error(self):
+        """Test that @pipeline_flow with params on sync function raises TypeError."""
+        from typing import Any, cast
+
+        with pytest.raises(TypeError, match="must be declared with 'async def'"):
+
+            @cast(Any, pipeline_flow(name="sync_flow", retries=2))
+            def sync_flow(  # pyright: ignore[reportUnusedFunction]
+                project_name: str, documents: DocumentList, flow_options: FlowOptions
+            ) -> DocumentList:
+                return documents
 
 
 class TestDoubleTracingDetection:

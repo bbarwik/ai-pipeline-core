@@ -60,11 +60,11 @@ class FlowOptions(BaseSettings):
         add flow-specific parameters with appropriate validation.
     """
 
-    core_model: ModelName | str = Field(
+    core_model: ModelName = Field(
         default="gpt-5",
         description="Primary model for complex analysis and generation tasks.",
     )
-    small_model: ModelName | str = Field(
+    small_model: ModelName = Field(
         default="gpt-5-mini",
         description="Fast, cost-effective model for simple tasks and orchestration.",
     )

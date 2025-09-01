@@ -27,24 +27,8 @@ class FlowDocument(Document):
     - Saved in directories named after the document's canonical name
 
     Creating FlowDocuments:
-        **Use the `create` classmethod** for most use cases. It handles automatic
-        conversion of various content types. Only use __init__ when you have bytes.
-
-        >>> from enum import StrEnum
-        >>>
-        >>> # Simple document with pass:
-        >>> class MyDoc(FlowDocument):
-        ...     pass
-        >>>
-        >>> # Document with restricted file names:
-        >>> class ConfigDoc(FlowDocument):
-        ...     class FILES(StrEnum):
-        ...         CONFIG = "config.yaml"
-        ...         SETTINGS = "settings.json"
-        >>>
-        >>> # RECOMMENDED - automatic conversion:
-        >>> doc = MyDoc.create(name="data.json", content={"key": "value"})
-        >>> doc = ConfigDoc.create(name="config.yaml", content={"host": "localhost"})
+        Same as Document - use `create()` for automatic conversion, `__init__` for bytes.
+        See Document.create() for detailed usage examples.
 
     Persistence:
         Documents are saved to: {output_dir}/{canonical_name}/{filename}
@@ -66,13 +50,11 @@ class FlowDocument(Document):
         name: str,
         content: bytes,
         description: str | None = None,
+        sources: list[str] = [],
     ) -> None:
         """Initialize a FlowDocument with raw bytes content.
 
-        Important:
-            **Most users should use the `create` classmethod instead of __init__.**
-            The create method provides automatic content conversion for various types
-            (str, dict, list, Pydantic models) while __init__ only accepts bytes.
+        See Document.__init__() for parameter details and usage notes.
 
         Prevents direct instantiation of the abstract FlowDocument class.
         FlowDocument must be subclassed for specific document types.
@@ -81,6 +63,7 @@ class FlowDocument(Document):
             name: Document filename (required, keyword-only)
             content: Document content as raw bytes (required, keyword-only)
             description: Optional human-readable description (keyword-only)
+            sources: Optional list of strings for provenance tracking
 
         Raises:
             TypeError: If attempting to instantiate FlowDocument directly
@@ -109,7 +92,7 @@ class FlowDocument(Document):
         """
         if type(self) is FlowDocument:
             raise TypeError("Cannot instantiate abstract FlowDocument class directly")
-        super().__init__(name=name, content=content, description=description)
+        super().__init__(name=name, content=content, description=description, sources=sources)
 
     @final
     def get_base_type(self) -> Literal["flow"]:

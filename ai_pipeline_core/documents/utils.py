@@ -1,7 +1,7 @@
 """Utility functions for document handling.
 
 Provides helper functions for URL sanitization, naming conventions,
-and canonical key generation used throughout the document system.
+canonical key generation, and hash validation used throughout the document system.
 """
 
 import re
@@ -115,3 +115,66 @@ def canonical_name_key(
                 break
 
     return camel_to_snake(name)
+
+
+def is_document_sha256(value: str) -> bool:
+    """Check if a string is a valid base32-encoded SHA256 hash with proper entropy.
+
+    @public
+
+    This function validates that a string is not just formatted like a SHA256 hash,
+    but actually has the entropy characteristics of a real hash. It checks:
+    1. Correct length (52 characters without padding)
+    2. Valid base32 characters (A-Z, 2-7)
+    3. Sufficient entropy (at least 8 unique characters)
+
+    The entropy check prevents false positives like 'AAAAAAA...AAA' from being
+    identified as valid document hashes.
+
+    Args:
+        value: String to check if it's a document SHA256 hash.
+
+    Returns:
+        True if the string appears to be a real base32-encoded SHA256 hash,
+        False otherwise.
+
+    Examples:
+        >>> # Real SHA256 hash
+        >>> is_document_sha256("P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ")
+        True
+
+        >>> # Too uniform - lacks entropy
+        >>> is_document_sha256("A" * 52)
+        False
+
+        >>> # Wrong length
+        >>> is_document_sha256("ABC123")
+        False
+
+        >>> # Invalid characters
+        >>> is_document_sha256("a" * 52)  # lowercase
+        False
+    """
+    # Check basic format: exactly 52 uppercase base32 characters
+    try:
+        if not value or len(value) != 52:
+            return False
+    except (TypeError, AttributeError):
+        return False
+
+    # Check if all characters are valid base32 (A-Z, 2-7)
+    try:
+        if not re.match(r"^[A-Z2-7]{52}$", value):
+            return False
+    except TypeError:
+        # re.match raises TypeError for non-string types like bytes
+        return False
+
+    # Check entropy: real SHA256 hashes have high entropy
+    # Require at least 8 unique characters (out of 32 possible in base32)
+    # This prevents patterns like "AAAAAAA..." from being identified as real hashes
+    unique_chars = len(set(value))
+    if unique_chars < 8:
+        return False
+
+    return True

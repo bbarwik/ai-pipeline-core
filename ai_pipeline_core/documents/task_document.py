@@ -29,24 +29,8 @@ class TaskDocument(Document):
     - Reduces persistent I/O for temporary data
 
     Creating TaskDocuments:
-        **Use the `create` classmethod** for most use cases. It handles automatic
-        conversion of various content types. Only use __init__ when you have bytes.
-
-        >>> from enum import StrEnum
-        >>>
-        >>> # Simple task document:
-        >>> class TempDoc(TaskDocument):
-        ...     pass
-        >>>
-        >>> # With restricted files:
-        >>> class CacheDoc(TaskDocument):
-        ...     class FILES(StrEnum):
-        ...         CACHE = "cache.json"
-        ...         INDEX = "index.dat"
-        >>>
-        >>> # RECOMMENDED - automatic conversion:
-        >>> doc = TempDoc.create(name="temp.json", content={"status": "processing"})
-        >>> doc = CacheDoc.create(name="cache.json", content={"data": [1, 2, 3]})
+        Same as Document - use `create()` for automatic conversion, `__init__` for bytes.
+        See Document.create() for detailed usage examples.
 
     Use Cases:
         - Intermediate transformation results
@@ -71,13 +55,11 @@ class TaskDocument(Document):
         name: str,
         content: bytes,
         description: str | None = None,
+        sources: list[str] = [],
     ) -> None:
         """Initialize a TaskDocument with raw bytes content.
 
-        Important:
-            **Most users should use the `create` classmethod instead of __init__.**
-            The create method provides automatic content conversion for various types
-            (str, dict, list, Pydantic models) while __init__ only accepts bytes.
+        See Document.__init__() for parameter details and usage notes.
 
         Prevents direct instantiation of the abstract TaskDocument class.
         TaskDocument must be subclassed for specific temporary document types.
@@ -86,6 +68,7 @@ class TaskDocument(Document):
             name: Document filename (required, keyword-only)
             content: Document content as raw bytes (required, keyword-only)
             description: Optional human-readable description (keyword-only)
+            sources: Optional list of strings for provenance tracking
 
         Raises:
             TypeError: If attempting to instantiate TaskDocument directly
@@ -114,7 +97,7 @@ class TaskDocument(Document):
         """
         if type(self) is TaskDocument:
             raise TypeError("Cannot instantiate abstract TaskDocument class directly")
-        super().__init__(name=name, content=content, description=description)
+        super().__init__(name=name, content=content, description=description, sources=sources)
 
     @final
     def get_base_type(self) -> Literal["task"]:

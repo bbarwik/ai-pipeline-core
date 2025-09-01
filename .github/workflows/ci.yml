@@ -33,7 +33,6 @@ jobs:
         run: interrogate -v --fail-under 100 ai_pipeline_core
 
       - name: "Validate API.md structure"
-        if: matrix.python-version == '3.12'
         run: |
           # Compare API structure by checking section headers
           # This ignores whitespace/formatting changes and focuses on actual content

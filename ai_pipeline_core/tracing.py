@@ -15,7 +15,7 @@ import os
 from functools import wraps
 from typing import Any, Callable, Literal, ParamSpec, TypeVar, cast, overload
 
-from lmnr import Instruments, Laminar, observe
+from lmnr import Attributes, Instruments, Laminar, observe
 from pydantic import BaseModel
 
 from ai_pipeline_core.settings import settings
@@ -370,7 +370,7 @@ def trace(
         # Store the new parameters
         _session_id = session_id
         _user_id = user_id
-        _metadata = metadata
+        _metadata = metadata or {}
         _tags = tags or []
         _span_type = span_type
         _ignore_input = ignore_input
@@ -404,10 +404,8 @@ def trace(
                 observe_params["session_id"] = _session_id
             if _user_id:
                 observe_params["user_id"] = _user_id
-
-            # Merge decorator-level metadata and tags
             if _metadata:
-                observe_params["metadata"] = {**observe_params.get("metadata", {}), **_metadata}
+                observe_params["metadata"] = _metadata
             if _tags:
                 observe_params["tags"] = observe_params.get("tags", []) + _tags
             if _span_type:
@@ -473,4 +471,113 @@ def trace(
         return decorator  # Called as @trace(...)
 
 
-__all__ = ["trace", "TraceLevel", "TraceInfo"]
+def set_trace_cost(cost: float | str) -> None:
+    """Set cost attributes for the current trace span.
+
+    Sets cost metadata in the current LMNR trace span for tracking expenses
+    of custom operations. This function should be called within a traced
+    function to dynamically set or update the cost associated with the
+    current operation. Particularly useful for tracking costs of external
+    API calls, compute resources, or custom billing scenarios.
+
+    The cost is stored in three metadata fields for compatibility:
+    - gen_ai.usage.output_cost: Standard OpenAI cost field
+    - gen_ai.usage.cost: Alternative cost field
+    - cost: Simple cost field
+
+    Args:
+        cost: The cost value to set. Can be:
+              - float: Cost in dollars (e.g., 0.05 for 5 cents)
+              - str: USD format with dollar sign (e.g., "$0.05" or "$1.25")
+              Only positive values will be set; zero or negative values are ignored.
+
+    Example:
+        >>> # Track cost of external API call
+        >>> @trace
+        >>> async def call_translation_api(text: str) -> str:
+        ...     # External API charges per character
+        ...     char_count = len(text)
+        ...     cost_per_char = 0.00001  # $0.00001 per character
+        ...
+        ...     result = await external_api.translate(text)
+        ...
+        ...     # Set the cost for this operation
+        ...     set_trace_cost(char_count * cost_per_char)
+        ...     return result
+        >>>
+        >>> # Track compute resource costs
+        >>> @trace
+        >>> def process_video(video_path: str) -> dict:
+        ...     duration = get_video_duration(video_path)
+        ...     cost_per_minute = 0.10  # $0.10 per minute
+        ...
+        ...     result = process_video_content(video_path)
+        ...
+        ...     # Set cost using string format
+        ...     set_trace_cost(f"${duration * cost_per_minute:.2f}")
+        ...     return result
+        >>>
+        >>> # Combine with LLM costs in pipeline
+        >>> @pipeline_task
+        >>> async def enriched_generation(prompt: str) -> str:
+        ...     # LLM cost tracked automatically via ModelResponse
+        ...     response = await llm.generate("gpt-5", messages=prompt)
+        ...
+        ...     # Add cost for post-processing
+        ...     processing_cost = 0.02  # Fixed cost for enrichment
+        ...     set_trace_cost(processing_cost)
+        ...
+        ...     return enrich_response(response.content)
+
+    Raises:
+        ValueError: If string format is invalid (not a valid USD amount).
+
+    Note:
+        - This function only works within a traced context (function decorated
+          with @trace, @pipeline_task, or @pipeline_flow)
+        - LLM costs are tracked automatically via ModelResponse; use this for non-LLM costs
+        - Cost should be a positive number representing actual monetary cost in USD
+        - The cost is added to the current span's attributes/metadata
+        - Multiple calls overwrite the previous cost (not cumulative)
+        - If called outside a traced context (no active span), it has no effect
+          and does not raise an error
+
+    See Also:
+        - trace: Decorator for adding tracing to functions
+        - ModelResponse.get_laminar_metadata: Access LLM generation costs
+        - pipeline_task: Task decorator with built-in tracing and optional trace_cost parameter
+        - pipeline_flow: Flow decorator with built-in tracing and optional trace_cost parameter
+    """
+    # Parse string format if provided
+    if isinstance(cost, str):
+        # Remove dollar sign and any whitespace
+        cost_str = cost.strip()
+        if not cost_str.startswith("$"):
+            raise ValueError(f"Invalid USD format: {cost!r}. Must start with '$' (e.g., '$0.50')")
+
+        try:
+            # Remove $ and convert to float
+            cost_value = float(cost_str[1:])
+        except ValueError as e:
+            raise ValueError(
+                f"Invalid USD format: {cost!r}. Must be a valid number after '$'"
+            ) from e
+    else:
+        cost_value = cost
+
+    if cost_value > 0:
+        # Build the attributes dictionary with cost metadata
+        attributes: dict[Attributes | str, float] = {
+            "gen_ai.usage.output_cost": cost_value,
+            "gen_ai.usage.cost": cost_value,
+            "cost": cost_value,
+        }
+
+        try:
+            Laminar.set_span_attributes(attributes)
+        except Exception:
+            # Silently ignore if not in a traced context
+            pass
+
+
+__all__ = ["trace", "TraceLevel", "TraceInfo", "set_trace_cost"]

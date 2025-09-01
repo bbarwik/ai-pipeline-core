@@ -120,10 +120,12 @@ Foundation for all data handling. Documents are immutable Pydantic models that w
 - **DocumentList**: Type-validated container with filtering and retrieval methods
 
 **Key Features**:
-- Document constructors MUST use keyword arguments: `Document(name="file.txt", content="data", description="optional")`
-- DocumentList unified API: `filter_by()` and `get_by()` for flexible filtering
+- Document constructors MUST use keyword arguments: `Document(name="file.txt", content="data", description="optional", sources=[])`
+- DocumentList unified API: `filter_by()` and `get_by()` for flexible filtering, supports iterables for batch operations
+- Document provenance tracking via sources field - track SHA256 hashes and references
 - YAML parsing uses ruamel.yaml (safe by default)
 - MIME type detection is automatic and required for AI interactions
+- Hash validation with `is_document_sha256()` includes entropy checking
 
 **Critical**: Each flow/task must define its own concrete document classes by inheriting from FlowDocument or TaskDocument. Never instantiate abstract classes directly. Never use raw bytes/strings - always Document classes.
 
@@ -133,11 +135,12 @@ All AI interactions through LiteLLM proxy (OpenAI API compatible). Built-in retr
 - **generate()**: Main entry - splits context (cached by default) and messages (dynamic)
 - **generate_structured()**: Returns structured Pydantic model outputs
 - **AIMessages**: Type-safe container, converts Documents to prompts automatically
-- **ModelOptions**: Config for retry, timeout, response format, system prompts
+- **ModelOptions**: Config for retry, timeout, response format, system prompts, cache TTL
 - **ModelResponse/StructuredModelResponse**: Focus on `.content` and `.parsed` properties
 
 **Key Features**:
-- Context caching saves 50-90% tokens with 120s TTL
+- Context caching saves 50-90% tokens with configurable TTL (default 120s)
+- Cache TTL configurable via ModelOptions.cache_ttl ("120s", "5m", None to disable)
 - Retry uses FIXED delay (default 10s), NOT exponential backoff
 - Messages can be string or AIMessages
 - Context/messages split is for caching efficiency
@@ -165,7 +168,7 @@ Jinja2 template loading with smart path resolution:
 Philosophy: Prompts near their usage = easier maintenance.
 
 ### Tracing (`ai_pipeline_core/tracing.py`)
-LMNR integration via `@trace` decorator. Test environment is automatically detected to avoid polluting production metrics.
+LMNR integration via `@trace` decorator. Test environment is automatically detected to avoid polluting production metrics. Manual cost tracking via `set_trace_cost()` for monitoring LLM usage costs.
 
 ### Settings (`ai_pipeline_core/settings.py`)
 Base class for application configuration. Projects should inherit from Settings to add custom configuration:
@@ -255,7 +258,8 @@ doc = MyDocument("file.txt", "content")  # Positional args - NO!
 doc = MyDocument(
     name="file.txt",
     content="content",
-    description="optional"  # Optional description
+    description="optional",  # Optional description
+    sources=["source_hash", "reference"]  # Optional provenance tracking
 )
 ```
 
@@ -293,7 +297,7 @@ Key points:
 - TemporaryDocument is never persisted (use for truly ephemeral data)
 - Each flow/task defines its own document classes
 - Use FlowConfig for type-safe flow definitions
-- **@pipeline_flow and @pipeline_task require async functions only** - sync functions will be rejected with TypeError
+- **@pipeline_flow and @pipeline_task require async functions only** - sync functions will be rejected with TypeError and clear error message
 - **Clean Prefect decorators** from `ai_pipeline_core.prefect` (flow, task) available for cases where tracing is not needed
 - Use @pipeline_flow/@pipeline_task for production flows with tracing, @flow/@task for simple utilities
 - Use fixtures for testing: prefect_test_harness and disable_run_logger (see tests/conftest.py)

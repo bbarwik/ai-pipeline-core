@@ -88,6 +88,7 @@ from .documents import (
     TaskDocument,
     TemporaryDocument,
     canonical_name_key,
+    is_document_sha256,
     sanitize_url,
 )
 from .flow import FlowConfig, FlowOptions
@@ -111,9 +112,9 @@ from .pipeline import pipeline_flow, pipeline_task
 from .prefect import disable_run_logger, prefect_test_harness
 from .prompt_manager import PromptManager
 from .settings import Settings
-from .tracing import TraceInfo, TraceLevel, trace
+from .tracing import TraceInfo, TraceLevel, set_trace_cost, trace
 
-__version__ = "0.1.13"
+__version__ = "0.1.14"
 
 __all__ = [
     # Config/Settings
@@ -132,6 +133,7 @@ __all__ = [
     "TaskDocument",
     "TemporaryDocument",
     "canonical_name_key",
+    "is_document_sha256",
     "sanitize_url",
     # Flow/Task
     "FlowConfig",
@@ -154,6 +156,7 @@ __all__ = [
     "trace",
     "TraceLevel",
     "TraceInfo",
+    "set_trace_cost",
     # Utils
     "PromptManager",
 ]

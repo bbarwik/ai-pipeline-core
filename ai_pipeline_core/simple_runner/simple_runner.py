@@ -35,6 +35,7 @@ Note:
     of each document type for consistent organization.
 """
 
+import json
 from pathlib import Path
 from typing import Any, Callable, Sequence, Type
 
@@ -113,9 +114,20 @@ def load_documents_from_directory(
             if not file_path.is_file() or file_path.name.endswith(Document.DESCRIPTION_EXTENSION):
                 continue
 
+            # Skip .sources.json files - they are metadata, not documents
+            if file_path.name.endswith(".sources.json"):
+                continue
+
             try:
                 content = file_path.read_bytes()
-                doc = doc_class(name=file_path.name, content=content)
+
+                # Load sources if .sources.json exists
+                sources = []
+                sources_file = file_path.with_name(file_path.name + ".sources.json")
+                if sources_file.exists():
+                    sources = json.loads(sources_file.read_text(encoding="utf-8"))
+
+                doc = doc_class(name=file_path.name, content=content, sources=sources)
 
                 desc_file = file_path.with_name(file_path.name + Document.DESCRIPTION_EXTENSION)
                 if desc_file.exists():
@@ -184,6 +196,11 @@ def save_documents_to_directory(base_dir: Path, documents: DocumentList) -> None
         if document.description:
             desc_file = file_path.with_name(file_path.name + Document.DESCRIPTION_EXTENSION)
             desc_file.write_text(document.description, encoding="utf-8")
+
+        # Save sources to .sources.json if present
+        if document.sources:
+            sources_file = file_path.with_name(file_path.name + ".sources.json")
+            sources_file.write_text(json.dumps(document.sources, indent=2), encoding="utf-8")
 
 
 async def run_pipeline(

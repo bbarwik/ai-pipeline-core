@@ -152,41 +152,97 @@ class DocumentList(list[Document]):
     def filter_by(self, arg: type[Document]) -> "DocumentList": ...
 
     @overload
-    def filter_by(self, arg: list[type[Document]]) -> "DocumentList": ...
+    def filter_by(self, arg: Iterable[type[Document]]) -> "DocumentList": ...
 
-    def filter_by(self, arg: str | type[Document] | list[type[Document]]) -> "DocumentList":
-        """Filter documents by name or type(s).
+    @overload
+    def filter_by(self, arg: Iterable[str]) -> "DocumentList": ...
+
+    def filter_by(
+        self, arg: str | type[Document] | Iterable[type[Document]] | Iterable[str]
+    ) -> "DocumentList":
+        """Filter documents by name(s) or type(s).
 
         @public
 
         Args:
-            arg: Document name (str), single document type, or list of document types.
+            arg: Can be one of:
+                - str: Single document name to filter by
+                - type[Document]: Single document type to filter by (includes subclasses)
+                - Iterable[type[Document]]: Multiple document types to filter by
+                  (list, tuple, set, generator, or any iterable)
+                - Iterable[str]: Multiple document names to filter by
+                  (list, tuple, set, generator, or any iterable)
 
         Returns:
             New DocumentList with filtered documents.
 
         Raises:
-            TypeError: If arg is not a valid type (str, Document type, or list of Document types).
+            TypeError: If arg is not a valid type (not str, type, or iterable),
+                or if iterable contains mixed types (strings and types together).
+            AttributeError: If arg is expected to be iterable but doesn't support iteration.
 
         Example:
-            >>> docs.filter_by("file.txt")  # Filter by name
-            >>> docs.filter_by(MyDocument)  # Filter by type
-            >>> docs.filter_by([Doc1, Doc2])  # Filter by multiple types
+            >>> docs.filter_by("file.txt")  # Filter by single name
+            >>> docs.filter_by(MyDocument)  # Filter by single type
+            >>> docs.filter_by([Doc1, Doc2])  # Filter by multiple types (list)
+            >>> docs.filter_by({"file1.txt", "file2.txt"})  # Filter by multiple names (set)
+            >>> docs.filter_by((SubDoc, AnotherDoc))  # Filter by multiple types (tuple)
+            >>> docs.filter_by(name for name in ["a.txt", "b.txt"])  # Generator expression
         """
         if isinstance(arg, str):
-            # Filter by name
+            # Filter by single name
             return DocumentList([doc for doc in self if doc.name == arg])
         elif isinstance(arg, type):
             # Filter by single type (including subclasses)
+            # The type system ensures arg is type[Document] due to overloads
             return DocumentList([doc for doc in self if isinstance(doc, arg)])
-        elif isinstance(arg, list):  # type: ignore[reportUnnecessaryIsInstance]
-            # Filter by multiple types
-            documents = DocumentList()
-            for document_type in arg:
-                documents.extend([doc for doc in self if isinstance(doc, document_type)])
-            return documents
         else:
-            raise TypeError(f"Invalid argument type for filter_by: {type(arg)}")
+            # Try to consume as iterable
+            try:
+                # Convert to list to check the first element and allow reuse
+                items = list(arg)  # type: ignore[arg-type]
+                if not items:
+                    return DocumentList()
+
+                first_item = items[0]
+                if isinstance(first_item, str):
+                    # Iterable of names - validate all items are strings
+                    for item in items:
+                        if not isinstance(item, str):
+                            raise TypeError(
+                                "Iterable must contain only strings or only Document types, "
+                                "not mixed types"
+                            )
+                    names_set = set(items)
+                    return DocumentList([doc for doc in self if doc.name in names_set])
+                elif isinstance(first_item, type):  # type: ignore[reportUnnecessaryIsInstance]
+                    # Iterable of document types - validate all items are types
+                    for item in items:
+                        if not isinstance(item, type):
+                            raise TypeError(
+                                "Iterable must contain only strings or only Document types, "
+                                "not mixed types"
+                            )
+                    # Convert to set for efficient lookup
+                    types_set = set(items)
+                    # Filter documents that match any of the requested types
+                    matching = [
+                        doc
+                        for doc in self
+                        if any(isinstance(doc, doc_type) for doc_type in types_set)  # type: ignore[arg-type]
+                    ]
+                    return DocumentList(matching)
+                else:
+                    raise TypeError(
+                        f"Iterable must contain strings or Document types, "
+                        f"got {type(first_item).__name__}"
+                    )
+            except (TypeError, AttributeError) as e:
+                # If the error message already mentions Iterable, re-raise it
+                if "Iterable" in str(e) or "strings or Document types" in str(e):
+                    raise
+                # Otherwise, provide a generic error message
+                raise TypeError(f"Invalid argument type for filter_by: {type(arg).__name__}") from e
 
     @overload
     def get_by(self, arg: str) -> Document: ...

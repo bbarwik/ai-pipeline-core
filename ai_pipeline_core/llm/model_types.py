@@ -12,28 +12,32 @@ Model categories:
 
 from typing import Literal, TypeAlias
 
-ModelName: TypeAlias = Literal[
-    # Core models
-    "gemini-2.5-pro",
-    "gpt-5",
-    "grok-4",
-    # Small models
-    "gemini-2.5-flash",
-    "gpt-5-mini",
-    "grok-3-mini",
-    # Search models
-    "gemini-2.5-flash-search",
-    "sonar-pro-search",
-    "gpt-4o-search",
-    "grok-3-mini-search",
-]
-"""Type-safe model name identifiers.
+ModelName: TypeAlias = (
+    Literal[
+        # Core models
+        "gemini-2.5-pro",
+        "gpt-5",
+        "grok-4",
+        # Small models
+        "gemini-2.5-flash",
+        "gpt-5-mini",
+        "grok-3-mini",
+        # Search models
+        "gemini-2.5-flash-search",
+        "sonar-pro-search",
+        "gpt-4o-search",
+        "grok-3-mini-search",
+    ]
+    | str
+)
+"""Type-safe model name identifiers with support for custom models.
 
 @public
 
-Provides compile-time validation and IDE autocompletion for supported
-language model names. Used throughout the library to prevent typos
-and ensure only valid models are referenced.
+Provides IDE autocompletion for common model names while allowing any
+string for custom models. The type is a union of predefined literals
+and str, giving you the best of both worlds: suggestions for known
+models and flexibility for custom ones.
 
 Note: These are example common model names as of Q3 2025. Actual availability
 depends on your LiteLLM proxy configuration and provider access.
@@ -51,32 +55,30 @@ Model categories:
         Models with integrated web search capabilities for retrieving
         and synthesizing current information.
 
-Extending with custom models:
-    The generate functions accept any string, not just ModelName literals.
-    To add custom models for type safety:
-    1. Create a new type alias: CustomModel = Literal["my-model"]
-    2. Use Union: model: ModelName | CustomModel = "my-model"
-    3. Or simply use strings: model = "any-model-via-litellm"
+Using custom models:
+    ModelName now includes str, so you can use any model name directly:
+    - Predefined models get IDE autocomplete and validation
+    - Custom models work seamlessly as strings
+    - No need for Union types or additional type aliases
 
 Example:
     >>> from ai_pipeline_core import llm, ModelName
     >>>
-    >>> # Type-safe model selection
-    >>> model: ModelName = "gpt-5"  # IDE autocomplete works
+    >>> # Predefined model with IDE autocomplete
+    >>> model: ModelName = "gpt-5"  # IDE suggests common models
     >>> response = await llm.generate(model, messages="Hello")
     >>>
-    >>> # Also accepts string for custom models
-    >>> response = await llm.generate("custom-model-v2", messages="Hello")
+    >>> # Custom model works directly
+    >>> model: ModelName = "custom-model-v2"  # Any string is valid
+    >>> response = await llm.generate(model, messages="Hello")
     >>>
-    >>> # Custom type safety
-    >>> from typing import Literal
-    >>> MyModel = Literal["company-llm-v1"]
-    >>> model: ModelName | MyModel = "company-llm-v1"
+    >>> # Both types work seamlessly
+    >>> models: list[ModelName] = ["gpt-5", "custom-llm", "gemini-2.5-pro"]
 
 Note:
-    While the type alias provides suggestions for common models,
-    the generate functions also accept string literals to support
-    custom or newer models accessed via LiteLLM proxy.
+    The ModelName type includes both predefined literals and str,
+    allowing full flexibility while maintaining IDE support for
+    common models.
 
 See Also:
     - llm.generate: Main generation function

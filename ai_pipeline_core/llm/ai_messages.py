@@ -63,7 +63,6 @@ class AIMessages(list[AIMessageType]):
         >>> messages.append("What is the capital of France?")
         >>> response = await llm.generate("gpt-5", messages=messages)
         >>> messages.append(response)  # Add the actual response
-        >>> prompt = messages.get_last_message_as_str()  # Get the last message as a string
     """
 
     def get_last_message(self) -> AIMessageType:
@@ -77,8 +76,6 @@ class AIMessages(list[AIMessageType]):
 
     def get_last_message_as_str(self) -> str:
         """Get the last message as a string, raising if not a string.
-
-        @public
 
         Returns:
             The last message as a string.

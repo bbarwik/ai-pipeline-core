@@ -30,25 +30,11 @@ class TemporaryDocument(Document):
     - Ignored by simple_runner save operations
 
     Creating TemporaryDocuments:
-        **Use the `create` classmethod** for most use cases. It handles automatic
-        conversion of various content types. Only use __init__ when you have bytes.
+        Same as Document - use `create()` for automatic conversion, `__init__` for bytes.
+        Unlike abstract document types, TemporaryDocument can be instantiated directly.
+        See Document.create() for detailed usage examples.
 
-        >>> # RECOMMENDED - automatic conversion:
-        >>> doc = TemporaryDocument.create(
-        ...     name="api_response.json",
-        ...     content={"status": "ok", "data": [1, 2, 3]}
-        ... )
-        >>> doc = TemporaryDocument.create(
-        ...     name="credentials.txt",
-        ...     content="secret_token_xyz"
-        ... )
-        >>>
-        >>> # Direct constructor - only for bytes:
-        >>> doc = TemporaryDocument(
-        ...     name="binary.dat",
-        ...     content=b"\x00\x01\x02"
-        ... )
-        >>>
+        >>> doc = TemporaryDocument.create(name="api.json", content={"status": "ok"})
         >>> doc.is_temporary  # Always True
 
     Use Cases:

@@ -12,7 +12,7 @@ from .document_list import DocumentList
 from .flow_document import FlowDocument
 from .task_document import TaskDocument
 from .temporary_document import TemporaryDocument
-from .utils import canonical_name_key, sanitize_url
+from .utils import canonical_name_key, is_document_sha256, sanitize_url
 
 __all__ = [
     "Document",
@@ -21,5 +21,6 @@ __all__ = [
     "TaskDocument",
     "TemporaryDocument",
     "canonical_name_key",
+    "is_document_sha256",
     "sanitize_url",
 ]

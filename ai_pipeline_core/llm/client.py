@@ -38,6 +38,7 @@ def _process_messages(
     context: AIMessages,
     messages: AIMessages,
     system_prompt: str | None = None,
+    cache_ttl: str | None = "120s",
 ) -> list[ChatCompletionMessageParam]:
     """Process and format messages for LLM API consumption.
 
@@ -49,11 +50,13 @@ def _process_messages(
         context: Messages to be cached (typically expensive/static content).
         messages: Regular messages without caching (dynamic queries).
         system_prompt: Optional system instructions for the model.
+        cache_ttl: Cache TTL for context messages (e.g. "120s", "5m", "1h").
+                   Set to None or empty string to disable caching.
 
     Returns:
         List of formatted messages ready for API calls, with:
         - System prompt at the beginning (if provided)
-        - Context messages with cache_control on the last one
+        - Context messages with cache_control on the last one (if cache_ttl)
         - Regular messages without caching
 
     System Prompt Location:
@@ -62,8 +65,10 @@ def _process_messages(
         allowing dynamic system prompts without breaking cache efficiency.
 
     Cache behavior:
-        The last context message gets ephemeral caching (120s TTL)
+        The last context message gets ephemeral caching with specified TTL
         to reduce token usage on repeated calls with same context.
+        If cache_ttl is None or empty string (falsy), no caching is applied.
+        Only the last context message receives cache_control to maximize efficiency.
 
     Note:
         This is an internal function used by _generate_with_retry().
@@ -80,11 +85,12 @@ def _process_messages(
         # Use AIMessages.to_prompt() for context
         context_messages = context.to_prompt()
 
-        # Apply caching to last context message
-        context_messages[-1]["cache_control"] = {  # type: ignore
-            "type": "ephemeral",
-            "ttl": "120s",  # Cache for 2m
-        }
+        # Apply caching to last context message if cache_ttl is set
+        if cache_ttl:
+            context_messages[-1]["cache_control"] = {  # type: ignore
+                "type": "ephemeral",
+                "ttl": cache_ttl,
+            }
 
         processed_messages.extend(context_messages)
 
@@ -173,7 +179,9 @@ async def _generate_with_retry(
     if not context and not messages:
         raise ValueError("Either context or messages must be provided")
 
-    processed_messages = _process_messages(context, messages, options.system_prompt)
+    processed_messages = _process_messages(
+        context, messages, options.system_prompt, options.cache_ttl
+    )
     completion_kwargs: dict[str, Any] = {
         "model": model,
         "messages": processed_messages,
@@ -215,7 +223,7 @@ async def _generate_with_retry(
 
 @trace(ignore_inputs=["context"])
 async def generate(
-    model: ModelName | str,
+    model: ModelName,
     *,
     context: AIMessages | None = None,
     messages: AIMessages | str,
@@ -236,7 +244,7 @@ async def generate(
 
     Args:
         model: Model to use (e.g., "gpt-5", "gemini-2.5-pro", "grok-4").
-               Can be ModelName literal or any string for custom models.
+               Accepts predefined models or any string for custom models.
         context: Static context to cache (documents, examples, instructions).
                 Defaults to None (empty context). Cached for 120 seconds.
         messages: Dynamic messages/queries. AIMessages or str ONLY.
@@ -292,6 +300,22 @@ async def generate(
         >>> # Second call: reuses cache, saves tokens!
         >>> r2 = await llm.generate("gpt-5", context=static_doc, messages="Key points?")
 
+        >>> # Custom cache TTL for longer-lived contexts
+        >>> response = await llm.generate(
+        ...     "gpt-5",
+        ...     context=static_doc,
+        ...     messages="Analyze this",
+        ...     options=ModelOptions(cache_ttl="300s")  # Cache for 5 minutes
+        ... )
+
+        >>> # Disable caching when context changes frequently
+        >>> response = await llm.generate(
+        ...     "gpt-5",
+        ...     context=dynamic_doc,
+        ...     messages="Process this",
+        ...     options=ModelOptions(cache_ttl=None)  # No caching
+        ... )
+
         >>> # AVOID unnecessary options (defaults are optimal)
         >>> response = await llm.generate(
         ...     "gpt-5",
@@ -310,14 +334,17 @@ async def generate(
     Performance:
         - Context caching saves ~50-90% tokens on repeated calls
         - First call: full token cost
-        - Subsequent calls (within 120s): only messages tokens
+        - Subsequent calls (within cache TTL): only messages tokens
+        - Default cache TTL is 120s (configurable via ModelOptions.cache_ttl)
         - Default retry delay is 10s (configurable via ModelOptions.retry_delay_seconds)
 
     Caching:
         When enabled in your LiteLLM proxy and supported by the upstream provider,
-        context messages may be cached (typical TTL ~120s) to reduce token usage on
-        repeated calls. Savings depend on provider and payload; treat this as an
-        optimization, not a guarantee. Cache behavior varies by proxy configuration.
+        context messages may be cached to reduce token usage on repeated calls.
+        Default TTL is 120s, configurable via ModelOptions.cache_ttl (e.g. "300s", "5m").
+        Set cache_ttl=None to disable caching. Savings depend on provider and payload;
+        treat this as an optimization, not a guarantee. Cache behavior varies by proxy
+        configuration.
 
     Note:
         - Context argument is ignored by the tracer to avoid recording large data
@@ -350,7 +377,7 @@ T = TypeVar("T", bound=BaseModel)
 
 @trace(ignore_inputs=["context"])
 async def generate_structured(
-    model: ModelName | str,
+    model: ModelName,
     response_format: type[T],
     *,
     context: AIMessages | None = None,
@@ -364,10 +391,8 @@ async def generate_structured(
     Type-safe generation that returns validated Pydantic model instances.
     Uses OpenAI's structured output feature for guaranteed schema compliance.
 
-    Best Practices (same as generate):
-        1. OPTIONS: Omit in 90% of cases - defaults are optimized
-        2. MESSAGES: Use AIMessages or str - wrap Documents in AIMessages
-        3. CONTEXT vs MESSAGES: Use context for static/cacheable, messages for dynamic
+    Best Practices:
+        Same as generate() - see generate() documentation for details.
 
     Args:
         model: Model to use (must support structured output).
@@ -473,3 +498,9 @@ async def generate_structured(
 
     # Create a StructuredModelResponse with the parsed value
     return StructuredModelResponse[T](chat_completion=response, parsed_value=parsed_value)
+
+
+# Public aliases for testing internal functions
+# These are exported to allow testing of implementation details
+process_messages_for_testing = _process_messages
+generate_with_retry_for_testing = _generate_with_retry

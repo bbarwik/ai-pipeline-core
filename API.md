@@ -1,5 +1,7 @@
 # ai-pipeline-core API Reference
 
+This document is automatically generated using `make docs-build`. Do not manually edit this file.
+
 ## Navigation Guide
 
 **For Humans:**
@@ -400,34 +402,6 @@ of Documents, build AIMessages first (e.g., `AIMessages([doc])` or `AIMessages(d
   >>> messages.append("What is the capital of France?")
   >>> response = await llm.generate("gpt-5", messages=messages)
   >>> messages.append(response)  # Add the actual response
-  >>> prompt = messages.get_last_message_as_str()  # Get the last message as a string
-
-#### AIMessages.get_last_message_as_str
-
-```python
-def get_last_message_as_str(self) -> str
-```
-
-Get the last message as a string, raising if not a string.
-
-**Returns**:
-
-  The last message as a string.
-
-**Raises**:
-
-- `ValueError` - If the last message is not a string.
-
-  Safer Pattern:
-  Instead of catching ValueError, check type first:
-  >>> messages = AIMessages([user_msg, response, followup])
-  >>> last = messages.get_last_message()
-  >>> if isinstance(last, str):
-  ...     text = last
-  >>> elif isinstance(last, ModelResponse):
-  ...     text = last.content
-  >>> elif isinstance(last, Document):
-  ...     text = last.text if last.is_text else "<binary>"
 
 
 ## ai_pipeline_core.llm.model_types
@@ -435,28 +409,32 @@ Get the last message as a string, raising if not a string.
 ### ModelName
 
 ```python
-ModelName: TypeAlias = Literal[
-    # Core models
-    "gemini-2.5-pro",
-    "gpt-5",
-    "grok-4",
-    # Small models
-    "gemini-2.5-flash",
-    "gpt-5-mini",
-    "grok-3-mini",
-    # Search models
-    "gemini-2.5-flash-search",
-    "sonar-pro-search",
-    "gpt-4o-search",
-    "grok-3-mini-search",
-]
+ModelName: TypeAlias = (
+    Literal[
+        # Core models
+        "gemini-2.5-pro",
+        "gpt-5",
+        "grok-4",
+        # Small models
+        "gemini-2.5-flash",
+        "gpt-5-mini",
+        "grok-3-mini",
+        # Search models
+        "gemini-2.5-flash-search",
+        "sonar-pro-search",
+        "gpt-4o-search",
+        "grok-3-mini-search",
+    ]
+    | str
+)
 ```
 
-Type-safe model name identifiers.
+Type-safe model name identifiers with support for custom models.
 
-Provides compile-time validation and IDE autocompletion for supported
-language model names. Used throughout the library to prevent typos
-and ensure only valid models are referenced.
+Provides IDE autocompletion for common model names while allowing any
+string for custom models. The type is a union of predefined literals
+and str, giving you the best of both worlds: suggestions for known
+models and flexibility for custom ones.
 
 Note: These are example common model names as of Q3 2025. Actual availability
 depends on your LiteLLM proxy configuration and provider access.
@@ -474,34 +452,32 @@ Search models (*-search suffix):
 Models with integrated web search capabilities for retrieving
 and synthesizing current information.
 
-Extending with custom models:
-The generate functions accept any string, not just ModelName literals.
-To add custom models for type safety:
-1. Create a new type alias: CustomModel = Literal["my-model"]
-2. Use Union: model: ModelName | CustomModel = "my-model"
-3. Or simply use strings: model = "any-model-via-litellm"
+Using custom models:
+ModelName now includes str, so you can use any model name directly:
+- Predefined models get IDE autocomplete and validation
+- Custom models work seamlessly as strings
+- No need for Union types or additional type aliases
 
 **Example**:
 
   >>> from ai_pipeline_core import llm, ModelName
   >>>
-  >>> # Type-safe model selection
-  >>> model: ModelName = "gpt-5"  # IDE autocomplete works
+  >>> # Predefined model with IDE autocomplete
+  >>> model: ModelName = "gpt-5"  # IDE suggests common models
   >>> response = await llm.generate(model, messages="Hello")
   >>>
-  >>> # Also accepts string for custom models
-  >>> response = await llm.generate("custom-model-v2", messages="Hello")
+  >>> # Custom model works directly
+  >>> model: ModelName = "custom-model-v2"  # Any string is valid
+  >>> response = await llm.generate(model, messages="Hello")
   >>>
-  >>> # Custom type safety
-  >>> from typing import Literal
-  >>> MyModel = Literal["company-llm-v1"]
-  >>> model: ModelName | MyModel = "company-llm-v1"
+  >>> # Both types work seamlessly
+  >>> models: list[ModelName] = ["gpt-5", "custom-llm", "gemini-2.5-pro"]
 
 **Notes**:
 
-  While the type alias provides suggestions for common models,
-  the generate functions also accept string literals to support
-  custom or newer models accessed via LiteLLM proxy.
+  The ModelName type includes both predefined literals and str,
+  allowing full flexibility while maintaining IDE support for
+  common models.
 
 **See Also**:
 
@@ -558,6 +534,10 @@ advanced features. All fields are optional with sensible defaults.
 
 - `timeout` - Maximum seconds to wait for response (default: 300).
 
+- `cache_ttl` - Cache TTL for context messages (default: "120s").
+  String format like "60s", "5m", or None to disable caching.
+  Applied to the last context message for efficient token reuse.
+
 - `service_tier` - API tier selection for performance/cost trade-offs.
 - `"auto"` - Let API choose
 - `"default"` - Standard tier
@@ -589,6 +569,18 @@ advanced features. All fields are optional with sensible defaults.
   ...     temperature=0.3  # Lower for code generation
   ... )
   >>>
+  >>> # With custom cache TTL
+  >>> options = ModelOptions(
+  ...     cache_ttl="300s",  # Cache context for 5 minutes
+  ...     max_completion_tokens=1000
+  ... )
+  >>>
+  >>> # Disable caching
+  >>> options = ModelOptions(
+  ...     cache_ttl=None,  # No context caching
+  ...     temperature=0.5
+  ... )
+  >>>
   >>> # For search-enabled models
   >>> options = ModelOptions(
   ...     search_context_size="high",  # Get more search results
@@ -607,6 +599,7 @@ advanced features. All fields are optional with sensible defaults.
   - search_context_size only works with search models
   - reasoning_effort only works with models that support explicit reasoning
   - response_format is set internally by generate_structured()
+  - cache_ttl accepts formats like "120s", "5m", "1h" or None to disable caching
 
 
 ## ai_pipeline_core.llm.client
@@ -625,7 +618,7 @@ Key functions:
 
 ```python
 @trace(ignore_inputs=["context"])
-async def generate(model: ModelName | str, *, context: AIMessages | None = None, messages: AIMessages | str, options: ModelOptions | None = None) -> ModelResponse
+async def generate(model: ModelName, *, context: AIMessages | None = None, messages: AIMessages | str, options: ModelOptions | None = None) -> ModelResponse
 ```
 
 Generate text response from a language model.
@@ -642,7 +635,7 @@ Best Practices:
 **Arguments**:
 
 - `model` - Model to use (e.g., "gpt-5", "gemini-2.5-pro", "grok-4").
-  Can be ModelName literal or any string for custom models.
+  Accepts predefined models or any string for custom models.
 - `context` - Static context to cache (documents, examples, instructions).
   Defaults to None (empty context). Cached for 120 seconds.
 - `messages` - Dynamic messages/queries. AIMessages or str ONLY.
@@ -701,6 +694,22 @@ Best Practices:
   >>> # Second call: reuses cache, saves tokens!
   >>> r2 = await llm.generate("gpt-5", context=static_doc, messages="Key points?")
 
+  >>> # Custom cache TTL for longer-lived contexts
+  >>> response = await llm.generate(
+  ...     "gpt-5",
+  ...     context=static_doc,
+  ...     messages="Analyze this",
+  ...     options=ModelOptions(cache_ttl="300s")  # Cache for 5 minutes
+  ... )
+
+  >>> # Disable caching when context changes frequently
+  >>> response = await llm.generate(
+  ...     "gpt-5",
+  ...     context=dynamic_doc,
+  ...     messages="Process this",
+  ...     options=ModelOptions(cache_ttl=None)  # No caching
+  ... )
+
   >>> # AVOID unnecessary options (defaults are optimal)
   >>> response = await llm.generate(
   ...     "gpt-5",
@@ -719,14 +728,17 @@ Best Practices:
   Performance:
   - Context caching saves ~50-90% tokens on repeated calls
   - First call: full token cost
-  - Subsequent calls (within 120s): only messages tokens
+  - Subsequent calls (within cache TTL): only messages tokens
+  - Default cache TTL is 120s (configurable via ModelOptions.cache_ttl)
   - Default retry delay is 10s (configurable via ModelOptions.retry_delay_seconds)
 
   Caching:
   When enabled in your LiteLLM proxy and supported by the upstream provider,
-  context messages may be cached (typical TTL ~120s) to reduce token usage on
-  repeated calls. Savings depend on provider and payload; treat this as an
-  optimization, not a guarantee. Cache behavior varies by proxy configuration.
+  context messages may be cached to reduce token usage on repeated calls.
+  Default TTL is 120s, configurable via ModelOptions.cache_ttl (e.g. "300s", "5m").
+  Set cache_ttl=None to disable caching. Savings depend on provider and payload;
+  treat this as an optimization, not a guarantee. Cache behavior varies by proxy
+  configuration.
 
 **Notes**:
 
@@ -745,7 +757,7 @@ Best Practices:
 
 ```python
 @trace(ignore_inputs=["context"])
-async def generate_structured(model: ModelName | str, response_format: type[T], *, context: AIMessages | None = None, messages: AIMessages | str, options: ModelOptions | None = None) -> StructuredModelResponse[T]
+async def generate_structured(model: ModelName, response_format: type[T], *, context: AIMessages | None = None, messages: AIMessages | str, options: ModelOptions | None = None) -> StructuredModelResponse[T]
 ```
 
 Generate structured output conforming to a Pydantic model.
@@ -753,10 +765,8 @@ Generate structured output conforming to a Pydantic model.
 Type-safe generation that returns validated Pydantic model instances.
 Uses OpenAI's structured output feature for guaranteed schema compliance.
 
-Best Practices (same as generate):
-1. OPTIONS: Omit in 90% of cases - defaults are optimized
-2. MESSAGES: Use AIMessages or str - wrap Documents in AIMessages
-3. CONTEXT vs MESSAGES: Use context for static/cacheable, messages for dynamic
+Best Practices:
+Same as generate() - see generate() documentation for details.
 
 **Arguments**:
 
@@ -1395,7 +1405,7 @@ and enforce async-only execution for consistency.
 ### pipeline_task
 
 ```python
-def pipeline_task(__fn: Callable[..., Coroutine[Any, Any, R_co]] | None = None, *, trace_level: TraceLevel = "always", trace_ignore_input: bool = False, trace_ignore_output: bool = False, trace_ignore_inputs: list[str] | None = None, trace_input_formatter: Callable[..., str] | None = None, trace_output_formatter: Callable[..., str] | None = None, name: str | None = None, description: str | None = None, tags: Iterable[str] | None = None, version: str | None = None, cache_policy: CachePolicy | type[NotSet] = NotSet, cache_key_fn: Callable[[TaskRunContext, dict[str, Any]], str | None] | None = None, cache_expiration: datetime.timedelta | None = None, task_run_name: TaskRunNameValueOrCallable | None = None, retries: int | None = None, retry_delay_seconds: int | float | list[float] | Callable[[int], list[float]] | None = None, retry_jitter_factor: float | None = None, persist_result: bool | None = None, result_storage: ResultStorage | str | None = None, result_serializer: ResultSerializer | str | None = None, result_storage_key: str | None = None, cache_result_in_memory: bool = True, timeout_seconds: int | float | None = None, log_prints: bool | None = False, refresh_cache: bool | None = None, on_completion: list[StateHookCallable] | None = None, on_failure: list[StateHookCallable] | None = None, retry_condition_fn: RetryConditionCallable | None = None, viz_return_value: bool | None = None, asset_deps: list[str | Asset] | None = None) -> _TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], _TaskLike[R_co]]
+def pipeline_task(__fn: Callable[..., Coroutine[Any, Any, R_co]] | None = None, *, trace_level: TraceLevel = "always", trace_ignore_input: bool = False, trace_ignore_output: bool = False, trace_ignore_inputs: list[str] | None = None, trace_input_formatter: Callable[..., str] | None = None, trace_output_formatter: Callable[..., str] | None = None, trace_cost: float | None = None, name: str | None = None, description: str | None = None, tags: Iterable[str] | None = None, version: str | None = None, cache_policy: CachePolicy | type[NotSet] = NotSet, cache_key_fn: Callable[[TaskRunContext, dict[str, Any]], str | None] | None = None, cache_expiration: datetime.timedelta | None = None, task_run_name: TaskRunNameValueOrCallable | None = None, retries: int | None = None, retry_delay_seconds: int | float | list[float] | Callable[[int], list[float]] | None = None, retry_jitter_factor: float | None = None, persist_result: bool | None = None, result_storage: ResultStorage | str | None = None, result_serializer: ResultSerializer | str | None = None, result_storage_key: str | None = None, cache_result_in_memory: bool = True, timeout_seconds: int | float | None = None, log_prints: bool | None = False, refresh_cache: bool | None = None, on_completion: list[StateHookCallable] | None = None, on_failure: list[StateHookCallable] | None = None, retry_condition_fn: RetryConditionCallable | None = None, viz_return_value: bool | None = None, asset_deps: list[str | Asset] | None = None) -> _TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], _TaskLike[R_co]]
 ```
 
 Decorate an async function as a traced Prefect task.
@@ -1424,6 +1434,9 @@ Only specify parameters when you have EXPLICIT requirements.
 - `trace_ignore_inputs` - List of parameter names to exclude from tracing.
 - `trace_input_formatter` - Custom formatter for input tracing.
 - `trace_output_formatter` - Custom formatter for output tracing.
+- `trace_cost` - Optional cost value to track in metadata. When provided and > 0,
+  sets gen_ai.usage.output_cost, gen_ai.usage.cost, and cost metadata.
+  Also forces trace level to "always" if not already set.
 
   Prefect task parameters:
 - `name` - Task name (defaults to function name).
@@ -1495,7 +1508,7 @@ Only specify parameters when you have EXPLICIT requirements.
 ### pipeline_flow
 
 ```python
-def pipeline_flow(__fn: _DocumentsFlowCallable[FO_contra] | None = None, *, trace_level: TraceLevel = "always", trace_ignore_input: bool = False, trace_ignore_output: bool = False, trace_ignore_inputs: list[str] | None = None, trace_input_formatter: Callable[..., str] | None = None, trace_output_formatter: Callable[..., str] | None = None, name: str | None = None, version: str | None = None, flow_run_name: Union[Callable[[], str], str] | None = None, retries: int | None = None, retry_delay_seconds: int | float | None = None, task_runner: TaskRunner[PrefectFuture[Any]] | None = None, description: str | None = None, timeout_seconds: int | float | None = None, validate_parameters: bool = True, persist_result: bool | None = None, result_storage: ResultStorage | str | None = None, result_serializer: ResultSerializer | str | None = None, cache_result_in_memory: bool = True, log_prints: bool | None = None, on_completion: list[FlowStateHook[Any, Any]] | None = None, on_failure: list[FlowStateHook[Any, Any]] | None = None, on_cancellation: list[FlowStateHook[Any, Any]] | None = None, on_crashed: list[FlowStateHook[Any, Any]] | None = None, on_running: list[FlowStateHook[Any, Any]] | None = None) -> _FlowLike[FO_contra] | Callable[[_DocumentsFlowCallable[FO_contra]], _FlowLike[FO_contra]]
+def pipeline_flow(__fn: _DocumentsFlowCallable[FO_contra] | None = None, *, trace_level: TraceLevel = "always", trace_ignore_input: bool = False, trace_ignore_output: bool = False, trace_ignore_inputs: list[str] | None = None, trace_input_formatter: Callable[..., str] | None = None, trace_output_formatter: Callable[..., str] | None = None, trace_cost: float | None = None, name: str | None = None, version: str | None = None, flow_run_name: Union[Callable[[], str], str] | None = None, retries: int | None = None, retry_delay_seconds: int | float | None = None, task_runner: TaskRunner[PrefectFuture[Any]] | None = None, description: str | None = None, timeout_seconds: int | float | None = None, validate_parameters: bool = True, persist_result: bool | None = None, result_storage: ResultStorage | str | None = None, result_serializer: ResultSerializer | str | None = None, cache_result_in_memory: bool = True, log_prints: bool | None = None, on_completion: list[FlowStateHook[Any, Any]] | None = None, on_failure: list[FlowStateHook[Any, Any]] | None = None, on_cancellation: list[FlowStateHook[Any, Any]] | None = None, on_crashed: list[FlowStateHook[Any, Any]] | None = None, on_running: list[FlowStateHook[Any, Any]] | None = None) -> _FlowLike[FO_contra] | Callable[[_DocumentsFlowCallable[FO_contra]], _FlowLike[FO_contra]]
 ```
 
 Decorate an async flow for document processing.
@@ -1536,6 +1549,9 @@ function, which can be passed during execution for flow-specific needs.
 - `trace_ignore_inputs` - Parameter names to exclude from tracing.
 - `trace_input_formatter` - Custom input formatter.
 - `trace_output_formatter` - Custom output formatter.
+- `trace_cost` - Optional cost value to track in metadata. When provided and > 0,
+  sets gen_ai.usage.output_cost, gen_ai.usage.cost, and cost metadata.
+  Also forces trace level to "always" if not already set.
 
   Prefect flow parameters:
 - `name` - Flow name (defaults to function name).
@@ -1874,24 +1890,8 @@ Key characteristics:
 - Reduces persistent I/O for temporary data
 
 Creating TaskDocuments:
-**Use the `create` classmethod** for most use cases. It handles automatic
-conversion of various content types. Only use __init__ when you have bytes.
-
->>> from enum import StrEnum
->>>
->>> # Simple task document:
->>> class TempDoc(TaskDocument):
-...     pass
->>>
->>> # With restricted files:
->>> class CacheDoc(TaskDocument):
-...     class FILES(StrEnum):
-...         CACHE = "cache.json"
-...         INDEX = "index.dat"
->>>
->>> # RECOMMENDED - automatic conversion:
->>> doc = TempDoc.create(name="temp.json", content={"status": "processing"})
->>> doc = CacheDoc.create(name="cache.json", content={"data": [1, 2, 3]})
+Same as Document - use `create()` for automatic conversion, `__init__` for bytes.
+See Document.create() for detailed usage examples.
 
 Use Cases:
 - Intermediate transformation results
@@ -1966,6 +1966,7 @@ Key features:
 - SHA256 hashing for deduplication
 - Support for text, JSON, YAML, PDF, and image formats
 - Conversion utilities between different formats
+- Source provenance tracking via sources field
 
 Class Variables:
 MAX_CONTENT_SIZE: Maximum allowed content size in bytes (default 25MB)
@@ -1975,6 +1976,7 @@ MAX_CONTENT_SIZE: Maximum allowed content size in bytes (default 25MB)
 - `name` - Document filename (validated for security)
 - `description` - Optional human-readable description
 - `content` - Raw document content as bytes
+- `sources` - List of source references tracking document provenance
 
   Creating Documents:
   **Use the `create` classmethod** for most use cases. It accepts various
@@ -1991,7 +1993,7 @@ MAX_CONTENT_SIZE: Maximum allowed content size in bytes (default 25MB)
 
   - Document subclasses should NOT start with 'Test' prefix (pytest conflict)
   - Cannot instantiate Document directly - must subclass FlowDocument or TaskDocument
-  - Cannot add custom fields - only name, description, content are allowed
+  - Cannot add custom fields - only name, description, content, sources are allowed
   - Document is an abstract class and cannot be instantiated directly
 
   Metadata Attachment Patterns:
@@ -2020,6 +2022,15 @@ MAX_CONTENT_SIZE: Maximum allowed content size in bytes (default 25MB)
   >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
   >>> print(doc.is_text)  # True
   >>> data = doc.as_json()  # {'key': 'value'}
+  >>>
+  >>> # Track document provenance with sources
+  >>> source_doc = MyDocument.create(name="input.txt", content="raw data")
+  >>> processed = MyDocument.create(
+  ...     name="output.txt",
+  ...     content="processed data",
+  ...     sources=[source_doc.sha256]  # Reference source document
+  ... )
+  >>> processed.has_source(source_doc)  # True
 
 #### Document.MAX_CONTENT_SIZE
 
@@ -2033,7 +2044,7 @@ Maximum allowed content size in bytes (default 25MB).
 
 ```python
 @classmethod
-def create(cls, *, name: str, content: str | bytes | dict[str, Any] | list[Any] | BaseModel, description: str | None = None) -> Self
+def create(cls, *, name: str, content: str | bytes | dict[str, Any] | list[Any] | BaseModel, description: str | None = None, sources: list[str] = []) -> Self
 ```
 
 Create a Document with automatic content type conversion (recommended).
@@ -2063,6 +2074,11 @@ Only provide name and content. The description parameter is RARELY needed.
   - BaseModel: Serialized to JSON or YAML based on extension
 - `description` - Optional description - USUALLY OMIT THIS (defaults to None).
   Only use when meaningful metadata helps downstream processing
+- `sources` - Optional list of source strings (document SHA256 hashes or references).
+  Used to track what sources contributed to creating this document.
+  Can contain document SHA256 hashes (for referencing other documents)
+  or arbitrary reference strings (URLs, file paths, descriptions).
+  Defaults to empty list
 
 **Returns**:
 
@@ -2114,10 +2130,20 @@ Only provide name and content. The description parameter is RARELY needed.
   >>> doc = MyDocument.create(name="sections.md", content=items)
   >>> doc.parse(list)  # ["Section 1", "Section 2"]
 
+  >>> # Document with sources for provenance tracking
+  >>> source_doc = MyDocument.create(name="source.txt", content="original")
+  >>> derived = MyDocument.create(
+  ...     name="result.txt",
+  ...     content="processed",
+  ...     sources=[source_doc.sha256, "https://api.example.com/data"]
+  ... )
+  >>> derived.get_source_documents()  # [source_doc.sha256]
+  >>> derived.get_source_references()  # ["https://api.example.com/data"]
+
 #### Document.__init__
 
 ```python
-def __init__(self, *, name: str, content: bytes, description: str | None = None) -> None
+def __init__(self, *, name: str, content: bytes, description: str | None = None, sources: list[str] = []) -> None
 ```
 
 Initialize a Document instance with raw bytes content.
@@ -2135,6 +2161,10 @@ direct instantiation of the abstract Document class.
 - `name` - Document filename (required, keyword-only)
 - `content` - Document content as raw bytes (required, keyword-only)
 - `description` - Optional human-readable description (keyword-only)
+- `sources` - Optional list of source strings for provenance tracking.
+  Can contain document SHA256 hashes (for referencing other documents)
+  or arbitrary reference strings (URLs, file paths, descriptions).
+  Defaults to empty list
 
 **Raises**:
 
@@ -2630,24 +2660,8 @@ Key characteristics:
 - Saved in directories named after the document's canonical name
 
 Creating FlowDocuments:
-**Use the `create` classmethod** for most use cases. It handles automatic
-conversion of various content types. Only use __init__ when you have bytes.
-
->>> from enum import StrEnum
->>>
->>> # Simple document with pass:
->>> class MyDoc(FlowDocument):
-...     pass
->>>
->>> # Document with restricted file names:
->>> class ConfigDoc(FlowDocument):
-...     class FILES(StrEnum):
-...         CONFIG = "config.yaml"
-...         SETTINGS = "settings.json"
->>>
->>> # RECOMMENDED - automatic conversion:
->>> doc = MyDoc.create(name="data.json", content={"key": "value"})
->>> doc = ConfigDoc.create(name="config.yaml", content={"host": "localhost"})
+Same as Document - use `create()` for automatic conversion, `__init__` for bytes.
+See Document.create() for detailed usage examples.
 
 Persistence:
 Documents are saved to: {output_dir}/{canonical_name}/{filename}
@@ -2694,25 +2708,11 @@ Key characteristics:
 - Ignored by simple_runner save operations
 
 Creating TemporaryDocuments:
-**Use the `create` classmethod** for most use cases. It handles automatic
-conversion of various content types. Only use __init__ when you have bytes.
+Same as Document - use `create()` for automatic conversion, `__init__` for bytes.
+Unlike abstract document types, TemporaryDocument can be instantiated directly.
+See Document.create() for detailed usage examples.
 
->>> # RECOMMENDED - automatic conversion:
->>> doc = TemporaryDocument.create(
-...     name="api_response.json",
-...     content={"status": "ok", "data": [1, 2, 3]}
-... )
->>> doc = TemporaryDocument.create(
-...     name="credentials.txt",
-...     content="secret_token_xyz"
-... )
->>>
->>> # Direct constructor - only for bytes:
->>> doc = TemporaryDocument(
-...     name="binary.dat",
-...     content=b"\x00\x01\x02"
-... )
->>>
+>>> doc = TemporaryDocument.create(name="api.json", content={"status": "ok"})
 >>> doc.is_temporary  # Always True
 
 Use Cases:
@@ -2780,14 +2780,20 @@ Initialize DocumentList.
 #### DocumentList.filter_by
 
 ```python
-def filter_by(self, arg: str | type[Document] | list[type[Document]]) -> "DocumentList"
+def filter_by(self, arg: str | type[Document] | Iterable[type[Document]] | Iterable[str]) -> "DocumentList"
 ```
 
-Filter documents by name or type(s).
+Filter documents by name(s) or type(s).
 
 **Arguments**:
 
-- `arg` - Document name (str), single document type, or list of document types.
+- `arg` - Can be one of:
+  - str: Single document name to filter by
+  - type[Document]: Single document type to filter by (includes subclasses)
+  - Iterable[type[Document]]: Multiple document types to filter by
+  (list, tuple, set, generator, or any iterable)
+  - Iterable[str]: Multiple document names to filter by
+  (list, tuple, set, generator, or any iterable)
 
 **Returns**:
 
@@ -2795,13 +2801,18 @@ Filter documents by name or type(s).
 
 **Raises**:
 
-- `TypeError` - If arg is not a valid type (str, Document type, or list of Document types).
+- `TypeError` - If arg is not a valid type (not str, type, or iterable),
+  or if iterable contains mixed types (strings and types together).
+- `AttributeError` - If arg is expected to be iterable but doesn't support iteration.
 
 **Example**:
 
-  >>> docs.filter_by("file.txt")  # Filter by name
-  >>> docs.filter_by(MyDocument)  # Filter by type
-  >>> docs.filter_by([Doc1, Doc2])  # Filter by multiple types
+  >>> docs.filter_by("file.txt")  # Filter by single name
+  >>> docs.filter_by(MyDocument)  # Filter by single type
+  >>> docs.filter_by([Doc1, Doc2])  # Filter by multiple types (list)
+  >>> docs.filter_by({"file1.txt", "file2.txt"})  # Filter by multiple names (set)
+  >>> docs.filter_by((SubDoc, AnotherDoc))  # Filter by multiple types (tuple)
+  >>> docs.filter_by(name for name in ["a.txt", "b.txt"])  # Generator expression
 
 #### DocumentList.get_by
 

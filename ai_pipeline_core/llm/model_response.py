@@ -146,36 +146,83 @@ class ModelResponse(ChatCompletion):
         self.headers = copy.deepcopy(headers)
 
     def get_laminar_metadata(self) -> dict[str, str | int | float]:
-        """Extract metadata for LMNR (Laminar) observability.
+        """Extract metadata for LMNR (Laminar) observability including cost tracking.
 
-        Collects comprehensive metadata about the generation for
-        tracing and monitoring in the LMNR platform.
+        Collects comprehensive metadata about the generation for tracing,
+        monitoring, and cost analysis in the LMNR platform. This method
+        provides detailed insights into token usage, caching effectiveness,
+        and generation costs.
 
         Returns:
             Dictionary containing:
-            - LiteLLM headers (call ID, costs, etc.)
-            - Token usage statistics
-            - Model configuration
-            - Cost information
-            - Cached token counts
+            - LiteLLM headers (call ID, costs, model info, etc.)
+            - Token usage statistics (input, output, total, cached)
+            - Model configuration used for generation
+            - Cost information in multiple formats
+            - Cached token counts (when context caching enabled)
             - Reasoning token counts (for O1 models)
 
         Metadata structure:
             - litellm.*: All LiteLLM-specific headers
-            - gen_ai.usage.*: Token usage statistics
+            - gen_ai.usage.prompt_tokens: Input token count
+            - gen_ai.usage.completion_tokens: Output token count
+            - gen_ai.usage.total_tokens: Total tokens used
+            - gen_ai.usage.cached_tokens: Cached tokens (if applicable)
+            - gen_ai.usage.reasoning_tokens: Reasoning tokens (O1 models)
+            - gen_ai.usage.output_cost: Generation cost in dollars
+            - gen_ai.usage.cost: Alternative cost field (same value)
+            - gen_ai.cost: Simple cost field (same value)
             - gen_ai.response.*: Response identifiers
-            - gen_ai.cost: Cost information
             - model_options.*: Configuration used
 
+        Cost tracking:
+            Cost information is extracted from two sources:
+            1. x-litellm-response-cost header (primary)
+            2. usage.cost attribute (fallback)
+
+            Cost is stored in three fields for compatibility:
+            - gen_ai.usage.output_cost (standard)
+            - gen_ai.usage.cost (alternative)
+            - gen_ai.cost (simple)
+
         Example:
-            >>> response = await llm.generate(...)
+            >>> response = await llm.generate(
+            ...     "gpt-5",
+            ...     context=large_doc,
+            ...     messages="Summarize this",
+            ...     options=ModelOptions(cache_ttl="300s")
+            ... )
+            >>>
+            >>> # Get comprehensive metadata
             >>> metadata = response.get_laminar_metadata()
-            >>> print(f"Cost: ${metadata.get('gen_ai.cost', 0)}")
-            >>> print(f"Tokens: {metadata.get('gen_ai.usage.total_tokens')}")
+            >>>
+            >>> # Track generation cost
+            >>> cost = metadata.get('gen_ai.usage.output_cost', 0)
+            >>> if cost > 0:
+            ...     print(f"Generation cost: ${cost:.4f}")
+            >>>
+            >>> # Monitor token usage
+            >>> print(f"Input: {metadata.get('gen_ai.usage.prompt_tokens', 0)} tokens")
+            >>> print(f"Output: {metadata.get('gen_ai.usage.completion_tokens', 0)} tokens")
+            >>> print(f"Total: {metadata.get('gen_ai.usage.total_tokens', 0)} tokens")
+            >>>
+            >>> # Check cache effectiveness
+            >>> cached = metadata.get('gen_ai.usage.cached_tokens', 0)
+            >>> if cached > 0:
+            ...     total = metadata.get('gen_ai.usage.total_tokens', 1)
+            ...     savings = (cached / total) * 100
+            ...     print(f"Cache hit: {cached} tokens ({savings:.1f}% savings)")
+            >>>
+            >>> # Calculate cost per token
+            >>> if cost > 0 and metadata.get('gen_ai.usage.total_tokens'):
+            ...     cost_per_1k = (cost / metadata['gen_ai.usage.total_tokens']) * 1000
+            ...     print(f"Cost per 1K tokens: ${cost_per_1k:.4f}")
 
         Note:
-            Used internally by the tracing system for observability.
-            Cost is extracted from headers or usage object.
+            - Cost availability depends on LiteLLM proxy configuration
+            - Not all providers return cost information
+            - Cached tokens reduce actual cost but may not be reflected
+            - Used internally by tracing but accessible for cost analysis
         """
         metadata: dict[str, str | int | float] = {}
 

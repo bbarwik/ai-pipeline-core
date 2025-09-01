@@ -16,7 +16,7 @@ class SQLAlchemyConnectionFilter(logging.Filter):
     database connections. They are harmless but noisy, so we suppress them.
     """
 
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord) -> bool:
         # Suppress AsyncAdaptedQueuePool errors related to connection termination
         if record.name == "sqlalchemy.pool.impl.AsyncAdaptedQueuePool":
             if "Exception terminating connection" in record.getMessage():

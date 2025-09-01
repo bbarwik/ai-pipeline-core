@@ -1,7 +1,12 @@
 """Tests for LLM client message processing."""
 
-from ai_pipeline_core.llm import AIMessages, ModelResponse
-from ai_pipeline_core.llm.client import _process_messages  # type: ignore[reportPrivateUsage]
+from ai_pipeline_core.llm import (
+    AIMessages,
+    ModelResponse,
+)
+from ai_pipeline_core.llm import (
+    process_messages_for_testing as _process_messages,
+)
 from tests.test_helpers import ConcreteFlowDocument
 
 

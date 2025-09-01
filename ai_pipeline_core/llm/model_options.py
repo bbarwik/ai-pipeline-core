@@ -49,6 +49,10 @@ class ModelOptions(BaseModel):
 
         timeout: Maximum seconds to wait for response (default: 300).
 
+        cache_ttl: Cache TTL for context messages (default: "120s").
+                   String format like "60s", "5m", or None to disable caching.
+                   Applied to the last context message for efficient token reuse.
+
         service_tier: API tier selection for performance/cost trade-offs.
                      "auto": Let API choose
                      "default": Standard tier
@@ -79,6 +83,18 @@ class ModelOptions(BaseModel):
         ...     temperature=0.3  # Lower for code generation
         ... )
         >>>
+        >>> # With custom cache TTL
+        >>> options = ModelOptions(
+        ...     cache_ttl="300s",  # Cache context for 5 minutes
+        ...     max_completion_tokens=1000
+        ... )
+        >>>
+        >>> # Disable caching
+        >>> options = ModelOptions(
+        ...     cache_ttl=None,  # No context caching
+        ...     temperature=0.5
+        ... )
+        >>>
         >>> # For search-enabled models
         >>> options = ModelOptions(
         ...     search_context_size="high",  # Get more search results
@@ -96,6 +112,7 @@ class ModelOptions(BaseModel):
         - search_context_size only works with search models
         - reasoning_effort only works with models that support explicit reasoning
         - response_format is set internally by generate_structured()
+        - cache_ttl accepts formats like "120s", "5m", "1h" or None to disable caching
     """
 
     temperature: float | None = None
@@ -105,6 +122,7 @@ class ModelOptions(BaseModel):
     retries: int = 3
     retry_delay_seconds: int = 10
     timeout: int = 300
+    cache_ttl: str | None = "120s"
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
     max_completion_tokens: int | None = None
     response_format: type[BaseModel] | None = None

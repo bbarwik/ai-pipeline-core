@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import inspect
+from functools import wraps
 from typing import (
     Any,
     Callable,
@@ -36,7 +37,7 @@ from typing_extensions import TypeAlias
 
 from ai_pipeline_core.documents import DocumentList
 from ai_pipeline_core.flow.options import FlowOptions
-from ai_pipeline_core.tracing import TraceLevel, trace
+from ai_pipeline_core.tracing import TraceLevel, set_trace_cost, trace
 
 # --------------------------------------------------------------------------- #
 # Public callback aliases (Prefect stubs omit these exact types)
@@ -224,6 +225,7 @@ def pipeline_task(
     trace_ignore_inputs: list[str] | None = None,
     trace_input_formatter: Callable[..., str] | None = None,
     trace_output_formatter: Callable[..., str] | None = None,
+    trace_cost: float | None = None,
     # prefect passthrough
     name: str | None = None,
     description: str | None = None,
@@ -263,6 +265,7 @@ def pipeline_task(
     trace_ignore_inputs: list[str] | None = None,
     trace_input_formatter: Callable[..., str] | None = None,
     trace_output_formatter: Callable[..., str] | None = None,
+    trace_cost: float | None = None,
     # prefect passthrough
     name: str | None = None,
     description: str | None = None,
@@ -316,6 +319,9 @@ def pipeline_task(
         trace_ignore_inputs: List of parameter names to exclude from tracing.
         trace_input_formatter: Custom formatter for input tracing.
         trace_output_formatter: Custom formatter for output tracing.
+        trace_cost: Optional cost value to track in metadata. When provided and > 0,
+             sets gen_ai.usage.output_cost, gen_ai.usage.cost, and cost metadata.
+             Also forces trace level to "always" if not already set.
 
         Prefect task parameters:
         name: Task name (defaults to function name).
@@ -405,6 +411,19 @@ def pipeline_task(
             )
 
         fname = _callable_name(fn, "task")
+
+        # Create wrapper to handle trace_cost if provided
+        @wraps(fn)
+        async def _wrapper(*args: Any, **kwargs: Any) -> R_co:
+            result = await fn(*args, **kwargs)
+            if trace_cost is not None and trace_cost > 0:
+                set_trace_cost(trace_cost)
+            return result
+
+        # Preserve the original function name for Prefect
+        _wrapper.__name__ = fname
+        _wrapper.__qualname__ = getattr(fn, "__qualname__", fname)
+
         traced_fn = trace(
             level=trace_level,
             name=name or fname,
@@ -413,7 +432,7 @@ def pipeline_task(
             ignore_inputs=trace_ignore_inputs,
             input_formatter=trace_input_formatter,
             output_formatter=trace_output_formatter,
-        )(fn)
+        )(_wrapper)
 
         return cast(
             _TaskLike[R_co],
@@ -463,6 +482,7 @@ def pipeline_flow(
     trace_ignore_inputs: list[str] | None = None,
     trace_input_formatter: Callable[..., str] | None = None,
     trace_output_formatter: Callable[..., str] | None = None,
+    trace_cost: float | None = None,
     # prefect passthrough
     name: str | None = None,
     version: str | None = None,
@@ -497,6 +517,7 @@ def pipeline_flow(
     trace_ignore_inputs: list[str] | None = None,
     trace_input_formatter: Callable[..., str] | None = None,
     trace_output_formatter: Callable[..., str] | None = None,
+    trace_cost: float | None = None,
     # prefect passthrough
     name: str | None = None,
     version: str | None = None,
@@ -557,6 +578,9 @@ def pipeline_flow(
         trace_ignore_inputs: Parameter names to exclude from tracing.
         trace_input_formatter: Custom input formatter.
         trace_output_formatter: Custom output formatter.
+        trace_cost: Optional cost value to track in metadata. When provided and > 0,
+             sets gen_ai.usage.output_cost, gen_ai.usage.cost, and cost metadata.
+             Also forces trace level to "always" if not already set.
 
         Prefect flow parameters:
         name: Flow name (defaults to function name).
@@ -666,6 +690,8 @@ def pipeline_flow(
             **kwargs: Any,
         ) -> DocumentList:
             result = await fn(project_name, documents, flow_options, *args, **kwargs)
+            if trace_cost is not None and trace_cost > 0:
+                set_trace_cost(trace_cost)
             if not isinstance(result, DocumentList):  # pyright: ignore[reportUnnecessaryIsInstance]
                 raise TypeError(
                     f"Flow '{fname}' must return DocumentList, got {type(result).__name__}"

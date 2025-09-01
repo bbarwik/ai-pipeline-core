@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Complete showcase of ai_pipeline_core features (v0.1.13)
+"""Complete showcase of ai_pipeline_core features (v0.1.14)
 
 This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
   • Settings configuration with environment variables and .env files
@@ -12,13 +12,14 @@ This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
     - DocumentList: Type-safe container with validation
   • Flow configuration (FlowConfig, FlowOptions) for type-safe pipelines
   • Pipeline decorators (pipeline_flow, pipeline_task) with LMNR tracing
+    - NEW: Cost tracking via trace_cost parameter (v0.1.14+)
   • Prefect utilities (flow, task, prefect_test_harness, disable_run_logger)
   • LLM module with smart caching and structured outputs:
     - generate/generate_structured with context caching
     - AIMessages supporting mixed content types
     - ModelOptions with retry and timeout configuration
     - ModelResponse with cost tracking metadata
-  • Tracing (trace, TraceLevel, TraceInfo) for observability
+  • Tracing (trace, TraceLevel, TraceInfo) for observability with cost tracking
   • PromptManager for Jinja2 templates with smart path resolution
   • Simple runner module (run_cli, run_pipeline, load/save documents)
 
@@ -76,6 +77,7 @@ from ai_pipeline_core import (
     pipeline_flow,
     pipeline_task,
     sanitize_url,
+    set_trace_cost,
     setup_logging,
     trace,
 )
@@ -207,17 +209,18 @@ class TextAnalysis(BaseModel):
 # -----------------------------------------------------------------------------
 
 
-# Task with custom tracing parameters
+# Task with custom tracing parameters including cost tracking
 @pipeline_task(
     name="analyze_with_tracing",
     trace_level="always",
     trace_ignore_inputs=["sensitive_data"],
+    trace_cost=0.002,  # Track cost for this task (e.g., $0.002 per call)
     retries=3,
     timeout_seconds=120,
 )
 async def analyze_with_advanced_tracing(
     doc: Document,
-    model: ModelName | str,
+    model: ModelName,
     sensitive_data: str = "secret",
 ) -> TextAnalysis:
     # Use AIMessages with different content types
@@ -254,11 +257,17 @@ async def simple_transform(text: str) -> str:
     return text.upper()
 
 
-# Demonstrate @trace decorator alone
-@trace(level="always", name="custom_operation", span_type="PROCESSING", metadata={"version": "1.0"})
+# Demonstrate @trace decorator alone with cost tracking
+@trace(
+    level="always",
+    name="custom_operation",
+    span_type="PROCESSING",
+    metadata={"version": "1.0"},
+)
 async def traced_operation(data: str) -> dict[str, Any]:
     """Function with only tracing, no Prefect."""
     processor = DataProcessor()
+    set_trace_cost(0.0005)
     return processor.process(data)
 
 
@@ -267,7 +276,13 @@ async def traced_operation(data: str) -> dict[str, Any]:
 # -----------------------------------------------------------------------------
 
 
-@pipeline_flow(name="stage1_analysis", trace_level="always", retries=2, timeout_seconds=600)
+@pipeline_flow(
+    name="stage1_analysis",
+    trace_level="always",
+    trace_cost=0.01,  # Track total cost for this flow (e.g., $0.01 per run)
+    retries=2,
+    timeout_seconds=600,
+)
 async def stage1_flow(
     project_name: str, documents: DocumentList, flow_options: ShowcaseFlowOptions
 ) -> DocumentList:
@@ -296,11 +311,19 @@ async def stage1_flow(
                 doc, flow_options.core_model, "sensitive_value"
             )
 
+            # Dynamically set cost based on document size
+            # NEW: set_trace_cost for dynamic cost tracking within traced functions
+            doc_size_kb = doc.size / 1024
+            dynamic_cost = doc_size_kb * 0.0001  # $0.0001 per KB
+            set_trace_cost(dynamic_cost)
+
             # Create document using smart factory with Pydantic model
+            # NEW in v0.1.14: Track document sources for provenance
             output = AnalysisDocument.create(
                 name=f"analysis_{doc.id}.json",
                 description="Structured analysis result",
                 content=analysis,  # Pydantic model auto-serialized to JSON
+                sources=[doc.sha256],  # Track source document
             )
         else:
             # Raw text generation with context caching
@@ -320,12 +343,15 @@ async def stage1_flow(
             # Access response metadata
             logger.info(f"Model used: {response.model}")
             logger.info(f"Tokens: {response.usage.total_tokens if response.usage else 'N/A'}")
+            # Note: Cost tracking via trace_cost parameter adds metadata to LMNR traces
+            # The cost is stored in gen_ai.usage.output_cost, gen_ai.usage.cost, and cost fields
 
-            # Create text document
+            # Create text document with source tracking
             output = AnalysisDocument.create(
                 name=f"analysis_{doc.id}.txt",
                 description="Text analysis result",
                 content=response.content,
+                sources=[doc.sha256],  # Track source
             )
 
         outputs.append(output)
@@ -367,30 +393,52 @@ async def stage2_flow(
         # Demonstrate sanitize_url utility
         safe_name = sanitize_url(f"https://example.com/doc/{doc.id}")
 
-        # Create enhanced document
+        # Create enhanced document with source tracking chain
         if doc.name.endswith(".json"):
             # Try to parse and enhance JSON
             try:
                 data = doc.as_json()
                 data["enhanced"] = True
                 data["safe_name"] = safe_name
+
+                # NEW: Create document with multiple sources (document + reference)
                 output = EnhancedDocument.create(
                     name=doc.name.replace(".", "_enhanced."),
                     description="Enhanced analysis",
                     content=data,  # Will be auto-serialized to JSON
+                    sources=[
+                        doc.sha256,  # Previous stage doc
+                        f"stage2_flow:{project_name}",  # Process reference
+                    ],
                 )
             except Exception:
                 output = EnhancedDocument.create(
                     name=doc.name.replace(".", "_enhanced."),
                     description="Enhanced text",
                     content=enhanced,
+                    sources=[doc.sha256],
                 )
         else:
+            # Demonstrate source tracking with multiple sources
             output = EnhancedDocument.create(
                 name=doc.name.replace(".", "_enhanced."),
                 description="Enhanced text",
                 content=enhanced,
+                sources=[
+                    doc.sha256,
+                    "enhancement_process",
+                ],
             )
+
+        # Log source tracking information
+        logger.info(f"Document {output.name} has {len(output.sources)} sources")
+        if output.sources:
+            doc_sources = output.get_source_documents()
+            ref_sources = output.get_source_references()
+            if doc_sources:
+                logger.debug(f"  Document sources: {len(doc_sources)} documents")
+            if ref_sources:
+                logger.debug(f"  Reference sources: {ref_sources}")
 
         outputs.append(output)
 
@@ -416,6 +464,9 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
     logger.info("Initializing showcase with sample data")
 
     # Note: OPENAI_API_KEY should be set via environment variable or .env file
+
+    # NEW in v0.1.14: Demonstrate source tracking from external references
+    external_source = "https://example.com/data-source"
 
     # Create sample documents including list[BaseModel] demonstration
     sample_models = [
@@ -448,6 +499,7 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
             content="""AI Pipeline Core is a powerful async library for building
             production-grade AI pipelines with strong typing, observability,
             and Prefect integration.""",
+            sources=[external_source],  # Track external data source
         ),
         InputDocument.create(
             name="data.json",

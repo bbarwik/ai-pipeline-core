@@ -6,6 +6,8 @@ This module provides the core document abstraction for working with various type
 in AI pipelines. Documents are immutable Pydantic models that wrap binary content with metadata.
 """
 
+from __future__ import annotations
+
 import base64
 import hashlib
 import json
@@ -30,13 +32,14 @@ from typing import (
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     ValidationInfo,
     field_serializer,
     field_validator,
 )
 from ruamel.yaml import YAML
 
-from ai_pipeline_core.documents.utils import canonical_name_key
+from ai_pipeline_core.documents.utils import canonical_name_key, is_document_sha256
 from ai_pipeline_core.exceptions import DocumentNameError, DocumentSizeError
 
 from .mime_type import (
@@ -94,6 +97,7 @@ class Document(BaseModel, ABC):
     - SHA256 hashing for deduplication
     - Support for text, JSON, YAML, PDF, and image formats
     - Conversion utilities between different formats
+    - Source provenance tracking via sources field
 
     Class Variables:
         MAX_CONTENT_SIZE: Maximum allowed content size in bytes (default 25MB)
@@ -102,6 +106,7 @@ class Document(BaseModel, ABC):
         name: Document filename (validated for security)
         description: Optional human-readable description
         content: Raw document content as bytes
+        sources: List of source references tracking document provenance
 
     Creating Documents:
         **Use the `create` classmethod** for most use cases. It accepts various
@@ -117,7 +122,7 @@ class Document(BaseModel, ABC):
     Warning:
         - Document subclasses should NOT start with 'Test' prefix (pytest conflict)
         - Cannot instantiate Document directly - must subclass FlowDocument or TaskDocument
-        - Cannot add custom fields - only name, description, content are allowed
+        - Cannot add custom fields - only name, description, content, sources are allowed
         - Document is an abstract class and cannot be instantiated directly
 
     Metadata Attachment Patterns:
@@ -145,6 +150,15 @@ class Document(BaseModel, ABC):
         >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
         >>> print(doc.is_text)  # True
         >>> data = doc.as_json()  # {'key': 'value'}
+        >>>
+        >>> # Track document provenance with sources
+        >>> source_doc = MyDocument.create(name="input.txt", content="raw data")
+        >>> processed = MyDocument.create(
+        ...     name="output.txt",
+        ...     content="processed data",
+        ...     sources=[source_doc.sha256]  # Reference source document
+        ... )
+        >>> processed.has_source(source_doc)  # True
     """
 
     MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024
@@ -193,7 +207,7 @@ class Document(BaseModel, ABC):
                 )
         # Check that the Document's model_fields only contain the allowed fields
         # It prevents AI models from adding additional fields to documents
-        allowed = {"name", "description", "content"}
+        allowed = {"name", "description", "content", "sources"}
         current = set(getattr(cls, "model_fields", {}).keys())
         extras = current - allowed
         if extras:
@@ -204,25 +218,58 @@ class Document(BaseModel, ABC):
 
     @overload
     @classmethod
-    def create(cls, *, name: str, content: bytes, description: str | None = None) -> Self: ...
-
-    @overload
-    @classmethod
-    def create(cls, *, name: str, content: str, description: str | None = None) -> Self: ...
-
-    @overload
-    @classmethod
     def create(
-        cls, *, name: str, content: dict[str, Any], description: str | None = None
+        cls,
+        *,
+        name: str,
+        content: bytes,
+        description: str | None = None,
+        sources: list[str] = [],
     ) -> Self: ...
 
     @overload
     @classmethod
-    def create(cls, *, name: str, content: list[Any], description: str | None = None) -> Self: ...
+    def create(
+        cls,
+        *,
+        name: str,
+        content: str,
+        description: str | None = None,
+        sources: list[str] = [],
+    ) -> Self: ...
 
     @overload
     @classmethod
-    def create(cls, *, name: str, content: BaseModel, description: str | None = None) -> Self: ...
+    def create(
+        cls,
+        *,
+        name: str,
+        content: dict[str, Any],
+        description: str | None = None,
+        sources: list[str] = [],
+    ) -> Self: ...
+
+    @overload
+    @classmethod
+    def create(
+        cls,
+        *,
+        name: str,
+        content: list[Any],
+        description: str | None = None,
+        sources: list[str] = [],
+    ) -> Self: ...
+
+    @overload
+    @classmethod
+    def create(
+        cls,
+        *,
+        name: str,
+        content: BaseModel,
+        description: str | None = None,
+        sources: list[str] = [],
+    ) -> Self: ...
 
     @classmethod
     def create(
@@ -231,6 +278,7 @@ class Document(BaseModel, ABC):
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
         description: str | None = None,
+        sources: list[str] = [],
     ) -> Self:
         r"""Create a Document with automatic content type conversion (recommended).
 
@@ -260,6 +308,11 @@ class Document(BaseModel, ABC):
                 - BaseModel: Serialized to JSON or YAML based on extension
             description: Optional description - USUALLY OMIT THIS (defaults to None).
                         Only use when meaningful metadata helps downstream processing
+            sources: Optional list of source strings (document SHA256 hashes or references).
+                    Used to track what sources contributed to creating this document.
+                    Can contain document SHA256 hashes (for referencing other documents)
+                    or arbitrary reference strings (URLs, file paths, descriptions).
+                    Defaults to empty list
 
         Returns:
             New Document instance with content converted to bytes
@@ -306,11 +359,31 @@ class Document(BaseModel, ABC):
             >>> items = ["Section 1", "Section 2"]
             >>> doc = MyDocument.create(name="sections.md", content=items)
             >>> doc.parse(list)  # ["Section 1", "Section 2"]
+
+            >>> # Document with sources for provenance tracking
+            >>> source_doc = MyDocument.create(name="source.txt", content="original")
+            >>> derived = MyDocument.create(
+            ...     name="result.txt",
+            ...     content="processed",
+            ...     sources=[source_doc.sha256, "https://api.example.com/data"]
+            ... )
+            >>> derived.get_source_documents()  # [source_doc.sha256]
+            >>> derived.get_source_references()  # ["https://api.example.com/data"]
         """
         # Use model_validate to leverage the existing validator logic
-        temp = cls.model_validate({"name": name, "content": content, "description": description})
+        temp = cls.model_validate({
+            "name": name,
+            "content": content,
+            "description": description,
+            "sources": sources,
+        })
         # Now construct with type-checker-friendly call (bytes only)
-        return cls(name=temp.name, content=temp.content, description=temp.description)
+        return cls(
+            name=temp.name,
+            content=temp.content,
+            description=temp.description,
+            sources=temp.sources,
+        )
 
     def __init__(
         self,
@@ -318,6 +391,7 @@ class Document(BaseModel, ABC):
         name: str,
         content: bytes,
         description: str | None = None,
+        sources: list[str] = [],
     ) -> None:
         """Initialize a Document instance with raw bytes content.
 
@@ -335,6 +409,10 @@ class Document(BaseModel, ABC):
             name: Document filename (required, keyword-only)
             content: Document content as raw bytes (required, keyword-only)
             description: Optional human-readable description (keyword-only)
+            sources: Optional list of source strings for provenance tracking.
+                    Can contain document SHA256 hashes (for referencing other documents)
+                    or arbitrary reference strings (URLs, file paths, descriptions).
+                    Defaults to empty list
 
         Raises:
             TypeError: If attempting to instantiate Document directly.
@@ -357,11 +435,17 @@ class Document(BaseModel, ABC):
         if type(self) is Document:
             raise TypeError("Cannot instantiate abstract Document class directly")
 
-        super().__init__(name=name, content=content, description=description)
+        super().__init__(name=name, content=content, description=description, sources=sources)
 
     name: str
     description: str | None = None
     content: bytes  # Note: constructor accepts str | bytes, but field stores bytes only
+    sources: list[str] = Field(
+        default_factory=list,
+        description="List of source references for tracking document provenance. "
+        "Can contain document SHA256 hashes (for referencing other documents) "
+        "or arbitrary reference strings (URLs, file paths, descriptions)",
+    )
 
     # Pydantic configuration
     model_config = ConfigDict(
@@ -795,7 +879,7 @@ class Document(BaseModel, ABC):
             This is computed once and cached for performance.
             The hash is deterministic based on content only.
         """
-        return b32encode(hashlib.sha256(self.content).digest()).decode("ascii").upper()
+        return b32encode(hashlib.sha256(self.content).digest()).decode("ascii").upper().rstrip("=")
 
     @final
     @property
@@ -1215,6 +1299,144 @@ class Document(BaseModel, ABC):
 
         raise ValueError(f"Unsupported type {type_} for file {self.name}")
 
+    def get_source_documents(self) -> list[str]:
+        """Get list of document SHA256 hashes referenced as sources.
+
+        Retrieves all document references from this document's sources list,
+        filtering for valid SHA256 hashes that reference other documents.
+        This is useful for building dependency graphs and tracking document
+        lineage in processing pipelines.
+
+        Returns:
+            List of SHA256 hashes (base32 encoded) for documents referenced
+            as sources. Each hash uniquely identifies another document that
+            contributed to creating this one.
+
+        Example:
+            >>> # Create a derived document from multiple sources
+            >>> source1 = MyDocument.create(name="data1.txt", content="First")
+            >>> source2 = MyDocument.create(name="data2.txt", content="Second")
+            >>>
+            >>> merged = MyDocument.create(
+            ...     name="merged.txt",
+            ...     content="Combined data",
+            ...     sources=[source1.sha256, source2.sha256, "https://api.example.com"]
+            ... )
+            >>>
+            >>> # Get only document references (not URLs)
+            >>> doc_refs = merged.get_source_documents()
+            >>> print(doc_refs)  # [source1.sha256, source2.sha256]
+            >>>
+            >>> # Check if specific document is a source
+            >>> if source1.sha256 in doc_refs:
+            ...     print("Document derived from source1")
+
+        See Also:
+            - get_source_references: Get non-document source references (URLs, etc.)
+            - has_source: Check if a specific source is tracked
+            - Document.create: Add sources when creating documents
+        """
+        return [src for src in self.sources if is_document_sha256(src)]
+
+    def get_source_references(self) -> list[str]:
+        """Get list of arbitrary reference strings from sources.
+
+        Retrieves all non-document references from this document's sources list.
+        These are typically URLs, file paths, API endpoints, or descriptive strings
+        that indicate where the document's content originated from, but are not
+        references to other documents in the pipeline.
+
+        Returns:
+            List of reference strings that are not document SHA256 hashes.
+            Can include URLs, file paths, API endpoints, dataset names,
+            or any other string that provides source context.
+
+        Example:
+            >>> # Create document with mixed source types
+            >>> doc = MyDocument.create(
+            ...     name="report.txt",
+            ...     content="Analysis results",
+            ...     sources=[
+            ...         other_doc.sha256,  # Document reference
+            ...         "https://api.example.com/data",  # API URL
+            ...         "dataset:customer-2024",  # Dataset identifier
+            ...         "/path/to/source.csv",  # File path
+            ...     ]
+            ... )
+            >>>
+            >>> # Get only non-document references
+            >>> refs = doc.get_source_references()
+            >>> print(refs)
+            >>> # ["https://api.example.com/data", "dataset:customer-2024", "/path/to/source.csv"]
+            >>>
+            >>> # Use for attribution or debugging
+            >>> for ref in refs:
+            ...     print(f"Data sourced from: {ref}")
+
+        See Also:
+            - get_source_documents: Get document SHA256 references
+            - has_source: Check if a specific source is tracked
+            - Document.create: Add sources when creating documents
+        """
+        return [src for src in self.sources if not is_document_sha256(src)]
+
+    def has_source(self, source: Document | str) -> bool:
+        """Check if a specific source is tracked for this document.
+
+        Verifies whether a given source (document or reference string) is
+        included in this document's sources list. Useful for dependency
+        checking, lineage verification, and conditional processing based
+        on document origins.
+
+        Args:
+            source: Source to check for. Can be:
+                    - Document: Checks if document's SHA256 is in sources
+                    - str: Checks if exact string is in sources (hash or reference)
+
+        Returns:
+            True if the source is tracked in this document's sources,
+            False otherwise.
+
+        Raises:
+            TypeError: If source is not a Document or string.
+
+        Example:
+            >>> # Check if document was derived from specific source
+            >>> source_doc = MyDocument.create(name="original.txt", content="Data")
+            >>> api_url = "https://api.example.com/data"
+            >>>
+            >>> derived = MyDocument.create(
+            ...     name="processed.txt",
+            ...     content="Processed data",
+            ...     sources=[source_doc.sha256, api_url]
+            ... )
+            >>>
+            >>> # Check document source
+            >>> if derived.has_source(source_doc):
+            ...     print("Derived from source_doc")
+            >>>
+            >>> # Check string reference
+            >>> if derived.has_source(api_url):
+            ...     print("Data from API")
+            >>>
+            >>> # Check by SHA256 directly
+            >>> if derived.has_source(source_doc.sha256):
+            ...     print("Has specific hash")
+
+        See Also:
+            - get_source_documents: Get all document sources
+            - get_source_references: Get all reference sources
+            - Document.create: Add sources when creating documents
+        """
+        if isinstance(source, str):
+            # Direct string comparison
+            return source in self.sources
+        elif isinstance(source, Document):  # type: ignore[misc]
+            # Check if document's SHA256 is in sources
+            return source.sha256 in self.sources
+        else:
+            raise TypeError(f"Invalid source type: {type(source)}")
+
     @final
     def serialize_model(self) -> dict[str, Any]:
         """Serialize document to dictionary for storage or transmission.
@@ -1230,8 +1452,9 @@ class Document(BaseModel, ABC):
                 - base_type: Persistence type - "flow", "task", or "temporary" (str)
                 - size: Content size in bytes (int)
                 - id: Short hash identifier, first 6 chars of SHA256 (str)
-                - sha256: Full SHA256 hash in base32 encoding (str)
+                - sha256: Full SHA256 hash in base32 encoding without padding (str)
                 - mime_type: Detected MIME type (str)
+                - sources: List of source strings (list[dict])
                 - content: Encoded content (str)
                 - content_encoding: Either "utf-8" or "base64" (str)
 
@@ -1254,6 +1477,7 @@ class Document(BaseModel, ABC):
             "id": self.id,
             "sha256": self.sha256,
             "mime_type": self.mime_type,
+            "sources": self.sources,
         }
 
         # Try to encode content as UTF-8, fall back to base64
@@ -1288,6 +1512,7 @@ class Document(BaseModel, ABC):
                 Optional keys:
                 - description: Document description (str | None)
                 - content_encoding: "utf-8" or "base64" (defaults to "utf-8")
+                - sources: List of source strings
 
         Returns:
             New Document instance with restored content.
@@ -1326,9 +1551,9 @@ class Document(BaseModel, ABC):
         else:
             raise ValueError(f"Invalid content type: {type(content_raw)}")
 
-        # Create document with the required fields
         return cls(
             name=data["name"],
             content=content,
             description=data.get("description"),
+            sources=data.get("sources", []),
         )

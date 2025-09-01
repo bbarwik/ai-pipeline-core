@@ -8,6 +8,8 @@ from .ai_messages import AIMessages, AIMessageType
 from .client import (
     generate,
     generate_structured,
+    generate_with_retry_for_testing,
+    process_messages_for_testing,
 )
 from .model_options import ModelOptions
 from .model_response import ModelResponse, StructuredModelResponse
@@ -22,4 +24,7 @@ __all__ = [
     "StructuredModelResponse",
     "generate",
     "generate_structured",
+    # Internal functions exposed for testing only
+    "process_messages_for_testing",
+    "generate_with_retry_for_testing",
 ]

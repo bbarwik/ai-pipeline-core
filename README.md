@@ -13,11 +13,11 @@ AI Pipeline Core is a production-ready framework that combines document processi
 
 ### Key Features
 
-- **Document Processing**: Type-safe handling of text, JSON, YAML, PDFs, and images with automatic MIME type detection
-- **LLM Integration**: Unified interface to any model via LiteLLM proxy with intelligent context caching
+- **Document Processing**: Type-safe handling of text, JSON, YAML, PDFs, and images with automatic MIME type detection and provenance tracking
+- **LLM Integration**: Unified interface to any model via LiteLLM proxy with configurable context caching
 - **Structured Output**: Type-safe generation with Pydantic model validation
 - **Workflow Orchestration**: Prefect-based flows and tasks with automatic retries
-- **Observability**: Built-in distributed tracing via Laminar (LMNR) for debugging and monitoring
+- **Observability**: Built-in distributed tracing via Laminar (LMNR) with cost tracking for debugging and monitoring
 - **Local Development**: Simple runner for testing pipelines without infrastructure
 
 ## Installation
@@ -134,6 +134,19 @@ doc = MyDocument.create(
 # Parse back to original type
 data = doc.parse(dict)  # Returns {"key": "value"}
 
+# Document provenance tracking (new in v0.1.14)
+doc_with_sources = MyDocument.create(
+    name="derived.json",
+    content={"result": "processed"},
+    sources=[source_doc.sha256, "https://api.example.com/data"]
+)
+
+# Check provenance
+for hash in doc_with_sources.get_source_documents():
+    print(f"Derived from document: {hash}")
+for ref in doc_with_sources.get_source_references():
+    print(f"External source: {ref}")
+
 # Temporary documents (never persisted)
 temp = TemporaryDocument.create(
     name="api_response.json",
@@ -167,6 +180,10 @@ if doc.is_text:
 
 # Parse structured data
 data = doc.as_json()  # or as_yaml(), as_pydantic_model()
+
+# Enhanced filtering (new in v0.1.14)
+filtered = documents.filter_by([Doc1, Doc2, Doc3])  # Multiple types
+named = documents.filter_by(["file1.txt", "file2.txt"])  # Multiple names
 ```
 
 ### LLM Integration
@@ -189,7 +206,7 @@ static_context = AIMessages([large_document])
 # First call: caches context
 r1 = await llm.generate(
     model="gpt-5",
-    context=static_context,  # Cached for 120 seconds
+    context=static_context,  # Cached for 120 seconds by default
     messages="Summarize"     # Dynamic query
 )
 
@@ -198,6 +215,22 @@ r2 = await llm.generate(
     model="gpt-5",
     context=static_context,  # Reused from cache!
     messages="Key points?"   # Different query
+)
+
+# Custom cache TTL (new in v0.1.14)
+response = await llm.generate(
+    model="gpt-5",
+    context=static_context,
+    messages="Analyze",
+    options=ModelOptions(cache_ttl="300s")  # Cache for 5 minutes
+)
+
+# Disable caching for dynamic contexts
+response = await llm.generate(
+    model="gpt-5",
+    context=dynamic_context,
+    messages="Process",
+    options=ModelOptions(cache_ttl=None)  # No caching
 )
 ```
 
@@ -228,11 +261,13 @@ class ProcessingConfig(FlowConfig):
 Enhanced decorators with built-in tracing and monitoring:
 
 ```python
-from ai_pipeline_core import pipeline_flow, pipeline_task
+from ai_pipeline_core import pipeline_flow, pipeline_task, set_trace_cost
 
 @pipeline_task  # Automatic retry, tracing, and monitoring
 async def process_chunk(data: str) -> str:
-    return await transform(data)
+    result = await transform(data)
+    set_trace_cost(0.05)  # Track costs (new in v0.1.14)
+    return result
 
 @pipeline_flow  # Full observability and orchestration
 async def main_flow(

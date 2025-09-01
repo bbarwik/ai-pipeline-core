@@ -1,11 +1,13 @@
-"""Tests for trace decorator."""
+"""Tests for trace decorator and tracing utilities."""
 
 import asyncio
 import inspect
 import os
 from unittest.mock import Mock, patch
 
-from ai_pipeline_core.tracing import TraceInfo, trace
+import pytest
+
+from ai_pipeline_core.tracing import TraceInfo, set_trace_cost, trace
 
 
 class TestTraceInfo:
@@ -276,3 +278,192 @@ class TestTraceDecorator:
         call_kwargs = mock_observe.call_args[1]
         assert call_kwargs["session_id"] == "session-123"
         assert call_kwargs["metadata"] == {"workflow": "test"}
+
+
+class TestSetTraceCost:
+    """Test set_trace_cost function."""
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    def test_set_trace_cost_positive(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost with positive cost value."""
+        set_trace_cost(0.05)
+
+        mock_set_attrs.assert_called_once_with({
+            "gen_ai.usage.output_cost": 0.05,
+            "gen_ai.usage.cost": 0.05,
+            "cost": 0.05,
+        })
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    def test_set_trace_cost_zero(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost with zero cost (should not call Laminar)."""
+        set_trace_cost(0.0)
+        mock_set_attrs.assert_not_called()
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    def test_set_trace_cost_negative(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost with negative cost (should not call Laminar)."""
+        set_trace_cost(-0.05)
+        mock_set_attrs.assert_not_called()
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    def test_set_trace_cost_usd_string_format(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost with USD string format."""
+        set_trace_cost("$0.50")
+
+        mock_set_attrs.assert_called_once_with({
+            "gen_ai.usage.output_cost": 0.50,
+            "gen_ai.usage.cost": 0.50,
+            "cost": 0.50,
+        })
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    def test_set_trace_cost_usd_string_with_spaces(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost with USD string format with spaces."""
+        set_trace_cost("  $1.25  ")
+
+        mock_set_attrs.assert_called_once_with({
+            "gen_ai.usage.output_cost": 1.25,
+            "gen_ai.usage.cost": 1.25,
+            "cost": 1.25,
+        })
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    def test_set_trace_cost_usd_string_zero(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost with USD string format of zero (should not call Laminar)."""
+        set_trace_cost("$0.00")
+        mock_set_attrs.assert_not_called()
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    def test_set_trace_cost_usd_string_negative(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost with negative USD string (should not call Laminar)."""
+        set_trace_cost("$-0.50")
+        mock_set_attrs.assert_not_called()
+
+    def test_set_trace_cost_invalid_string_no_dollar(self) -> None:
+        """Test set_trace_cost with invalid string (no dollar sign)."""
+        with pytest.raises(ValueError, match="Invalid USD format.*Must start with"):
+            set_trace_cost("0.50")
+
+    def test_set_trace_cost_invalid_string_not_number(self) -> None:
+        """Test set_trace_cost with invalid string (not a number)."""
+        with pytest.raises(ValueError, match="Invalid USD format.*Must be a valid number"):
+            set_trace_cost("$abc")
+
+    def test_set_trace_cost_invalid_string_empty_after_dollar(self) -> None:
+        """Test set_trace_cost with invalid string (empty after dollar)."""
+        with pytest.raises(ValueError, match="Invalid USD format.*Must be a valid number"):
+            set_trace_cost("$")
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    def test_set_trace_cost_multiple_calls(self, mock_set_attrs: Mock) -> None:
+        """Test multiple calls to set_trace_cost within the same function."""
+
+        @trace
+        def traced_func():
+            # First cost
+            set_trace_cost(0.01)
+            # Update cost
+            set_trace_cost("$0.02")
+            # Final cost
+            set_trace_cost(0.03)
+            return "result"
+
+        traced_func()
+
+        # Verify all three calls were made
+        assert mock_set_attrs.call_count == 3
+
+        # Check each call
+        calls = mock_set_attrs.call_args_list
+        assert calls[0][0][0] == {
+            "gen_ai.usage.output_cost": 0.01,
+            "gen_ai.usage.cost": 0.01,
+            "cost": 0.01,
+        }
+        assert calls[1][0][0] == {
+            "gen_ai.usage.output_cost": 0.02,
+            "gen_ai.usage.cost": 0.02,
+            "cost": 0.02,
+        }
+        assert calls[2][0][0] == {
+            "gen_ai.usage.output_cost": 0.03,
+            "gen_ai.usage.cost": 0.03,
+            "cost": 0.03,
+        }
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    def test_set_trace_cost_within_traced_function(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost called within a traced function."""
+
+        @trace
+        def traced_func():
+            # Calculate dynamic cost
+            cost = 0.001 * 10  # Some calculation
+            set_trace_cost(cost)
+            return "result"
+
+        # Note: In real usage, this would be within a Laminar span context
+        # For testing, we just verify the call was made
+        traced_func()
+
+        mock_set_attrs.assert_called_with({
+            "gen_ai.usage.output_cost": 0.01,
+            "gen_ai.usage.cost": 0.01,
+            "cost": 0.01,
+        })
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    async def test_set_trace_cost_in_async_function(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost in async traced function."""
+
+        @trace
+        async def async_traced_func(items: list[int]) -> int:
+            # Dynamic cost based on input
+            cost_per_item = 0.002
+            total_cost = len(items) * cost_per_item
+            set_trace_cost(total_cost)
+            await asyncio.sleep(0.001)
+            return len(items)
+
+        result = await async_traced_func([1, 2, 3])
+        assert result == 3
+
+        mock_set_attrs.assert_called_with({
+            "gen_ai.usage.output_cost": 0.006,
+            "gen_ai.usage.cost": 0.006,
+            "cost": 0.006,
+        })
+
+    @patch("ai_pipeline_core.tracing.Laminar.set_span_attributes")
+    async def test_set_trace_cost_with_usd_string_in_async(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost with USD string in async traced function."""
+
+        @trace
+        async def async_traced_func(amount: float) -> str:
+            # Format cost as USD string
+            cost_str = f"${amount:.2f}"
+            set_trace_cost(cost_str)
+            await asyncio.sleep(0.001)
+            return cost_str
+
+        result = await async_traced_func(3.456)
+        assert result == "$3.46"
+
+        mock_set_attrs.assert_called_with({
+            "gen_ai.usage.output_cost": 3.46,
+            "gen_ai.usage.cost": 3.46,
+            "cost": 3.46,
+        })
+
+    @patch(
+        "ai_pipeline_core.tracing.Laminar.set_span_attributes",
+        side_effect=Exception("Not in traced context"),
+    )
+    def test_set_trace_cost_outside_context_no_error(self, mock_set_attrs: Mock) -> None:
+        """Test set_trace_cost silently handles exception when not in traced context."""
+        # Should NOT raise an exception - silently ignores the error
+        set_trace_cost(0.05)  # This should not raise
+
+        # Verify it tried to call
+        mock_set_attrs.assert_called_once()
