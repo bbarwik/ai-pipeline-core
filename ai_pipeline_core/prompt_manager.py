@@ -10,7 +10,8 @@ directories.
 Search strategy:
     1. Local directory (same as calling module)
     2. Local 'prompts' subdirectory
-    3. Parent 'prompts' directories (up to package boundary)
+    3. Parent 'prompts' directories (search ascends parent packages up to the package
+       boundary or after 4 parent levels, whichever comes first)
 
 Key features:
     - Automatic template discovery
@@ -69,7 +70,8 @@ class PromptManager:
     Search hierarchy:
         1. Same directory as the calling module (for local templates)
         2. 'prompts' subdirectory in the calling module's directory
-        3. 'prompts' directories in parent packages (up to package boundary)
+        3. 'prompts' directories in parent packages (search ascends parent packages up to the
+           package boundary or after 4 parent levels, whichever comes first)
 
     Attributes:
         search_paths: List of directories where templates are searched.
@@ -144,7 +146,8 @@ class PromptManager:
             2. /project/flows/prompts/ (if exists)
             3. /project/prompts/ (if /project has __init__.py)
 
-            Search stops when no __init__.py is found (package boundary).
+            Search ascends parent packages up to the package boundary or after 4 parent
+            levels, whichever comes first.
 
         Example:
             >>> # Correct usage
@@ -155,10 +158,6 @@ class PromptManager:
             >>>
             >>> # Common mistake (will raise PromptError)
             >>> pm = PromptManager(__name__)  # Wrong!
-
-        Note:
-            The search is limited to 4 parent levels to prevent
-            excessive filesystem traversal.
         """
         search_paths: list[Path] = []
 

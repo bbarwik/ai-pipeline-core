@@ -43,10 +43,6 @@ class TaskDocument(Document):
         - Not saved by simple_runner utilities
         - Reduces I/O overhead for temporary data
         - No additional abstract methods to implement
-
-    See Also:
-        FlowDocument: For documents that persist across flow runs
-        TemporaryDocument: Alternative for non-persistent documents
     """
 
     def __init__(

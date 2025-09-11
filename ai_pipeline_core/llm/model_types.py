@@ -79,8 +79,4 @@ Note:
     The ModelName type includes both predefined literals and str,
     allowing full flexibility while maintaining IDE support for
     common models.
-
-See Also:
-    - llm.generate: Main generation function
-    - ModelOptions: Model configuration options
 """

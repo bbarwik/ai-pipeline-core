@@ -12,6 +12,8 @@ Environment variables:
     PREFECT_API_URL: Prefect server endpoint for flow orchestration
     PREFECT_API_KEY: Prefect API authentication key
     LMNR_PROJECT_API_KEY: Laminar project key for observability
+    GCS_BLOCK: Prefect GcsBucket block name for GCS storage access
+    GCS_BUCKET: Default GCS bucket name for storage operations
 
 Configuration precedence:
     1. Environment variables (highest priority)
@@ -39,6 +41,8 @@ Example:
     PREFECT_API_URL=http://localhost:4200/api
     PREFECT_API_KEY=pnu_abc123
     LMNR_PROJECT_API_KEY=lmnr_proj_xyz
+    GCS_BLOCK=my-gcs-block
+    GCS_BUCKET=my-bucket
     APP_NAME=production-app
     DEBUG_MODE=false
 
@@ -90,12 +94,18 @@ class Settings(BaseSettings):
         prefect_api_key: Prefect API authentication key. Required only
                         when connecting to Prefect Cloud or secured server.
 
-        lmnr_project_api_key: Laminar (LMNR) project API key for tracing
-                              and observability. Optional but recommended
-                              for production monitoring.
+        lmnr_project_api_key: Laminar (LMNR) project API key for observability.
+                              Optional but recommended for production monitoring.
 
-        lmnr_debug: Debug mode flag for Laminar tracing. Set to "true" to
-                   enable debug-level traces. Empty string by default.
+        lmnr_debug: Debug mode flag for Laminar. Set to "true" to
+                   enable debug-level logging. Empty string by default.
+
+        gcs_block: Prefect GcsBucket block name for GCS storage access.
+                   Used as default when accessing gs:// URIs without
+                   explicitly providing gcs_block parameter.
+
+        gcs_bucket: Default GCS bucket name for storage operations.
+                    Optional configuration for default bucket selection.
 
     Configuration sources:
         - Environment variables (highest priority)
@@ -125,6 +135,10 @@ class Settings(BaseSettings):
     # Observability
     lmnr_project_api_key: str = ""
     lmnr_debug: str = ""
+
+    # Storage Configuration
+    gcs_block: str = ""  # Prefect GcsBucket block name for GCS access
+    gcs_bucket: str = ""  # Default GCS bucket name (from GCS_BUCKET env)
 
 
 # Legacy: Module-level instance for backwards compatibility

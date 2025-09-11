@@ -1,7 +1,5 @@
 """Configuration options for LLM generation.
 
-@public
-
 Provides the ModelOptions class for configuring model behavior,
 retry logic, and advanced features like web search and reasoning.
 """
@@ -13,8 +11,6 @@ from pydantic import BaseModel
 
 class ModelOptions(BaseModel):
     """Configuration options for LLM generation requests.
-
-    @public
 
     ModelOptions encapsulates all configuration parameters for model
     generation, including model behavior settings, retry logic, and
@@ -68,7 +64,8 @@ class ModelOptions(BaseModel):
 
         response_format: Pydantic model class for structured output.
                         Pass a Pydantic model; the client converts it to JSON Schema.
-                        Set automatically by generate_structured(). Provider support varies.
+                        Set automatically by generate_structured().
+                        Structured output support varies by provider and model.
 
     Example:
         >>> # Basic configuration

@@ -1,7 +1,5 @@
 """Logging infrastructure for AI Pipeline Core.
 
-@public
-
 Provides a Prefect-integrated logging facade for unified logging across pipelines.
 Prefer get_pipeline_logger instead of logging.getLogger to ensure proper integration.
 

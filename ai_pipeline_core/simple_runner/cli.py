@@ -19,7 +19,7 @@ from ai_pipeline_core.logging import get_pipeline_logger, setup_logging
 from ai_pipeline_core.prefect import disable_run_logger, prefect_test_harness
 from ai_pipeline_core.settings import settings
 
-from .simple_runner import ConfigSequence, FlowSequence, run_pipelines, save_documents_to_directory
+from .simple_runner import ConfigSequence, FlowSequence, run_pipelines
 
 logger = get_pipeline_logger(__name__)
 
@@ -105,12 +105,12 @@ def run_cli(
 
     Example:
         >>> # In __main__.py
-        >>> from ai_pipeline_core.simple_runner import run_cli
+        >>> from ai_pipeline_core import simple_runner
         >>> from .flows import AnalysisFlow, SummaryFlow
         >>> from .config import AnalysisConfig, AnalysisOptions
         >>>
         >>> if __name__ == "__main__":
-        ...     run_cli(
+        ...     simple_runner.run_cli(
         ...         flows=[AnalysisFlow, SummaryFlow],
         ...         flow_configs=[
         ...             (AnalysisConfig, AnalysisOptions),
@@ -227,7 +227,12 @@ def run_cli(
 
         # Save initial documents if starting from first step
         if getattr(opts, "start", 1) == 1 and initial_documents:
-            save_documents_to_directory(wd, initial_documents)
+            # Use the first flow's config to save initial documents
+            asyncio.run(
+                flow_configs[0].save_documents(
+                    str(wd), initial_documents, validate_output_type=False
+                )
+            )
 
     # Setup context stack with optional test harness and tracing
     with ExitStack() as stack:

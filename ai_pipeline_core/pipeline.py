@@ -36,6 +36,7 @@ from prefect.utilities.annotations import NotSet
 from typing_extensions import TypeAlias
 
 from ai_pipeline_core.documents import DocumentList
+from ai_pipeline_core.flow.config import FlowConfig
 from ai_pipeline_core.flow.options import FlowOptions
 from ai_pipeline_core.tracing import TraceLevel, set_trace_cost, trace
 
@@ -420,10 +421,6 @@ def pipeline_task(
                 set_trace_cost(trace_cost)
             return result
 
-        # Preserve the original function name for Prefect
-        _wrapper.__name__ = fname
-        _wrapper.__qualname__ = getattr(fn, "__qualname__", fname)
-
         traced_fn = trace(
             level=trace_level,
             name=name or fname,
@@ -475,6 +472,8 @@ def pipeline_flow(__fn: _DocumentsFlowCallable[FO_contra], /) -> _FlowLike[FO_co
 @overload
 def pipeline_flow(
     *,
+    # config
+    config: type[FlowConfig] | None = None,
     # tracing
     trace_level: TraceLevel = "always",
     trace_ignore_input: bool = False,
@@ -510,6 +509,8 @@ def pipeline_flow(
     __fn: _DocumentsFlowCallable[FO_contra] | None = None,
     /,
     *,
+    # config
+    config: type[FlowConfig] | None = None,
     # tracing
     trace_level: TraceLevel = "always",
     trace_ignore_input: bool = False,
@@ -567,6 +568,10 @@ def pipeline_flow(
 
     Args:
         __fn: Function to decorate (when used without parentheses).
+
+        Config parameter:
+        config: FlowConfig class for document loading/saving. When provided,
+                enables automatic loading from string paths and saving outputs.
 
         Tracing parameters:
         trace_level: When to trace ("always", "debug", "off").
@@ -682,14 +687,24 @@ def pipeline_flow(
                 "'project_name, documents, flow_options' as its first three parameters"
             )
 
+        @wraps(fn)
         async def _wrapper(
             project_name: str,
-            documents: DocumentList,
+            documents: str | DocumentList,
             flow_options: FO_contra,
             *args: Any,
             **kwargs: Any,
         ) -> DocumentList:
+            save_path: str | None = None
+            if isinstance(documents, str):
+                save_path = documents
+                if config:
+                    documents = await config.load_documents(documents)
+                else:
+                    documents = DocumentList([])
             result = await fn(project_name, documents, flow_options, *args, **kwargs)
+            if save_path and config:
+                await config.save_documents(save_path, result)
             if trace_cost is not None and trace_cost > 0:
                 set_trace_cost(trace_cost)
             if not isinstance(result, DocumentList):  # pyright: ignore[reportUnnecessaryIsInstance]
@@ -697,10 +712,6 @@ def pipeline_flow(
                     f"Flow '{fname}' must return DocumentList, got {type(result).__name__}"
                 )
             return result
-
-        # Preserve the original function name for Prefect
-        _wrapper.__name__ = fname
-        _wrapper.__qualname__ = getattr(fn, "__qualname__", fname)
 
         traced = trace(
             level=trace_level,
@@ -711,6 +722,20 @@ def pipeline_flow(
             input_formatter=trace_input_formatter,
             output_formatter=trace_output_formatter,
         )(_wrapper)
+
+        # --- Publish a schema where `documents` accepts str (path) OR DocumentList ---
+        _sig = inspect.signature(fn)
+        _params = [
+            p.replace(annotation=(str | DocumentList)) if p.name == "documents" else p
+            for p in _sig.parameters.values()
+        ]
+        if hasattr(traced, "__signature__"):
+            setattr(traced, "__signature__", _sig.replace(parameters=_params))
+        if hasattr(traced, "__annotations__"):
+            traced.__annotations__ = {
+                **getattr(traced, "__annotations__", {}),
+                "documents": str | DocumentList,
+            }
 
         return cast(
             _FlowLike[FO_contra],

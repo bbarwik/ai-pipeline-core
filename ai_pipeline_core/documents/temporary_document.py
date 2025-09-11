@@ -1,7 +1,5 @@
 """Temporary document implementation for non-persistent data.
 
-@public
-
 This module provides the TemporaryDocument class for documents that
 are never persisted, regardless of context.
 """
@@ -15,8 +13,6 @@ from .document import Document
 class TemporaryDocument(Document):
     r"""Concrete document class for data that is never persisted.
 
-    @public
-
     TemporaryDocument is a final (non-subclassable) document type for
     data that should never be saved to disk, regardless of whether it's
     used in a flow or task context. Unlike FlowDocument and TaskDocument
@@ -28,6 +24,7 @@ class TemporaryDocument(Document):
     - Cannot be subclassed (annotated with Python's @final decorator in code)
     - Useful for transient data like API responses or intermediate calculations
     - Ignored by simple_runner save operations
+    - Useful for tests and debugging
 
     Creating TemporaryDocuments:
         Same as Document - use `create()` for automatic conversion, `__init__` for bytes.
@@ -48,10 +45,6 @@ class TemporaryDocument(Document):
         - This is a final class and cannot be subclassed
         - Use when you explicitly want to prevent persistence
         - Useful for sensitive data that shouldn't be written to disk
-
-    See Also:
-        FlowDocument: For documents that persist across flow runs
-        TaskDocument: For documents temporary within task execution
     """
 
     def __init_subclass__(cls, **kwargs: Any) -> None:

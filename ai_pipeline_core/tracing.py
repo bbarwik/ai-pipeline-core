@@ -1,7 +1,5 @@
 """Tracing utilities that integrate Laminar (``lmnr``) with our code-base.
 
-@public
-
 This module centralizes:
 - ``TraceInfo`` - a small helper object for propagating contextual metadata.
 - ``trace`` decorator - augments a callable with Laminar tracing, automatic
@@ -29,8 +27,6 @@ R = TypeVar("R")
 TraceLevel = Literal["always", "debug", "off"]
 """Control level for tracing activation.
 
-@public
-
 Values:
 - "always": Always trace (default, production mode)
 - "debug": Only trace when LMNR_DEBUG == "true"
@@ -51,16 +47,12 @@ class TraceInfo(BaseModel):
 
     Attributes:
         session_id: Unique identifier for the current session/conversation.
-                   Falls back to LMNR_SESSION_ID environment variable.
         user_id: Identifier for the user triggering the operation.
-                Falls back to LMNR_USER_ID environment variable.
         metadata: Key-value pairs for additional trace context.
                  Useful for filtering and searching in LMNR dashboard.
         tags: List of tags for categorizing traces (e.g., ["production", "v2"]).
 
     Environment fallbacks:
-        - LMNR_SESSION_ID: Default session_id if not explicitly set
-        - LMNR_USER_ID: Default user_id if not explicitly set
         - LMNR_DEBUG: Controls debug-level tracing when set to "true"
 
         Note: These variables are read directly by the tracing layer and are
@@ -102,8 +94,8 @@ class TraceInfo(BaseModel):
 
         Returns:
             Dictionary with keys:
-            - session_id: From field or LMNR_SESSION_ID env var
-            - user_id: From field or LMNR_USER_ID env var
+            - session_id: From field or environment variable fallback
+            - user_id: From field or environment variable fallback
             - metadata: Dictionary of custom metadata (if set)
             - tags: List of tags (if set)
 
@@ -212,15 +204,13 @@ def trace(
 ) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
     """Add Laminar observability tracing to any function.
 
-    @public
-
     The trace decorator integrates functions with Laminar (LMNR) for
     distributed tracing, performance monitoring, and debugging. It
     automatically handles both sync and async functions, propagates
     trace context, and provides fine-grained control over what gets traced.
 
     USAGE GUIDELINE - Defaults First:
-        In 90% of cases, use WITHOUT any parameters.
+        By default, use WITHOUT any parameters unless instructed otherwise.
         The defaults are optimized for most use cases.
 
     Args:
@@ -306,8 +296,6 @@ def trace(
 
     Environment variables:
         - LMNR_DEBUG: Set to "true" to enable debug-level traces
-        - LMNR_SESSION_ID: Default session ID if not in TraceInfo
-        - LMNR_USER_ID: Default user ID if not in TraceInfo
         - LMNR_PROJECT_API_KEY: Required for trace submission
 
     Performance:
@@ -320,11 +308,6 @@ def trace(
         - Works with both sync and async functions
         - Preserves function signature and metadata
         - Thread-safe and async-safe
-
-    See Also:
-        - TraceInfo: Container for trace metadata
-        - pipeline_task: Task decorator with built-in tracing
-        - pipeline_flow: Flow decorator with built-in tracing
     """
     if level == "off":
         if func:
@@ -541,12 +524,6 @@ def set_trace_cost(cost: float | str) -> None:
         - Multiple calls overwrite the previous cost (not cumulative)
         - If called outside a traced context (no active span), it has no effect
           and does not raise an error
-
-    See Also:
-        - trace: Decorator for adding tracing to functions
-        - ModelResponse.get_laminar_metadata: Access LLM generation costs
-        - pipeline_task: Task decorator with built-in tracing and optional trace_cost parameter
-        - pipeline_flow: Flow decorator with built-in tracing and optional trace_cost parameter
     """
     # Parse string format if provided
     if isinstance(cost, str):

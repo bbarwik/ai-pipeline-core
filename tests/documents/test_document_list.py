@@ -102,24 +102,28 @@ class TestDocumentList:
         doc2 = AnotherDoc(name="file2.txt", content=b"content2")
         doc3 = SubDoc(name="file3.txt", content=b"content3")
 
-        docs = DocumentList([doc1, doc2, doc3])
+        # When there's only one of a type
+        docs_single = DocumentList([doc2, doc3])
+        result = docs_single.get_by(AnotherDoc)
+        assert result == doc2
 
-        # Get by type (gets first match)
-        result = docs.get_by(SampleDoc)
-        assert result == doc1  # First SampleDoc (or subclass)
-
-        result = docs.get_by(SubDoc)
+        result = docs_single.get_by(SubDoc)
         assert result == doc3
+
+        # Test that get_by returns first match when there's only one
+        docs_with_sample = DocumentList([doc1, doc2])
+        result = docs_with_sample.get_by(SampleDoc)
+        assert result == doc1  # Returns first SampleDoc
 
         # Get non-existing type (required=True, default)
         class NonExistentDoc(FlowDocument):
             pass
 
         with pytest.raises(ValueError, match="Document of type 'NonExistentDoc' not found"):
-            docs.get_by(NonExistentDoc)
+            docs_single.get_by(NonExistentDoc)
 
         # Get non-existing type (required=False)
-        result = docs.get_by(NonExistentDoc, required=False)
+        result = docs_single.get_by(NonExistentDoc, required=False)
         assert result is None
 
     def test_get_by_invalid_arg(self) -> None:
@@ -128,6 +132,44 @@ class TestDocumentList:
 
         with pytest.raises(TypeError, match="Invalid argument type"):
             docs.get_by(123)  # type: ignore
+
+    def test_get_by_multiple_matches_by_name(self) -> None:
+        """Test that get_by raises error when multiple documents have same name."""
+        # This shouldn't normally happen unless validate_duplicates=False
+        doc1 = SampleDoc(name="config.yaml", content=b"content1")
+        doc2 = AnotherDoc(name="config.yaml", content=b"content2")
+
+        docs = DocumentList([doc1, doc2], validate_duplicates=False)
+
+        # Should raise error for multiple matches
+        with pytest.raises(ValueError, match="Multiple documents found with name 'config.yaml'"):
+            docs.get_by("config.yaml")
+
+        # The error message should suggest using filter_by
+        with pytest.raises(ValueError, match="Use filter_by\\(\\) to get all matches"):
+            docs.get_by("config.yaml")
+
+    def test_get_by_multiple_matches_by_type(self) -> None:
+        """Test that get_by raises error when multiple documents of same type exist."""
+        doc1 = SampleDoc(name="file1.txt", content=b"content1")
+        doc2 = SampleDoc(name="file2.txt", content=b"content2")
+        doc3 = SubDoc(name="file3.txt", content=b"content3")  # SubDoc is also a SampleDoc
+
+        docs = DocumentList([doc1, doc2, doc3])
+
+        # Should raise error for multiple SampleDoc matches
+        with pytest.raises(ValueError, match="Multiple documents found of type 'SampleDoc'"):
+            docs.get_by(SampleDoc)
+
+        # The error should mention the count
+        with pytest.raises(ValueError, match="Found 3 matches"):
+            docs.get_by(SampleDoc)
+
+        # Should work fine when there's only one AnotherDoc
+        doc4 = AnotherDoc(name="file4.txt", content=b"content4")
+        docs2 = DocumentList([doc1, doc4])
+        result = docs2.get_by(AnotherDoc)
+        assert result == doc4  # Works when unique
 
     def test_backwards_compatibility(self) -> None:
         """Test that new methods provide same functionality as old ones."""

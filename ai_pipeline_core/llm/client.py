@@ -24,7 +24,6 @@ from pydantic import BaseModel
 
 from ai_pipeline_core.exceptions import LLMError
 from ai_pipeline_core.settings import settings
-from ai_pipeline_core.tracing import trace
 
 from .ai_messages import AIMessages
 from .model_options import ModelOptions
@@ -60,9 +59,9 @@ def _process_messages(
         - Regular messages without caching
 
     System Prompt Location:
-        The system prompt from ModelOptions.system_prompt is always injected
-        as the FIRST message with role="system". It is NOT cached with context,
-        allowing dynamic system prompts without breaking cache efficiency.
+        The system prompt parameter is always injected as the FIRST message
+        with role="system". It is NOT cached with context, allowing dynamic
+        system prompts without breaking cache efficiency.
 
     Cache behavior:
         The last context message gets ephemeral caching with specified TTL
@@ -221,7 +220,6 @@ async def _generate_with_retry(
     raise LLMError("Unknown error occurred during LLM generation.")
 
 
-@trace(ignore_inputs=["context"])
 async def generate(
     model: ModelName,
     *,
@@ -238,9 +236,10 @@ async def generate(
     expensive static content separately from dynamic queries.
 
     Best Practices:
-        1. OPTIONS: Omit in 90% of cases - defaults are optimized
+        1. OPTIONS: DO NOT use the options parameter - omit it entirely for production use
         2. MESSAGES: Use AIMessages or str - wrap Documents in AIMessages
         3. CONTEXT vs MESSAGES: Use context for static/cacheable, messages for dynamic
+        4. CONFIGURATION: Configure model behavior via LiteLLM proxy or environment variables
 
     Args:
         model: Model to use (e.g., "gpt-5", "gemini-2.5-pro", "grok-4").
@@ -250,8 +249,11 @@ async def generate(
         messages: Dynamic messages/queries. AIMessages or str ONLY.
                  Do not pass Document or DocumentList directly.
                  If string, converted to AIMessages internally.
-        options: Model configuration (temperature, retries, timeout, etc.).
-                Defaults to None (uses ModelOptions() with standard settings).
+        options: DEPRECATED - DO NOT USE. Reserved for internal framework usage only.
+                Framework defaults are production-optimized (3 retries, 10s delay, 300s timeout).
+                Configure model behavior centrally via LiteLLM proxy settings or environment
+                variables, not per API call. Provider-specific settings should be configured
+                at the proxy level.
 
     Returns:
         ModelResponse containing:
@@ -276,17 +278,26 @@ async def generate(
         # WRONG - don't convert to string yourself
         response = await llm.generate("gpt-5", messages=my_document.text)  # NO!
 
-    Context vs Messages Strategy:
-        context: Static, reusable content (cached 120 seconds)
-            - Large documents, instructions, examples
-            - Same across multiple calls
+    VISION/PDF MODEL COMPATIBILITY:
+        When using Documents containing images or PDFs, ensure your model supports these formats:
+        - Images require vision-capable models (gpt-4o, gemini-pro-vision, claude-3-sonnet)
+        - PDFs require document processing support (varies by provider)
+        - Non-compatible models will raise ValueError or fall back to text extraction
+        - Check model capabilities before including visual/PDF content
 
-        messages: Dynamic, query-specific content
+    Context vs Messages Strategy:
+        context: Static, reusable content for caching efficiency
+            - Large documents, instructions, examples
+            - Remains constant across multiple calls
+            - Cached when supported by provider/proxy configuration
+
+        messages: Dynamic, per-call specific content
             - User questions, current conversation turn
-            - Changes every call
+            - Changes with each API call
+            - Never cached, always processed fresh
 
     Example:
-        >>> # Simple case - no options needed (90% of cases)
+        >>> # CORRECT - No options parameter (this is the recommended pattern)
         >>> response = await llm.generate("gpt-5", messages="Explain quantum computing")
         >>> print(response.content)  # In production, use get_pipeline_logger instead of print
 
@@ -300,29 +311,6 @@ async def generate(
         >>> # Second call: reuses cache, saves tokens!
         >>> r2 = await llm.generate("gpt-5", context=static_doc, messages="Key points?")
 
-        >>> # Custom cache TTL for longer-lived contexts
-        >>> response = await llm.generate(
-        ...     "gpt-5",
-        ...     context=static_doc,
-        ...     messages="Analyze this",
-        ...     options=ModelOptions(cache_ttl="300s")  # Cache for 5 minutes
-        ... )
-
-        >>> # Disable caching when context changes frequently
-        >>> response = await llm.generate(
-        ...     "gpt-5",
-        ...     context=dynamic_doc,
-        ...     messages="Process this",
-        ...     options=ModelOptions(cache_ttl=None)  # No caching
-        ... )
-
-        >>> # AVOID unnecessary options (defaults are optimal)
-        >>> response = await llm.generate(
-        ...     "gpt-5",
-        ...     messages="Hello",
-        ...     options=ModelOptions(temperature=0.7)  # Default is probably fine!
-        ... )
-
         >>> # Multi-turn conversation
         >>> messages = AIMessages([
         ...     "What is Python?",
@@ -331,31 +319,48 @@ async def generate(
         ... ])
         >>> response = await llm.generate("gpt-5", messages=messages)
 
+        Configuration via LiteLLM Proxy:
+        >>> # Configure temperature in litellm_config.yaml:
+        >>> # model_list:
+        >>> #   - model_name: gpt-5
+        >>> #     litellm_params:
+        >>> #       model: openai/gpt-4o
+        >>> #       temperature: 0.3
+        >>> #       max_tokens: 1000
+        >>>
+        >>> # Configure retry logic in proxy:
+        >>> # general_settings:
+        >>> #   master_key: sk-1234
+        >>> #   max_retries: 5
+        >>> #   retry_delay: 15
+
     Performance:
         - Context caching saves ~50-90% tokens on repeated calls
         - First call: full token cost
         - Subsequent calls (within cache TTL): only messages tokens
-        - Default cache TTL is 120s (configurable via ModelOptions.cache_ttl)
-        - Default retry delay is 10s (configurable via ModelOptions.retry_delay_seconds)
+        - Default cache TTL is 120s (production-optimized)
+        - Default retry logic: 3 attempts with 10s delay (production-optimized)
 
     Caching:
         When enabled in your LiteLLM proxy and supported by the upstream provider,
         context messages may be cached to reduce token usage on repeated calls.
-        Default TTL is 120s, configurable via ModelOptions.cache_ttl (e.g. "300s", "5m").
-        Set cache_ttl=None to disable caching. Savings depend on provider and payload;
-        treat this as an optimization, not a guarantee. Cache behavior varies by proxy
-        configuration.
+        Default TTL is 120s (optimized for production workloads). Configure caching
+        behavior centrally via your LiteLLM proxy settings, not per API call.
+        Savings depend on provider and payload; treat this as an optimization, not a guarantee.
+
+    Configuration:
+        All model behavior should be configured at the LiteLLM proxy level:
+        - Temperature, max_tokens: Set in litellm_config.yaml model_list
+        - Retry logic: Configure in proxy general_settings
+        - Timeouts: Set via proxy configuration
+        - Caching: Enable/configure in proxy cache settings
+
+        This centralizes configuration and ensures consistency across all API calls.
 
     Note:
-        - Context argument is ignored by the tracer to avoid recording large data
         - All models are accessed via LiteLLM proxy
         - Automatic retry with configurable delay between attempts
         - Cost tracking via response headers
-
-    See Also:
-        - generate_structured: For typed/structured output
-        - AIMessages: Message container with document support
-        - ModelOptions: Configuration options
     """
     if isinstance(messages, str):
         messages = AIMessages([messages])
@@ -375,7 +380,6 @@ T = TypeVar("T", bound=BaseModel)
 """Type variable for Pydantic model types in structured generation."""
 
 
-@trace(ignore_inputs=["context"])
 async def generate_structured(
     model: ModelName,
     response_format: type[T],
@@ -391,18 +395,71 @@ async def generate_structured(
     Type-safe generation that returns validated Pydantic model instances.
     Uses OpenAI's structured output feature for guaranteed schema compliance.
 
+    IMPORTANT: Search models (models with '-search' suffix) do not support
+    structured output. Use generate() instead for search models.
+
     Best Practices:
-        Same as generate() - see generate() documentation for details.
+        1. OPTIONS: DO NOT use the options parameter - omit it entirely for production use
+        2. MESSAGES: Use AIMessages or str - wrap Documents in AIMessages
+        3. CONFIGURATION: Configure model behavior via LiteLLM proxy or environment variables
+        4. See generate() documentation for more details
+
+    Context vs Messages Strategy:
+        context: Static, reusable content for caching efficiency
+            - Schemas, examples, instructions
+            - Remains constant across multiple calls
+            - Cached when supported by provider/proxy configuration
+
+        messages: Dynamic, per-call specific content
+            - Data to be structured, user queries
+            - Changes with each API call
+            - Never cached, always processed fresh
+
+    Complex Task Pattern:
+        For complex tasks like research or deep analysis, it's recommended to use
+        a two-step approach:
+        1. First use generate() with a capable model to perform the analysis
+        2. Then use generate_structured() with a smaller model to convert the
+           response into structured output
+
+        This pattern is more reliable than trying to force complex reasoning
+        directly into structured format:
+
+        >>> # Step 1: Research/analysis with generate() - no options parameter
+        >>> research = await llm.generate(
+        ...     "gpt-5",
+        ...     messages="Research and analyze this complex topic..."
+        ... )
+        >>>
+        >>> # Step 2: Structure the results with generate_structured()
+        >>> structured = await llm.generate_structured(
+        ...     "gpt-5-mini",  # Smaller model is fine for structuring
+        ...     response_format=ResearchSummary,
+        ...     messages=f"Extract key information: {research.content}"
+        ... )
 
     Args:
         model: Model to use (must support structured output).
+               Search models (models with '-search' suffix) do not support structured output.
         response_format: Pydantic model class defining the output schema.
                         The model will generate JSON matching this schema.
         context: Static context to cache (documents, schemas, examples).
                 Defaults to None (empty AIMessages).
         messages: Dynamic prompts/queries. AIMessages or str ONLY.
                  Do not pass Document or DocumentList directly.
-        options: Model configuration. response_format is set automatically.
+        options: DEPRECATED - DO NOT USE. Reserved for internal framework usage only.
+                Framework defaults are production-optimized. Configure model behavior
+                centrally via LiteLLM proxy settings, not per API call.
+                The response_format is set automatically from the response_format parameter.
+
+    VISION/PDF MODEL COMPATIBILITY:
+        When using Documents with images/PDFs in structured output:
+        - Images require vision-capable models that also support structured output
+        - PDFs require models with both document processing AND structured output support
+        - Many models support either vision OR structured output, but not both
+        - Test your specific model+document combination before production use
+        - Consider two-step approach: generate() for analysis, then generate_structured()
+          for formatting
 
     Returns:
         StructuredModelResponse[T] containing:
@@ -412,6 +469,7 @@ async def generate_structured(
     Raises:
         TypeError: If response_format is not a Pydantic model class.
         ValueError: If model doesn't support structured output or no parsed content returned.
+                   Structured output support varies by provider and model.
         LLMError: If generation fails after retries.
         ValidationError: If response cannot be parsed into response_format.
 
@@ -423,8 +481,9 @@ async def generate_structured(
         ...     sentiment: float = Field(ge=-1, le=1)
         ...     key_points: list[str] = Field(max_length=5)
         >>>
+        >>> # CORRECT - No options parameter
         >>> response = await llm.generate_structured(
-        ...     model="gpt-5",
+        ...     "gpt-5",
         ...     response_format=Analysis,
         ...     messages="Analyze this product review: ..."
         ... )
@@ -435,11 +494,13 @@ async def generate_structured(
         ...     print(f"- {point}")
 
     Supported models:
-        Support varies by provider and model. Generally includes:
+        Structured output support varies by provider and model. Generally includes:
         - OpenAI: GPT-4 and newer models
         - Anthropic: Claude 3+ models
         - Google: Gemini Pro models
-        Check provider documentation for specific model support.
+
+        Search models (models with '-search' suffix) do not support structured output.
+        Check provider documentation for specific support.
 
     Performance:
         - Structured output may use more tokens than free text
@@ -451,11 +512,7 @@ async def generate_structured(
         - The model generates JSON matching the schema
         - Validation happens automatically via Pydantic
         - Use Field() descriptions to guide generation
-
-    See Also:
-        - generate: For unstructured text generation
-        - ModelOptions: Configuration including response_format
-        - StructuredModelResponse: Response wrapper with .parsed property
+        - Search models (models with '-search' suffix) do not support structured output
     """
     if context is None:
         context = AIMessages()

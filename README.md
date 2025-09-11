@@ -295,6 +295,10 @@ LMNR_DEBUG=true  # Enable debug traces
 # Optional: Orchestration
 PREFECT_API_URL=http://localhost:4200/api
 PREFECT_API_KEY=your-prefect-key
+
+# Optional: Storage (for Google Cloud Storage)
+GCS_BLOCK=my-gcs-block  # Prefect GcsBucket block name
+GCS_BUCKET=my-bucket    # Default bucket (future use)
 ```
 
 ### Settings Management

@@ -10,11 +10,16 @@ Best Practice:
     to ensure type safety and proper validation of output documents.
 """
 
+import json
 from abc import ABC
 from typing import Any, ClassVar, Iterable
 
 from ai_pipeline_core.documents import DocumentList, FlowDocument
 from ai_pipeline_core.exceptions import DocumentValidationError
+from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.storage import Storage
+
+logger = get_pipeline_logger(__name__)
 
 
 class FlowConfig(ABC):
@@ -312,3 +317,177 @@ class FlowConfig(ABC):
             documents = DocumentList(list(output))  # type: ignore[arg-type]
         cls.validate_output_documents(documents)
         return documents
+
+    @classmethod
+    async def load_documents(
+        cls,
+        uri: str,
+        *,
+        gcs_block: str | None = None,
+    ) -> DocumentList:
+        """Load documents from storage matching INPUT_DOCUMENT_TYPES.
+
+        Loads documents from a storage location based on the class's INPUT_DOCUMENT_TYPES.
+        Supports both local filesystem and Google Cloud Storage backends.
+        Automatically loads metadata (.description.md and .sources.json) when present.
+
+        Args:
+            uri: Storage URI (file://, gs://, or local path)
+            gcs_block: Prefect GcsBucket block name for GCS (defaults to settings.gcs_block)
+
+        Returns:
+            DocumentList containing loaded documents matching INPUT_DOCUMENT_TYPES
+
+        Example:
+            >>> # Load from local filesystem
+            >>> docs = await MyFlowConfig.load_documents("./data")
+            >>>
+            >>> # Load from GCS (uses GCS_BLOCK from settings by default)
+            >>> docs = await MyFlowConfig.load_documents("gs://bucket/data")
+            >>>
+            >>> # Load from GCS with specific block override
+            >>> docs = await MyFlowConfig.load_documents(
+            ...     "gs://bucket/data",
+            ...     gcs_block="my-gcs-block"
+            ... )
+        """
+        # Use INPUT_DOCUMENT_TYPES if not specified
+        storage = Storage.from_uri(uri, gcs_block=gcs_block)
+        loaded_documents = DocumentList()
+
+        # Process each document type
+        for doc_type in cls.INPUT_DOCUMENT_TYPES:
+            canonical_name = doc_type.__name__.lower()
+            doc_storage = storage.with_base(canonical_name)
+
+            # Check if subdirectory exists
+            if not await doc_storage.exists(""):
+                logger.debug(f"Subdirectory {canonical_name} not found, skipping")
+                continue
+
+            # List files in subdirectory
+            objects = await doc_storage.list("", recursive=False, include_dirs=False)
+
+            # Filter out metadata files
+            doc_files = [
+                obj
+                for obj in objects
+                if not obj.key.endswith(".description.md") and not obj.key.endswith(".sources.json")
+            ]
+
+            for obj in doc_files:
+                try:
+                    # Load document content
+                    content = await doc_storage.read_bytes(obj.key)
+
+                    # Load metadata if present
+                    description = None
+                    sources: list[str] = []
+
+                    # Try loading description
+                    desc_path = f"{obj.key}.description.md"
+                    if await doc_storage.exists(desc_path):
+                        try:
+                            description = await doc_storage.read_text(desc_path)
+                        except Exception as e:
+                            logger.warning(f"Failed to load description for {obj.key}: {e}")
+
+                    # Try loading sources
+                    sources_path = f"{obj.key}.sources.json"
+                    if await doc_storage.exists(sources_path):
+                        try:
+                            sources_text = await doc_storage.read_text(sources_path)
+                            sources = json.loads(sources_text)
+                        except Exception as e:
+                            logger.warning(f"Failed to load sources for {obj.key}: {e}")
+
+                    # Create document instance
+                    doc = doc_type(
+                        name=obj.key,
+                        content=content,
+                        description=description,
+                        sources=sources,
+                    )
+
+                    loaded_documents.append(doc)
+                    logger.debug(f"Loaded {doc_type.__name__} document: {obj.key}")
+                except Exception as e:
+                    logger.error(f"Failed to load {doc_type.__name__} document {obj.key}: {e}")
+
+        logger.debug(f"Loaded {len(loaded_documents)} documents from {uri}")
+        return loaded_documents
+
+    @classmethod
+    async def save_documents(
+        cls,
+        uri: str,
+        documents: DocumentList,
+        *,
+        gcs_block: str | None = None,
+        validate_output_type: bool = True,
+    ) -> None:
+        """Save documents to storage with metadata.
+
+        Saves FlowDocument instances to a storage location with their content
+        and metadata files (.description.md and .sources.json).
+        Non-FlowDocument instances (TaskDocument, TemporaryDocument) are skipped.
+
+        Args:
+            uri: Storage URI (file://, gs://, or local path)
+            documents: DocumentList to save
+            gcs_block: Prefect GcsBucket block name for GCS (defaults to settings.gcs_block)
+            validate_output_type: If True, validate documents match cls.OUTPUT_DOCUMENT_TYPE
+
+        Raises:
+            DocumentValidationError: If validate_output_type=True and documents don't match
+                                   OUTPUT_DOCUMENT_TYPE
+
+        Example:
+            >>> # Save to local filesystem
+            >>> await MyFlowConfig.save_documents("./output", docs)
+            >>>
+            >>> # Save to GCS (uses GCS_BLOCK from settings by default)
+            >>> await MyFlowConfig.save_documents("gs://bucket/output", docs)
+            >>>
+            >>> # Save to GCS with specific block override
+            >>> await MyFlowConfig.save_documents(
+            ...     "gs://bucket/output",
+            ...     docs,
+            ...     gcs_block="my-gcs-block"
+            ... )
+        """
+        # Validate output type if requested
+        if validate_output_type:
+            cls.validate_output_documents(documents)
+
+        storage = Storage.from_uri(uri, gcs_block=gcs_block)
+        saved_count = 0
+
+        for doc in documents:
+            # Skip non-FlowDocument instances
+            if not isinstance(doc, FlowDocument):
+                logger.debug(f"Skipping non-FlowDocument: {type(doc).__name__}")
+                continue
+
+            # Get canonical name for subdirectory
+            canonical_name = type(doc).__name__.lower()
+            doc_storage = storage.with_base(canonical_name)
+
+            # Save document content
+            await doc_storage.write_bytes(doc.name, doc.content)
+            saved_count += 1
+
+            # Save description if present
+            if doc.description:
+                desc_path = f"{doc.name}.description.md"
+                await doc_storage.write_text(desc_path, doc.description)
+
+            # Save sources if present
+            if doc.sources:
+                sources_path = f"{doc.name}.sources.json"
+                sources_json = json.dumps(doc.sources, indent=2)
+                await doc_storage.write_text(sources_path, sources_json)
+
+            logger.debug(f"Saved {type(doc).__name__} document: {doc.name}")
+
+        logger.debug(f"Saved {saved_count} documents to {uri}")

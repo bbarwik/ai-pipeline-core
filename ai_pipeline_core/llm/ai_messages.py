@@ -48,14 +48,24 @@ class AIMessages(list[AIMessageType]):
         - ModelResponse: Becomes {"role": "assistant", "content": response.content}
 
     Note: Document conversion is automatic. Text content becomes user text messages.
-    Images are sent to vision-capable models (non-vision models will raise ValueError).
-    PDFs are attached when supported by the model, otherwise a text extraction
-    fallback is used. LiteLLM proxy handles the specific encoding requirements
-    for each provider.
+
+    VISION/PDF MODEL COMPATIBILITY WARNING:
+    Images require vision-capable models (e.g., gpt-4o, gemini-pro-vision, claude-3-haiku).
+    Non-vision models will raise ValueError when encountering image documents.
+    PDFs require models with document processing support - check your model's capabilities
+    before including PDF documents in messages. Unsupported models may fall back to
+    text extraction or raise errors depending on provider configuration.
+    LiteLLM proxy handles the specific encoding requirements for each provider.
 
     IMPORTANT: Although AIMessages can contain Document entries, the LLM client functions
     expect `messages` to be `AIMessages` or `str`. If you start from a Document or a list
     of Documents, build AIMessages first (e.g., `AIMessages([doc])` or `AIMessages(docs)`).
+
+    CAUTION: AIMessages is a list subclass. Always use list construction (e.g.,
+    `AIMessages(["text"])`) or empty constructor with append (e.g.,
+    `AIMessages(); messages.append("text")`). Never pass raw strings directly to the
+    constructor (`AIMessages("text")`) as this will iterate over the string characters
+    instead of treating it as a single message.
 
     Example:
         >>> from ai_pipeline_core import llm

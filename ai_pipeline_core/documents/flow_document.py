@@ -24,24 +24,20 @@ class FlowDocument(Document):
     - Persisted to file system between pipeline steps
     - Survives across multiple flow runs
     - Used for flow inputs and outputs
-    - Saved in directories named after the document's canonical name
+    - Saved in directories organized by the document's type/name
 
     Creating FlowDocuments:
         Same as Document - use `create()` for automatic conversion, `__init__` for bytes.
         See Document.create() for detailed usage examples.
 
     Persistence:
-        Documents are saved to: {output_dir}/{canonical_name}/{filename}
+        Documents are saved under an output directory path associated with the document's type/name.
         For example: output/my_doc/data.json
 
     Note:
         - Cannot instantiate FlowDocument directly - must subclass
         - Used with FlowConfig to define flow input/output types
         - No additional abstract methods to implement
-
-    See Also:
-        TaskDocument: For temporary documents within task execution
-        TemporaryDocument: For documents that are never persisted
     """
 
     def __init__(

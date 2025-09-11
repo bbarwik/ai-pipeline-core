@@ -10,7 +10,6 @@ This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
     - TaskDocument: Temporary within task execution
     - TemporaryDocument: Never persisted (NEW in v0.1.9+)
     - DocumentList: Type-safe container with validation
-  • Flow configuration (FlowConfig, FlowOptions) for type-safe pipelines
   • Pipeline decorators (pipeline_flow, pipeline_task) with LMNR tracing
     - NEW: Cost tracking via trace_cost parameter (v0.1.14+)
   • Prefect utilities (flow, task, prefect_test_harness, disable_run_logger)

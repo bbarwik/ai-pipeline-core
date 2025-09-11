@@ -61,8 +61,7 @@ class Document(BaseModel, ABC):
     Document is the fundamental data abstraction for all content flowing through
     pipelines. It provides automatic encoding, MIME type detection, serialization,
     and validation. All documents must be subclassed from FlowDocument or TaskDocument
-    based on their persistence requirements. TemporaryDocument is a special concrete
-    class that can be instantiated directly (not abstract).
+    based on their persistence requirements.
 
     VALIDATION IS AUTOMATIC - Do not add manual validation!
         Size validation, name validation, and MIME type detection are built-in.
@@ -74,7 +73,7 @@ class Document(BaseModel, ABC):
         document.validate_file_name(document.name)  # NO! Automatic
 
     Best Practices:
-        - Use create() classmethod for automatic type conversion (90% of cases)
+        - Use create() classmethod for automatic type conversion (default preferred)
         - Omit description parameter unless truly needed for metadata
         - When using LLM functions, pass AIMessages or str. Wrap any Document values
           in AIMessages([...]). Do not call .text yourself
@@ -131,10 +130,62 @@ class Document(BaseModel, ABC):
         2. Embed metadata in content (e.g., JSON with data + metadata fields)
         3. Create a separate MetadataDocument type to accompany data documents
         4. Use document naming conventions (e.g., "data_v2_2024.json")
-        5. Store metadata in flow_options or pass through TraceInfo
+        5. Store metadata in flow_options
+
+    FILES Enum Best Practice:
+        When defining a FILES enum, NEVER use magic strings to reference files.
+        Always use the enum values to maintain type safety and refactorability.
+
+        WRONG - Magic strings/numbers:
+            doc = ConfigDocument.create(name="config.yaml", content=data)  # NO!
+            doc = docs.get_by("settings.json")  # NO! Magic string
+            files = ["config.yaml", "settings.json"]  # NO! Magic strings
+
+        CORRECT - Use enum references:
+            doc = ConfigDocument.create(
+                name=ConfigDocument.FILES.CONFIG,  # YES! Type-safe
+                content=data
+            )
+            doc = docs.get_by(ConfigDocument.FILES.SETTINGS)  # YES!
+            files = [
+                ConfigDocument.FILES.CONFIG,
+                ConfigDocument.FILES.SETTINGS
+            ]  # YES! Refactorable
+
+    Pydantic Model Interaction:
+        Documents provide DIRECT support for Pydantic models. Use the built-in
+        methods instead of manual JSON conversion.
+
+        WRONG - Manual JSON conversion:
+            # Don't do this - manual JSON handling
+            json_str = doc.text
+            json_data = json.loads(json_str)
+            model = MyModel(**json_data)  # NO! Use as_pydantic_model
+
+            # Don't do this - manual serialization
+            json_str = model.model_dump_json()
+            doc = MyDocument.create(name="data.json", content=json_str)  # NO!
+
+        CORRECT - Direct Pydantic interaction:
+            # Reading Pydantic model from document
+            model = doc.as_pydantic_model(MyModel)  # Direct conversion
+            models = doc.as_pydantic_model(list[MyModel])  # List support
+
+            # Creating document from Pydantic model
+            doc = MyDocument.create(
+                name="data.json",
+                content=model  # Direct BaseModel support
+            )
+
+            # Round-trip is seamless
+            original_model = MyModel(field="value")
+            doc = MyDocument.create(name="data.json", content=original_model)
+            restored = doc.as_pydantic_model(MyModel)
+            assert restored == original_model  # Perfect round-trip
 
     Example:
         >>> from enum import StrEnum
+        >>> from pydantic import BaseModel
         >>>
         >>> # Simple document:
         >>> class MyDocument(FlowDocument):
@@ -146,10 +197,23 @@ class Document(BaseModel, ABC):
         ...         CONFIG = "config.yaml"
         ...         SETTINGS = "settings.json"
         >>>
-        >>> # RECOMMENDED: Use create for automatic conversion
-        >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
-        >>> print(doc.is_text)  # True
-        >>> data = doc.as_json()  # {'key': 'value'}
+        >>> # CORRECT FILES usage - no magic strings:
+        >>> doc = ConfigDocument.create(
+        ...     name=ConfigDocument.FILES.CONFIG,  # Use enum
+        ...     content={"key": "value"}
+        ... )
+        >>>
+        >>> # CORRECT Pydantic usage:
+        >>> class Config(BaseModel):
+        ...     key: str
+        >>>
+        >>> # Direct creation from Pydantic model
+        >>> config_model = Config(key="value")
+        >>> doc = MyDocument.create(name="data.json", content=config_model)
+        >>>
+        >>> # Direct extraction to Pydantic model
+        >>> restored = doc.as_pydantic_model(Config)
+        >>> print(restored.key)  # "value"
         >>>
         >>> # Track document provenance with sources
         >>> source_doc = MyDocument.create(name="input.txt", content="raw data")
@@ -288,7 +352,7 @@ class Document(BaseModel, ABC):
         content types and automatically converts them to bytes based on the file
         extension. Use the `parse` method to reverse this conversion.
 
-        Best Practice (90% of cases):
+        Best Practice (by default, unless instructed otherwise):
             Only provide name and content. The description parameter is RARELY needed.
 
         Args:
@@ -302,8 +366,8 @@ class Document(BaseModel, ABC):
                 - bytes: Used directly without conversion
                 - str: Encoded to UTF-8 bytes
                 - dict[str, Any]: Serialized to JSON (.json) or YAML (.yaml/.yml)
-                - list[str]: Joined with separator for .md (validates no items
-                            contain separator), else JSON/YAML
+                - list[str]: Joined automatically for .md (validates format compatibility),
+                            else JSON/YAML
                 - list[BaseModel]: Serialized to JSON or YAML based on extension
                 - BaseModel: Serialized to JSON or YAML based on extension
             description: Optional description - USUALLY OMIT THIS (defaults to None).
@@ -319,7 +383,7 @@ class Document(BaseModel, ABC):
 
         Raises:
             ValueError: If content type is not supported for the file extension,
-                       or if markdown list items contain the separator
+                       or if markdown list format is incompatible
             DocumentNameError: If filename violates validation rules
             DocumentSizeError: If content exceeds MAX_CONTENT_SIZE
 
@@ -329,7 +393,7 @@ class Document(BaseModel, ABC):
             returns the original dictionary {"key": "value"}.
 
         Example:
-            >>> # CORRECT - no description needed (90% of cases)
+            >>> # CORRECT - no description needed (by default, unless instructed otherwise)
             >>> doc = MyDocument.create(name="test.txt", content="Hello World")
             >>> doc.content  # b'Hello World'
             >>> doc.parse(str)  # "Hello World"
@@ -427,10 +491,6 @@ class Document(BaseModel, ABC):
             >>> doc = MyDocument.create(name="data.json", content={"key": "value"})
             >>> doc = MyDocument.create(name="config.yaml", content=my_model)
             >>> doc = MyDocument.create(name="items.md", content=["item1", "item2"])
-
-        See Also:
-            create: Recommended factory method with automatic type conversion
-            parse: Method to reverse the conversion done by create
         """
         if type(self) is Document:
             raise TypeError("Cannot instantiate abstract Document class directly")
@@ -467,8 +527,7 @@ class Document(BaseModel, ABC):
 
         Note:
             This method determines document persistence and lifecycle.
-            FlowDocument returns "flow", TaskDocument returns "task",
-            TemporaryDocument returns "temporary".
+            FlowDocument returns "flow", TaskDocument returns "task".
         """
         raise NotImplementedError("Subclasses must implement this method")
 
@@ -520,7 +579,7 @@ class Document(BaseModel, ABC):
         during execution.
 
         Returns:
-            True if this is a TemporaryDocument, False otherwise.
+            True if this document is temporary, False otherwise.
         """
         return self.get_base_type() == "temporary"
 
@@ -564,8 +623,6 @@ class Document(BaseModel, ABC):
     @classmethod
     def validate_file_name(cls, name: str) -> None:
         """Validate that a file name matches allowed patterns.
-
-        @public
 
         DO NOT OVERRIDE this method if you define a FILES enum!
         The validation is automatic when FILES enum is present.
@@ -659,7 +716,7 @@ class Document(BaseModel, ABC):
             2. str → UTF-8 encoding
             3. dict/BaseModel + .json → JSON serialization (indented)
             4. dict/BaseModel + .yaml/.yml → YAML serialization
-            5. list[str] + .md → Join with markdown separator (validates no items contain separator)
+            5. list[str] + .md → Join with markdown sections (validates format compatibility)
             6. list[Any] + .json/.yaml → JSON/YAML array
             7. int/float/bool + .json → JSON primitive
 
@@ -1028,8 +1085,6 @@ class Document(BaseModel, ABC):
     def as_yaml(self) -> Any:
         r"""Parse document content as YAML.
 
-        @public
-
         Parses the document's text content as YAML and returns Python objects.
         Uses ruamel.yaml which is safe by default (no code execution).
 
@@ -1056,8 +1111,6 @@ class Document(BaseModel, ABC):
 
     def as_json(self) -> Any:
         """Parse document content as JSON.
-
-        @public
 
         Parses the document's text content as JSON and returns Python objects.
         Document must contain valid JSON text.
@@ -1153,7 +1206,7 @@ class Document(BaseModel, ABC):
 
         @public
 
-        Splits text content using markdown separator ("\n\n-----------------\n\n").
+        Splits text content automatically using markdown section separators.
         Designed for markdown documents with multiple sections.
 
         Returns:
@@ -1168,9 +1221,9 @@ class Document(BaseModel, ABC):
             >>> doc = MyDocument.create(name="book.md", content=sections)
             >>> doc.as_markdown_list()  # Returns original sections
 
-            >>> # Manual creation with separator
-            >>> content = "Part 1\n\n-----------------\n\nPart 2\n\n-----------------\n\nPart 3"
-            >>> doc2 = MyDocument(name="parts.md", content=content.encode())
+            >>> # Round-trip conversion works automatically
+            >>> sections = ["Part 1", "Part 2", "Part 3"]
+            >>> doc2 = MyDocument.create(name="parts.md", content=sections)
             >>> doc2.as_markdown_list()  # ['Part 1', 'Part 2', 'Part 3']
         """
         return self.text.split(self.MARKDOWN_LIST_SEPARATOR)
@@ -1207,7 +1260,7 @@ class Document(BaseModel, ABC):
         Extension Rules:
             - .json → JSON parsing for dict/list/BaseModel
             - .yaml/.yml → YAML parsing for dict/list/BaseModel
-            - .md + list → Split by markdown separator
+            - .md + list → Split automatically into sections
             - Any + str → UTF-8 decode
             - Any + bytes → Raw content
 
@@ -1223,8 +1276,7 @@ class Document(BaseModel, ABC):
 
             >>> # Markdown list
             >>> items = ["Item 1", "Item 2"]
-            >>> content = "\n\n---\n\n".join(items).encode()
-            >>> doc = MyDocument(name="list.md", content=content)
+            >>> doc = MyDocument.create(name="list.md", content=items)
             >>> doc.parse(list)
             ['Item 1', 'Item 2']
         """
@@ -1330,11 +1382,6 @@ class Document(BaseModel, ABC):
             >>> # Check if specific document is a source
             >>> if source1.sha256 in doc_refs:
             ...     print("Document derived from source1")
-
-        See Also:
-            - get_source_references: Get non-document source references (URLs, etc.)
-            - has_source: Check if a specific source is tracked
-            - Document.create: Add sources when creating documents
         """
         return [src for src in self.sources if is_document_sha256(src)]
 
@@ -1372,11 +1419,6 @@ class Document(BaseModel, ABC):
             >>> # Use for attribution or debugging
             >>> for ref in refs:
             ...     print(f"Data sourced from: {ref}")
-
-        See Also:
-            - get_source_documents: Get document SHA256 references
-            - has_source: Check if a specific source is tracked
-            - Document.create: Add sources when creating documents
         """
         return [src for src in self.sources if not is_document_sha256(src)]
 
@@ -1422,11 +1464,6 @@ class Document(BaseModel, ABC):
             >>> # Check by SHA256 directly
             >>> if derived.has_source(source_doc.sha256):
             ...     print("Has specific hash")
-
-        See Also:
-            - get_source_documents: Get all document sources
-            - get_source_references: Get all reference sources
-            - Document.create: Add sources when creating documents
         """
         if isinstance(source, str):
             # Direct string comparison

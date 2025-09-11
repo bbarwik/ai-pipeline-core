@@ -1,7 +1,5 @@
 """Centralized logging configuration for AI Pipeline Core.
 
-@public
-
 Provides logging configuration management that integrates with Prefect's logging system.
 """
 
@@ -25,8 +23,6 @@ DEFAULT_LOG_LEVELS = {
 
 class LoggingConfig:
     """Manages logging configuration for the pipeline.
-
-    @public
 
     Provides centralized logging configuration with Prefect integration.
 
@@ -143,8 +139,6 @@ _logging_config: Optional[LoggingConfig] = None
 
 def setup_logging(config_path: Optional[Path] = None, level: Optional[str] = None):
     """Setup logging for the AI Pipeline Core library.
-
-    @public
 
     Initializes logging configuration for the pipeline system.
 

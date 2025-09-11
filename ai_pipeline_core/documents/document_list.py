@@ -17,8 +17,8 @@ class DocumentList(list[Document]):
 
     Specialized list with validation and filtering for documents.
 
-    Best Practice: Use default constructor in 90% of cases. Only enable
-    validate_same_type or validate_duplicates when you explicitly need them.
+    Best Practice: Use default constructor by default, unless instructed otherwise.
+    Only enable validate_same_type or validate_duplicates when you explicitly need them.
 
     Example:
         >>> # RECOMMENDED - default constructor for most cases
@@ -164,6 +164,9 @@ class DocumentList(list[Document]):
 
         @public
 
+        ALWAYS returns a DocumentList (which may be empty), never raises an exception
+        for no matches. Use this when you want to process all matching documents.
+
         Args:
             arg: Can be one of:
                 - str: Single document name to filter by
@@ -174,7 +177,9 @@ class DocumentList(list[Document]):
                   (list, tuple, set, generator, or any iterable)
 
         Returns:
-            New DocumentList with filtered documents.
+            New DocumentList with filtered documents (may be empty).
+            - Returns ALL matching documents
+            - Empty DocumentList if no matches found
 
         Raises:
             TypeError: If arg is not a valid type (not str, type, or iterable),
@@ -182,12 +187,19 @@ class DocumentList(list[Document]):
             AttributeError: If arg is expected to be iterable but doesn't support iteration.
 
         Example:
-            >>> docs.filter_by("file.txt")  # Filter by single name
-            >>> docs.filter_by(MyDocument)  # Filter by single type
-            >>> docs.filter_by([Doc1, Doc2])  # Filter by multiple types (list)
-            >>> docs.filter_by({"file1.txt", "file2.txt"})  # Filter by multiple names (set)
-            >>> docs.filter_by((SubDoc, AnotherDoc))  # Filter by multiple types (tuple)
-            >>> docs.filter_by(name for name in ["a.txt", "b.txt"])  # Generator expression
+            >>> # Returns list with all matching documents
+            >>> matching_docs = docs.filter_by("file.txt")  # May be empty
+            >>> for doc in matching_docs:
+            ...     process(doc)
+            >>>
+            >>> # Filter by type - returns all instances
+            >>> config_docs = docs.filter_by(ConfigDocument)
+            >>> print(f"Found {len(config_docs)} config documents")
+            >>>
+            >>> # Filter by multiple names
+            >>> important_docs = docs.filter_by(["config.yaml", "settings.json"])
+            >>> if not important_docs:  # Check if empty
+            ...     print("No important documents found")
         """
         if isinstance(arg, str):
             # Filter by single name
@@ -257,38 +269,73 @@ class DocumentList(list[Document]):
     def get_by(self, arg: type[Document], required: bool = True) -> Document | None: ...
 
     def get_by(self, arg: str | type[Document], required: bool = True) -> Document | None:
-        """Get a single document by name or type.
+        """Get EXACTLY ONE document by name or type.
 
         @public
 
+        IMPORTANT: This method expects to find exactly one matching document.
+        - If no matches and required=True: raises ValueError
+        - If no matches and required=False: returns None
+        - If multiple matches: ALWAYS raises ValueError (ambiguous)
+
+        When required=True (default), you do NOT need to check for None:
+            >>> doc = docs.get_by("config.yaml")  # Will raise if not found
+            >>> # No need for: if doc is not None  <- This is redundant!
+            >>> print(doc.content)  # Safe to use directly
+
         Args:
             arg: Document name (str) or document type.
-            required: If True, raises ValueError when not found. If False, returns None.
+            required: If True (default), raises ValueError when not found.
+                     If False, returns None when not found.
 
         Returns:
-            The first matching document, or None if not found and required=False.
+            The single matching document, or None if not found and required=False.
 
         Raises:
-            ValueError: If required=True and document not found.
+            ValueError: If required=True and document not found, OR if multiple
+                       documents match (ambiguous result).
             TypeError: If arg is not a string or Document type.
 
         Example:
-            >>> doc = docs.get_by("file.txt")  # Get by name, raises if not found
-            >>> doc = docs.get_by(MyDocument, required=False)  # Returns None if not found
+            >>> # CORRECT - No need to check for None when required=True (default)
+            >>> doc = docs.get_by("file.txt")  # Raises if not found
+            >>> print(doc.content)  # Safe to use directly
+            >>>
+            >>> # When using required=False, check for None
+            >>> doc = docs.get_by("optional.txt", required=False)
+            >>> if doc is not None:
+            ...     print(doc.content)
+            >>>
+            >>> # Will raise if multiple documents have same type
+            >>> # Use filter_by() instead if you want all matches
+            >>> try:
+            ...     doc = docs.get_by(ConfigDocument)  # Error if 2+ configs
+            >>> except ValueError as e:
+            ...     configs = docs.filter_by(ConfigDocument)  # Get all instead
         """
         if isinstance(arg, str):
-            # Get by name
-            for doc in self:
-                if doc.name == arg:
-                    return doc
+            # Get by name - collect all matches to check for duplicates
+            matches = [doc for doc in self if doc.name == arg]
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Multiple documents found with name '{arg}'. "
+                    f"Found {len(matches)} matches. Use filter_by() to get all matches."
+                )
+            if matches:
+                return matches[0]
             if required:
                 raise ValueError(f"Document with name '{arg}' not found")
             return None
         elif isinstance(arg, type):  # type: ignore[reportUnnecessaryIsInstance]
-            # Get by type (including subclasses)
-            for doc in self:
-                if isinstance(doc, arg):
-                    return doc
+            # Get by type (including subclasses) - collect all matches
+            matches = [doc for doc in self if isinstance(doc, arg)]
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Multiple documents found of type '{arg.__name__}'. "
+                    f"Found {len(matches)} matches. Use filter_by() to get all matches."
+                )
+            if matches:
+                return matches[0]
             if required:
                 raise ValueError(f"Document of type '{arg.__name__}' not found")
             return None

@@ -25,6 +25,7 @@ dependencies = [
     "lmnr>=0.7.6",
     "openai>=1.99.9",
     "prefect>=3.4.13",
+    "prefect-gcp[cloud_storage]>=6.10",
     "pydantic-settings>=2.10.1",
     "pydantic>=2.11.7",
     "python-magic>=0.4.27",
@@ -76,6 +77,7 @@ skip_covered = false
 line-length = 100
 target-version = "py312"
 preview = true  # Required for DOC (pydoclint-derived) rules
+exclude = [".tmp", "build", "dist", ".venv", "venv", "__pycache__"]
 
 [tool.ruff.lint]
 # Select the rules you want to enforce. 'E' and 'F' are standard.

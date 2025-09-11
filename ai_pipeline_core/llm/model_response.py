@@ -2,7 +2,7 @@
 
 @public
 
-Provides enhanced response classes that wrap OpenAI API responses
+Provides enhanced response classes that use OpenAI-compatible base types via LiteLLM
 with additional metadata, cost tracking, and structured output support.
 """
 
@@ -23,8 +23,8 @@ class ModelResponse(ChatCompletion):
 
     Primary usage is adding to AIMessages for multi-turn conversations:
 
-        >>> response = await llm.generate(messages=messages)
-        >>> messages.add(response)  # Add assistant response to conversation
+        >>> response = await llm.generate("gpt-5", messages=messages)
+        >>> messages.append(response)  # Add assistant response to conversation
         >>> print(response.content)  # Access generated text
 
     The two main interactions with ModelResponse:
@@ -35,13 +35,13 @@ class ModelResponse(ChatCompletion):
     like token usage and cost tracking are available but rarely needed.
 
     Example:
-        >>> from ai_pipeline_core.llm import AIMessages, generate
+        >>> from ai_pipeline_core import llm, AIMessages
         >>>
-        >>> messages = AIMessages("Explain quantum computing")
-        >>> response = await generate(messages=messages)
+        >>> messages = AIMessages(["Explain quantum computing"])
+        >>> response = await llm.generate("gpt-5", messages=messages)
         >>>
         >>> # Primary usage: add to conversation
-        >>> messages.add(response)
+        >>> messages.append(response)
         >>>
         >>> # Access generated text
         >>> print(response.content)
@@ -96,17 +96,17 @@ class ModelResponse(ChatCompletion):
         @public
 
         Primary property for accessing the LLM's response text.
-        This covers 99% of use cases with ModelResponse.
+        This is the main property you'll use with ModelResponse.
 
         Returns:
             Generated text from the model, or empty string if none.
 
         Example:
-            >>> response = await generate(messages="Hello")
+            >>> response = await generate("gpt-5", messages="Hello")
             >>> text = response.content  # The generated response
             >>>
             >>> # Common pattern: add to messages then use content
-            >>> messages.add(response)
+            >>> messages.append(response)
             >>> if "error" in response.content.lower():
             ...     # Handle error case
         """
@@ -189,8 +189,7 @@ class ModelResponse(ChatCompletion):
             >>> response = await llm.generate(
             ...     "gpt-5",
             ...     context=large_doc,
-            ...     messages="Summarize this",
-            ...     options=ModelOptions(cache_ttl="300s")
+            ...     messages="Summarize this"
             ... )
             >>>
             >>> # Get comprehensive metadata
@@ -292,6 +291,7 @@ class StructuredModelResponse(ModelResponse, Generic[T]):
         ...     summary: str
         >>>
         >>> response = await generate_structured(
+        ...     "gpt-5",
         ...     response_format=Analysis,
         ...     messages="Analyze this text..."
         ... )
@@ -301,7 +301,7 @@ class StructuredModelResponse(ModelResponse, Generic[T]):
         >>> print(f"Sentiment: {analysis.sentiment}")
         >>>
         >>> # Can add to messages for conversation
-        >>> messages.add(response)
+        >>> messages.append(response)
 
     The two main interactions:
     1. Accessing .parsed property for the structured data
@@ -377,6 +377,7 @@ class StructuredModelResponse(ModelResponse, Generic[T]):
             ...     age: int
             >>>
             >>> response = await generate_structured(
+            ...     "gpt-5",
             ...     response_format=UserInfo,
             ...     messages="Extract user info..."
             ... )
@@ -386,11 +387,11 @@ class StructuredModelResponse(ModelResponse, Generic[T]):
             >>> print(f"{user.name} is {user.age} years old")
             >>>
             >>> # Can also add to messages
-            >>> messages.add(response)
+            >>> messages.append(response)
 
         Note:
-            Type-safe with full IDE support. This property covers
-            99% of structured response use cases.
+            Type-safe with full IDE support. This is the main property
+            you'll use with structured responses.
         """
         if self._parsed_value is not None:
             return self._parsed_value

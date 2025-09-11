@@ -7,7 +7,7 @@ It combines document processing, LLM integration, and workflow orchestration int
 system designed for production use.
 
 The framework enforces best practices through strong typing (Pydantic), automatic retries,
-cost tracking, and distributed tracing. All I/O operations are async for maximum throughput.
+and cost tracking. All I/O operations are async for maximum throughput.
 
 **CRITICAL IMPORT RULE**:
     Always import from the top-level package:
@@ -18,12 +18,12 @@ cost tracking, and distributed tracing. All I/O operations are async for maximum
         from ai_pipeline_core.llm import generate  # NO!
         from ai_pipeline_core.documents import FlowDocument  # NO!
 
-FRAMEWORK RULES (90% Use Cases):
-    1. Decorators: Use @trace, @pipeline_task, @pipeline_flow WITHOUT parameters
+FRAMEWORK RULES (Use by default, unless instructed otherwise):
+    1. Decorators: Use @pipeline_task, @pipeline_flow WITHOUT parameters
     2. Logging: Use get_pipeline_logger(__name__) - NEVER print() or logging module
     3. LLM calls: Use AIMessages or str. Wrap Documents in AIMessages; do not call .text yourself
-    4. Options: Omit ModelOptions unless specifically needed (defaults are optimal)
-    5. Documents: Create with just name and content - skip description
+    4. Options: DO NOT use options parameter - omit it entirely (defaults are optimal)
+    5. Documents: Create with just name and content - skip description unless needed
     6. FlowConfig: OUTPUT_DOCUMENT_TYPE must differ from all INPUT_DOCUMENT_TYPES
     7. Initialization: PromptManager and logger at module scope, not in functions
     8. DocumentList: Use default constructor - no validation flags needed
@@ -36,7 +36,7 @@ Core Capabilities:
     - **LLM Integration**: Unified interface to any model via LiteLLM with caching
     - **Structured Output**: Type-safe generation with Pydantic model validation
     - **Workflow Orchestration**: Prefect-based flows and tasks with retries
-    - **Observability**: Distributed tracing via Laminar (LMNR) for debugging
+    - **Observability**: Built-in monitoring and debugging capabilities
     - **Local Development**: Simple runner for testing without infrastructure
 
 Quick Start:
@@ -55,7 +55,7 @@ Quick Start:
     ... ) -> DocumentList:
     ...     # Messages accept AIMessages or str. Wrap documents: AIMessages([doc])
     ...     response = await llm.generate(
-    ...         model="gpt-5",
+    ...         "gpt-5",
     ...         messages=AIMessages([documents[0]])
     ...     )
     ...     result = OutputDoc.create(
@@ -76,8 +76,6 @@ Optional Environment Variables:
     - PREFECT_API_KEY: Prefect API authentication key
     - LMNR_PROJECT_API_KEY: Laminar (LMNR) API key for tracing
     - LMNR_DEBUG: Set to "true" to enable debug-level traces
-    - LMNR_SESSION_ID: Default session ID for traces
-    - LMNR_USER_ID: Default user ID for traces
 """
 
 from . import llm
@@ -99,6 +97,8 @@ from .llm import (
     ModelOptions,
     ModelResponse,
     StructuredModelResponse,
+    generate,
+    generate_structured,
 )
 from .logging import (
     LoggerMixin,
@@ -145,7 +145,9 @@ __all__ = [
     "prefect_test_harness",
     "disable_run_logger",
     # LLM
-    "llm",
+    "llm",  # for backward compatibility
+    "generate",
+    "generate_structured",
     "ModelName",
     "ModelOptions",
     "ModelResponse",
@@ -159,4 +161,6 @@ __all__ = [
     "set_trace_cost",
     # Utils
     "PromptManager",
+    "generate",
+    "generate_structured",
 ]

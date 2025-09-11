@@ -1,7 +1,4 @@
-"""Logging mixin for consistent logging across components using Prefect logging.
-
-@public
-"""
+"""Logging mixin for consistent logging across components using Prefect logging."""
 
 import contextlib
 import time
@@ -16,8 +13,6 @@ from prefect.logging import get_logger
 
 class LoggerMixin:
     """Mixin class that provides consistent logging functionality using Prefect's logging system.
-
-    @public
 
     Note for users: In your code, always obtain loggers via get_pipeline_logger(__name__).
     The mixin's internal behavior routes to the appropriate backend; you should not call
@@ -94,10 +89,7 @@ class LoggerMixin:
 
 
 class StructuredLoggerMixin(LoggerMixin):
-    """Extended mixin for structured logging with Prefect.
-
-    @public
-    """
+    """Extended mixin for structured logging with Prefect."""
 
     def log_event(self, event: str, **kwargs: Any) -> None:
         """Log a structured event.

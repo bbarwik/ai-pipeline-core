@@ -5,24 +5,24 @@ locally without full Prefect orchestration. It handles document I/O,
 flow sequencing, and error management.
 
 Key components:
-    - Document I/O from/to filesystem directories
+    - Document I/O from/to filesystem directories via FlowConfig
     - Single and multi-flow execution
     - Automatic document validation and passing between flows
     - Step-based execution control (start/end steps)
 
 Directory structure:
     working_dir/
-    ├── InputDocument/       # Documents of type InputDocument
+    ├── inputdocument/       # Documents of type InputDocument (lowercase)
     │   ├── file1.txt
     │   └── file1.txt.description.md   # Optional description
-    └── OutputDocument/      # Documents of type OutputDocument
+    └── outputdocument/      # Documents of type OutputDocument (lowercase)
         └── result.json
 
 Example:
-    >>> from ai_pipeline_core.simple_runner import run_pipeline
+    >>> from ai_pipeline_core import simple_runner
     >>>
     >>> # Run single flow
-    >>> results = await run_pipeline(
+    >>> results = await simple_runner.run_pipeline(
     ...     flow_func=MyFlow,
     ...     config=MyConfig,
     ...     project_name="test",
@@ -31,15 +31,14 @@ Example:
     ... )
 
 Note:
-    Document directories are named using the canonical_name() method
-    of each document type for consistent organization.
+    Document directories are organized by document type names (lowercase)
+    for consistent structure and easy access.
 """
 
-import json
 from pathlib import Path
 from typing import Any, Callable, Sequence, Type
 
-from ai_pipeline_core.documents import Document, DocumentList, FlowDocument
+from ai_pipeline_core.documents import DocumentList
 from ai_pipeline_core.flow.config import FlowConfig
 from ai_pipeline_core.flow.options import FlowOptions
 from ai_pipeline_core.logging import get_pipeline_logger
@@ -51,156 +50,6 @@ FlowSequence = Sequence[Callable[..., Any]]
 
 ConfigSequence = Sequence[Type[FlowConfig]]
 """Type alias for a sequence of flow configuration classes."""
-
-
-def load_documents_from_directory(
-    base_dir: Path, document_types: Sequence[Type[FlowDocument]]
-) -> DocumentList:
-    """Load documents from filesystem directories by type.
-
-    Scans subdirectories of base_dir for documents matching the provided
-    types. Each document type has its own subdirectory named after its
-    canonical_name().
-
-    Args:
-        base_dir: Base directory containing document subdirectories.
-        document_types: Sequence of FlowDocument subclasses to load.
-                       Each type corresponds to a subdirectory.
-
-    Returns:
-        DocumentList containing all successfully loaded documents.
-        Empty list if no documents found or directories don't exist.
-
-    Directory structure:
-        base_dir/
-        ├── DocumentTypeA/     # canonical_name() of DocumentTypeA
-        │   ├── doc1.txt
-        │   ├── doc1.txt.description.md  # Optional description file
-        │   └── doc2.json
-        └── DocumentTypeB/
-            └── data.csv
-
-    File handling:
-        - Document content is read as bytes
-        - Optional .description.md files provide document descriptions
-        - Failed loads are logged but don't stop processing
-        - Non-file entries are skipped
-
-    Example:
-        >>> from my_docs import InputDoc, ConfigDoc
-        >>> docs = load_documents_from_directory(
-        ...     Path("./data"),
-        ...     [InputDoc, ConfigDoc]
-        ... )
-        >>> print(f"Loaded {len(docs)} documents")
-
-    Note:
-        - Uses canonical_name() for directory names (e.g., "InputDocument")
-        - Descriptions are loaded from "{filename}.description.md" files
-        - All file types are supported (determined by document class)
-    """
-    documents = DocumentList()
-
-    for doc_class in document_types:
-        dir_name = doc_class.canonical_name()
-        type_dir = base_dir / dir_name
-
-        if not type_dir.exists() or not type_dir.is_dir():
-            continue
-
-        logger.info(f"Loading documents from {type_dir.relative_to(base_dir)}")
-
-        for file_path in type_dir.iterdir():
-            if not file_path.is_file() or file_path.name.endswith(Document.DESCRIPTION_EXTENSION):
-                continue
-
-            # Skip .sources.json files - they are metadata, not documents
-            if file_path.name.endswith(".sources.json"):
-                continue
-
-            try:
-                content = file_path.read_bytes()
-
-                # Load sources if .sources.json exists
-                sources = []
-                sources_file = file_path.with_name(file_path.name + ".sources.json")
-                if sources_file.exists():
-                    sources = json.loads(sources_file.read_text(encoding="utf-8"))
-
-                doc = doc_class(name=file_path.name, content=content, sources=sources)
-
-                desc_file = file_path.with_name(file_path.name + Document.DESCRIPTION_EXTENSION)
-                if desc_file.exists():
-                    object.__setattr__(doc, "description", desc_file.read_text(encoding="utf-8"))
-
-                documents.append(doc)
-            except Exception as e:
-                logger.error(
-                    f"  Failed to load {file_path.name} as {doc_class.__name__}: {e}", exc_info=True
-                )
-
-    return documents
-
-
-def save_documents_to_directory(base_dir: Path, documents: DocumentList) -> None:
-    """Save documents to filesystem directories by type.
-
-    Creates subdirectories under base_dir for each document type and
-    saves documents with their original filenames. Only FlowDocument
-    instances are saved (temporary documents are skipped).
-
-    Args:
-        base_dir: Base directory for saving document subdirectories.
-                 Created if it doesn't exist.
-        documents: DocumentList containing documents to save.
-                  Non-FlowDocument instances are silently skipped.
-
-    Side effects:
-        - Creates base_dir and subdirectories as needed
-        - Overwrites existing files with the same name
-        - Logs each saved document
-        - Creates .description.md files for documents with descriptions
-
-    Directory structure created:
-        base_dir/
-        └── DocumentType/      # canonical_name() of document
-            ├── output.json    # Document content
-            └── output.json.description.md  # Optional description
-
-    Example:
-        >>> docs = DocumentList([
-        ...     OutputDoc(name="result.txt", content=b"data"),
-        ...     OutputDoc(name="stats.json", content=b'{...}')
-        ... ])
-        >>> save_documents_to_directory(Path("./output"), docs)
-        >>> # Creates ./output/OutputDocument/result.txt
-        >>> #     and ./output/OutputDocument/stats.json
-
-    Note:
-        - Only FlowDocument subclasses are saved
-        - TaskDocument and other temporary documents are skipped
-        - Descriptions are saved as separate .description.md files
-    """
-    for document in documents:
-        if not isinstance(document, FlowDocument):
-            continue
-
-        dir_name = document.canonical_name()
-        document_dir = base_dir / dir_name
-        document_dir.mkdir(parents=True, exist_ok=True)
-
-        file_path = document_dir / document.name
-        file_path.write_bytes(document.content)
-        logger.info(f"Saved: {dir_name}/{document.name}")
-
-        if document.description:
-            desc_file = file_path.with_name(file_path.name + Document.DESCRIPTION_EXTENSION)
-            desc_file.write_text(document.description, encoding="utf-8")
-
-        # Save sources to .sources.json if present
-        if document.sources:
-            sources_file = file_path.with_name(file_path.name + ".sources.json")
-            sources_file.write_text(json.dumps(document.sources, indent=2), encoding="utf-8")
 
 
 async def run_pipeline(
@@ -273,7 +122,8 @@ async def run_pipeline(
 
     logger.info(f"Running Flow: {flow_name}")
 
-    input_documents = load_documents_from_directory(output_dir, config.INPUT_DOCUMENT_TYPES)
+    # Load input documents using FlowConfig's new async method
+    input_documents = await config.load_documents(str(output_dir))
 
     if not config.has_input_documents(input_documents):
         raise RuntimeError(f"Missing input documents for flow {flow_name}")
@@ -282,7 +132,8 @@ async def run_pipeline(
 
     config.validate_output_documents(result_documents)
 
-    save_documents_to_directory(output_dir, result_documents)
+    # Save output documents using FlowConfig's new async method
+    await config.save_documents(str(output_dir), result_documents)
 
     logger.info(f"Completed Flow: {flow_name}")
 

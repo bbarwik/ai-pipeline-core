@@ -13,10 +13,8 @@ from ai_pipeline_core.flow.config import FlowConfig
 from ai_pipeline_core.flow.options import FlowOptions
 from ai_pipeline_core.simple_runner.cli import run_cli
 from ai_pipeline_core.simple_runner.simple_runner import (
-    load_documents_from_directory,
     run_pipeline,
     run_pipelines,
-    save_documents_to_directory,
 )
 
 
@@ -50,7 +48,7 @@ class CustomFlowOptions(FlowOptions):
 class TestDocumentOperations:
     """Test document loading and saving operations."""
 
-    def test_save_documents_to_directory(self, tmp_path: Path):
+    async def test_save_documents_to_directory(self, tmp_path: Path):
         """Test saving documents to directory."""
         doc1 = SimpleInputDocument(name="test1.txt", content=b"content1")
         doc2 = SimpleInputDocument(
@@ -58,10 +56,10 @@ class TestDocumentOperations:
         )
         documents = DocumentList([doc1, doc2])
 
-        save_documents_to_directory(tmp_path, documents)
+        await SimpleFlowConfig.save_documents(str(tmp_path), documents, validate_output_type=False)
 
         # Check files were created
-        doc_dir = tmp_path / "simple_input"
+        doc_dir = tmp_path / "simpleinputdocument"
         assert doc_dir.exists()
         assert (doc_dir / "test1.txt").exists()
         assert (doc_dir / "test2.txt").exists()
@@ -72,17 +70,17 @@ class TestDocumentOperations:
         assert (doc_dir / "test2.txt").read_bytes() == b"content2"
         assert (doc_dir / "test2.txt.description.md").read_text() == "Test description"
 
-    def test_load_documents_from_directory(self, tmp_path: Path):
+    async def test_load_documents_from_directory(self, tmp_path: Path):
         """Test loading documents from directory."""
         # Create test files
-        doc_dir = tmp_path / "simple_input"
+        doc_dir = tmp_path / "simpleinputdocument"
         doc_dir.mkdir()
         (doc_dir / "test1.txt").write_bytes(b"content1")
         (doc_dir / "test2.txt").write_bytes(b"content2")
         (doc_dir / "test2.txt.description.md").write_text("Test description")
 
         # Load documents
-        documents = load_documents_from_directory(tmp_path, [SimpleInputDocument])
+        documents = await SimpleFlowConfig.load_documents(str(tmp_path))
 
         assert len(documents) == 2
         doc1 = next((d for d in documents if d.name == "test1.txt"), None)
@@ -96,14 +94,14 @@ class TestDocumentOperations:
         assert doc2.content == b"content2"
         assert doc2.description == "Test description"
 
-    def test_load_documents_missing_directory(self, tmp_path: Path):
+    async def test_load_documents_missing_directory(self, tmp_path: Path):
         """Test loading documents when directory doesn't exist."""
-        documents = load_documents_from_directory(tmp_path / "nonexistent", [SimpleInputDocument])
+        documents = await SimpleFlowConfig.load_documents(str(tmp_path / "nonexistent"))
         assert len(documents) == 0
 
-    def test_load_documents_with_invalid_file(self, tmp_path: Path, caplog):
+    async def test_load_documents_with_invalid_file(self, tmp_path: Path, caplog):
         """Test loading documents handles invalid files gracefully."""
-        doc_dir = tmp_path / "simple_input"
+        doc_dir = tmp_path / "simpleinputdocument"
         doc_dir.mkdir()
         (doc_dir / "valid.txt").write_bytes(b"valid content")
 
@@ -111,7 +109,7 @@ class TestDocumentOperations:
         with patch.object(
             SimpleInputDocument, "__init__", side_effect=ValueError("Invalid content")
         ):
-            documents = load_documents_from_directory(tmp_path, [SimpleInputDocument])
+            documents = await SimpleFlowConfig.load_documents(str(tmp_path))
 
         assert len(documents) == 0
         assert "Failed to load" in caplog.text
@@ -133,7 +131,9 @@ class TestRunPipeline:
 
         # Prepare input documents
         input_doc = SimpleInputDocument(name="input.txt", content=b"input")
-        save_documents_to_directory(tmp_path, DocumentList([input_doc]))
+        await SimpleFlowConfig.save_documents(
+            str(tmp_path), DocumentList([input_doc]), validate_output_type=False
+        )
 
         # Run single pipeline
         result = await run_pipeline(
@@ -150,7 +150,7 @@ class TestRunPipeline:
         assert result[0].content == b"result"
 
         # Verify output was saved
-        assert (tmp_path / "output" / "output.txt").exists()
+        assert (tmp_path / "outputdocument" / "output.txt").exists()
 
 
 class TestRunPipelines:
@@ -169,7 +169,9 @@ class TestRunPipelines:
 
         # Prepare input documents
         input_doc = SimpleInputDocument(name="input.txt", content=b"input")
-        save_documents_to_directory(tmp_path, DocumentList([input_doc]))
+        await SimpleFlowConfig.save_documents(
+            str(tmp_path), DocumentList([input_doc]), validate_output_type=False
+        )
 
         # Run pipeline
         await run_pipelines(
@@ -183,7 +185,7 @@ class TestRunPipelines:
         )
 
         # Verify output
-        output_dir = tmp_path / "output"
+        output_dir = tmp_path / "outputdocument"
         assert output_dir.exists()
         assert (output_dir / "output.txt").exists()
         assert (output_dir / "output.txt").read_bytes() == b"output"
@@ -222,8 +224,8 @@ class TestRunPipelines:
         )
 
         # Verify final output
-        assert (tmp_path / "output" / "final.txt").exists()
-        assert (tmp_path / "output" / "final.txt").read_bytes() == b"final"
+        assert (tmp_path / "outputdocument" / "final.txt").exists()
+        assert (tmp_path / "outputdocument" / "final.txt").read_bytes() == b"final"
 
     async def test_run_pipeline_with_start_end_steps(self, tmp_path: Path):
         """Test running pipeline with specific start and end steps."""
@@ -365,7 +367,7 @@ class TestCLI:
             )
 
         assert flow_executed
-        assert (tmp_path / "output" / "output.txt").exists()
+        assert (tmp_path / "outputdocument" / "output.txt").exists()
 
     def test_run_cli_positional_argument(self, tmp_path: Path):
         """Test that working_directory is handled as positional argument."""
@@ -422,9 +424,9 @@ class TestCLI:
             )
 
         # Check initial documents were saved
-        assert (tmp_path / "simple_input" / "init1.txt").exists()
-        assert (tmp_path / "simple_input" / "init2.txt").exists()
-        assert (tmp_path / "simple_input" / "init1.txt").read_bytes() == b"initial1"
+        assert (tmp_path / "simpleinputdocument" / "init1.txt").exists()
+        assert (tmp_path / "simpleinputdocument" / "init2.txt").exists()
+        assert (tmp_path / "simpleinputdocument" / "init1.txt").read_bytes() == b"initial1"
 
     def test_run_cli_skip_initial_documents_when_start_not_1(self, tmp_path: Path):
         """Test CLI skips initial documents when start > 1."""
@@ -455,7 +457,7 @@ class TestCLI:
                 )
 
         # Initial documents should NOT be saved when start > 1
-        assert not (tmp_path / "simple_input" / "init.txt").exists()
+        assert not (tmp_path / "simpleinputdocument" / "init.txt").exists()
 
     def test_run_cli_environment_setup(self):
         """Test that CLI initializes environment correctly."""

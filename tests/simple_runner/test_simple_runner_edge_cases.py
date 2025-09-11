@@ -12,10 +12,8 @@ from ai_pipeline_core.flow.config import FlowConfig
 from ai_pipeline_core.flow.options import FlowOptions
 from ai_pipeline_core.simple_runner.cli import run_cli
 from ai_pipeline_core.simple_runner.simple_runner import (
-    load_documents_from_directory,
     run_pipeline,
     run_pipelines,
-    save_documents_to_directory,
 )
 
 
@@ -47,18 +45,20 @@ class EdgeCaseFlowConfig(FlowConfig):
 class TestEdgeCases:
     """Test edge cases for simple_runner."""
 
-    def test_save_documents_skips_non_flow_documents(self, tmp_path: Path):
-        """Test that save_documents_to_directory skips non-FlowDocument types."""
+    async def test_save_documents_skips_non_flow_documents(self, tmp_path: Path):
+        """Test that save_documents skips non-FlowDocument types."""
         flow_doc = SampleDocument(name="flow.txt", content=b"flow content")
         task_doc = NonFlowDoc(name="task.txt", content=b"task content")
         # Document.create is abstract, just skip this test for regular Document
 
         documents = DocumentList([flow_doc, task_doc])
-        save_documents_to_directory(tmp_path, documents)
+        await EdgeCaseFlowConfig.save_documents(
+            str(tmp_path), documents, validate_output_type=False
+        )
 
         # Only flow document should be saved (task documents are skipped)
-        assert (tmp_path / "sample" / "flow.txt").exists()
-        assert not (tmp_path / "non_flow" / "task.txt").exists()
+        assert (tmp_path / "sampledocument" / "flow.txt").exists()
+        assert not (tmp_path / "nonflowdoc" / "task.txt").exists()
 
     def test_project_name_from_empty_directory_name(self, tmp_path: Path):
         """Test error when directory name results in empty project name."""
@@ -104,7 +104,7 @@ class TestEdgeCases:
             )
 
         # Check initial document was saved
-        assert (tmp_path / "sample" / "init.txt").exists()
+        assert (tmp_path / "sampledocument" / "init.txt").exists()
 
     def test_project_name_cli_override(self, tmp_path: Path):
         """Test that --project-name CLI flag overrides directory name."""
@@ -150,7 +150,7 @@ class TestEdgeCases:
             )
 
         # Check output was created
-        assert (tmp_path / "sample" / "output.txt").exists()
+        assert (tmp_path / "sampledocument" / "output.txt").exists()
 
     async def test_run_pipeline_custom_flow_name(self, tmp_path: Path):
         """Test run_pipeline with custom flow name."""
@@ -162,7 +162,9 @@ class TestEdgeCases:
 
         # Prepare input documents since EdgeCaseFlowConfig requires them
         input_doc = SampleDocument(name="input.txt", content=b"input")
-        save_documents_to_directory(tmp_path, DocumentList([input_doc]))
+        await EdgeCaseFlowConfig.save_documents(
+            str(tmp_path), DocumentList([input_doc]), validate_output_type=False
+        )
 
         # Test with custom flow name
         result = await run_pipeline(
@@ -187,7 +189,9 @@ class TestEdgeCases:
 
         # Prepare input documents since EdgeCaseFlowConfig requires them
         input_doc = SampleDocument(name="input.txt", content=b"input")
-        save_documents_to_directory(tmp_path, DocumentList([input_doc]))
+        await EdgeCaseFlowConfig.save_documents(
+            str(tmp_path), DocumentList([input_doc]), validate_output_type=False
+        )
 
         # Add name attribute to function
         test_flow.name = "FlowWithNameAttribute"  # type: ignore
@@ -235,13 +239,13 @@ class TestEdgeCases:
 
         assert flow_executions == [1, 2, 3]
 
-    def test_load_documents_with_test_data(self):
+    async def test_load_documents_with_test_data(self):
         """Test loading documents from test_data directory."""
         test_data_dir = Path("tests/test_data/sample_project")
         test_data_dir.mkdir(parents=True, exist_ok=True)
 
         # Create sample documents
-        doc_dir = test_data_dir / "sample"
+        doc_dir = test_data_dir / "sampledocument"
         doc_dir.mkdir(exist_ok=True)
 
         (doc_dir / "file1.txt").write_bytes(b"content1")
@@ -250,7 +254,7 @@ class TestEdgeCases:
 
         try:
             # Load documents
-            documents = load_documents_from_directory(test_data_dir, [SampleDocument])
+            documents = await EdgeCaseFlowConfig.load_documents(str(test_data_dir))
 
             assert len(documents) == 2
             file1 = next((d for d in documents if d.name == "file1.txt"), None)
@@ -299,7 +303,7 @@ class TestEdgeCases:
                 )
 
         # Initial document should NOT be saved when start > 1
-        assert not (tmp_path / "sample" / "init.txt").exists()
+        assert not (tmp_path / "sampledocument" / "init.txt").exists()
 
     def test_custom_flow_options_in_cli(self, tmp_path: Path):
         """Test CLI with custom FlowOptions containing various field types."""
