@@ -101,7 +101,6 @@ class _DocumentsFlowCallable(Protocol[FO_contra]):
         project_name: Name of the project/pipeline.
         documents: Input DocumentList to process.
         flow_options: Configuration options (FlowOptions or subclass).
-        *args, **kwargs: Additional flow-specific parameters.
 
     Returns:
         DocumentList: Processed documents.
@@ -115,8 +114,6 @@ class _DocumentsFlowCallable(Protocol[FO_contra]):
         project_name: str,
         documents: DocumentList,
         flow_options: FO_contra,
-        *args: Any,
-        **kwargs: Any,
     ) -> Coroutine[Any, Any, DocumentList]: ...
 
 
@@ -147,8 +144,6 @@ class _FlowLike(Protocol[FO_contra]):
         project_name: str,
         documents: DocumentList,
         flow_options: FO_contra,
-        *args: Any,
-        **kwargs: Any,
     ) -> Coroutine[Any, Any, DocumentList]: ...
 
     name: str | None
@@ -467,13 +462,10 @@ def pipeline_task(
 # --------------------------------------------------------------------------- #
 # @pipeline_flow — async-only, traced, returns Prefect's flow wrapper
 # --------------------------------------------------------------------------- #
-@overload
-def pipeline_flow(__fn: _DocumentsFlowCallable[FO_contra], /) -> _FlowLike[FO_contra]: ...
-@overload
 def pipeline_flow(
     *,
     # config
-    config: type[FlowConfig] | None = None,
+    config: type[FlowConfig],
     # tracing
     trace_level: TraceLevel = "always",
     trace_ignore_input: bool = False,
@@ -502,44 +494,7 @@ def pipeline_flow(
     on_cancellation: list[FlowStateHook[Any, Any]] | None = None,
     on_crashed: list[FlowStateHook[Any, Any]] | None = None,
     on_running: list[FlowStateHook[Any, Any]] | None = None,
-) -> Callable[[_DocumentsFlowCallable[FO_contra]], _FlowLike[FO_contra]]: ...
-
-
-def pipeline_flow(
-    __fn: _DocumentsFlowCallable[FO_contra] | None = None,
-    /,
-    *,
-    # config
-    config: type[FlowConfig] | None = None,
-    # tracing
-    trace_level: TraceLevel = "always",
-    trace_ignore_input: bool = False,
-    trace_ignore_output: bool = False,
-    trace_ignore_inputs: list[str] | None = None,
-    trace_input_formatter: Callable[..., str] | None = None,
-    trace_output_formatter: Callable[..., str] | None = None,
-    trace_cost: float | None = None,
-    # prefect passthrough
-    name: str | None = None,
-    version: str | None = None,
-    flow_run_name: Union[Callable[[], str], str] | None = None,
-    retries: int | None = None,
-    retry_delay_seconds: int | float | None = None,
-    task_runner: TaskRunner[PrefectFuture[Any]] | None = None,
-    description: str | None = None,
-    timeout_seconds: int | float | None = None,
-    validate_parameters: bool = True,
-    persist_result: bool | None = None,
-    result_storage: ResultStorage | str | None = None,
-    result_serializer: ResultSerializer | str | None = None,
-    cache_result_in_memory: bool = True,
-    log_prints: bool | None = None,
-    on_completion: list[FlowStateHook[Any, Any]] | None = None,
-    on_failure: list[FlowStateHook[Any, Any]] | None = None,
-    on_cancellation: list[FlowStateHook[Any, Any]] | None = None,
-    on_crashed: list[FlowStateHook[Any, Any]] | None = None,
-    on_running: list[FlowStateHook[Any, Any]] | None = None,
-) -> _FlowLike[FO_contra] | Callable[[_DocumentsFlowCallable[FO_contra]], _FlowLike[FO_contra]]:
+) -> Callable[[_DocumentsFlowCallable[FO_contra]], _FlowLike[FO_contra]]:
     """Decorate an async flow for document processing.
 
     @public
@@ -559,19 +514,14 @@ def pipeline_flow(
             project_name: str,         # Project/pipeline identifier
             documents: DocumentList,   # Input documents to process
             flow_options: FlowOptions, # Configuration (or subclass)
-            *args,                     # Additional positional args for custom parameters
-            **kwargs                   # Additional keyword args for custom parameters
         ) -> DocumentList             # Must return DocumentList
-
-    Note: *args and **kwargs allow for defining custom parameters on your flow
-    function, which can be passed during execution for flow-specific needs.
 
     Args:
         __fn: Function to decorate (when used without parentheses).
 
         Config parameter:
-        config: FlowConfig class for document loading/saving. When provided,
-                enables automatic loading from string paths and saving outputs.
+        config: Required FlowConfig class for document loading/saving. Enables
+                automatic loading from string paths and saving outputs.
 
         Tracing parameters:
         trace_level: When to trace ("always", "debug", "off").
@@ -613,10 +563,14 @@ def pipeline_flow(
         while enforcing document processing conventions.
 
     Example:
-        >>> from ai_pipeline_core import FlowOptions
+        >>> from ai_pipeline_core import FlowOptions, FlowConfig
         >>>
-        >>> # RECOMMENDED - No parameters needed!
-        >>> @pipeline_flow
+        >>> class MyFlowConfig(FlowConfig):
+        ...     INPUT_DOCUMENT_TYPES = [InputDoc]
+        ...     OUTPUT_DOCUMENT_TYPE = OutputDoc
+        >>>
+        >>> # Standard usage with config
+        >>> @pipeline_flow(config=MyFlowConfig)
         >>> async def analyze_documents(
         ...     project_name: str,
         ...     documents: DocumentList,
@@ -629,8 +583,8 @@ def pipeline_flow(
         ...         results.append(result)
         ...     return DocumentList(results)
         >>>
-        >>> # With parameters (only when necessary):
-        >>> @pipeline_flow(retries=2)  # Only for flows that need retry logic
+        >>> # With additional parameters:
+        >>> @pipeline_flow(config=MyFlowConfig, retries=2)
         >>> async def critical_flow(
         ...     project_name: str,
         ...     documents: DocumentList,
@@ -692,18 +646,13 @@ def pipeline_flow(
             project_name: str,
             documents: str | DocumentList,
             flow_options: FO_contra,
-            *args: Any,
-            **kwargs: Any,
         ) -> DocumentList:
             save_path: str | None = None
             if isinstance(documents, str):
                 save_path = documents
-                if config:
-                    documents = await config.load_documents(documents)
-                else:
-                    documents = DocumentList([])
-            result = await fn(project_name, documents, flow_options, *args, **kwargs)
-            if save_path and config:
+                documents = await config.load_documents(documents)
+            result = await fn(project_name, documents, flow_options)
+            if save_path:
                 await config.save_documents(save_path, result)
             if trace_cost is not None and trace_cost > 0:
                 set_trace_cost(trace_cost)
@@ -737,7 +686,7 @@ def pipeline_flow(
                 "documents": str | DocumentList,
             }
 
-        return cast(
+        flow_obj = cast(
             _FlowLike[FO_contra],
             flow_decorator(
                 name=name or fname,
@@ -761,8 +710,11 @@ def pipeline_flow(
                 on_running=on_running,
             )(traced),
         )
+        # Attach config to the flow object for later access
+        flow_obj.config = config  # type: ignore[attr-defined]
+        return flow_obj
 
-    return _apply(__fn) if __fn else _apply
+    return _apply
 
 
 __all__ = ["pipeline_task", "pipeline_flow"]

@@ -11,6 +11,7 @@ from pydantic import Field
 from ai_pipeline_core.documents import DocumentList, FlowDocument
 from ai_pipeline_core.flow.config import FlowConfig
 from ai_pipeline_core.flow.options import FlowOptions
+from ai_pipeline_core.pipeline import pipeline_flow
 from ai_pipeline_core.simple_runner.cli import run_cli
 from ai_pipeline_core.simple_runner.simple_runner import (
     run_pipeline,
@@ -59,7 +60,7 @@ class TestDocumentOperations:
         await SimpleFlowConfig.save_documents(str(tmp_path), documents, validate_output_type=False)
 
         # Check files were created
-        doc_dir = tmp_path / "simpleinputdocument"
+        doc_dir = tmp_path / "simple_input"
         assert doc_dir.exists()
         assert (doc_dir / "test1.txt").exists()
         assert (doc_dir / "test2.txt").exists()
@@ -73,7 +74,7 @@ class TestDocumentOperations:
     async def test_load_documents_from_directory(self, tmp_path: Path):
         """Test loading documents from directory."""
         # Create test files
-        doc_dir = tmp_path / "simpleinputdocument"
+        doc_dir = tmp_path / "simple_input"
         doc_dir.mkdir()
         (doc_dir / "test1.txt").write_bytes(b"content1")
         (doc_dir / "test2.txt").write_bytes(b"content2")
@@ -101,7 +102,7 @@ class TestDocumentOperations:
 
     async def test_load_documents_with_invalid_file(self, tmp_path: Path, caplog):
         """Test loading documents handles invalid files gracefully."""
-        doc_dir = tmp_path / "simpleinputdocument"
+        doc_dir = tmp_path / "simple_input"
         doc_dir.mkdir()
         (doc_dir / "valid.txt").write_bytes(b"valid content")
 
@@ -121,6 +122,7 @@ class TestRunPipeline:
     async def test_run_single_pipeline(self, tmp_path: Path):
         """Test running a single pipeline flow."""
 
+        @pipeline_flow(config=SimpleFlowConfig)
         async def test_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
@@ -138,7 +140,6 @@ class TestRunPipeline:
         # Run single pipeline
         result = await run_pipeline(
             flow_func=test_flow,
-            config=SimpleFlowConfig,
             project_name="test-project",
             output_dir=tmp_path,
             flow_options=FlowOptions(),
@@ -150,7 +151,7 @@ class TestRunPipeline:
         assert result[0].content == b"result"
 
         # Verify output was saved
-        assert (tmp_path / "outputdocument" / "output.txt").exists()
+        assert (tmp_path / "output" / "output.txt").exists()
 
 
 class TestRunPipelines:
@@ -159,6 +160,7 @@ class TestRunPipelines:
     async def test_run_pipelines_single_flow(self, tmp_path: Path):
         """Test running a pipeline with a single flow."""
 
+        @pipeline_flow(config=SimpleFlowConfig)
         async def test_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
@@ -178,34 +180,19 @@ class TestRunPipelines:
             project_name="test-project",
             output_dir=tmp_path,
             flows=[test_flow],
-            flow_configs=[SimpleFlowConfig],
             flow_options=FlowOptions(),
             start_step=1,
             end_step=1,
         )
 
         # Verify output
-        output_dir = tmp_path / "outputdocument"
+        output_dir = tmp_path / "output"
         assert output_dir.exists()
         assert (output_dir / "output.txt").exists()
         assert (output_dir / "output.txt").read_bytes() == b"output"
 
     async def test_run_pipeline_multiple_flows(self, tmp_path: Path):
         """Test running a pipeline with multiple flows."""
-
-        async def flow1(
-            project_name: str, documents: DocumentList, flow_options: FlowOptions
-        ) -> DocumentList:
-            return DocumentList([
-                SimpleInputDocument(name="intermediate.txt", content=b"intermediate")
-            ])
-
-        async def flow2(
-            project_name: str, documents: DocumentList, flow_options: FlowOptions
-        ) -> DocumentList:
-            assert len(documents) == 1
-            assert documents[0].name == "intermediate.txt"
-            return DocumentList([OutputDocument(name="final.txt", content=b"final")])
 
         class Flow1Config(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
@@ -215,44 +202,67 @@ class TestRunPipelines:
             INPUT_DOCUMENT_TYPES = [SimpleInputDocument]
             OUTPUT_DOCUMENT_TYPE = OutputDocument
 
+        @pipeline_flow(config=Flow1Config)
+        async def flow1(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([
+                SimpleInputDocument(name="intermediate.txt", content=b"intermediate")
+            ])
+
+        @pipeline_flow(config=Flow2Config)
+        async def flow2(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            assert len(documents) == 1
+            assert documents[0].name == "intermediate.txt"
+            return DocumentList([OutputDocument(name="final.txt", content=b"final")])
+
         await run_pipelines(
             project_name="test-project",
             output_dir=tmp_path,
             flows=[flow1, flow2],
-            flow_configs=[Flow1Config, Flow2Config],
             flow_options=FlowOptions(),
         )
 
         # Verify final output
-        assert (tmp_path / "outputdocument" / "final.txt").exists()
-        assert (tmp_path / "outputdocument" / "final.txt").read_bytes() == b"final"
+        assert (tmp_path / "output" / "final.txt").exists()
+        assert (tmp_path / "output" / "final.txt").read_bytes() == b"final"
 
     async def test_run_pipeline_with_start_end_steps(self, tmp_path: Path):
         """Test running pipeline with specific start and end steps."""
         flow_calls = []
 
-        async def flow1(*args, **kwargs) -> DocumentList:
-            flow_calls.append(1)
-            return DocumentList([SimpleInputDocument(name="flow1.txt", content=b"flow1")])
-
-        async def flow2(*args, **kwargs) -> DocumentList:
-            flow_calls.append(2)
-            return DocumentList([SimpleInputDocument(name="flow2.txt", content=b"flow2")])
-
-        async def flow3(*args, **kwargs) -> DocumentList:
-            flow_calls.append(3)
-            return DocumentList([SimpleInputDocument(name="flow3.txt", content=b"flow3")])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
+
+        @pipeline_flow(config=DummyConfig)
+        async def flow1(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            flow_calls.append(1)
+            return DocumentList([SimpleInputDocument(name="flow1.txt", content=b"flow1")])
+
+        @pipeline_flow(config=DummyConfig)
+        async def flow2(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            flow_calls.append(2)
+            return DocumentList([SimpleInputDocument(name="flow2.txt", content=b"flow2")])
+
+        @pipeline_flow(config=DummyConfig)
+        async def flow3(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            flow_calls.append(3)
+            return DocumentList([SimpleInputDocument(name="flow3.txt", content=b"flow3")])
 
         # Run only flow 2
         await run_pipelines(
             project_name="test",
             output_dir=tmp_path,
             flows=[flow1, flow2, flow3],
-            flow_configs=[DummyConfig, DummyConfig, DummyConfig],
             flow_options=FlowOptions(),
             start_step=2,
             end_step=2,
@@ -263,19 +273,21 @@ class TestRunPipelines:
     async def test_run_pipeline_invalid_steps(self, tmp_path: Path):
         """Test run_pipeline with invalid step ranges."""
 
-        async def dummy_flow(*args, **kwargs) -> DocumentList:
-            return DocumentList([])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
+
+        @pipeline_flow(config=DummyConfig)
+        async def dummy_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([])
 
         with pytest.raises(ValueError, match="Invalid start/end steps"):
             await run_pipelines(
                 project_name="test",
                 output_dir=tmp_path,
                 flows=[dummy_flow],
-                flow_configs=[DummyConfig],
                 flow_options=FlowOptions(),
                 start_step=2,
                 end_step=1,
@@ -284,7 +296,10 @@ class TestRunPipelines:
     async def test_run_pipeline_missing_input_documents(self, tmp_path: Path):
         """Test pipeline fails when required input documents are missing."""
 
-        async def test_flow(*args, **kwargs) -> DocumentList:
+        @pipeline_flow(config=SimpleFlowConfig)
+        async def test_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
             return DocumentList([])
 
         with pytest.raises(RuntimeError, match="Missing input documents"):
@@ -292,26 +307,27 @@ class TestRunPipelines:
                 project_name="test",
                 output_dir=tmp_path,
                 flows=[test_flow],
-                flow_configs=[SimpleFlowConfig],
                 flow_options=FlowOptions(),
             )
 
     async def test_run_pipeline_flow_exception_propagates(self, tmp_path: Path):
         """Test that exceptions in flows propagate correctly."""
 
-        async def failing_flow(*args, **kwargs) -> DocumentList:
-            raise ValueError("Flow failed")
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
+
+        @pipeline_flow(config=DummyConfig)
+        async def failing_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            raise ValueError("Flow failed")
 
         with pytest.raises(ValueError, match="Flow failed"):
             await run_pipelines(
                 project_name="test",
                 output_dir=tmp_path,
                 flows=[failing_flow],
-                flow_configs=[DummyConfig],
                 flow_options=FlowOptions(),
             )
 
@@ -323,6 +339,7 @@ class TestCLI:
         """Test basic CLI execution."""
         flow_executed = False
 
+        @pipeline_flow(config=SimpleFlowConfig)
         async def test_flow(
             project_name: str, documents: DocumentList, flow_options: CustomFlowOptions
         ) -> DocumentList:
@@ -361,13 +378,12 @@ class TestCLI:
         ):
             run_cli(
                 flows=[test_flow],
-                flow_configs=[SimpleFlowConfig],
                 options_cls=CustomFlowOptions,  # type: ignore[arg-type]
                 initializer=initializer,
             )
 
         assert flow_executed
-        assert (tmp_path / "outputdocument" / "output.txt").exists()
+        assert (tmp_path / "output" / "output.txt").exists()
 
     def test_run_cli_positional_argument(self, tmp_path: Path):
         """Test that working_directory is handled as positional argument."""
@@ -381,17 +397,19 @@ class TestCLI:
             assert Path(opts.working_directory) == tmp_path  # type: ignore
             return "test", DocumentList([])
 
-        async def dummy_flow(*args, **kwargs) -> DocumentList:
-            return DocumentList([])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
 
+        @pipeline_flow(config=DummyConfig)
+        async def dummy_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([])
+
         with patch.object(sys, "argv", ["test", str(tmp_path)]):
             run_cli(
                 flows=[dummy_flow],
-                flow_configs=[DummyConfig],
                 options_cls=FlowOptions,  # type: ignore[arg-type]
                 initializer=initializer,
             )
@@ -408,25 +426,27 @@ class TestCLI:
                 SimpleInputDocument(name="init2.txt", content=b"initial2"),
             ])
 
-        async def dummy_flow(*args, **kwargs) -> DocumentList:
-            return DocumentList([])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
 
+        @pipeline_flow(config=DummyConfig)
+        async def dummy_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([])
+
         with patch.object(sys, "argv", ["test", str(tmp_path), "--start", "1"]):
             run_cli(
                 flows=[dummy_flow],
-                flow_configs=[DummyConfig],
                 options_cls=FlowOptions,  # type: ignore[arg-type]
                 initializer=initializer,
             )
 
         # Check initial documents were saved
-        assert (tmp_path / "simpleinputdocument" / "init1.txt").exists()
-        assert (tmp_path / "simpleinputdocument" / "init2.txt").exists()
-        assert (tmp_path / "simpleinputdocument" / "init1.txt").read_bytes() == b"initial1"
+        assert (tmp_path / "simple_input" / "init1.txt").exists()
+        assert (tmp_path / "simple_input" / "init2.txt").exists()
+        assert (tmp_path / "simple_input" / "init1.txt").read_bytes() == b"initial1"
 
     def test_run_cli_skip_initial_documents_when_start_not_1(self, tmp_path: Path):
         """Test CLI skips initial documents when start > 1."""
@@ -434,12 +454,15 @@ class TestCLI:
         def initializer(opts: FlowOptions) -> tuple[str, DocumentList]:
             return "test", DocumentList([SimpleInputDocument(name="init.txt", content=b"initial")])
 
-        async def dummy_flow(*args, **kwargs) -> DocumentList:
-            return DocumentList([])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
+
+        @pipeline_flow(config=DummyConfig)
+        async def dummy_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([])
 
         with patch.object(sys, "argv", ["test", str(tmp_path), "--start", "2", "--end", "2"]):
 
@@ -451,43 +474,62 @@ class TestCLI:
             ):
                 run_cli(
                     flows=[dummy_flow, dummy_flow],
-                    flow_configs=[DummyConfig, DummyConfig],
                     options_cls=FlowOptions,  # type: ignore[arg-type]
                     initializer=initializer,
                 )
 
         # Initial documents should NOT be saved when start > 1
-        assert not (tmp_path / "simpleinputdocument" / "init.txt").exists()
+        assert not (tmp_path / "simple_input" / "init.txt").exists()
 
     def test_run_cli_environment_setup(self):
         """Test that CLI initializes environment correctly."""
         with patch("ai_pipeline_core.simple_runner.cli.setup_logging") as mock_setup:
-            with patch("ai_pipeline_core.simple_runner.cli.Laminar.initialize") as mock_lmnr:
-                with patch.object(sys, "argv", ["test", "/tmp/test"]):
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        sys.argv[1] = tmpdir
+            # Mock both places where Laminar.initialize is called
+            with patch("ai_pipeline_core.simple_runner.cli.Laminar.initialize") as mock_lmnr_cli:
+                with patch("ai_pipeline_core.tracing.Laminar.initialize") as mock_lmnr_tracing:
+                    with patch.object(sys, "argv", ["test", "/tmp/test"]):
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            sys.argv[1] = tmpdir
 
-                        async def dummy_flow(*args, **kwargs) -> DocumentList:
-                            return DocumentList([])
+                            class DummyConfig(FlowConfig):
+                                INPUT_DOCUMENT_TYPES = []
+                                OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
 
-                        class DummyConfig(FlowConfig):
-                            INPUT_DOCUMENT_TYPES = []
-                            OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
+                            @pipeline_flow(config=DummyConfig)
+                            async def dummy_flow(
+                                project_name: str,
+                                documents: DocumentList,
+                                flow_options: FlowOptions,
+                            ) -> DocumentList:
+                                return DocumentList([])
 
-                        run_cli(
-                            flows=[dummy_flow],
-                            flow_configs=[DummyConfig],
-                            options_cls=FlowOptions,  # type: ignore[arg-type]
-                            initializer=lambda opts: ("test", DocumentList([])),
-                        )
+                            run_cli(
+                                flows=[dummy_flow],
+                                options_cls=FlowOptions,  # type: ignore[arg-type]
+                                initializer=lambda opts: ("test", DocumentList([])),
+                            )
 
-                mock_setup.assert_called_once()
-                mock_lmnr.assert_called_once()
+                    mock_setup.assert_called_once()
+                    # Either CLI or tracing might call it
+                    assert mock_lmnr_cli.called or mock_lmnr_tracing.called
 
     def test_run_cli_handles_lmnr_initialization_failure(self):
         """Test CLI handles LMNR initialization failure gracefully."""
-        with patch("ai_pipeline_core.simple_runner.cli.Laminar.initialize") as mock_lmnr:
-            mock_lmnr.side_effect = Exception("LMNR init failed")
+
+        # Create the flow outside of the mocked context to avoid issues
+        class DummyConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = []
+            OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
+
+        @pipeline_flow(config=DummyConfig)
+        async def dummy_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([])
+
+        # Now mock Laminar.initialize to fail in CLI
+        with patch("ai_pipeline_core.simple_runner.cli.Laminar.initialize") as mock_lmnr_cli:
+            mock_lmnr_cli.side_effect = Exception("LMNR init failed")
 
             # Capture the logger to verify warning
             with patch("ai_pipeline_core.simple_runner.cli.logger") as mock_logger:
@@ -495,17 +537,9 @@ class TestCLI:
                     with tempfile.TemporaryDirectory() as tmpdir:
                         sys.argv[1] = tmpdir
 
-                        async def dummy_flow(*args, **kwargs) -> DocumentList:
-                            return DocumentList([])
-
-                        class DummyConfig(FlowConfig):
-                            INPUT_DOCUMENT_TYPES = []
-                            OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
-
                         # Should not raise, just log warning
                         run_cli(
                             flows=[dummy_flow],
-                            flow_configs=[DummyConfig],
                             options_cls=FlowOptions,  # type: ignore[arg-type]
                             initializer=lambda opts: ("test", DocumentList([])),
                         )
@@ -525,6 +559,11 @@ class TestCLI:
 
         options_received = None
 
+        class DummyConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = []
+            OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
+
+        @pipeline_flow(config=DummyConfig)
         async def test_flow(
             project_name: str, documents: DocumentList, flow_options: ProjectOptions
         ) -> DocumentList:
@@ -534,10 +573,6 @@ class TestCLI:
 
         def initializer(opts: FlowOptions) -> tuple[str, DocumentList]:
             return "test", DocumentList([])
-
-        class DummyConfig(FlowConfig):
-            INPUT_DOCUMENT_TYPES = []
-            OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
 
         with patch.object(
             sys,
@@ -555,7 +590,6 @@ class TestCLI:
         ):
             run_cli(
                 flows=[test_flow],
-                flow_configs=[DummyConfig],
                 options_cls=ProjectOptions,  # type: ignore[arg-type]
                 initializer=initializer,
             )
@@ -571,19 +605,21 @@ class TestCLI:
         def initializer(opts: FlowOptions) -> tuple[str, DocumentList]:
             raise ValueError("Initializer failed")
 
-        async def dummy_flow(*args, **kwargs) -> DocumentList:
-            return DocumentList([])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
+
+        @pipeline_flow(config=DummyConfig)
+        async def dummy_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([])
 
         with patch.object(sys, "argv", ["test", str(tmp_path)]):
             # Should raise exception, not call sys.exit
             with pytest.raises(ValueError, match="Initializer failed"):
                 run_cli(
                     flows=[dummy_flow],
-                    flow_configs=[DummyConfig],
                     options_cls=FlowOptions,  # type: ignore[arg-type]
                     initializer=initializer,
                 )
@@ -595,21 +631,26 @@ class TestFlowSequenceValidation:
     async def test_mismatched_flows_and_configs(self, tmp_path: Path):
         """Test that mismatched flows and configs raise error."""
 
-        async def flow1(*args, **kwargs) -> DocumentList:
-            return DocumentList([])
-
-        async def flow2(*args, **kwargs) -> DocumentList:
-            return DocumentList([])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SimpleInputDocument
 
-        with pytest.raises(ValueError, match="number of flows and flow configs must match"):
+        @pipeline_flow(config=DummyConfig)
+        async def flow1(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([])
+
+        # flow2 is not decorated, so it doesn't have config attribute
+        async def flow2(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([])
+
+        with pytest.raises(RuntimeError, match="does not have a config attribute"):
             await run_pipelines(
                 project_name="test",
                 output_dir=tmp_path,
-                flows=[flow1, flow2],
-                flow_configs=[DummyConfig],  # Only one config for two flows
+                flows=[flow1, flow2],  # flow2 not decorated
                 flow_options=FlowOptions(),
             )

@@ -47,8 +47,17 @@ Note:
     integrated LMNR tracing and are the standard for this library.
 """
 
-from prefect import flow, task
+from prefect import deploy, flow, serve, task
 from prefect.logging import disable_run_logger
 from prefect.testing.utilities import prefect_test_harness
+from prefect.types.entrypoint import EntrypointType
 
-__all__ = ["task", "flow", "disable_run_logger", "prefect_test_harness"]
+__all__ = [
+    "task",
+    "flow",
+    "disable_run_logger",
+    "prefect_test_harness",
+    "serve",
+    "deploy",
+    "EntrypointType",
+]

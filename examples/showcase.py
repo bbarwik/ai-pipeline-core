@@ -66,7 +66,6 @@ from ai_pipeline_core import (
     PromptManager,
     StructuredLoggerMixin,
     TaskDocument,
-    TemporaryDocument,
     canonical_name_key,
     # Prefect utilities
     get_logger,
@@ -276,6 +275,7 @@ async def traced_operation(data: str) -> dict[str, Any]:
 
 
 @pipeline_flow(
+    config=Stage1Config,
     name="stage1_analysis",
     trace_level="always",
     trace_cost=0.01,  # Track total cost for this flow (e.g., $0.01 per run)
@@ -317,7 +317,6 @@ async def stage1_flow(
             set_trace_cost(dynamic_cost)
 
             # Create document using smart factory with Pydantic model
-            # NEW in v0.1.14: Track document sources for provenance
             output = AnalysisDocument.create(
                 name=f"analysis_{doc.id}.json",
                 description="Structured analysis result",
@@ -359,7 +358,7 @@ async def stage1_flow(
     return config.create_and_validate_output(outputs)
 
 
-@pipeline_flow(name="stage2_enhancement")
+@pipeline_flow(config=Stage2Config, name="stage2_enhancement")
 async def stage2_flow(
     project_name: str, documents: DocumentList, flow_options: ShowcaseFlowOptions
 ) -> DocumentList:
@@ -463,8 +462,6 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
     logger.info("Initializing showcase with sample data")
 
     # Note: OPENAI_API_KEY should be set via environment variable or .env file
-
-    # NEW in v0.1.14: Demonstrate source tracking from external references
     external_source = "https://example.com/data-source"
 
     # Create sample documents including list[BaseModel] demonstration
@@ -482,14 +479,6 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
             confidence=0.85,
         ),
     ]
-
-    # Create temporary document to demonstrate TemporaryDocument usage
-    temp_doc = TemporaryDocument.create(
-        name="temp_demo.txt",
-        description="Demo of TemporaryDocument",
-        content="This demonstrates the new TemporaryDocument class",
-    )
-    logger.info(f"Created TemporaryDocument: {temp_doc.name} (type: {temp_doc.base_type})")
 
     docs = DocumentList([
         InputDocument.create(
@@ -532,7 +521,6 @@ def main():
     # Run in CLI mode with all features
     run_cli(
         flows=[stage1_flow, stage2_flow],
-        flow_configs=[Stage1Config, Stage2Config],
         options_cls=ShowcaseFlowOptions,
         initializer=initialize_showcase,
         trace_name="showcase",

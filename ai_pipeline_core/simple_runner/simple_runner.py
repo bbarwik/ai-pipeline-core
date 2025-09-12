@@ -36,10 +36,9 @@ Note:
 """
 
 from pathlib import Path
-from typing import Any, Callable, Sequence, Type
+from typing import Any, Callable, Sequence
 
 from ai_pipeline_core.documents import DocumentList
-from ai_pipeline_core.flow.config import FlowConfig
 from ai_pipeline_core.flow.options import FlowOptions
 from ai_pipeline_core.logging import get_pipeline_logger
 
@@ -48,13 +47,9 @@ logger = get_pipeline_logger(__name__)
 FlowSequence = Sequence[Callable[..., Any]]
 """Type alias for a sequence of flow functions."""
 
-ConfigSequence = Sequence[Type[FlowConfig]]
-"""Type alias for a sequence of flow configuration classes."""
-
 
 async def run_pipeline(
     flow_func: Callable[..., Any],
-    config: Type[FlowConfig],
     project_name: str,
     output_dir: Path,
     flow_options: FlowOptions,
@@ -68,7 +63,7 @@ async def run_pipeline(
 
     The execution proceeds through these steps:
     1. Load input documents from output_dir subdirectories
-    2. Validate input documents against config requirements
+    2. Validate input documents against flow's config requirements
     3. Execute flow function with documents and options
     4. Validate output documents match config.OUTPUT_DOCUMENT_TYPE
     5. Save output documents to output_dir subdirectories
@@ -76,9 +71,7 @@ async def run_pipeline(
     Args:
         flow_func: Async flow function decorated with @pipeline_flow.
                   Must accept (project_name, documents, flow_options).
-
-        config: FlowConfig subclass defining input/output document types.
-               Used for validation and directory organization.
+                  The flow must have a config attribute set by @pipeline_flow.
 
         project_name: Name of the project/pipeline for logging and tracking.
 
@@ -95,14 +88,14 @@ async def run_pipeline(
         DocumentList containing the flow's output documents.
 
     Raises:
-        RuntimeError: If required input documents are missing.
+        RuntimeError: If required input documents are missing or if
+                     flow doesn't have a config attribute.
 
     Example:
-        >>> from my_flows import AnalysisFlow, AnalysisConfig
+        >>> from my_flows import AnalysisFlow
         >>>
         >>> results = await run_pipeline(
         ...     flow_func=AnalysisFlow,
-        ...     config=AnalysisConfig,
         ...     project_name="analysis_001",
         ...     output_dir=Path("./results"),
         ...     flow_options=FlowOptions(temperature=0.7)
@@ -110,8 +103,8 @@ async def run_pipeline(
         >>> print(f"Generated {len(results)} documents")
 
     Note:
-        - Flow must be async (decorated with @pipeline_flow)
-        - Input documents are loaded based on config.INPUT_DOCUMENT_TYPES
+        - Flow must be async (decorated with @pipeline_flow with config)
+        - Input documents are loaded based on flow's config.INPUT_DOCUMENT_TYPES
         - Output is validated against config.OUTPUT_DOCUMENT_TYPE
         - All I/O is logged for debugging
     """
@@ -121,6 +114,14 @@ async def run_pipeline(
         flow_name = getattr(flow_func, "name", None) or getattr(flow_func, "__name__", "flow")
 
     logger.info(f"Running Flow: {flow_name}")
+
+    # Get config from the flow function (attached by @pipeline_flow decorator)
+    config = getattr(flow_func, "config", None)
+    if config is None:
+        raise RuntimeError(
+            f"Flow {flow_name} does not have a config attribute. "
+            "Ensure it's decorated with @pipeline_flow(config=YourConfig)"
+        )
 
     # Load input documents using FlowConfig's new async method
     input_documents = await config.load_documents(str(output_dir))
@@ -144,7 +145,6 @@ async def run_pipelines(
     project_name: str,
     output_dir: Path,
     flows: FlowSequence,
-    flow_configs: ConfigSequence,
     flow_options: FlowOptions,
     start_step: int = 1,
     end_step: int | None = None,
@@ -156,7 +156,7 @@ async def run_pipelines(
     for debugging and resuming failed pipelines.
 
     Execution proceeds by:
-    1. Validating step indices and sequence lengths
+    1. Validating step indices
     2. For each flow in range [start_step, end_step]:
        a. Loading input documents from output_dir
        b. Executing flow with documents
@@ -173,9 +173,8 @@ async def run_pipelines(
         output_dir: Directory for document I/O between flows.
                    Shared by all flows in the sequence.
         flows: Sequence of flow functions to execute in order.
-              Must all be async functions decorated with @pipeline_flow.
-        flow_configs: Sequence of FlowConfig classes corresponding to flows.
-                     Must have same length as flows sequence.
+              Must all be async functions decorated with @pipeline_flow
+              with a config parameter.
         flow_options: Options passed to all flows in the sequence.
                      Individual flows can use different fields.
         start_step: First flow to execute (1-based index).
@@ -184,8 +183,8 @@ async def run_pipelines(
                  None runs through the last flow.
 
     Raises:
-        ValueError: If flows and configs have different lengths, or if
-                   start_step or end_step are out of range.
+        ValueError: If start_step or end_step are out of range.
+        RuntimeError: If any flow doesn't have a config attribute.
 
     Example:
         >>> # Run full pipeline
@@ -193,7 +192,6 @@ async def run_pipelines(
         ...     project_name="analysis",
         ...     output_dir=Path("./work"),
         ...     flows=[ExtractFlow, AnalyzeFlow, SummarizeFlow],
-        ...     flow_configs=[ExtractConfig, AnalyzeConfig, SummaryConfig],
         ...     flow_options=options
         ... )
         >>>
@@ -205,14 +203,12 @@ async def run_pipelines(
         ... )
 
     Note:
+        - Each flow must be decorated with @pipeline_flow(config=...)
         - Each flow's output must match the next flow's input types
         - Failed flows stop the entire pipeline
         - Progress is logged with step numbers for debugging
         - Documents persist in output_dir between runs
     """
-    if len(flows) != len(flow_configs):
-        raise ValueError("The number of flows and flow configs must match.")
-
     num_steps = len(flows)
     start_index = start_step - 1
     end_index = (end_step if end_step is not None else num_steps) - 1
@@ -228,7 +224,6 @@ async def run_pipelines(
 
     for i in range(start_index, end_index + 1):
         flow_func = flows[i]
-        config = flow_configs[i]
         # For Prefect Flow objects, use their name attribute; for functions, use __name__
         flow_name = getattr(flow_func, "name", None) or getattr(
             flow_func, "__name__", f"flow_{i + 1}"
@@ -239,7 +234,6 @@ async def run_pipelines(
         try:
             await run_pipeline(
                 flow_func=flow_func,
-                config=config,
                 project_name=project_name,
                 output_dir=output_dir,
                 flow_options=flow_options,

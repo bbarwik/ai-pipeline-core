@@ -9,6 +9,64 @@ from tests.test_helpers import ConcreteFlowDocument
 class TestAIMessagesBasic:
     """Test basic AIMessages functionality."""
 
+    def test_string_construction_prevention(self):
+        """Test that AIMessages prevents direct string construction."""
+        # Direct string construction should raise TypeError
+        with pytest.raises(TypeError) as exc_info:
+            AIMessages("text")
+        assert "cannot be constructed from a string directly" in str(exc_info.value)
+        assert "AIMessages(['text'])" in str(exc_info.value)
+
+        # These should work fine
+        messages1 = AIMessages(["text"])  # List with string
+        assert len(messages1) == 1
+        assert messages1[0] == "text"
+
+        messages2 = AIMessages()  # Empty
+        messages2.append("text")
+        assert len(messages2) == 1
+        assert messages2[0] == "text"
+
+        messages3 = AIMessages(["hello", "world"])  # Multiple strings
+        assert len(messages3) == 2
+
+        messages4 = AIMessages([])  # Empty list
+        assert len(messages4) == 0
+
+        # From tuple should work
+        messages5 = AIMessages(("hello", "world"))
+        assert len(messages5) == 2
+
+        # From another AIMessages (copying)
+        messages6 = AIMessages(messages1)
+        assert len(messages6) == 1
+        assert messages6[0] == "text"
+
+        # None should create empty
+        messages7 = AIMessages(None)
+        assert len(messages7) == 0
+        messages7 = AIMessages()
+        assert len(messages7) == 0
+
+    def test_string_construction_edge_cases(self):
+        """Test edge cases for string construction prevention."""
+        # Empty string should still raise
+        with pytest.raises(TypeError) as exc_info:
+            AIMessages("")
+        assert "cannot be constructed from a string directly" in str(exc_info.value)
+
+        # Unicode string should raise
+        with pytest.raises(TypeError) as exc_info:
+            AIMessages("你好世界")
+        assert "cannot be constructed from a string directly" in str(exc_info.value)
+
+        # Multiline string should raise
+        with pytest.raises(TypeError) as exc_info:
+            AIMessages("""This is
+            a multiline
+            string""")
+        assert "cannot be constructed from a string directly" in str(exc_info.value)
+
     def test_get_last_message_as_str(self):
         """Test getting last message as string."""
         # String message should return the string

@@ -55,7 +55,7 @@ async def test_pipeline_flow_loads_documents_from_string(prefect_test_fixture):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Prepare input documents
-        input_dir = Path(tmpdir) / "storageinputdoc"
+        input_dir = Path(tmpdir) / "storage_input_doc"
         input_dir.mkdir()
         (input_dir / "input.txt").write_bytes(b"test input")
 
@@ -63,10 +63,10 @@ async def test_pipeline_flow_loads_documents_from_string(prefect_test_fixture):
         options = StorageFlowOptions()
 
         # Run flow with string path
-        result = await test_flow("test_project", tmpdir, options)
+        result = await test_flow("test_project", tmpdir, options)  # type: ignore[arg-type]
 
         # Check output was saved
-        output_dir = Path(tmpdir) / "storageoutputdoc"
+        output_dir = Path(tmpdir) / "storage_output_doc"
         assert output_dir.exists()
         assert (output_dir / "output.txt").exists()
         assert (output_dir / "output.txt").read_bytes() == b"test output"
@@ -96,7 +96,7 @@ async def test_pipeline_flow_with_documentlist_no_save(prefect_test_fixture):
         result = await test_flow("test_project", input_docs, options)
 
         # Check output was NOT saved (no path provided)
-        output_dir = Path(tmpdir) / "storageoutputdoc"
+        output_dir = Path(tmpdir) / "storage_output_doc"
         assert not output_dir.exists()
 
         assert len(result) == 1
@@ -104,14 +104,18 @@ async def test_pipeline_flow_with_documentlist_no_save(prefect_test_fixture):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_flow_without_config(prefect_test_fixture):
-    """Test pipeline_flow with string path but no config."""
+async def test_pipeline_flow_with_empty_config(prefect_test_fixture):
+    """Test pipeline_flow with string path with config that has no documents."""
 
-    @pipeline_flow()  # No config provided
+    class EmptyConfig(FlowConfig):
+        INPUT_DOCUMENT_TYPES = []
+        OUTPUT_DOCUMENT_TYPE = StorageOutputDoc
+
+    @pipeline_flow(config=EmptyConfig)
     async def test_flow(
         project_name: str, documents: DocumentList, flow_options: FlowOptions
     ) -> DocumentList:
-        # Should receive empty DocumentList when no config
+        # Should receive empty DocumentList when no input types in config
         assert len(documents) == 0
         return DocumentList([StorageOutputDoc(name="output.txt", content=b"test output")])
 
@@ -120,11 +124,11 @@ async def test_pipeline_flow_without_config(prefect_test_fixture):
         options = FlowOptions()
 
         # Run flow with string path
-        result = await test_flow("test_project", tmpdir, options)
+        result = await test_flow("test_project", tmpdir, options)  # type: ignore[arg-type]
 
-        # Check output was NOT saved (no config)
-        output_dir = Path(tmpdir) / "storageoutputdoc"
-        assert not output_dir.exists()
+        # Check output was saved
+        output_dir = Path(tmpdir) / "storage_output_doc"
+        assert output_dir.exists()
 
         assert len(result) == 1
         assert isinstance(result[0], StorageOutputDoc)
@@ -156,7 +160,7 @@ async def test_pipeline_flow_with_description_and_sources(prefect_test_fixture):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Prepare input with metadata
-        input_dir = Path(tmpdir) / "storageinputdoc"
+        input_dir = Path(tmpdir) / "storage_input_doc"
         input_dir.mkdir()
         (input_dir / "input.txt").write_bytes(b"test input")
         (input_dir / "input.txt.description.md").write_text("Input description")
@@ -169,10 +173,10 @@ async def test_pipeline_flow_with_description_and_sources(prefect_test_fixture):
         options = StorageFlowOptions()
 
         # Run flow
-        await test_flow("test_project", tmpdir, options)
+        await test_flow("test_project", tmpdir, options)  # type: ignore[call-overload]
 
         # Check output metadata was saved
-        output_dir = Path(tmpdir) / "storageoutputdoc"
+        output_dir = Path(tmpdir) / "storage_output_doc"
         assert (output_dir / "output.txt.description.md").exists()
         assert (output_dir / "output.txt.description.md").read_text() == "Output description"
 

@@ -64,8 +64,8 @@ class AIMessages(list[AIMessageType]):
     CAUTION: AIMessages is a list subclass. Always use list construction (e.g.,
     `AIMessages(["text"])`) or empty constructor with append (e.g.,
     `AIMessages(); messages.append("text")`). Never pass raw strings directly to the
-    constructor (`AIMessages("text")`) as this will iterate over the string characters
-    instead of treating it as a single message.
+    constructor (`AIMessages("text")`) as this will raise a TypeError to prevent
+    accidental character iteration.
 
     Example:
         >>> from ai_pipeline_core import llm
@@ -74,6 +74,27 @@ class AIMessages(list[AIMessageType]):
         >>> response = await llm.generate("gpt-5", messages=messages)
         >>> messages.append(response)  # Add the actual response
     """
+
+    def __init__(self, iterable=None):
+        """Initialize AIMessages with optional iterable.
+
+        Args:
+            iterable: Optional iterable of messages (list, tuple, etc.).
+                     Must not be a string.
+
+        Raises:
+            TypeError: If a string is passed directly to the constructor.
+        """
+        if isinstance(iterable, str):
+            raise TypeError(
+                "AIMessages cannot be constructed from a string directly. "
+                "Use AIMessages(['text']) for a single message or "
+                "AIMessages() and then append('text')."
+            )
+        if iterable is None:
+            super().__init__()
+        else:
+            super().__init__(iterable)
 
     def get_last_message(self) -> AIMessageType:
         """Get the last message in the conversation.

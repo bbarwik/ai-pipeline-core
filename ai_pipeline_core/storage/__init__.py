@@ -3,6 +3,6 @@
 @public
 """
 
-from ai_pipeline_core.storage.storage import ObjectInfo, RetryPolicy, Storage, retry_async
+from ai_pipeline_core.storage.storage import ObjectInfo, RetryPolicy, Storage
 
-__all__ = ["Storage", "ObjectInfo", "RetryPolicy", "retry_async"]
+__all__ = ["Storage", "ObjectInfo", "RetryPolicy"]
