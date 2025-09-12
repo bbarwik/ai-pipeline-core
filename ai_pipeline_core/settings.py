@@ -12,8 +12,7 @@ Environment variables:
     PREFECT_API_URL: Prefect server endpoint for flow orchestration
     PREFECT_API_KEY: Prefect API authentication key
     LMNR_PROJECT_API_KEY: Laminar project key for observability
-    GCS_BLOCK: Prefect GcsBucket block name for GCS storage access
-    GCS_BUCKET: Default GCS bucket name for storage operations
+    GCS_SERVICE_ACCOUNT_FILE: Path to GCS service account JSON file
 
 Configuration precedence:
     1. Environment variables (highest priority)
@@ -41,8 +40,7 @@ Example:
     PREFECT_API_URL=http://localhost:4200/api
     PREFECT_API_KEY=pnu_abc123
     LMNR_PROJECT_API_KEY=lmnr_proj_xyz
-    GCS_BLOCK=my-gcs-block
-    GCS_BUCKET=my-bucket
+    GCS_SERVICE_ACCOUNT_FILE=/path/to/service-account.json
     APP_NAME=production-app
     DEBUG_MODE=false
 
@@ -100,12 +98,9 @@ class Settings(BaseSettings):
         lmnr_debug: Debug mode flag for Laminar. Set to "true" to
                    enable debug-level logging. Empty string by default.
 
-        gcs_block: Prefect GcsBucket block name for GCS storage access.
-                   Used as default when accessing gs:// URIs without
-                   explicitly providing gcs_block parameter.
-
-        gcs_bucket: Default GCS bucket name for storage operations.
-                    Optional configuration for default bucket selection.
+        gcs_service_account_file: Path to GCS service account JSON file.
+                                  Used for authenticating with Google Cloud Storage.
+                                  Optional - if not set, default credentials will be used.
 
     Configuration sources:
         - Environment variables (highest priority)
@@ -137,8 +132,7 @@ class Settings(BaseSettings):
     lmnr_debug: str = ""
 
     # Storage Configuration
-    gcs_block: str = ""  # Prefect GcsBucket block name for GCS access
-    gcs_bucket: str = ""  # Default GCS bucket name (from GCS_BUCKET env)
+    gcs_service_account_file: str = ""  # Path to GCS service account JSON file
 
 
 # Legacy: Module-level instance for backwards compatibility

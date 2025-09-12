@@ -67,15 +67,13 @@ class AnalysisConfig(FlowConfig):
     INPUT_DOCUMENT_TYPES = [InputDoc]
     OUTPUT_DOCUMENT_TYPE = OutputDoc
 
-# Create pipeline flow
-@pipeline_flow
+# Create pipeline flow with required config
+@pipeline_flow(config=AnalysisConfig)
 async def analyze_flow(
     project_name: str,
     documents: DocumentList,
     flow_options: FlowOptions
 ) -> DocumentList:
-    config = AnalysisConfig()
-
     # Process documents
     outputs = []
     for doc in documents:
@@ -92,7 +90,7 @@ async def analyze_flow(
         outputs.append(output)
 
     # RECOMMENDED: Always validate output
-    return config.create_and_validate_output(outputs)
+    return AnalysisConfig.create_and_validate_output(outputs)
 ```
 
 ### Structured Output
@@ -245,15 +243,15 @@ class ProcessingConfig(FlowConfig):
     INPUT_DOCUMENT_TYPES = [RawDataDocument]
     OUTPUT_DOCUMENT_TYPE = ProcessedDocument  # Must be different!
 
-    # Use in flows for validation
-    @pipeline_flow
-    async def process(
-        config: ProcessingConfig,
-        documents: DocumentList,
-        flow_options: FlowOptions
-    ) -> DocumentList:
-        # ... processing logic ...
-        return config.create_and_validate_output(outputs)
+# Use in flows for validation
+@pipeline_flow(config=ProcessingConfig)
+async def process(
+    project_name: str,
+    documents: DocumentList,
+    flow_options: FlowOptions
+) -> DocumentList:
+    # ... processing logic ...
+    return ProcessingConfig.create_and_validate_output(outputs)
 ```
 
 ### Pipeline Decorators
@@ -269,7 +267,7 @@ async def process_chunk(data: str) -> str:
     set_trace_cost(0.05)  # Track costs (new in v0.1.14)
     return result
 
-@pipeline_flow  # Full observability and orchestration
+@pipeline_flow(config=MyFlowConfig)  # Full observability and orchestration
 async def main_flow(
     project_name: str,
     documents: DocumentList,
@@ -297,8 +295,7 @@ PREFECT_API_URL=http://localhost:4200/api
 PREFECT_API_KEY=your-prefect-key
 
 # Optional: Storage (for Google Cloud Storage)
-GCS_BLOCK=my-gcs-block  # Prefect GcsBucket block name
-GCS_BUCKET=my-bucket    # Default bucket (future use)
+GCS_SERVICE_ACCOUNT_FILE=/path/to/service-account.json  # GCS auth file
 ```
 
 ### Settings Management
@@ -326,7 +323,7 @@ print(settings.app_name)
 
 ### Framework Rules (90% Use Cases)
 
-1. **Decorators**: Use `@trace`, `@pipeline_task`, `@pipeline_flow` WITHOUT parameters
+1. **Decorators**: Use `@pipeline_task` WITHOUT parameters, `@pipeline_flow` WITH config
 2. **Logging**: Use `get_pipeline_logger(__name__)` - NEVER `print()` or `logging` module
 3. **LLM calls**: Use `AIMessages` or `str`. Wrap Documents in `AIMessages`
 4. **Options**: Omit `ModelOptions` unless specifically needed (defaults are optimal)

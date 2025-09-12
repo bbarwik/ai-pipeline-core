@@ -19,7 +19,7 @@ from ai_pipeline_core.logging import get_pipeline_logger, setup_logging
 from ai_pipeline_core.prefect import disable_run_logger, prefect_test_harness
 from ai_pipeline_core.settings import settings
 
-from .simple_runner import ConfigSequence, FlowSequence, run_pipelines
+from .simple_runner import FlowSequence, run_pipelines
 
 logger = get_pipeline_logger(__name__)
 
@@ -87,7 +87,6 @@ def _running_under_pytest() -> bool:
 def run_cli(
     *,
     flows: FlowSequence,
-    flow_configs: ConfigSequence,
     options_cls: Type[TOptions],
     initializer: InitializerFunc = None,
     trace_name: str | None = None,
@@ -107,15 +106,11 @@ def run_cli(
         >>> # In __main__.py
         >>> from ai_pipeline_core import simple_runner
         >>> from .flows import AnalysisFlow, SummaryFlow
-        >>> from .config import AnalysisConfig, AnalysisOptions
+        >>> from .config import AnalysisOptions
         >>>
         >>> if __name__ == "__main__":
         ...     simple_runner.run_cli(
         ...         flows=[AnalysisFlow, SummaryFlow],
-        ...         flow_configs=[
-        ...             (AnalysisConfig, AnalysisOptions),
-        ...             (AnalysisConfig, AnalysisOptions)
-        ...         ],
         ...         options_cls=AnalysisOptions,
         ...         trace_name="document-analysis"
         ...     )
@@ -226,13 +221,15 @@ def run_cli(
         _, initial_documents = init_result  # Ignore project name from initializer
 
         # Save initial documents if starting from first step
-        if getattr(opts, "start", 1) == 1 and initial_documents:
-            # Use the first flow's config to save initial documents
-            asyncio.run(
-                flow_configs[0].save_documents(
-                    str(wd), initial_documents, validate_output_type=False
+        if getattr(opts, "start", 1) == 1 and initial_documents and flows:
+            # Get config from the first flow
+            first_flow_config = getattr(flows[0], "config", None)
+            if first_flow_config:
+                asyncio.run(
+                    first_flow_config.save_documents(
+                        str(wd), initial_documents, validate_output_type=False
+                    )
                 )
-            )
 
     # Setup context stack with optional test harness and tracing
     with ExitStack() as stack:
@@ -252,7 +249,6 @@ def run_cli(
                 project_name=project_name,
                 output_dir=wd,
                 flows=flows,
-                flow_configs=flow_configs,
                 flow_options=opts,
                 start_step=getattr(opts, "start", 1),
                 end_step=getattr(opts, "end", None),

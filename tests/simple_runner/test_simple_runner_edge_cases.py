@@ -10,6 +10,7 @@ from pydantic import Field
 from ai_pipeline_core.documents import DocumentList, FlowDocument, TaskDocument
 from ai_pipeline_core.flow.config import FlowConfig
 from ai_pipeline_core.flow.options import FlowOptions
+from ai_pipeline_core.pipeline import pipeline_flow
 from ai_pipeline_core.simple_runner.cli import run_cli
 from ai_pipeline_core.simple_runner.simple_runner import (
     run_pipeline,
@@ -57,7 +58,7 @@ class TestEdgeCases:
         )
 
         # Only flow document should be saved (task documents are skipped)
-        assert (tmp_path / "sampledocument" / "flow.txt").exists()
+        assert (tmp_path / "sample" / "flow.txt").exists()
         assert not (tmp_path / "nonflowdoc" / "task.txt").exists()
 
     def test_project_name_from_empty_directory_name(self, tmp_path: Path):
@@ -67,17 +68,19 @@ class TestEdgeCases:
         with patch.object(sys, "argv", ["test", "/"]):
             with patch("ai_pipeline_core.simple_runner.cli.Path.mkdir"):
 
-                async def dummy_flow(*args, **kwargs) -> DocumentList:
-                    return DocumentList([])
-
                 class DummyConfig(FlowConfig):
                     INPUT_DOCUMENT_TYPES = []
                     OUTPUT_DOCUMENT_TYPE = SampleDocument
 
+                @pipeline_flow(config=DummyConfig)
+                async def dummy_flow(
+                    project_name: str, documents: DocumentList, flow_options: FlowOptions
+                ) -> DocumentList:
+                    return DocumentList([])
+
                 with pytest.raises(ValueError, match="Project name cannot be empty"):
                     run_cli(
                         flows=[dummy_flow],
-                        flow_configs=[DummyConfig],
                         options_cls=FlowOptions,
                     )
 
@@ -88,28 +91,35 @@ class TestEdgeCases:
             # Return tuple with project name and documents
             return "ignored", DocumentList([SampleDocument(name="init.txt", content=b"init")])
 
-        async def dummy_flow(*args, **kwargs) -> DocumentList:
-            return DocumentList([])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SampleDocument
 
+        @pipeline_flow(config=DummyConfig)
+        async def dummy_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([])
+
         with patch.object(sys, "argv", ["test", str(tmp_path)]):
             run_cli(
                 flows=[dummy_flow],
-                flow_configs=[DummyConfig],
                 options_cls=FlowOptions,
                 initializer=initializer,
             )
 
         # Check initial document was saved
-        assert (tmp_path / "sampledocument" / "init.txt").exists()
+        assert (tmp_path / "sample" / "init.txt").exists()
 
     def test_project_name_cli_override(self, tmp_path: Path):
         """Test that --project-name CLI flag overrides directory name."""
         project_name_used = None
 
+        class DummyConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = []
+            OUTPUT_DOCUMENT_TYPE = SampleDocument
+
+        @pipeline_flow(config=DummyConfig)
         async def capture_project_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
@@ -117,14 +127,9 @@ class TestEdgeCases:
             project_name_used = project_name
             return DocumentList([])
 
-        class DummyConfig(FlowConfig):
-            INPUT_DOCUMENT_TYPES = []
-            OUTPUT_DOCUMENT_TYPE = SampleDocument
-
         with patch.object(sys, "argv", ["test", str(tmp_path), "--project-name", "custom-project"]):
             run_cli(
                 flows=[capture_project_flow],
-                flow_configs=[DummyConfig],
                 options_cls=FlowOptions,
             )
 
@@ -133,28 +138,31 @@ class TestEdgeCases:
     def test_run_cli_without_initializer(self, tmp_path: Path):
         """Test run_cli works without an initializer."""
 
-        async def dummy_flow(*args, **kwargs) -> DocumentList:
-            return DocumentList([SampleDocument(name="output.txt", content=b"output")])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SampleDocument
+
+        @pipeline_flow(config=DummyConfig)
+        async def dummy_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([SampleDocument(name="output.txt", content=b"output")])
 
         with patch.object(sys, "argv", ["test", str(tmp_path)]):
             # Should work without initializer
             run_cli(
                 flows=[dummy_flow],
-                flow_configs=[DummyConfig],
                 options_cls=FlowOptions,
                 # No initializer provided
             )
 
         # Check output was created
-        assert (tmp_path / "sampledocument" / "output.txt").exists()
+        assert (tmp_path / "sample" / "output.txt").exists()
 
     async def test_run_pipeline_custom_flow_name(self, tmp_path: Path):
         """Test run_pipeline with custom flow name."""
 
+        @pipeline_flow(config=EdgeCaseFlowConfig)
         async def test_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
@@ -169,7 +177,6 @@ class TestEdgeCases:
         # Test with custom flow name
         result = await run_pipeline(
             flow_func=test_flow,
-            config=EdgeCaseFlowConfig,
             project_name="test",
             output_dir=tmp_path,
             flow_options=FlowOptions(),
@@ -182,6 +189,7 @@ class TestEdgeCases:
     async def test_run_pipeline_flow_with_name_attribute(self, tmp_path: Path):
         """Test run_pipeline gets name from flow function's name attribute."""
 
+        @pipeline_flow(config=EdgeCaseFlowConfig)
         async def test_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
@@ -198,7 +206,6 @@ class TestEdgeCases:
 
         result = await run_pipeline(
             flow_func=test_flow,
-            config=EdgeCaseFlowConfig,
             project_name="test",
             output_dir=tmp_path,
             flow_options=FlowOptions(),
@@ -211,27 +218,35 @@ class TestEdgeCases:
         """Test run_pipelines with end_step=None runs all flows."""
         flow_executions = []
 
-        async def flow1(*args, **kwargs) -> DocumentList:
-            flow_executions.append(1)
-            return DocumentList([SampleDocument(name="f1.txt", content=b"1")])
-
-        async def flow2(*args, **kwargs) -> DocumentList:
-            flow_executions.append(2)
-            return DocumentList([SampleDocument(name="f2.txt", content=b"2")])
-
-        async def flow3(*args, **kwargs) -> DocumentList:
-            flow_executions.append(3)
-            return DocumentList([SampleDocument(name="f3.txt", content=b"3")])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SampleDocument
+
+        @pipeline_flow(config=DummyConfig)
+        async def flow1(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            flow_executions.append(1)
+            return DocumentList([SampleDocument(name="f1.txt", content=b"1")])
+
+        @pipeline_flow(config=DummyConfig)
+        async def flow2(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            flow_executions.append(2)
+            return DocumentList([SampleDocument(name="f2.txt", content=b"2")])
+
+        @pipeline_flow(config=DummyConfig)
+        async def flow3(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            flow_executions.append(3)
+            return DocumentList([SampleDocument(name="f3.txt", content=b"3")])
 
         await run_pipelines(
             project_name="test",
             output_dir=tmp_path,
             flows=[flow1, flow2, flow3],
-            flow_configs=[DummyConfig, DummyConfig, DummyConfig],
             flow_options=FlowOptions(),
             start_step=1,
             end_step=None,  # Should run all flows
@@ -245,7 +260,7 @@ class TestEdgeCases:
         test_data_dir.mkdir(parents=True, exist_ok=True)
 
         # Create sample documents
-        doc_dir = test_data_dir / "sampledocument"
+        doc_dir = test_data_dir / "sample"
         doc_dir.mkdir(exist_ok=True)
 
         (doc_dir / "file1.txt").write_bytes(b"content1")
@@ -280,12 +295,15 @@ class TestEdgeCases:
         def initializer(opts: FlowOptions) -> tuple[str, DocumentList]:
             return "ignored", DocumentList([SampleDocument(name="init.txt", content=b"initial")])
 
-        async def dummy_flow(*args, **kwargs) -> DocumentList:
-            return DocumentList([])
-
         class DummyConfig(FlowConfig):
             INPUT_DOCUMENT_TYPES = []
             OUTPUT_DOCUMENT_TYPE = SampleDocument
+
+        @pipeline_flow(config=DummyConfig)
+        async def dummy_flow(
+            project_name: str, documents: DocumentList, flow_options: FlowOptions
+        ) -> DocumentList:
+            return DocumentList([])
 
         with patch.object(sys, "argv", ["test", str(tmp_path), "--start", "2", "--end", "2"]):
 
@@ -297,13 +315,12 @@ class TestEdgeCases:
             ):
                 run_cli(
                     flows=[dummy_flow, dummy_flow],
-                    flow_configs=[DummyConfig, DummyConfig],
                     options_cls=FlowOptions,
                     initializer=initializer,
                 )
 
         # Initial document should NOT be saved when start > 1
-        assert not (tmp_path / "sampledocument" / "init.txt").exists()
+        assert not (tmp_path / "sample" / "init.txt").exists()
 
     def test_custom_flow_options_in_cli(self, tmp_path: Path):
         """Test CLI with custom FlowOptions containing various field types."""
@@ -319,16 +336,17 @@ class TestEdgeCases:
 
         options_received = None
 
+        class DummyConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = []
+            OUTPUT_DOCUMENT_TYPE = SampleDocument
+
+        @pipeline_flow(config=DummyConfig)
         async def capture_options_flow(
             project_name: str, documents: DocumentList, flow_options: ComplexFlowOptions
         ) -> DocumentList:
             nonlocal options_received
             options_received = flow_options
             return DocumentList([])
-
-        class DummyConfig(FlowConfig):
-            INPUT_DOCUMENT_TYPES = []
-            OUTPUT_DOCUMENT_TYPE = SampleDocument
 
         with patch.object(
             sys,
@@ -350,7 +368,6 @@ class TestEdgeCases:
         ):
             run_cli(
                 flows=[capture_options_flow],
-                flow_configs=[DummyConfig],
                 options_cls=ComplexFlowOptions,
             )
 

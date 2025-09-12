@@ -19,7 +19,7 @@ and cost tracking. All I/O operations are async for maximum throughput.
         from ai_pipeline_core.documents import FlowDocument  # NO!
 
 FRAMEWORK RULES (Use by default, unless instructed otherwise):
-    1. Decorators: Use @pipeline_task, @pipeline_flow WITHOUT parameters
+    1. Decorators: Use @pipeline_task WITHOUT parameters, @pipeline_flow WITH config
     2. Logging: Use get_pipeline_logger(__name__) - NEVER print() or logging module
     3. LLM calls: Use AIMessages or str. Wrap Documents in AIMessages; do not call .text yourself
     4. Options: DO NOT use options parameter - omit it entirely (defaults are optimal)
@@ -41,13 +41,17 @@ Core Capabilities:
 
 Quick Start:
     >>> from ai_pipeline_core import (
-    ...     pipeline_flow, FlowDocument, DocumentList, FlowOptions, llm, AIMessages
+    ...     pipeline_flow, FlowDocument, DocumentList, FlowOptions, FlowConfig, llm, AIMessages
     ... )
     >>>
     >>> class OutputDoc(FlowDocument):
     ...     '''Analysis result document.'''
     >>>
-    >>> @pipeline_flow
+    >>> class MyFlowConfig(FlowConfig):
+    ...     INPUT_DOCUMENT_TYPES = []
+    ...     OUTPUT_DOCUMENT_TYPE = OutputDoc
+    >>>
+    >>> @pipeline_flow(config=MyFlowConfig)
     >>> async def analyze_flow(
     ...     project_name: str,
     ...     documents: DocumentList,
@@ -114,7 +118,7 @@ from .prompt_manager import PromptManager
 from .settings import Settings
 from .tracing import TraceInfo, TraceLevel, set_trace_cost, trace
 
-__version__ = "0.1.14"
+__version__ = "0.2.0"
 
 __all__ = [
     # Config/Settings

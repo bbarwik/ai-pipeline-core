@@ -52,14 +52,25 @@ async def test_pipeline_task_creates_prefect_task():
 
 def test_pipeline_flow_with_documents():
     """Test that pipeline_flow creates a proper flow for document processing."""
-    from ai_pipeline_core.documents import DocumentList
+    from ai_pipeline_core.documents import DocumentList, FlowDocument
+    from ai_pipeline_core.flow.config import FlowConfig
     from ai_pipeline_core.flow.options import FlowOptions
 
-    @pipeline_flow
+    class InputDoc(FlowDocument):
+        pass
+
+    class OutputDoc(FlowDocument):
+        pass
+
+    class TestConfig(FlowConfig):
+        INPUT_DOCUMENT_TYPES = [InputDoc]
+        OUTPUT_DOCUMENT_TYPE = OutputDoc
+
+    @pipeline_flow(config=TestConfig)
     async def my_doc_flow(
         project_name: str, documents: DocumentList, flow_options: FlowOptions
     ) -> DocumentList:
-        return documents
+        return DocumentList([OutputDoc.create(name="output.txt", content=b"output")])
 
     # Check it's a Prefect Flow
     assert hasattr(my_doc_flow, "__wrapped__")

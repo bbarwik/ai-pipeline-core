@@ -234,6 +234,9 @@ class Document(BaseModel, ABC):
     DESCRIPTION_EXTENSION: ClassVar[str] = ".description.md"
     """File extension for description files."""
 
+    SOURCES_EXTENSION: ClassVar[str] = ".sources.json"
+    """File extension for sources metadata files."""
+
     MARKDOWN_LIST_SEPARATOR: ClassVar[str] = "\n\n-----------------\n\n"
     """Separator for markdown list items."""
 
@@ -667,7 +670,7 @@ class Document(BaseModel, ABC):
 
         Ensures the document name is secure and follows conventions:
         - No path traversal characters (.., \\, /)
-        - Cannot end with .description.md
+        - Cannot end with .description.md or .sources.json
         - No leading/trailing whitespace
         - Must match FILES enum if defined
 
@@ -691,6 +694,9 @@ class Document(BaseModel, ABC):
             raise DocumentNameError(
                 f"Document names cannot end with {cls.DESCRIPTION_EXTENSION}: {v}"
             )
+
+        if v.endswith(cls.SOURCES_EXTENSION):
+            raise DocumentNameError(f"Document names cannot end with {cls.SOURCES_EXTENSION}: {v}")
 
         if ".." in v or "\\" in v or "/" in v:
             raise DocumentNameError(f"Invalid filename - contains path traversal characters: {v}")

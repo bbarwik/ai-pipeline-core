@@ -11,6 +11,7 @@ from prefect.flows import Flow
 from prefect.tasks import Task
 
 from ai_pipeline_core.documents import DocumentList, FlowDocument
+from ai_pipeline_core.flow.config import FlowConfig
 from ai_pipeline_core.flow.options import FlowOptions
 from ai_pipeline_core.pipeline import (
     pipeline_flow,
@@ -225,38 +226,54 @@ class TestPipelineFlowDecorator:
     async def test_flow_bare_decorator(self):
         """Test @pipeline_flow without parentheses."""
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig)
         async def my_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
+            # Use InputDocument to avoid unused warning
+            if InputDocument:
                 pass
-            return documents
+            return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
-        docs = DocumentList([SampleDocument(name="test.txt", content=b"test")])
+        docs = DocumentList([InputDocument(name="test.txt", content=b"test")])
         options = FlowOptions()
         result = await my_flow("project", docs, options)
-        assert result == docs
+        assert len(result) == 1
+        assert result[0].name == "output.txt"
+        assert result[0].content == b"output"
 
     async def test_flow_with_parentheses(self):
         """Test @pipeline_flow() with parentheses."""
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow()
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig)
         async def my_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
-            return DocumentList([SampleDocument(name="modified.txt", content=b"modified")])
+            return DocumentList([OutputDocument(name="modified.txt", content=b"modified")])
 
         assert isinstance(my_flow, Flow)
-        docs = DocumentList([SampleDocument(name="test.txt", content=b"test")])
+        docs = DocumentList([InputDocument(name="test.txt", content=b"test")])
         options = FlowOptions()
         result = await my_flow("project", docs, options)
         assert len(result) == 1
@@ -264,10 +281,18 @@ class TestPipelineFlowDecorator:
     async def test_flow_with_trace_parameters(self):
         """Test @pipeline_flow with trace parameters."""
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
         @pipeline_flow(
+            config=TestConfig,
             trace_level="debug",
             trace_ignore_input=True,
             trace_ignore_output=False,
@@ -275,20 +300,28 @@ class TestPipelineFlowDecorator:
         async def my_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
+            # Use InputDocument to avoid unused warning
+            if InputDocument:
                 pass
-            return documents
+            return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
 
     async def test_flow_with_prefect_parameters(self):
         """Test @pipeline_flow with Prefect parameters."""
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
         @pipeline_flow(
+            config=TestConfig,
             name="docs_flow",
             version="1.0",
             description="Process documents",
@@ -298,10 +331,10 @@ class TestPipelineFlowDecorator:
         async def my_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
+            # Use InputDocument to avoid unused warning
+            if InputDocument:
                 pass
-            return documents
+            return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
         assert my_flow.name == "docs_flow"
@@ -310,73 +343,113 @@ class TestPipelineFlowDecorator:
     async def test_flow_with_extra_parameters(self):
         """Test @pipeline_flow with additional parameters."""
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig)
         async def my_flow(
             project_name: str,
             documents: DocumentList,
             flow_options: FlowOptions,
-            extra_param: int = 10,
         ) -> DocumentList:
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
+            # Test that we can access all three parameters
+            assert project_name == "project"
+            assert len(documents) == 1
+            assert documents[0].name == "test.txt"
+            assert flow_options is not None
+            # Use InputDocument to avoid unused warning
+            if InputDocument:
                 pass
-            return documents
+            return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
-        docs = DocumentList([SampleDocument(name="test.txt", content=b"test")])
+        docs = DocumentList([InputDocument(name="test.txt", content=b"test")])
         options = FlowOptions()
-        result = await my_flow("project", docs, options, 20)
-        assert result == docs
+        result = await my_flow("project", docs, options)
+        assert len(result) == 1
+        assert result[0].name == "output.txt"
+        assert result[0].content == b"output"
 
     async def test_flow_async(self):
         """Test @pipeline_flow with async function."""
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig)
         async def my_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
             await asyncio.sleep(0.01)
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
+            # Use InputDocument to avoid unused warning
+            if InputDocument:
                 pass
-            return documents
+            return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
-        docs = DocumentList([SampleDocument(name="test.txt", content=b"test")])
+        docs = DocumentList([InputDocument(name="test.txt", content=b"test")])
         options = FlowOptions()
         result = await my_flow("project", docs, options)  # type: ignore[arg-type]
-        assert result == docs
+        assert len(result) == 1
+        assert result[0].name == "output.txt"
+        assert result[0].content == b"output"
 
     async def test_flow_invalid_signature(self):
         """Test @pipeline_flow with invalid signature."""
+
+        class InputDocument(FlowDocument):
+            pass
+
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
         with pytest.raises(TypeError, match="must accept"):
 
-            @pipeline_flow  # type: ignore[arg-type]
+            @pipeline_flow(config=TestConfig)  # type: ignore[arg-type]
             async def my_flow(project_name: str) -> DocumentList:  # type: ignore[misc]
                 return DocumentList([])
 
     async def test_flow_invalid_return_type(self):
         """Test @pipeline_flow with invalid return type."""
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig)
         async def my_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
+            # Use InputDocument to avoid unused warning
+            if InputDocument:
                 pass
             return "invalid"  # type: ignore
 
-        docs = DocumentList([SampleDocument(name="test.txt", content=b"test")])
+        docs = DocumentList([InputDocument(name="test.txt", content=b"test")])
         options = FlowOptions()
 
         with pytest.raises(TypeError, match="must return DocumentList"):
@@ -385,33 +458,49 @@ class TestPipelineFlowDecorator:
     async def test_flow_with_custom_options(self):
         """Test @pipeline_flow with custom FlowOptions subclass."""
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
+
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
 
         class CustomOptions(FlowOptions):
             custom_field: str = "custom"
 
-        @pipeline_flow  # type: ignore[arg-type]
+        @pipeline_flow(config=TestConfig)  # type: ignore[arg-type]
         async def my_flow(
             project_name: str, documents: DocumentList, flow_options: CustomOptions
         ) -> DocumentList:
             assert flow_options.custom_field == "custom"
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
+            # Use InputDocument to avoid unused warning
+            if InputDocument:
                 pass
-            return documents
+            return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
-        docs = DocumentList([SampleDocument(name="test.txt", content=b"test")])
+        docs = DocumentList([InputDocument(name="test.txt", content=b"test")])
         options = CustomOptions()
         result = await my_flow("project", docs, options)
-        assert result == docs
+        assert len(result) == 1
+        assert result[0].name == "output.txt"
+        assert result[0].content == b"output"
 
     async def test_flow_with_all_parameters(self):
         """Test @pipeline_flow with all possible parameters."""
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
+
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
 
         def format_input(*args, **kwargs) -> str:
             return "input"
@@ -423,6 +512,7 @@ class TestPipelineFlowDecorator:
             pass
 
         @pipeline_flow(  # type: ignore[arg-type]
+            config=TestConfig,
             trace_level="off",
             trace_ignore_input=True,
             trace_ignore_output=True,
@@ -447,10 +537,10 @@ class TestPipelineFlowDecorator:
         async def my_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
+            # Use InputDocument to avoid unused warning
+            if InputDocument:
                 pass
-            return documents
+            return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
         assert my_flow.name == "full_flow"
@@ -462,46 +552,64 @@ class TestPipelineFlowDecorator:
         async def add_one(x: int) -> int:
             return x + 1
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow(trace_level="always")
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig, trace_level="always")
         async def my_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
             # Just call the task to test integration
             await add_one(5)
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
+            # Use InputDocument to avoid unused warning
+            if InputDocument:
                 pass
-            return documents
+            return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
-        docs = DocumentList([SampleDocument(name="test.txt", content=b"test")])
+        docs = DocumentList([InputDocument(name="test.txt", content=b"test")])
         options = FlowOptions()
         result = await my_flow("project", docs, options)
-        assert result == docs
+        assert len(result) == 1
+        assert result[0].name == "output.txt"
+        assert result[0].content == b"output"
 
     async def test_flow_with_trace_cost(self):
         """Test @pipeline_flow with trace_cost parameter."""
         from unittest.mock import patch
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
+
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
 
         with patch("ai_pipeline_core.pipeline.set_trace_cost") as mock_set_cost:
 
-            @pipeline_flow(trace_cost=0.15)
+            @pipeline_flow(config=TestConfig, trace_cost=0.15)
             async def my_flow(
                 project_name: str, documents: DocumentList, flow_options: FlowOptions
             ) -> DocumentList:
-                return documents
+                return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
             assert isinstance(my_flow, Flow)
-            docs = DocumentList([SampleDocument(name="test.txt", content=b"test")])
+            docs = DocumentList([InputDocument(name="test.txt", content=b"test")])
             options = FlowOptions()
             result = await my_flow("project", docs, options)
-            assert result == docs
+            assert len(result) == 1
+            assert result[0].name == "output.txt"
+            assert result[0].content == b"output"
 
             # Verify that set_trace_cost was called with the correct value
             mock_set_cost.assert_called_once_with(0.15)
@@ -534,25 +642,45 @@ class TestSyncFunctionRejection:
         """Test that @pipeline_flow on sync function raises TypeError."""
         from typing import Any, cast
 
+        class InputDocument(FlowDocument):
+            pass
+
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
         with pytest.raises(TypeError, match="must be declared with 'async def'"):
 
-            @cast(Any, pipeline_flow)
+            @cast(Any, pipeline_flow(config=TestConfig))
             def sync_flow(  # pyright: ignore[reportUnusedFunction]
                 project_name: str, documents: DocumentList, flow_options: FlowOptions
             ) -> DocumentList:
-                return documents
+                return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
     def test_sync_function_with_pipeline_flow_with_params_raises_error(self):
         """Test that @pipeline_flow with params on sync function raises TypeError."""
         from typing import Any, cast
 
+        class InputDocument(FlowDocument):
+            pass
+
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
         with pytest.raises(TypeError, match="must be declared with 'async def'"):
 
-            @cast(Any, pipeline_flow(name="sync_flow", retries=2))
+            @cast(Any, pipeline_flow(config=TestConfig, name="sync_flow", retries=2))
             def sync_flow(  # pyright: ignore[reportUnusedFunction]
                 project_name: str, documents: DocumentList, flow_options: FlowOptions
             ) -> DocumentList:
-                return documents
+                return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
 
 class TestDoubleTracingDetection:
@@ -585,27 +713,47 @@ class TestDoubleTracingDetection:
         """Test that @trace followed by @pipeline_flow raises an error."""
         from ai_pipeline_core import trace
 
+        class InputDocument(FlowDocument):
+            pass
+
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
         with pytest.raises(TypeError, match="already decorated.*with @trace"):
 
-            @pipeline_flow
+            @pipeline_flow(config=TestConfig)
             @trace
             async def my_flow(  # pyright: ignore[reportUnusedFunction]
                 project_name: str, documents: DocumentList, flow_options: FlowOptions
             ) -> DocumentList:
-                return documents
+                return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
     def test_pipeline_flow_then_trace_raises_error(self):
         """Test that @pipeline_flow followed by @trace raises an error."""
         from ai_pipeline_core import trace
 
+        class InputDocument(FlowDocument):
+            pass
+
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
         with pytest.raises(TypeError, match="already decorated with @pipeline"):
 
             @trace
-            @pipeline_flow
+            @pipeline_flow(config=TestConfig)
             async def my_flow(  # pyright: ignore[reportUnusedFunction]
                 project_name: str, documents: DocumentList, flow_options: FlowOptions
             ) -> DocumentList:
-                return documents
+                return DocumentList([OutputDocument(name="output.txt", content=b"output")])
 
     def test_multiple_trace_then_pipeline_task_raises_error(self):
         """Test that multiple @trace decorators followed by @pipeline_task raises an error."""
@@ -643,16 +791,25 @@ class TestDoubleTracingDetection:
     async def test_normal_pipeline_flow_still_works(self):
         """Test that normal @pipeline_flow without @trace still works."""
 
-        class SampleDoc(FlowDocument):
+        class InputDoc(FlowDocument):
             pass
 
-        @pipeline_flow
+        class OutputDoc(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDoc]
+            OUTPUT_DOCUMENT_TYPE = OutputDoc
+
+        @pipeline_flow(config=TestConfig)
         async def my_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
-            return documents
+            return DocumentList([OutputDoc(name="output.txt", content=b"output")])
 
-        docs = DocumentList([SampleDoc(name="test.txt", content=b"test")])
+        docs = DocumentList([InputDoc(name="test.txt", content=b"test")])
         options = FlowOptions()
         result = await my_flow("project", docs, options)
-        assert result == docs
+        assert len(result) == 1
+        assert result[0].name == "output.txt"
+        assert result[0].content == b"output"

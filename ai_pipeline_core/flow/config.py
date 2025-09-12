@@ -14,7 +14,7 @@ import json
 from abc import ABC
 from typing import Any, ClassVar, Iterable
 
-from ai_pipeline_core.documents import DocumentList, FlowDocument
+from ai_pipeline_core.documents import Document, DocumentList, FlowDocument
 from ai_pipeline_core.exceptions import DocumentValidationError
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.storage import Storage
@@ -56,8 +56,10 @@ class FlowConfig(ABC):
         ...     OUTPUT_DOCUMENT_TYPE = ProcessedDocument  # Different type!
         >>>
         >>> # Use in @pipeline_flow - RECOMMENDED PATTERN
-        >>> @pipeline_flow(name="processing")
-        >>> async def process(config: ProcessingFlowConfig, docs: DocumentList) -> DocumentList:
+        >>> @pipeline_flow(config=ProcessingFlowConfig, name="processing")
+        >>> async def process(
+        ...     project_name: str, docs: DocumentList, flow_options: FlowOptions
+        ... ) -> DocumentList:
         ...     outputs = []
         ...     # ... processing logic ...
         ...     return config.create_and_validate_output(outputs)
@@ -294,8 +296,10 @@ class FlowConfig(ABC):
             DocumentValidationError: If output type doesn't match OUTPUT_DOCUMENT_TYPE.
 
         Example:
-            >>> @pipeline_flow(name="my_flow")
-            >>> async def process_flow(config: MyFlowConfig, ...) -> DocumentList:
+            >>> @pipeline_flow(config=MyFlowConfig, name="my_flow")
+            >>> async def process_flow(
+            ...     project_name: str, documents: DocumentList, flow_options: FlowOptions
+            ... ) -> DocumentList:
             >>>     outputs = []
             >>>     # ... processing logic ...
             >>>     outputs.append(OutputDoc(...))
@@ -322,8 +326,6 @@ class FlowConfig(ABC):
     async def load_documents(
         cls,
         uri: str,
-        *,
-        gcs_block: str | None = None,
     ) -> DocumentList:
         """Load documents from storage matching INPUT_DOCUMENT_TYPES.
 
@@ -333,7 +335,6 @@ class FlowConfig(ABC):
 
         Args:
             uri: Storage URI (file://, gs://, or local path)
-            gcs_block: Prefect GcsBucket block name for GCS (defaults to settings.gcs_block)
 
         Returns:
             DocumentList containing loaded documents matching INPUT_DOCUMENT_TYPES
@@ -342,22 +343,16 @@ class FlowConfig(ABC):
             >>> # Load from local filesystem
             >>> docs = await MyFlowConfig.load_documents("./data")
             >>>
-            >>> # Load from GCS (uses GCS_BLOCK from settings by default)
+            >>> # Load from GCS (uses GCS_SERVICE_ACCOUNT_FILE from settings if configured)
             >>> docs = await MyFlowConfig.load_documents("gs://bucket/data")
-            >>>
-            >>> # Load from GCS with specific block override
-            >>> docs = await MyFlowConfig.load_documents(
-            ...     "gs://bucket/data",
-            ...     gcs_block="my-gcs-block"
-            ... )
         """
         # Use INPUT_DOCUMENT_TYPES if not specified
-        storage = Storage.from_uri(uri, gcs_block=gcs_block)
+        storage = await Storage.from_uri(uri)
         loaded_documents = DocumentList()
 
         # Process each document type
         for doc_type in cls.INPUT_DOCUMENT_TYPES:
-            canonical_name = doc_type.__name__.lower()
+            canonical_name = doc_type.canonical_name()
             doc_storage = storage.with_base(canonical_name)
 
             # Check if subdirectory exists
@@ -368,11 +363,15 @@ class FlowConfig(ABC):
             # List files in subdirectory
             objects = await doc_storage.list("", recursive=False, include_dirs=False)
 
+            # Create lookup set for metadata files
+            object_keys = {obj.key for obj in objects}
+
             # Filter out metadata files
             doc_files = [
                 obj
                 for obj in objects
-                if not obj.key.endswith(".description.md") and not obj.key.endswith(".sources.json")
+                if not obj.key.endswith(Document.DESCRIPTION_EXTENSION)
+                and not obj.key.endswith(Document.SOURCES_EXTENSION)
             ]
 
             for obj in doc_files:
@@ -384,17 +383,17 @@ class FlowConfig(ABC):
                     description = None
                     sources: list[str] = []
 
-                    # Try loading description
-                    desc_path = f"{obj.key}.description.md"
-                    if await doc_storage.exists(desc_path):
+                    # Check for description in objects list
+                    desc_path = f"{obj.key}{Document.DESCRIPTION_EXTENSION}"
+                    if desc_path in object_keys:
                         try:
                             description = await doc_storage.read_text(desc_path)
                         except Exception as e:
                             logger.warning(f"Failed to load description for {obj.key}: {e}")
 
-                    # Try loading sources
-                    sources_path = f"{obj.key}.sources.json"
-                    if await doc_storage.exists(sources_path):
+                    # Check for sources in objects list
+                    sources_path = f"{obj.key}{Document.SOURCES_EXTENSION}"
+                    if sources_path in object_keys:
                         try:
                             sources_text = await doc_storage.read_text(sources_path)
                             sources = json.loads(sources_text)
@@ -414,7 +413,7 @@ class FlowConfig(ABC):
                 except Exception as e:
                     logger.error(f"Failed to load {doc_type.__name__} document {obj.key}: {e}")
 
-        logger.debug(f"Loaded {len(loaded_documents)} documents from {uri}")
+        logger.info(f"Loaded {len(loaded_documents)} documents from {uri}")
         return loaded_documents
 
     @classmethod
@@ -423,19 +422,17 @@ class FlowConfig(ABC):
         uri: str,
         documents: DocumentList,
         *,
-        gcs_block: str | None = None,
         validate_output_type: bool = True,
     ) -> None:
         """Save documents to storage with metadata.
 
         Saves FlowDocument instances to a storage location with their content
-        and metadata files (.description.md and .sources.json).
+        and metadata files (Document.DESCRIPTION_EXTENSION and Document.SOURCES_EXTENSION).
         Non-FlowDocument instances (TaskDocument, TemporaryDocument) are skipped.
 
         Args:
             uri: Storage URI (file://, gs://, or local path)
             documents: DocumentList to save
-            gcs_block: Prefect GcsBucket block name for GCS (defaults to settings.gcs_block)
             validate_output_type: If True, validate documents match cls.OUTPUT_DOCUMENT_TYPE
 
         Raises:
@@ -446,31 +443,24 @@ class FlowConfig(ABC):
             >>> # Save to local filesystem
             >>> await MyFlowConfig.save_documents("./output", docs)
             >>>
-            >>> # Save to GCS (uses GCS_BLOCK from settings by default)
+            >>> # Save to GCS (uses GCS_SERVICE_ACCOUNT_FILE from settings if configured)
             >>> await MyFlowConfig.save_documents("gs://bucket/output", docs)
-            >>>
-            >>> # Save to GCS with specific block override
-            >>> await MyFlowConfig.save_documents(
-            ...     "gs://bucket/output",
-            ...     docs,
-            ...     gcs_block="my-gcs-block"
-            ... )
         """
         # Validate output type if requested
         if validate_output_type:
             cls.validate_output_documents(documents)
 
-        storage = Storage.from_uri(uri, gcs_block=gcs_block)
+        storage = await Storage.from_uri(uri)
         saved_count = 0
 
         for doc in documents:
             # Skip non-FlowDocument instances
             if not isinstance(doc, FlowDocument):
-                logger.debug(f"Skipping non-FlowDocument: {type(doc).__name__}")
+                logger.warning(f"Skipping non-FlowDocument: {type(doc).__name__}")
                 continue
 
             # Get canonical name for subdirectory
-            canonical_name = type(doc).__name__.lower()
+            canonical_name = doc.canonical_name()
             doc_storage = storage.with_base(canonical_name)
 
             # Save document content
@@ -479,15 +469,15 @@ class FlowConfig(ABC):
 
             # Save description if present
             if doc.description:
-                desc_path = f"{doc.name}.description.md"
+                desc_path = f"{doc.name}{Document.DESCRIPTION_EXTENSION}"
                 await doc_storage.write_text(desc_path, doc.description)
 
             # Save sources if present
             if doc.sources:
-                sources_path = f"{doc.name}.sources.json"
+                sources_path = f"{doc.name}{Document.SOURCES_EXTENSION}"
                 sources_json = json.dumps(doc.sources, indent=2)
                 await doc_storage.write_text(sources_path, sources_json)
 
             logger.debug(f"Saved {type(doc).__name__} document: {doc.name}")
 
-        logger.debug(f"Saved {saved_count} documents to {uri}")
+        logger.info(f"Saved {saved_count} documents to {uri}")

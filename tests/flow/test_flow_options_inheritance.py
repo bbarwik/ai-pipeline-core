@@ -7,6 +7,7 @@ import pytest
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from ai_pipeline_core.documents import DocumentList, FlowDocument
+from ai_pipeline_core.flow.config import FlowConfig
 from ai_pipeline_core.flow.options import FlowOptions
 from ai_pipeline_core.pipeline import pipeline_flow
 
@@ -165,10 +166,17 @@ class TestDocumentsFlowWithInheritedOptions:
     def test_documents_flow_with_base_options(self):
         """Test documents_flow with base FlowOptions."""
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig)
         async def test_flow(
             project_name: str, documents: DocumentList, flow_options: FlowOptions
         ) -> DocumentList:
@@ -178,10 +186,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert isinstance(flow_options, FlowOptions)
             assert flow_options.core_model == "gpt-5"
             assert flow_options.small_model == "gpt-5-mini"
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
-                pass
-            return documents
+            # Return output document
+            return DocumentList([OutputDocument(name="output", content=b"test")])
 
         # Run the flow
         result = asyncio.run(
@@ -196,10 +202,17 @@ class TestDocumentsFlowWithInheritedOptions:
             batch_size: int = Field(default=10, gt=0)
             enable_logging: bool = Field(default=True)
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow  # type: ignore[arg-type]
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig)  # type: ignore[arg-type]
         async def test_flow(
             project_name: str,
             documents: DocumentList,
@@ -211,10 +224,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert flow_options.core_model == "custom-core"
             assert flow_options.batch_size == 20
             assert flow_options.enable_logging is False
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
-                pass
-            return documents
+            # Return output document
+            return DocumentList([OutputDocument(name="output", content=b"test")])
 
         # Run the flow with custom options
         custom_options = CustomFlowOptions(
@@ -239,10 +250,17 @@ class TestDocumentsFlowWithInheritedOptions:
             processing_modes: list[str] = Field(default_factory=lambda: ["fast", "accurate"])
             metadata: dict[str, Any] = Field(default_factory=dict)
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow  # type: ignore[arg-type]
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig)  # type: ignore[arg-type]
         async def advanced_flow(
             project_name: str, documents: DocumentList, flow_options: AdvancedFlowOptions
         ) -> DocumentList:
@@ -256,10 +274,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert "fast" in flow_options.processing_modes
             assert "parallel" in flow_options.processing_modes
             assert flow_options.metadata["version"] == "2.0"
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
-                pass
-            return documents
+            # Return output document
+            return DocumentList([OutputDocument(name="output", content=b"test")])
 
         # Create complex options
         api_config = APIConfig(endpoint="https://custom.api.com", timeout=60, retry_count=5)
@@ -284,18 +300,23 @@ class TestDocumentsFlowWithInheritedOptions:
         class StrictFlowOptions(FlowOptions):
             required_field: str  # No default - required field
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow  # type: ignore[arg-type]
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig)  # type: ignore[arg-type]
         async def strict_flow(
             project_name: str, documents: DocumentList, flow_options: StrictFlowOptions
         ) -> DocumentList:
             assert flow_options.required_field == "test-value"
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
-                pass
-            return documents
+            # Return output document
+            return DocumentList([OutputDocument(name="output", content=b"test")])
 
         # Should work with proper options
         options = StrictFlowOptions(required_field="test-value")
@@ -322,10 +343,17 @@ class TestDocumentsFlowWithInheritedOptions:
 
             feature_flags: dict[str, bool] = Field(default_factory=dict)
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
-        @pipeline_flow  # type: ignore[arg-type]
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
+        @pipeline_flow(config=TestConfig)  # type: ignore[arg-type]
         async def multi_level_flow(
             project_name: str, documents: DocumentList, flow_options: SpecificProjectOptions
         ) -> DocumentList:
@@ -334,10 +362,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert flow_options.organization == "custom-org"  # From BaseProjectOptions
             assert flow_options.environment == "production"  # From BaseProjectOptions
             assert flow_options.feature_flags["new_feature"] is True  # From SpecificProjectOptions
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
-                pass
-            return documents
+            # Return output document
+            return DocumentList([OutputDocument(name="output", content=b"test")])
 
         options = SpecificProjectOptions(
             organization="custom-org",
@@ -367,11 +393,18 @@ class TestDocumentsFlowWithInheritedOptions:
             small_models_list: list[str] = Field(default_factory=lambda: SMALL_MODELS.copy())
             search_models: list[str] = Field(default_factory=lambda: SEARCH_MODELS.copy())
 
-        class SampleDocument(FlowDocument):
+        class InputDocument(FlowDocument):
             pass
 
+        class OutputDocument(FlowDocument):
+            pass
+
+        class TestConfig(FlowConfig):
+            INPUT_DOCUMENT_TYPES = [InputDocument]
+            OUTPUT_DOCUMENT_TYPE = OutputDocument
+
         # This should reproduce the type error
-        @pipeline_flow
+        @pipeline_flow(config=TestConfig)
         async def convert_input_documents(
             project_name: str,
             documents: DocumentList,
@@ -381,10 +414,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert isinstance(flow_options.primary_models, list)
             assert isinstance(flow_options.small_models_list, list)
             assert isinstance(flow_options.search_models, list)
-            # Use SampleDocument to avoid unused warning
-            if SampleDocument:
-                pass
-            return documents
+            # Return output document
+            return DocumentList([OutputDocument(name="output", content=b"test")])
 
         # Try to run the flow
         options = ProjectFlowOptions()

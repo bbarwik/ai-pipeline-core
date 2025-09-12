@@ -89,27 +89,27 @@ async def test_save_documents_basic():
         await SampleFlowConfig.save_documents(str(uri), docs, validate_output_type=False)
 
         # Verify files were created
-        inputdoc_dir = uri / "inputdoc"
-        assert inputdoc_dir.exists()
-        assert (inputdoc_dir / "input.json").exists()
-        assert (inputdoc_dir / "input.json.description.md").exists()
-        assert (inputdoc_dir / "input.json.sources.json").exists()
+        input_doc_dir = uri / "input_doc"
+        assert input_doc_dir.exists()
+        assert (input_doc_dir / "input.json").exists()
+        assert (input_doc_dir / "input.json.description.md").exists()
+        assert (input_doc_dir / "input.json.sources.json").exists()
 
         # Check description content
-        desc_content = (inputdoc_dir / "input.json.description.md").read_text()
+        desc_content = (input_doc_dir / "input.json.description.md").read_text()
         assert desc_content == "Input document"
 
         # Check sources content
-        sources_content = (inputdoc_dir / "input.json.sources.json").read_text()
+        sources_content = (input_doc_dir / "input.json.sources.json").read_text()
         sources_data = json.loads(sources_content)
         assert sources_data == ["source1", "source2"]
 
         # Check OutputDoc was saved
-        outputdoc_dir = uri / "outputdoc"
-        assert outputdoc_dir.exists()
-        assert (outputdoc_dir / "output.txt").exists()
-        assert not (outputdoc_dir / "output.txt.description.md").exists()
-        assert not (outputdoc_dir / "output.txt.sources.json").exists()
+        output_doc_dir = uri / "output_doc"
+        assert output_doc_dir.exists()
+        assert (output_doc_dir / "output.txt").exists()
+        assert not (output_doc_dir / "output.txt.description.md").exists()
+        assert not (output_doc_dir / "output.txt.sources.json").exists()
 
 
 @pytest.mark.asyncio
@@ -130,8 +130,8 @@ async def test_save_documents_skip_non_flow():
         await SampleFlowConfig.save_documents(str(uri), docs, validate_output_type=False)
 
         # Verify only FlowDocument was saved
-        assert (uri / "outputdoc").exists()
-        assert (uri / "outputdoc" / "flow.txt").exists()
+        assert (uri / "output_doc").exists()
+        assert (uri / "output_doc" / "flow.txt").exists()
 
         # Verify non-FlowDocument types were not saved
         assert not (uri / "sampletaskdoc").exists()
@@ -151,7 +151,7 @@ async def test_save_documents_with_validation():
 
         # This should succeed
         await SampleFlowConfig.save_documents(str(uri), docs_correct, validate_output_type=True)
-        assert (uri / "outputdoc" / "output.json").exists()
+        assert (uri / "output_doc" / "output.json").exists()
 
 
 @pytest.mark.asyncio
@@ -188,12 +188,12 @@ async def test_save_documents_no_metadata():
 
         await SampleFlowConfig.save_documents(str(uri), docs, validate_output_type=True)
 
-        outputdoc_dir = uri / "outputdoc"
-        assert (outputdoc_dir / "simple.txt").exists()
+        output_doc_dir = uri / "output_doc"
+        assert (output_doc_dir / "simple.txt").exists()
 
         # Metadata files should not exist
-        assert not (outputdoc_dir / "simple.txt.description.md").exists()
-        assert not (outputdoc_dir / "simple.txt.sources.json").exists()
+        assert not (output_doc_dir / "simple.txt.description.md").exists()
+        assert not (output_doc_dir / "simple.txt.sources.json").exists()
 
 
 @pytest.mark.asyncio
@@ -212,11 +212,11 @@ async def test_save_documents_empty_sources():
 
         await SampleFlowConfig.save_documents(str(uri), docs, validate_output_type=False)
 
-        outputdoc_dir = uri / "outputdoc"
-        assert (outputdoc_dir / "empty_sources.txt").exists()
+        output_doc_dir = uri / "output_doc"
+        assert (output_doc_dir / "empty_sources.txt").exists()
 
         # Sources file should not be created for empty list
-        assert not (outputdoc_dir / "empty_sources.txt.sources.json").exists()
+        assert not (output_doc_dir / "empty_sources.txt.sources.json").exists()
 
 
 # ============================================================================
@@ -229,7 +229,7 @@ async def test_load_documents_basic():
     """Test basic document loading functionality."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create document structure
-        input_dir = Path(tmpdir) / "inputdoc"
+        input_dir = Path(tmpdir) / "input_doc"
         input_dir.mkdir()
 
         # Write document content
@@ -256,12 +256,12 @@ async def test_load_documents_multiple_types():
     """Test loading multiple document types."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create InputDoc
-        input_dir = Path(tmpdir) / "inputdoc"
+        input_dir = Path(tmpdir) / "input_doc"
         input_dir.mkdir()
         (input_dir / "input.txt").write_bytes(b"input data")
 
         # Create SecondInputDoc
-        second_dir = Path(tmpdir) / "secondinputdoc"
+        second_dir = Path(tmpdir) / "second_input_doc"
         second_dir.mkdir()
         (second_dir / "second.txt").write_bytes(b"second data")
 
@@ -286,12 +286,12 @@ async def test_load_documents_specific_types():
     """Test loading specific document types only."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create InputDoc
-        input_dir = Path(tmpdir) / "inputdoc"
+        input_dir = Path(tmpdir) / "input_doc"
         input_dir.mkdir()
         (input_dir / "input.txt").write_bytes(b"input data")
 
         # Create SecondInputDoc
-        second_dir = Path(tmpdir) / "secondinputdoc"
+        second_dir = Path(tmpdir) / "second_input_doc"
         second_dir.mkdir()
         (second_dir / "second.txt").write_bytes(b"second data")
 
@@ -308,7 +308,7 @@ async def test_load_documents_no_metadata():
     """Test loading documents without metadata files."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create document without metadata
-        input_dir = Path(tmpdir) / "inputdoc"
+        input_dir = Path(tmpdir) / "input_doc"
         input_dir.mkdir()
         (input_dir / "plain.txt").write_bytes(b"plain content")
 
@@ -328,7 +328,7 @@ async def test_load_documents_corrupted_metadata():
     """Test loading documents with corrupted metadata files."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create document
-        input_dir = Path(tmpdir) / "inputdoc"
+        input_dir = Path(tmpdir) / "input_doc"
         input_dir.mkdir()
         (input_dir / "doc.txt").write_bytes(b"content")
 
@@ -349,7 +349,7 @@ async def test_load_documents_corrupted_metadata():
 async def test_load_documents_missing_directory():
     """Test loading from non-existent directories."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Try to load when inputdoc directory doesn't exist
+        # Try to load when input_doc directory doesn't exist
         docs = await SingleInputFlowConfig.load_documents(tmpdir)
 
         # Should return empty list, not error
@@ -361,7 +361,7 @@ async def test_load_documents_skip_metadata_files():
     """Test that metadata files are not loaded as documents."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create document with metadata
-        input_dir = Path(tmpdir) / "inputdoc"
+        input_dir = Path(tmpdir) / "input_doc"
         input_dir.mkdir()
         (input_dir / "doc.txt").write_bytes(b"content")
         (input_dir / "doc.txt.description.md").write_text("Description")
@@ -622,13 +622,13 @@ async def test_canonical_name_directory_structure():
         await SampleFlowConfig.save_documents(tmpdir, docs, validate_output_type=False)
 
         # Verify directory structure
-        assert (path / "inputdoc").is_dir()
-        assert (path / "secondinputdoc").is_dir()
-        assert (path / "outputdoc").is_dir()
+        assert (path / "input_doc").is_dir()
+        assert (path / "second_input_doc").is_dir()
+        assert (path / "output_doc").is_dir()
 
-        assert (path / "inputdoc" / "file.txt").exists()
-        assert (path / "secondinputdoc" / "file2.txt").exists()
-        assert (path / "outputdoc" / "file3.txt").exists()
+        assert (path / "input_doc" / "file.txt").exists()
+        assert (path / "second_input_doc" / "file2.txt").exists()
+        assert (path / "output_doc" / "file3.txt").exists()
 
 
 @pytest.mark.asyncio
@@ -636,7 +636,7 @@ async def test_load_documents_file_read_error():
     """Test handling of file read errors during loading."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create a directory where a file should be
-        input_dir = Path(tmpdir) / "inputdoc"
+        input_dir = Path(tmpdir) / "input_doc"
         input_dir.mkdir()
 
         # Create a directory with the name of what should be a file

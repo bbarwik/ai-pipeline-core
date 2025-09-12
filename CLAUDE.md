@@ -154,10 +154,14 @@ class MyFlowConfig(FlowConfig):
     OUTPUT_DOCUMENT_TYPE = OutputDoc
 
 # Always finish flows with validation
-@pipeline_flow
-async def my_flow(...) -> DocumentList:
+@pipeline_flow(config=MyFlowConfig)
+async def my_flow(
+    project_name: str,
+    documents: DocumentList,
+    flow_options: FlowOptions
+) -> DocumentList:
     # ... processing ...
-    return config.create_and_validate_output(outputs)
+    return MyFlowConfig.create_and_validate_output(outputs)
 ```
 
 ### Prompt Manager (`ai_pipeline_core/prompt_manager.py`)
