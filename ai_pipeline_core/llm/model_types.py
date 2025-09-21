@@ -21,12 +21,12 @@ ModelName: TypeAlias = (
         # Small models
         "gemini-2.5-flash",
         "gpt-5-mini",
-        "grok-3-mini",
+        "grok-4-fast",
         # Search models
         "gemini-2.5-flash-search",
         "sonar-pro-search",
         "gpt-4o-search",
-        "grok-3-mini-search",
+        "grok-4-fast-search",
     ]
     | str
 )
@@ -47,7 +47,7 @@ Model categories:
         High-capability models for complex tasks requiring deep reasoning,
         nuanced understanding, or creative generation.
 
-    Small models (gemini-2.5-flash, gpt-5-mini, grok-3-mini):
+    Small models (gemini-2.5-flash, gpt-5-mini, grok-4-fast):
         Efficient models optimized for speed and cost, suitable for
         simpler tasks or high-volume processing.
 

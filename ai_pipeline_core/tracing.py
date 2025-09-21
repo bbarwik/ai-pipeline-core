@@ -9,6 +9,7 @@ This module centralizes:
 from __future__ import annotations
 
 import inspect
+import json
 import os
 from functools import wraps
 from typing import Any, Callable, Literal, ParamSpec, TypeVar, cast, overload
@@ -16,6 +17,10 @@ from typing import Any, Callable, Literal, ParamSpec, TypeVar, cast, overload
 from lmnr import Attributes, Instruments, Laminar, observe
 from pydantic import BaseModel
 
+# Import for document trimming - needed for isinstance checks
+# These are lazy imports only used when trim_documents is enabled
+from ai_pipeline_core.documents import Document, DocumentList
+from ai_pipeline_core.llm import AIMessages, ModelResponse
 from ai_pipeline_core.settings import settings
 
 # ---------------------------------------------------------------------------
@@ -32,6 +37,145 @@ Values:
 - "debug": Only trace when LMNR_DEBUG == "true"
 - "off": Disable tracing completely
 """
+
+
+# ---------------------------------------------------------------------------
+# Serialization helpers
+# ---------------------------------------------------------------------------
+def _serialize_for_tracing(obj: Any) -> Any:
+    """Convert objects to JSON-serializable format for tracing.
+
+    Handles Pydantic models, Documents, and other special types.
+    This is extracted for better testability.
+
+    Args:
+        obj: Object to serialize
+
+    Returns:
+        JSON-serializable representation of the object
+    """
+    # Our Document types - handle first to ensure serialize_model is used
+    if isinstance(obj, Document):
+        return obj.serialize_model()
+    # DocumentList
+    if isinstance(obj, DocumentList):
+        return [doc.serialize_model() for doc in obj]
+    # AIMessages
+    if isinstance(obj, AIMessages):
+        result = []
+        for msg in obj:
+            if isinstance(msg, Document):
+                result.append(msg.serialize_model())
+            else:
+                result.append(msg)
+        return result
+    # ModelResponse (special Pydantic model) - use standard model_dump
+    if isinstance(obj, ModelResponse):
+        return obj.model_dump()
+    # Pydantic models - use custom serializer that respects Document.serialize_model()
+    if isinstance(obj, BaseModel):
+        # For Pydantic models, we need to handle Document fields specially
+        data = {}
+        for field_name, field_value in obj.__dict__.items():
+            if isinstance(field_value, Document):
+                # Use serialize_model for Documents to get base_type
+                data[field_name] = field_value.serialize_model()
+            elif isinstance(field_value, BaseModel):
+                # Recursively handle nested Pydantic models
+                data[field_name] = _serialize_for_tracing(field_value)
+            else:
+                # Let Pydantic handle other fields normally
+                data[field_name] = field_value
+        return data
+    # Fallback to string representation
+    try:
+        return str(obj)
+    except Exception:
+        return f"<{type(obj).__name__}>"
+
+
+# ---------------------------------------------------------------------------
+# Document trimming utilities
+# ---------------------------------------------------------------------------
+def _trim_document_content(doc_dict: dict[str, Any]) -> dict[str, Any]:
+    """Trim document content based on document type and content type.
+
+    For non-FlowDocuments:
+    - Text content: Keep first 100 and last 100 chars (unless < 250 total)
+    - Binary content: Remove content entirely
+
+    For FlowDocuments:
+    - Text content: Keep full content
+    - Binary content: Remove content entirely
+
+    Args:
+        doc_dict: Document dictionary with base_type, content, and content_encoding
+
+    Returns:
+        Modified document dictionary with trimmed content
+    """
+    # Check if this looks like a document (has required fields)
+    if not isinstance(doc_dict, dict):  # type: ignore[reportUnknownArgumentType]
+        return doc_dict
+
+    if "base_type" not in doc_dict or "content" not in doc_dict:
+        return doc_dict
+
+    base_type = doc_dict.get("base_type")
+    content = doc_dict.get("content", "")
+    content_encoding = doc_dict.get("content_encoding", "utf-8")
+
+    # For binary content (base64 encoded), remove content
+    if content_encoding == "base64":
+        doc_dict = doc_dict.copy()
+        doc_dict["content"] = "[binary content removed]"
+        return doc_dict
+
+    # For FlowDocuments with text content, keep full content
+    if base_type == "flow":
+        return doc_dict
+
+    # For other documents (task, temporary), trim text content
+    if isinstance(content, str) and len(content) > 250:
+        doc_dict = doc_dict.copy()
+        # Keep first 100 and last 100 characters
+        trimmed_chars = len(content) - 200  # Number of characters removed
+        doc_dict["content"] = (
+            content[:100] + f" ... [trimmed {trimmed_chars} chars] ... " + content[-100:]
+        )
+
+    return doc_dict
+
+
+def _trim_documents_in_data(data: Any) -> Any:
+    """Recursively trim document content in nested data structures.
+
+    Processes dictionaries, lists, and nested structures to find and trim
+    documents based on their type and content.
+
+    Args:
+        data: Input data that may contain documents
+
+    Returns:
+        Data with document content trimmed according to rules
+    """
+    if isinstance(data, dict):
+        # Check if this is a document
+        if "base_type" in data and "content" in data:
+            # This is a document, trim it
+            return _trim_document_content(data)
+        else:
+            # Recursively process dictionary values
+            return {k: _trim_documents_in_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        # Process each item in list
+        return [_trim_documents_in_data(item) for item in data]
+    elif isinstance(data, tuple):
+        # Process tuples
+        return tuple(_trim_documents_in_data(item) for item in data)
+    else:
+        # Return other types unchanged
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +319,7 @@ def trace(
     output_formatter: Callable[..., str] | None = None,
     ignore_exceptions: bool = False,
     preserve_global_context: bool = True,
+    trim_documents: bool = True,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
 
 
@@ -201,6 +346,7 @@ def trace(
     output_formatter: Callable[..., str] | None = None,
     ignore_exceptions: bool = False,
     preserve_global_context: bool = True,
+    trim_documents: bool = True,
 ) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
     """Add Laminar observability tracing to any function.
 
@@ -256,6 +402,12 @@ def trace(
 
         preserve_global_context: Maintain Laminar's global context across
                                 calls (default True). Set False for isolated traces.
+
+        trim_documents: Automatically trim document content in traces (default True).
+                       When enabled, non-FlowDocument text content is trimmed to
+                       first/last 100 chars, and all binary content is removed.
+                       FlowDocuments keep full text content but binary is removed.
+                       Helps reduce trace size for large documents.
 
     Returns:
         Decorated function with same signature but added tracing.
@@ -363,6 +515,72 @@ def trace(
         _output_formatter = output_formatter
         _ignore_exceptions = ignore_exceptions
         _preserve_global_context = preserve_global_context
+        _trim_documents = trim_documents
+
+        # Create document trimming formatters if needed
+        def _create_trimming_input_formatter(*args, **kwargs) -> str:
+            # First, let any custom formatter process the data
+            if _input_formatter:
+                result = _input_formatter(*args, **kwargs)
+                # If formatter returns string, try to parse and trim
+                if isinstance(result, str):  # type: ignore[reportUnknownArgumentType]
+                    try:
+                        data = json.loads(result)
+                        trimmed = _trim_documents_in_data(data)
+                        return json.dumps(trimmed)
+                    except (json.JSONDecodeError, TypeError):
+                        return result
+                else:
+                    # If formatter returns dict/list, trim it
+                    trimmed = _trim_documents_in_data(result)
+                    return json.dumps(trimmed) if not isinstance(trimmed, str) else trimmed
+            else:
+                # No custom formatter - mimic Laminar's get_input_from_func_args
+                # Build a dict with parameter names as keys (like Laminar does)
+                params = list(sig.parameters.keys())
+                data = {}
+
+                # Map args to parameter names
+                for i, arg in enumerate(args):
+                    if i < len(params):
+                        data[params[i]] = arg
+
+                # Add kwargs
+                data.update(kwargs)
+
+                # Serialize with our helper function
+                serialized = json.dumps(data, default=_serialize_for_tracing)
+                parsed = json.loads(serialized)
+
+                # Trim documents in the serialized data
+                trimmed = _trim_documents_in_data(parsed)
+                return json.dumps(trimmed)
+
+        def _create_trimming_output_formatter(result: Any) -> str:
+            # First, let any custom formatter process the data
+            if _output_formatter:
+                formatted = _output_formatter(result)
+                # If formatter returns string, try to parse and trim
+                if isinstance(formatted, str):  # type: ignore[reportUnknownArgumentType]
+                    try:
+                        data = json.loads(formatted)
+                        trimmed = _trim_documents_in_data(data)
+                        return json.dumps(trimmed)
+                    except (json.JSONDecodeError, TypeError):
+                        return formatted
+                else:
+                    # If formatter returns dict/list, trim it
+                    trimmed = _trim_documents_in_data(formatted)
+                    return json.dumps(trimmed) if not isinstance(trimmed, str) else trimmed
+            else:
+                # No custom formatter, serialize result with smart defaults
+                # Serialize with our extracted helper function
+                serialized = json.dumps(result, default=_serialize_for_tracing)
+                parsed = json.loads(serialized)
+
+                # Trim documents in the serialized data
+                trimmed = _trim_documents_in_data(parsed)
+                return json.dumps(trimmed)
 
         # --- Helper function for runtime logic ---
         def _prepare_and_get_observe_params(runtime_kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -401,10 +619,19 @@ def trace(
                 observe_params["ignore_output"] = _ignore_output
             if _ignore_inputs is not None:
                 observe_params["ignore_inputs"] = _ignore_inputs
-            if _input_formatter is not None:
-                observe_params["input_formatter"] = _input_formatter
-            if _output_formatter is not None:
-                observe_params["output_formatter"] = _output_formatter
+
+            # Use trimming formatters if trim_documents is enabled
+            if _trim_documents:
+                # Use the trimming formatters (which may wrap custom formatters)
+                observe_params["input_formatter"] = _create_trimming_input_formatter
+                observe_params["output_formatter"] = _create_trimming_output_formatter
+            else:
+                # Use custom formatters directly if provided
+                if _input_formatter is not None:
+                    observe_params["input_formatter"] = _input_formatter
+                if _output_formatter is not None:
+                    observe_params["output_formatter"] = _output_formatter
+
             if _ignore_exceptions:
                 observe_params["ignore_exceptions"] = _ignore_exceptions
             if _preserve_global_context:

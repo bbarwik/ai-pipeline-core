@@ -310,3 +310,27 @@ class TestPromptManager:
         assert "### Summary" not in result
         assert "### Recommendations" not in result
         assert "1. Only key points" in result
+
+    def test_current_date_global(self, tmp_path: Path) -> None:
+        """Test that current_date global variable is available in templates."""
+        from datetime import datetime
+
+        # Create template that uses current_date
+        template_content = "Today is {{ current_date }}"
+        template_file = tmp_path / "date_test.jinja2"
+        template_file.write_text(template_content)
+
+        pm = PromptManager(str(tmp_path))
+        result = pm.get("date_test.jinja2")
+
+        # Check format matches expected "03 January 2025" pattern
+        expected_date = datetime.now().strftime("%d %B %Y")
+        assert result == f"Today is {expected_date}"
+
+        # Test in combination with other variables
+        template_content2 = "{{ greeting }} on {{ current_date }}!"
+        template_file2 = tmp_path / "date_test2.jinja2"
+        template_file2.write_text(template_content2)
+
+        result = pm.get("date_test2.jinja2", greeting="Hello")
+        assert result == f"Hello on {expected_date}!"

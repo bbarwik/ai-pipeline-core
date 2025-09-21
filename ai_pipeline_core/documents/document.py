@@ -51,6 +51,7 @@ from .mime_type import (
 )
 
 TModel = TypeVar("TModel", bound=BaseModel)
+TDocument = TypeVar("TDocument", bound="Document")
 
 
 class Document(BaseModel, ABC):
@@ -97,6 +98,8 @@ class Document(BaseModel, ABC):
     - Support for text, JSON, YAML, PDF, and image formats
     - Conversion utilities between different formats
     - Source provenance tracking via sources field
+    - Document type conversion via model_convert() method
+    - Standard Pydantic model_copy() for same-type copying
 
     Class Variables:
         MAX_CONTENT_SIZE: Maximum allowed content size in bytes (default 25MB)
@@ -223,6 +226,14 @@ class Document(BaseModel, ABC):
         ...     sources=[source_doc.sha256]  # Reference source document
         ... )
         >>> processed.has_source(source_doc)  # True
+        >>>
+        >>> # Document copying and type conversion:
+        >>> # Standard Pydantic model_copy (doesn't validate updates)
+        >>> copied = doc.model_copy(update={"name": "new_name.json"})
+        >>> # Type conversion with validation via model_convert
+        >>> task_doc = MyTaskDoc.create(name="temp.json", content={"data": "value"})
+        >>> flow_doc = task_doc.model_convert(MyFlowDoc)  # Convert to FlowDocument
+        >>> flow_doc.is_flow  # True
     """
 
     MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024
@@ -1498,6 +1509,8 @@ class Document(BaseModel, ABC):
                 - sha256: Full SHA256 hash in base32 encoding without padding (str)
                 - mime_type: Detected MIME type (str)
                 - sources: List of source strings (list[dict])
+                - canonical_name: Canonical snake_case name for debug tracing (str)
+                - class_name: Name of the actual document class for debug tracing (str)
                 - content: Encoded content (str)
                 - content_encoding: Either "utf-8" or "base64" (str)
 
@@ -1521,10 +1534,12 @@ class Document(BaseModel, ABC):
             "sha256": self.sha256,
             "mime_type": self.mime_type,
             "sources": self.sources,
+            "canonical_name": canonical_name_key(self.__class__),
+            "class_name": self.__class__.__name__,
         }
 
         # Try to encode content as UTF-8, fall back to base64
-        if self.is_text or self.mime_type.startswith("text/"):
+        if self.is_text:
             try:
                 result["content"] = self.content.decode("utf-8")
                 result["content_encoding"] = "utf-8"
@@ -1597,6 +1612,99 @@ class Document(BaseModel, ABC):
         return cls(
             name=data["name"],
             content=content,
+            description=data.get("description"),
+            sources=data.get("sources", []),
+        )
+
+    @final
+    def model_convert(
+        self,
+        new_type: type[TDocument],
+        *,
+        update: dict[str, Any] | None = None,
+        deep: bool = False,
+    ) -> TDocument:
+        """Convert document to a different Document type with optional updates.
+
+        @public
+
+        Creates a new document of a different type, preserving all attributes
+        while allowing updates. This is useful for converting between document
+        types (e.g., TaskDocument to FlowDocument) while maintaining data integrity.
+
+        Args:
+            new_type: Target Document class for conversion. Must be a concrete
+                     subclass of Document (not abstract classes like Document,
+                     FlowDocument, or TaskDocument).
+            update: Dictionary of attributes to update. Supports any attributes
+                   that the Document constructor accepts (name, content,
+                   description, sources).
+            deep: Whether to perform a deep copy of mutable attributes.
+
+        Returns:
+            New Document instance of the specified type.
+
+        Raises:
+            TypeError: If new_type is not a subclass of Document, is an abstract
+                      class, or if update contains invalid attributes.
+            DocumentNameError: If the name violates the target type's FILES enum.
+            DocumentSizeError: If content exceeds MAX_CONTENT_SIZE.
+
+        Example:
+            >>> # Convert TaskDocument to FlowDocument
+            >>> task_doc = MyTaskDoc.create(name="temp.json", content={"data": "value"})
+            >>> flow_doc = task_doc.model_convert(MyFlowDoc)
+            >>> assert flow_doc.is_flow
+            >>> assert flow_doc.content == task_doc.content
+            >>>
+            >>> # Convert with updates
+            >>> updated = task_doc.model_convert(
+            ...     MyFlowDoc,
+            ...     update={"name": "permanent.json", "description": "Converted"}
+            ... )
+            >>>
+            >>> # Track document lineage
+            >>> derived = doc.model_convert(
+            ...     ProcessedDoc,
+            ...     update={"sources": [doc.sha256]}
+            ... )
+        """
+        # Validate new_type
+        try:
+            # Use a runtime check to ensure it's a class
+            if not isinstance(new_type, type):  # type: ignore[reportIncompatibleArgumentType]
+                raise TypeError(f"new_type must be a class, got {new_type}")
+            if not issubclass(new_type, Document):  # type: ignore[reportIncompatibleArgumentType]
+                raise TypeError(f"new_type must be a subclass of Document, got {new_type}")
+        except (TypeError, AttributeError):
+            # Not a class at all
+            raise TypeError(f"new_type must be a subclass of Document, got {new_type}")
+
+        # Check for abstract classes by name (avoid circular imports)
+        class_name = new_type.__name__
+        if class_name == "Document":
+            raise TypeError("Cannot instantiate abstract Document class directly")
+        if class_name == "FlowDocument":
+            raise TypeError("Cannot instantiate abstract FlowDocument class directly")
+        if class_name == "TaskDocument":
+            raise TypeError("Cannot instantiate abstract TaskDocument class directly")
+
+        # Get current document data with proper typing
+        data: dict[str, Any] = {
+            "name": self.name,
+            "content": self.content,
+            "description": self.description,
+            "sources": self.sources.copy() if deep else self.sources,
+        }
+
+        # Apply updates if provided
+        if update:
+            data.update(update)
+
+        # Create new document of target type
+        return new_type(
+            name=data["name"],
+            content=data["content"],
             description=data.get("description"),
             sources=data.get("sources", []),
         )

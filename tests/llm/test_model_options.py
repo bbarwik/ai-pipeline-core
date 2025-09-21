@@ -27,7 +27,7 @@ class TestModelOptions:
 
         assert kwargs["timeout"] == 300
         assert "extra_body" in kwargs
-        assert kwargs["extra_body"] == {}
+        assert kwargs["extra_body"] == {"usage": {"include": True}}
 
         # These should not be in kwargs when None
         assert "max_completion_tokens" not in kwargs

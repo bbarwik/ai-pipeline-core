@@ -9,6 +9,8 @@ including text, documents, and model responses.
 import base64
 import hashlib
 import json
+from copy import deepcopy
+from typing import Any, Callable, Iterable, SupportsIndex, Union
 
 from openai.types.chat import (
     ChatCompletionContentPartParam,
@@ -75,12 +77,13 @@ class AIMessages(list[AIMessageType]):
         >>> messages.append(response)  # Add the actual response
     """
 
-    def __init__(self, iterable=None):
+    def __init__(self, iterable: Iterable[AIMessageType] | None = None, *, frozen: bool = False):
         """Initialize AIMessages with optional iterable.
 
         Args:
             iterable: Optional iterable of messages (list, tuple, etc.).
                      Must not be a string.
+            frozen: If True, list is immutable from creation.
 
         Raises:
             TypeError: If a string is passed directly to the constructor.
@@ -91,10 +94,109 @@ class AIMessages(list[AIMessageType]):
                 "Use AIMessages(['text']) for a single message or "
                 "AIMessages() and then append('text')."
             )
+        self._frozen = False  # Initialize as unfrozen to allow initial population
         if iterable is None:
             super().__init__()
         else:
             super().__init__(iterable)
+        self._frozen = frozen  # Set frozen state after initial population
+
+    def freeze(self) -> None:
+        """Permanently freeze the list, preventing modifications.
+
+        Once frozen, the list cannot be unfrozen.
+        """
+        self._frozen = True
+
+    def copy(self) -> "AIMessages":
+        """Create an unfrozen deep copy of the list.
+
+        Returns:
+            New unfrozen AIMessages with deep-copied messages.
+        """
+        copied_messages = deepcopy(list(self))
+        return AIMessages(copied_messages, frozen=False)
+
+    def _check_frozen(self) -> None:
+        """Check if list is frozen and raise if it is.
+
+        Raises:
+            RuntimeError: If the list is frozen.
+        """
+        if self._frozen:
+            raise RuntimeError("Cannot modify frozen AIMessages")
+
+    def append(self, message: AIMessageType) -> None:
+        """Add a message to the end of the list."""
+        self._check_frozen()
+        super().append(message)
+
+    def extend(self, messages: Iterable[AIMessageType]) -> None:
+        """Add multiple messages to the list."""
+        self._check_frozen()
+        super().extend(messages)
+
+    def insert(self, index: SupportsIndex, message: AIMessageType) -> None:
+        """Insert a message at the specified position."""
+        self._check_frozen()
+        super().insert(index, message)
+
+    def __setitem__(
+        self,
+        index: Union[SupportsIndex, slice],
+        value: Union[AIMessageType, Iterable[AIMessageType]],
+    ) -> None:
+        """Set item or slice."""
+        self._check_frozen()
+        super().__setitem__(index, value)  # type: ignore[arg-type]
+
+    def __iadd__(self, other: Iterable[AIMessageType]) -> "AIMessages":
+        """In-place addition (+=).
+
+        Returns:
+            This AIMessages instance after modification.
+        """
+        self._check_frozen()
+        return super().__iadd__(other)
+
+    def __delitem__(self, index: Union[SupportsIndex, slice]) -> None:
+        """Delete item or slice from list."""
+        self._check_frozen()
+        super().__delitem__(index)
+
+    def pop(self, index: SupportsIndex = -1) -> AIMessageType:
+        """Remove and return item at index.
+
+        Returns:
+            AIMessageType removed from the list.
+        """
+        self._check_frozen()
+        return super().pop(index)
+
+    def remove(self, message: AIMessageType) -> None:
+        """Remove first occurrence of message."""
+        self._check_frozen()
+        super().remove(message)
+
+    def clear(self) -> None:
+        """Remove all items from list."""
+        self._check_frozen()
+        super().clear()
+
+    def reverse(self) -> None:
+        """Reverse list in place."""
+        self._check_frozen()
+        super().reverse()
+
+    def sort(
+        self, *, key: Callable[[AIMessageType], Any] | None = None, reverse: bool = False
+    ) -> None:
+        """Sort list in place."""
+        self._check_frozen()
+        if key is None:
+            super().sort(reverse=reverse)  # type: ignore[call-arg]
+        else:
+            super().sort(key=key, reverse=reverse)
 
     def get_last_message(self) -> AIMessageType:
         """Get the last message in the conversation.

@@ -222,6 +222,7 @@ def pipeline_task(
     trace_input_formatter: Callable[..., str] | None = None,
     trace_output_formatter: Callable[..., str] | None = None,
     trace_cost: float | None = None,
+    trace_trim_documents: bool = True,
     # prefect passthrough
     name: str | None = None,
     description: str | None = None,
@@ -262,6 +263,7 @@ def pipeline_task(
     trace_input_formatter: Callable[..., str] | None = None,
     trace_output_formatter: Callable[..., str] | None = None,
     trace_cost: float | None = None,
+    trace_trim_documents: bool = True,
     # prefect passthrough
     name: str | None = None,
     description: str | None = None,
@@ -318,6 +320,8 @@ def pipeline_task(
         trace_cost: Optional cost value to track in metadata. When provided and > 0,
              sets gen_ai.usage.output_cost, gen_ai.usage.cost, and cost metadata.
              Also forces trace level to "always" if not already set.
+        trace_trim_documents: Trim document content in traces to first 100 chars (default True).
+                             Reduces trace size with large documents.
 
         Prefect task parameters:
         name: Task name (defaults to function name).
@@ -424,6 +428,7 @@ def pipeline_task(
             ignore_inputs=trace_ignore_inputs,
             input_formatter=trace_input_formatter,
             output_formatter=trace_output_formatter,
+            trim_documents=trace_trim_documents,
         )(_wrapper)
 
         return cast(
@@ -474,6 +479,7 @@ def pipeline_flow(
     trace_input_formatter: Callable[..., str] | None = None,
     trace_output_formatter: Callable[..., str] | None = None,
     trace_cost: float | None = None,
+    trace_trim_documents: bool = True,
     # prefect passthrough
     name: str | None = None,
     version: str | None = None,
@@ -536,6 +542,8 @@ def pipeline_flow(
         trace_cost: Optional cost value to track in metadata. When provided and > 0,
              sets gen_ai.usage.output_cost, gen_ai.usage.cost, and cost metadata.
              Also forces trace level to "always" if not already set.
+        trace_trim_documents: Trim document content in traces to first 100 chars (default True).
+                             Reduces trace size with large documents.
 
         Prefect flow parameters:
         name: Flow name (defaults to function name).
@@ -670,6 +678,7 @@ def pipeline_flow(
             ignore_inputs=trace_ignore_inputs,
             input_formatter=trace_input_formatter,
             output_formatter=trace_output_formatter,
+            trim_documents=trace_trim_documents,
         )(_wrapper)
 
         # --- Publish a schema where `documents` accepts str (path) OR DocumentList ---

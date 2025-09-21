@@ -3,7 +3,8 @@
 @public
 """
 
-from typing import Any, Iterable, SupportsIndex, Union, overload
+from copy import deepcopy
+from typing import Any, Callable, Iterable, SupportsIndex, Union, overload
 
 from typing_extensions import Self
 
@@ -37,6 +38,7 @@ class DocumentList(list[Document]):
         documents: list[Document] | None = None,
         validate_same_type: bool = False,
         validate_duplicates: bool = False,
+        frozen: bool = False,
     ) -> None:
         """Initialize DocumentList.
 
@@ -46,12 +48,15 @@ class DocumentList(list[Document]):
             documents: Initial list of documents.
             validate_same_type: Enforce same document type.
             validate_duplicates: Prevent duplicate filenames.
+            frozen: If True, list is immutable from creation.
         """
         super().__init__()
         self._validate_same_type = validate_same_type
         self._validate_duplicates = validate_duplicates
+        self._frozen = False  # Initialize as unfrozen to allow initial population
         if documents:
             self.extend(documents)
+        self._frozen = frozen  # Set frozen state after initial population
 
     def _validate_no_duplicates(self) -> None:
         """Check for duplicate document names.
@@ -109,18 +114,51 @@ class DocumentList(list[Document]):
         self._validate_no_description_files()
         self._validate_types()
 
+    def freeze(self) -> None:
+        """Permanently freeze the list, preventing modifications.
+
+        Once frozen, the list cannot be unfrozen.
+        """
+        self._frozen = True
+
+    def copy(self) -> "DocumentList":
+        """Create an unfrozen deep copy of the list.
+
+        Returns:
+            New unfrozen DocumentList with deep-copied documents.
+        """
+        copied_docs = deepcopy(list(self))
+        return DocumentList(
+            documents=copied_docs,
+            validate_same_type=self._validate_same_type,
+            validate_duplicates=self._validate_duplicates,
+            frozen=False,  # Copies are always unfrozen
+        )
+
+    def _check_frozen(self) -> None:
+        """Check if list is frozen and raise if it is.
+
+        Raises:
+            RuntimeError: If the list is frozen.
+        """
+        if self._frozen:
+            raise RuntimeError("Cannot modify frozen DocumentList")
+
     def append(self, document: Document) -> None:
         """Add a document to the end of the list."""
+        self._check_frozen()
         super().append(document)
         self._validate()
 
     def extend(self, documents: Iterable[Document]) -> None:
         """Add multiple documents to the list."""
+        self._check_frozen()
         super().extend(documents)
         self._validate()
 
     def insert(self, index: SupportsIndex, document: Document) -> None:
         """Insert a document at the specified position."""
+        self._check_frozen()
         super().insert(index, document)
         self._validate()
 
@@ -132,6 +170,7 @@ class DocumentList(list[Document]):
 
     def __setitem__(self, index: Union[SupportsIndex, slice], value: Any) -> None:
         """Set item or slice with validation."""
+        self._check_frozen()
         super().__setitem__(index, value)
         self._validate()
 
@@ -141,9 +180,47 @@ class DocumentList(list[Document]):
         Returns:
             Self: This DocumentList after modification.
         """
+        self._check_frozen()
         result = super().__iadd__(other)
         self._validate()
         return result
+
+    def __delitem__(self, index: Union[SupportsIndex, slice]) -> None:
+        """Delete item or slice from list."""
+        self._check_frozen()
+        super().__delitem__(index)
+
+    def pop(self, index: SupportsIndex = -1) -> Document:
+        """Remove and return item at index.
+
+        Returns:
+            Document removed from the list.
+        """
+        self._check_frozen()
+        return super().pop(index)
+
+    def remove(self, document: Document) -> None:
+        """Remove first occurrence of document."""
+        self._check_frozen()
+        super().remove(document)
+
+    def clear(self) -> None:
+        """Remove all items from list."""
+        self._check_frozen()
+        super().clear()
+
+    def reverse(self) -> None:
+        """Reverse list in place."""
+        self._check_frozen()
+        super().reverse()
+
+    def sort(self, *, key: Callable[[Document], Any] | None = None, reverse: bool = False) -> None:
+        """Sort list in place."""
+        self._check_frozen()
+        if key is None:
+            super().sort(reverse=reverse)  # type: ignore[call-arg]
+        else:
+            super().sort(key=key, reverse=reverse)
 
     @overload
     def filter_by(self, arg: str) -> "DocumentList": ...

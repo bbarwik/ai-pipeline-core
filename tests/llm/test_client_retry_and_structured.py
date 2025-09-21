@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from ai_pipeline_core.exceptions import LLMError
 from ai_pipeline_core.llm import AIMessages, ModelOptions, generate
-from ai_pipeline_core.llm import generate_with_retry_for_testing as _generate_with_retry
+from ai_pipeline_core.llm.client import _generate_with_retry  # pyright: ignore[reportPrivateUsage]
 
 
 class ExampleModel(BaseModel):

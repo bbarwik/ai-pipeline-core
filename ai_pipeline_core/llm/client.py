@@ -524,6 +524,8 @@ async def generate_structured(
     if isinstance(messages, str):
         messages = AIMessages([messages])
 
+    assert isinstance(messages, AIMessages)
+
     # Call the internal generate function with structured output enabled
     try:
         response = await _generate_with_retry(model, context, messages, options)
@@ -555,9 +557,3 @@ async def generate_structured(
 
     # Create a StructuredModelResponse with the parsed value
     return StructuredModelResponse[T](chat_completion=response, parsed_value=parsed_value)
-
-
-# Public aliases for testing internal functions
-# These are exported to allow testing of implementation details
-process_messages_for_testing = _process_messages
-generate_with_retry_for_testing = _generate_with_retry

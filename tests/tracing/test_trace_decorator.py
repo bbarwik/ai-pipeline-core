@@ -186,7 +186,12 @@ class TestTraceDecorator:
         def output_fmt(result):
             return f"Output: {result}"
 
-        @trace(level="debug", input_formatter=input_fmt, output_formatter=output_fmt)
+        @trace(
+            level="debug",
+            input_formatter=input_fmt,
+            output_formatter=output_fmt,
+            trim_documents=False,
+        )
         def test_func(x):
             return x * 2
 

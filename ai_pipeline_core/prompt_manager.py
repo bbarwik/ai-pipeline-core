@@ -18,6 +18,8 @@ Key features:
     - Jinja2 template rendering with context
     - Smart path resolution (.jinja2/.jinja extension handling)
     - Clear error messages for missing templates
+    - Built-in global variables:
+        - current_date: Current date in format "03 January 2025" (string)
 
 Example:
     >>> from ai_pipeline_core import PromptManager
@@ -45,6 +47,7 @@ Note:
     The extension can be omitted when calling get().
 """
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +106,8 @@ class PromptManager:
         {% if instructions %}
         Instructions: {{ instructions }}
         {% endif %}
+
+        Date: {{ current_date }}  # Current date in format "03 January 2025"
         ```
 
     Note:
@@ -213,6 +218,9 @@ class PromptManager:
             lstrip_blocks=True,
             autoescape=False,  # Important for prompt engineering
         )
+
+        # Add current_date as a global string (format: "03 January 2025")
+        self.env.globals["current_date"] = datetime.now().strftime("%d %B %Y")  # type: ignore[assignment]
 
     def get(self, prompt_path: str, **kwargs: Any) -> str:
         """Load and render a Jinja2 template with the given context.

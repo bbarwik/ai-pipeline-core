@@ -179,9 +179,17 @@ if doc.is_text:
 # Parse structured data
 data = doc.as_json()  # or as_yaml(), as_pydantic_model()
 
+# Convert between document types (new in v0.2.1)
+task_doc = flow_doc.model_convert(TaskDocument)  # Convert FlowDocument to TaskDocument
+new_doc = doc.model_convert(OtherDocType, content={"new": "data"})  # With content update
+
 # Enhanced filtering (new in v0.1.14)
 filtered = documents.filter_by([Doc1, Doc2, Doc3])  # Multiple types
 named = documents.filter_by(["file1.txt", "file2.txt"])  # Multiple names
+
+# Immutable collections (new in v0.2.1)
+frozen_docs = DocumentList(docs, frozen=True)  # Immutable document list
+frozen_msgs = AIMessages(messages, frozen=True)  # Immutable message list
 ```
 
 ### LLM Integration
@@ -267,13 +275,18 @@ async def process_chunk(data: str) -> str:
     set_trace_cost(0.05)  # Track costs (new in v0.1.14)
     return result
 
-@pipeline_flow(config=MyFlowConfig)  # Full observability and orchestration
+@pipeline_flow(
+    config=MyFlowConfig,
+    trace_trim_documents=True  # Trim large documents in traces (new in v0.2.1)
+)
 async def main_flow(
     project_name: str,
     documents: DocumentList,
     flow_options: FlowOptions
 ) -> DocumentList:
     # Your pipeline logic
+    # Large documents are automatically trimmed to 100 chars in traces
+    # for better observability without overwhelming the tracing UI
     return DocumentList(results)
 ```
 

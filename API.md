@@ -432,12 +432,12 @@ ModelName: TypeAlias = (
         # Small models
         "gemini-2.5-flash",
         "gpt-5-mini",
-        "grok-3-mini",
+        "grok-4-fast",
         # Search models
         "gemini-2.5-flash-search",
         "sonar-pro-search",
         "gpt-4o-search",
-        "grok-3-mini-search",
+        "grok-4-fast-search",
     ]
     | str
 )
@@ -458,7 +458,7 @@ Core models (gemini-2.5-pro, gpt-5, grok-4):
 High-capability models for complex tasks requiring deep reasoning,
 nuanced understanding, or creative generation.
 
-Small models (gemini-2.5-flash, gpt-5-mini, grok-3-mini):
+Small models (gemini-2.5-flash, gpt-5-mini, grok-4-fast):
 Efficient models optimized for speed and cost, suitable for
 simpler tasks or high-volume processing.
 
@@ -806,6 +806,8 @@ Key features:
 - Jinja2 template rendering with context
 - Smart path resolution (.jinja2/.jinja extension handling)
 - Clear error messages for missing templates
+- Built-in global variables:
+- current_date: Current date in format "03 January 2025" (string)
 
 **Example**:
 
@@ -885,6 +887,8 @@ package boundary or after 4 parent levels, whichever comes first)
     {% if instructions %}
     Instructions: {{ instructions }}
     {% endif %}
+
+    Date: {{ current_date }}  # Current date in format "03 January 2025"
     ```
 
 **Notes**:
@@ -1207,7 +1211,7 @@ and enforce async-only execution for consistency.
 ### pipeline_task
 
 ```python
-def pipeline_task(__fn: Callable[..., Coroutine[Any, Any, R_co]] | None = None, *, trace_level: TraceLevel = "always", trace_ignore_input: bool = False, trace_ignore_output: bool = False, trace_ignore_inputs: list[str] | None = None, trace_input_formatter: Callable[..., str] | None = None, trace_output_formatter: Callable[..., str] | None = None, trace_cost: float | None = None, name: str | None = None, description: str | None = None, tags: Iterable[str] | None = None, version: str | None = None, cache_policy: CachePolicy | type[NotSet] = NotSet, cache_key_fn: Callable[[TaskRunContext, dict[str, Any]], str | None] | None = None, cache_expiration: datetime.timedelta | None = None, task_run_name: TaskRunNameValueOrCallable | None = None, retries: int | None = None, retry_delay_seconds: int | float | list[float] | Callable[[int], list[float]] | None = None, retry_jitter_factor: float | None = None, persist_result: bool | None = None, result_storage: ResultStorage | str | None = None, result_serializer: ResultSerializer | str | None = None, result_storage_key: str | None = None, cache_result_in_memory: bool = True, timeout_seconds: int | float | None = None, log_prints: bool | None = False, refresh_cache: bool | None = None, on_completion: list[StateHookCallable] | None = None, on_failure: list[StateHookCallable] | None = None, retry_condition_fn: RetryConditionCallable | None = None, viz_return_value: bool | None = None, asset_deps: list[str | Asset] | None = None) -> _TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], _TaskLike[R_co]]
+def pipeline_task(__fn: Callable[..., Coroutine[Any, Any, R_co]] | None = None, *, trace_level: TraceLevel = "always", trace_ignore_input: bool = False, trace_ignore_output: bool = False, trace_ignore_inputs: list[str] | None = None, trace_input_formatter: Callable[..., str] | None = None, trace_output_formatter: Callable[..., str] | None = None, trace_cost: float | None = None, trace_trim_documents: bool = True, name: str | None = None, description: str | None = None, tags: Iterable[str] | None = None, version: str | None = None, cache_policy: CachePolicy | type[NotSet] = NotSet, cache_key_fn: Callable[[TaskRunContext, dict[str, Any]], str | None] | None = None, cache_expiration: datetime.timedelta | None = None, task_run_name: TaskRunNameValueOrCallable | None = None, retries: int | None = None, retry_delay_seconds: int | float | list[float] | Callable[[int], list[float]] | None = None, retry_jitter_factor: float | None = None, persist_result: bool | None = None, result_storage: ResultStorage | str | None = None, result_serializer: ResultSerializer | str | None = None, result_storage_key: str | None = None, cache_result_in_memory: bool = True, timeout_seconds: int | float | None = None, log_prints: bool | None = False, refresh_cache: bool | None = None, on_completion: list[StateHookCallable] | None = None, on_failure: list[StateHookCallable] | None = None, retry_condition_fn: RetryConditionCallable | None = None, viz_return_value: bool | None = None, asset_deps: list[str | Asset] | None = None) -> _TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], _TaskLike[R_co]]
 ```
 
 Decorate an async function as a traced Prefect task.
@@ -1239,6 +1243,8 @@ Only specify parameters when you have EXPLICIT requirements.
 - `trace_cost` - Optional cost value to track in metadata. When provided and > 0,
   sets gen_ai.usage.output_cost, gen_ai.usage.cost, and cost metadata.
   Also forces trace level to "always" if not already set.
+- `trace_trim_documents` - Trim document content in traces to first 100 chars (default True).
+  Reduces trace size with large documents.
 
   Prefect task parameters:
 - `name` - Task name (defaults to function name).
@@ -1310,7 +1316,7 @@ Only specify parameters when you have EXPLICIT requirements.
 ### pipeline_flow
 
 ```python
-def pipeline_flow(*, config: type[FlowConfig], trace_level: TraceLevel = "always", trace_ignore_input: bool = False, trace_ignore_output: bool = False, trace_ignore_inputs: list[str] | None = None, trace_input_formatter: Callable[..., str] | None = None, trace_output_formatter: Callable[..., str] | None = None, trace_cost: float | None = None, name: str | None = None, version: str | None = None, flow_run_name: Union[Callable[[], str], str] | None = None, retries: int | None = None, retry_delay_seconds: int | float | None = None, task_runner: TaskRunner[PrefectFuture[Any]] | None = None, description: str | None = None, timeout_seconds: int | float | None = None, validate_parameters: bool = True, persist_result: bool | None = None, result_storage: ResultStorage | str | None = None, result_serializer: ResultSerializer | str | None = None, cache_result_in_memory: bool = True, log_prints: bool | None = None, on_completion: list[FlowStateHook[Any, Any]] | None = None, on_failure: list[FlowStateHook[Any, Any]] | None = None, on_cancellation: list[FlowStateHook[Any, Any]] | None = None, on_crashed: list[FlowStateHook[Any, Any]] | None = None, on_running: list[FlowStateHook[Any, Any]] | None = None) -> Callable[[_DocumentsFlowCallable[FO_contra]], _FlowLike[FO_contra]]
+def pipeline_flow(*, config: type[FlowConfig], trace_level: TraceLevel = "always", trace_ignore_input: bool = False, trace_ignore_output: bool = False, trace_ignore_inputs: list[str] | None = None, trace_input_formatter: Callable[..., str] | None = None, trace_output_formatter: Callable[..., str] | None = None, trace_cost: float | None = None, trace_trim_documents: bool = True, name: str | None = None, version: str | None = None, flow_run_name: Union[Callable[[], str], str] | None = None, retries: int | None = None, retry_delay_seconds: int | float | None = None, task_runner: TaskRunner[PrefectFuture[Any]] | None = None, description: str | None = None, timeout_seconds: int | float | None = None, validate_parameters: bool = True, persist_result: bool | None = None, result_storage: ResultStorage | str | None = None, result_serializer: ResultSerializer | str | None = None, cache_result_in_memory: bool = True, log_prints: bool | None = None, on_completion: list[FlowStateHook[Any, Any]] | None = None, on_failure: list[FlowStateHook[Any, Any]] | None = None, on_cancellation: list[FlowStateHook[Any, Any]] | None = None, on_crashed: list[FlowStateHook[Any, Any]] | None = None, on_running: list[FlowStateHook[Any, Any]] | None = None) -> Callable[[_DocumentsFlowCallable[FO_contra]], _FlowLike[FO_contra]]
 ```
 
 Decorate an async flow for document processing.
@@ -1353,6 +1359,8 @@ flow_options: FlowOptions, # Configuration (or subclass)
 - `trace_cost` - Optional cost value to track in metadata. When provided and > 0,
   sets gen_ai.usage.output_cost, gen_ai.usage.cost, and cost metadata.
   Also forces trace level to "always" if not already set.
+- `trace_trim_documents` - Trim document content in traces to first 100 chars (default True).
+  Reduces trace size with large documents.
 
   Prefect flow parameters:
 - `name` - Flow name (defaults to function name).
@@ -1678,6 +1686,8 @@ Key features:
 - Support for text, JSON, YAML, PDF, and image formats
 - Conversion utilities between different formats
 - Source provenance tracking via sources field
+- Document type conversion via model_convert() method
+- Standard Pydantic model_copy() for same-type copying
 
 Class Variables:
 MAX_CONTENT_SIZE: Maximum allowed content size in bytes (default 25MB)
@@ -1807,6 +1817,14 @@ MAX_CONTENT_SIZE: Maximum allowed content size in bytes (default 25MB)
   ...     sources=[source_doc.sha256]  # Reference source document
   ... )
   >>> processed.has_source(source_doc)  # True
+  >>>
+  >>> # Document copying and type conversion:
+  >>> # Standard Pydantic model_copy (doesn't validate updates)
+  >>> copied = doc.model_copy(update={"name": "new_name.json"})
+  >>> # Type conversion with validation via model_convert
+  >>> task_doc = MyTaskDoc.create(name="temp.json", content={"data": "value"})
+  >>> flow_doc = task_doc.model_convert(MyFlowDoc)  # Convert to FlowDocument
+  >>> flow_doc.is_flow  # True
 
 #### Document.MAX_CONTENT_SIZE
 
@@ -2287,6 +2305,60 @@ Designed for roundtrip conversion:
   >>> doc.parse(list)
   ['Item 1', 'Item 2']
 
+#### Document.model_convert
+
+```python
+@final
+def model_convert(self, new_type: type[TDocument], *, update: dict[str, Any] | None = None, deep: bool = False) -> TDocument
+```
+
+Convert document to a different Document type with optional updates.
+
+Creates a new document of a different type, preserving all attributes
+while allowing updates. This is useful for converting between document
+types (e.g., TaskDocument to FlowDocument) while maintaining data integrity.
+
+**Arguments**:
+
+- `new_type` - Target Document class for conversion. Must be a concrete
+  subclass of Document (not abstract classes like Document,
+  FlowDocument, or TaskDocument).
+- `update` - Dictionary of attributes to update. Supports any attributes
+  that the Document constructor accepts (name, content,
+  description, sources).
+- `deep` - Whether to perform a deep copy of mutable attributes.
+
+**Returns**:
+
+  New Document instance of the specified type.
+
+**Raises**:
+
+- `TypeError` - If new_type is not a subclass of Document, is an abstract
+  class, or if update contains invalid attributes.
+- `DocumentNameError` - If the name violates the target type's FILES enum.
+- `DocumentSizeError` - If content exceeds MAX_CONTENT_SIZE.
+
+**Example**:
+
+  >>> # Convert TaskDocument to FlowDocument
+  >>> task_doc = MyTaskDoc.create(name="temp.json", content={"data": "value"})
+  >>> flow_doc = task_doc.model_convert(MyFlowDoc)
+  >>> assert flow_doc.is_flow
+  >>> assert flow_doc.content == task_doc.content
+  >>>
+  >>> # Convert with updates
+  >>> updated = task_doc.model_convert(
+  ...     MyFlowDoc,
+  ...     update={"name": "permanent.json", "description": "Converted"}
+  ... )
+  >>>
+  >>> # Track document lineage
+  >>> derived = doc.model_convert(
+  ...     ProcessedDoc,
+  ...     update={"sources": [doc.sha256]}
+  ... )
+
 
 ## ai_pipeline_core.documents
 
@@ -2369,7 +2441,7 @@ Only enable validate_same_type or validate_duplicates when you explicitly need t
 #### DocumentList.__init__
 
 ```python
-def __init__(self, documents: list[Document] | None = None, validate_same_type: bool = False, validate_duplicates: bool = False) -> None
+def __init__(self, documents: list[Document] | None = None, validate_same_type: bool = False, validate_duplicates: bool = False, frozen: bool = False) -> None
 ```
 
 Initialize DocumentList.
@@ -2379,6 +2451,7 @@ Initialize DocumentList.
 - `documents` - Initial list of documents.
 - `validate_same_type` - Enforce same document type.
 - `validate_duplicates` - Prevent duplicate filenames.
+- `frozen` - If True, list is immutable from creation.
 
 #### DocumentList.filter_by
 

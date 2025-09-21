@@ -159,11 +159,13 @@ class ModelOptions(BaseModel):
         Note:
             - system_prompt is handled separately in _process_messages()
             - retries and retry_delay_seconds are used by retry logic
-            - extra_body is always included for potential extensions
+            - extra_body always includes usage tracking for cost monitoring
         """
         kwargs: dict[str, Any] = {
             "timeout": self.timeout,
-            "extra_body": {},
+            "extra_body": {
+                "usage": {"include": True},  # For openrouter cost tracking
+            },
         }
 
         if self.temperature:
