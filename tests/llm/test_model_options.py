@@ -16,22 +16,26 @@ class TestModelOptions:
         assert options.reasoning_effort is None
         assert options.retries == 3
         assert options.retry_delay_seconds == 10
-        assert options.timeout == 300
+        assert options.timeout == 600
+        assert options.cache_ttl == "5m"
         assert options.max_completion_tokens is None
         assert options.response_format is None
+        assert options.verbosity is None
+        assert options.usage_tracking is True
 
     def test_to_openai_kwargs_defaults(self):
         """Test conversion to OpenAI kwargs with defaults."""
         options = ModelOptions()
         kwargs = options.to_openai_completion_kwargs()
 
-        assert kwargs["timeout"] == 300
+        assert kwargs["timeout"] == 600
         assert "extra_body" in kwargs
         assert kwargs["extra_body"] == {"usage": {"include": True}}
 
         # These should not be in kwargs when None
         assert "max_completion_tokens" not in kwargs
         assert "response_format" not in kwargs
+        assert "verbosity" not in kwargs
 
     def test_max_completion_tokens(self):
         """Test max_completion_tokens pass-through."""
@@ -109,3 +113,22 @@ class TestModelOptions:
 
         options.response_format = None
         assert options.response_format is None
+
+    def test_verbosity_option(self):
+        """Test verbosity option."""
+        for level in ["low", "medium", "high"]:
+            options = ModelOptions(verbosity=level)  # type: ignore
+            kwargs = options.to_openai_completion_kwargs()
+            assert kwargs["verbosity"] == level
+
+    def test_usage_tracking_disabled(self):
+        """Test usage tracking can be disabled."""
+        options = ModelOptions(usage_tracking=False)
+        kwargs = options.to_openai_completion_kwargs()
+        assert "usage" not in kwargs["extra_body"]
+
+    def test_usage_tracking_enabled(self):
+        """Test usage tracking is enabled by default."""
+        options = ModelOptions(usage_tracking=True)
+        kwargs = options.to_openai_completion_kwargs()
+        assert kwargs["extra_body"]["usage"] == {"include": True}

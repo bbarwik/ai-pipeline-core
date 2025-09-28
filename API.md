@@ -529,7 +529,7 @@ Best Practices:
 - `model` - Model to use (e.g., "gpt-5", "gemini-2.5-pro", "grok-4").
   Accepts predefined models or any string for custom models.
 - `context` - Static context to cache (documents, examples, instructions).
-  Defaults to None (empty context). Cached for 120 seconds.
+  Defaults to None (empty context). Cached for 5 minutes by default.
 - `messages` - Dynamic messages/queries. AIMessages or str ONLY.
   Do not pass Document or DocumentList directly.
   If string, converted to AIMessages internally.
@@ -625,13 +625,13 @@ Best Practices:
   - Context caching saves ~50-90% tokens on repeated calls
   - First call: full token cost
   - Subsequent calls (within cache TTL): only messages tokens
-  - Default cache TTL is 120s (production-optimized)
+  - Default cache TTL is 5m (production-optimized)
   - Default retry logic: 3 attempts with 10s delay (production-optimized)
 
   Caching:
   When enabled in your LiteLLM proxy and supported by the upstream provider,
   context messages may be cached to reduce token usage on repeated calls.
-  Default TTL is 120s (optimized for production workloads). Configure caching
+  Default TTL is 5m (optimized for production workloads). Configure caching
   behavior centrally via your LiteLLM proxy settings, not per API call.
   Savings depend on provider and payload; treat this as an optimization, not a guarantee.
 

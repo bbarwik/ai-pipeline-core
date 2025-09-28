@@ -73,6 +73,48 @@ class TestModelResponse:
 
         assert response.content == "Content here"
 
+    def test_content_strips_think_tags(self):
+        """Test that content property removes think tags."""
+        response = ModelResponse(
+            id="test",
+            object="chat.completion",
+            created=1234567890,
+            model="test",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "<think>Internal reasoning</think> Visible content",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        )
+
+        assert response.content == "Visible content"
+
+    def test_content_strips_think_tags_multiline(self):
+        """Test stripping think tags with multiline content."""
+        response = ModelResponse(
+            id="test",
+            object="chat.completion",
+            created=1234567890,
+            model="test",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "<think>\nMultiline\nthinking\n</think>\nActual response",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        )
+
+        assert response.content == "Actual response"
+
     def test_set_headers(self):
         """Test setting response headers."""
         response = ModelResponse(

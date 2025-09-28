@@ -60,7 +60,7 @@ class TestProcessMessages:
         assert result[1]["content"] == "Context message 2"
         assert "cache_control" in result[1]
         assert result[1]["cache_control"]["type"] == "ephemeral"
-        assert result[1]["cache_control"]["ttl"] == "120s"
+        assert result[1]["cache_control"]["ttl"] == "5m"
 
         # Regular message should not have cache control
         assert result[2]["role"] == "user"
@@ -111,7 +111,7 @@ class TestProcessMessages:
         # Last context message gets cache control (even if assistant)
         assert "cache_control" in result[3]
         assert result[3]["cache_control"]["type"] == "ephemeral"
-        assert result[3]["cache_control"]["ttl"] == "120s"
+        assert result[3]["cache_control"]["ttl"] == "5m"
 
         assert result[4]["role"] == "user"
         assert result[4]["content"] == "User question"
@@ -154,7 +154,7 @@ class TestProcessMessages:
         assert result[2]["role"] == "user"
         assert "cache_control" in result[2]
         assert result[2]["cache_control"]["type"] == "ephemeral"
-        assert result[2]["cache_control"]["ttl"] == "120s"
+        assert result[2]["cache_control"]["ttl"] == "5m"
 
     def test_no_system_prompt_when_none(self):
         """Test that no system message is added when prompt is None."""
@@ -189,7 +189,7 @@ class TestProcessMessages:
         assert result[0]["content"] == "Single context message"
         assert "cache_control" in result[0]
         assert result[0]["cache_control"]["type"] == "ephemeral"
-        assert result[0]["cache_control"]["ttl"] == "120s"
+        assert result[0]["cache_control"]["ttl"] == "5m"
 
         # Regular message should not have cache control
         assert result[1]["role"] == "user"
@@ -227,7 +227,7 @@ class TestProcessMessages:
         assert result[1]["role"] == "assistant"
         assert "cache_control" in result[1]
         assert result[1]["cache_control"]["type"] == "ephemeral"
-        assert result[1]["cache_control"]["ttl"] == "120s"
+        assert result[1]["cache_control"]["ttl"] == "5m"
 
         # Regular message no cache
         assert result[2]["role"] == "user"

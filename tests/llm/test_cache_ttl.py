@@ -10,9 +10,9 @@ class TestCacheTTL:
     """Test cache_ttl functionality."""
 
     def test_model_options_default_cache_ttl(self):
-        """Test ModelOptions has default cache_ttl of 120s."""
+        """Test ModelOptions has default cache_ttl of 5m."""
         options = ModelOptions()
-        assert options.cache_ttl == "120s"
+        assert options.cache_ttl == "5m"
 
     def test_model_options_custom_cache_ttl(self):
         """Test ModelOptions accepts custom cache_ttl values."""
@@ -28,7 +28,7 @@ class TestCacheTTL:
         assert options.cache_ttl is None
 
     def test_process_messages_default_cache_ttl(self):
-        """Test _process_messages uses default cache_ttl of 120s."""
+        """Test _process_messages uses default cache_ttl of 5m."""
         context = AIMessages(["context message"])
         messages = AIMessages(["query message"])
 
@@ -40,7 +40,7 @@ class TestCacheTTL:
         context_msg_dict = cast(dict[str, Any], context_msg)
         assert "cache_control" in context_msg_dict
         assert context_msg_dict["cache_control"]["type"] == "ephemeral"
-        assert context_msg_dict["cache_control"]["ttl"] == "120s"
+        assert context_msg_dict["cache_control"]["ttl"] == "5m"
 
     def test_process_messages_custom_cache_ttl(self):
         """Test _process_messages uses custom cache_ttl."""
@@ -203,7 +203,7 @@ class TestCacheTTL:
         """Test that ModelOptions correctly integrates cache_ttl."""
         # Test default value
         default_options = ModelOptions()
-        assert default_options.cache_ttl == "120s"
+        assert default_options.cache_ttl == "5m"
 
         # Test that to_openai_completion_kwargs doesn't include cache_ttl
         # (it's handled separately in _process_messages)

@@ -110,7 +110,8 @@ class ModelResponse(ChatCompletion):
             >>> if "error" in response.content.lower():
             ...     # Handle error case
         """
-        return self.choices[0].message.content or ""
+        content = self.choices[0].message.content or ""
+        return content.split("</think>")[-1].strip()
 
     def set_model_options(self, options: dict[str, Any]) -> None:
         """Store the model configuration used for generation.

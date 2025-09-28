@@ -30,7 +30,7 @@ IGNORE_PATTERNS = [
 ]
 
 TREE_IGNORE = "__pycache__|*.pyc|.git|.pytest_cache|.ruff_cache|*.egg-info|.venv|venv|env|.env"
-TREE_FLAGS = ["--dirsfirst", "--du", "--si", "--gitignore", "--charset=ascii", "-a"]
+TREE_FLAGS = ["--dirsfirst", "--du", "--si", "--gitignore", "--charset=ascii"]
 SEPARATOR = "=" * 40
 DEFAULT_MAX_BYTES = 200_000
 MIN_EXCLUDE_BYTES = 1000

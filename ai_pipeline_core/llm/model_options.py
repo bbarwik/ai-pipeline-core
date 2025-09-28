@@ -45,7 +45,7 @@ class ModelOptions(BaseModel):
 
         timeout: Maximum seconds to wait for response (default: 300).
 
-        cache_ttl: Cache TTL for context messages (default: "120s").
+        cache_ttl: Cache TTL for context messages (default: "5m").
                    String format like "60s", "5m", or None to disable caching.
                    Applied to the last context message for efficient token reuse.
 
@@ -109,7 +109,7 @@ class ModelOptions(BaseModel):
         - search_context_size only works with search models
         - reasoning_effort only works with models that support explicit reasoning
         - response_format is set internally by generate_structured()
-        - cache_ttl accepts formats like "120s", "5m", "1h" or None to disable caching
+        - cache_ttl accepts formats like "120s", "5m" (default), "1h" or None to disable caching
     """
 
     temperature: float | None = None
@@ -118,11 +118,13 @@ class ModelOptions(BaseModel):
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     retries: int = 3
     retry_delay_seconds: int = 10
-    timeout: int = 300
-    cache_ttl: str | None = "120s"
+    timeout: int = 600
+    cache_ttl: str | None = "5m"
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
     max_completion_tokens: int | None = None
     response_format: type[BaseModel] | None = None
+    verbosity: Literal["low", "medium", "high"] | None = None
+    usage_tracking: bool = True
 
     def to_openai_completion_kwargs(self) -> dict[str, Any]:
         """Convert options to OpenAI API completion parameters.
@@ -163,9 +165,7 @@ class ModelOptions(BaseModel):
         """
         kwargs: dict[str, Any] = {
             "timeout": self.timeout,
-            "extra_body": {
-                "usage": {"include": True},  # For openrouter cost tracking
-            },
+            "extra_body": {},
         }
 
         if self.temperature:
@@ -185,5 +185,11 @@ class ModelOptions(BaseModel):
 
         if self.service_tier:
             kwargs["service_tier"] = self.service_tier
+
+        if self.verbosity:
+            kwargs["verbosity"] = self.verbosity
+
+        if self.usage_tracking:
+            kwargs["extra_body"]["usage"] = {"include": True}
 
         return kwargs

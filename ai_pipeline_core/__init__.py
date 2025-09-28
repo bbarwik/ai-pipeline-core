@@ -118,7 +118,7 @@ from .prompt_manager import PromptManager
 from .settings import Settings
 from .tracing import TraceInfo, TraceLevel, set_trace_cost, trace
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     # Config/Settings
