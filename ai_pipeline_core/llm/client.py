@@ -187,7 +187,7 @@ async def _generate_with_retry(
         **options.to_openai_completion_kwargs(),
     }
 
-    if context:
+    if context and options.cache_ttl:
         completion_kwargs["prompt_cache_key"] = context.get_prompt_cache_key(options.system_prompt)
 
     for attempt in range(options.retries):
