@@ -302,7 +302,7 @@ class Document(BaseModel, ABC):
         name: str,
         content: bytes,
         description: str | None = None,
-        sources: list[str] = [],
+        sources: list[str] | None = None,
     ) -> Self: ...
 
     @overload
@@ -313,7 +313,7 @@ class Document(BaseModel, ABC):
         name: str,
         content: str,
         description: str | None = None,
-        sources: list[str] = [],
+        sources: list[str] | None = None,
     ) -> Self: ...
 
     @overload
@@ -324,7 +324,7 @@ class Document(BaseModel, ABC):
         name: str,
         content: dict[str, Any],
         description: str | None = None,
-        sources: list[str] = [],
+        sources: list[str] | None = None,
     ) -> Self: ...
 
     @overload
@@ -335,7 +335,7 @@ class Document(BaseModel, ABC):
         name: str,
         content: list[Any],
         description: str | None = None,
-        sources: list[str] = [],
+        sources: list[str] | None = None,
     ) -> Self: ...
 
     @overload
@@ -346,7 +346,7 @@ class Document(BaseModel, ABC):
         name: str,
         content: BaseModel,
         description: str | None = None,
-        sources: list[str] = [],
+        sources: list[str] | None = None,
     ) -> Self: ...
 
     @classmethod
@@ -356,7 +356,7 @@ class Document(BaseModel, ABC):
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
         description: str | None = None,
-        sources: list[str] = [],
+        sources: list[str] | None = None,
     ) -> Self:
         r"""Create a Document with automatic content type conversion (recommended).
 
@@ -469,7 +469,7 @@ class Document(BaseModel, ABC):
         name: str,
         content: bytes,
         description: str | None = None,
-        sources: list[str] = [],
+        sources: list[str] | None = None,
     ) -> None:
         """Initialize a Document instance with raw bytes content.
 
@@ -509,7 +509,11 @@ class Document(BaseModel, ABC):
         if type(self) is Document:
             raise TypeError("Cannot instantiate abstract Document class directly")
 
-        super().__init__(name=name, content=content, description=description, sources=sources)
+        # Only pass sources if not None to let Pydantic's default_factory handle it
+        if sources is not None:
+            super().__init__(name=name, content=content, description=description, sources=sources)
+        else:
+            super().__init__(name=name, content=content, description=description)
 
     name: str
     description: str | None = None

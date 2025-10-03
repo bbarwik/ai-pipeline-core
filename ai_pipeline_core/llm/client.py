@@ -447,10 +447,11 @@ async def generate_structured(
                 Defaults to None (empty AIMessages).
         messages: Dynamic prompts/queries. AIMessages or str ONLY.
                  Do not pass Document or DocumentList directly.
-        options: DEPRECATED - DO NOT USE. Reserved for internal framework usage only.
-                Framework defaults are production-optimized. Configure model behavior
-                centrally via LiteLLM proxy settings, not per API call.
-                The response_format is set automatically from the response_format parameter.
+        options: Optional ModelOptions for configuring temperature, retries, etc.
+                If provided, it will NOT be mutated (a copy is created internally).
+                The response_format field is set automatically from the response_format parameter.
+                In most cases, leave as None to use framework defaults.
+                Configure model behavior centrally via LiteLLM proxy settings when possible.
 
     VISION/PDF MODEL COMPATIBILITY:
         When using Documents with images/PDFs in structured output:
@@ -518,6 +519,9 @@ async def generate_structured(
         context = AIMessages()
     if options is None:
         options = ModelOptions()
+    else:
+        # Create a copy to avoid mutating the caller's options object
+        options = options.model_copy()
 
     options.response_format = response_format
 

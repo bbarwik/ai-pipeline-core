@@ -51,7 +51,7 @@ class TaskDocument(Document):
         name: str,
         content: bytes,
         description: str | None = None,
-        sources: list[str] = [],
+        sources: list[str] | None = None,
     ) -> None:
         """Initialize a TaskDocument with raw bytes content.
 
@@ -93,7 +93,12 @@ class TaskDocument(Document):
         """
         if type(self) is TaskDocument:
             raise TypeError("Cannot instantiate abstract TaskDocument class directly")
-        super().__init__(name=name, content=content, description=description, sources=sources)
+
+        # Only pass sources if not None to let Pydantic's default_factory handle it
+        if sources is not None:
+            super().__init__(name=name, content=content, description=description, sources=sources)
+        else:
+            super().__init__(name=name, content=content, description=description)
 
     @final
     def get_base_type(self) -> Literal["task"]:

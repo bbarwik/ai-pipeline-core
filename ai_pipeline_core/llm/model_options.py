@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 
 class ModelOptions(BaseModel):
-    """Configuration options for LLM generation requests.
+    r"""Configuration options for LLM generation requests.
 
     ModelOptions encapsulates all configuration parameters for model
     generation, including model behavior settings, retry logic, and
@@ -62,10 +62,36 @@ class ModelOptions(BaseModel):
         max_completion_tokens: Maximum tokens to generate.
                               None uses model default.
 
+        stop: Stop sequences that halt generation when encountered.
+             Can be a single string or list of strings.
+             When the model generates any of these sequences, it stops immediately.
+             Maximum of 4 stop sequences supported by most providers.
+
         response_format: Pydantic model class for structured output.
                         Pass a Pydantic model; the client converts it to JSON Schema.
                         Set automatically by generate_structured().
                         Structured output support varies by provider and model.
+
+        verbosity: Controls output verbosity for models that support it.
+                  Literal["low", "medium", "high"] | None
+                  "low": Minimal output
+                  "medium": Standard output
+                  "high": Detailed output
+                  Note: Only some models support verbosity control.
+
+        usage_tracking: Enable token usage tracking in API responses (default: True).
+                       When enabled, adds {"usage": {"include": True}} to extra_body.
+                       Disable for providers that don't support usage tracking.
+
+        user: User identifier for cost tracking and monitoring.
+             A unique identifier representing the end-user, which can help track costs
+             and detect abuse. Maximum length is typically 256 characters.
+             Useful for multi-tenant applications or per-user billing.
+
+        extra_body: Additional provider-specific parameters to pass in request body.
+                   Dictionary of custom parameters not covered by standard options.
+                   Merged with usage_tracking if both are set.
+                   Useful for beta features or provider-specific capabilities.
 
     Example:
         >>> # Basic configuration
@@ -103,6 +129,24 @@ class ModelOptions(BaseModel):
         ...     reasoning_effort="high",  # Deep reasoning
         ...     timeout=600  # More time for complex reasoning
         ... )
+        >>>
+        >>> # With stop sequences
+        >>> options = ModelOptions(
+        ...     stop=["STOP", "END", "\n\n"],  # Stop on these sequences
+        ...     temperature=0.7
+        ... )
+        >>>
+        >>> # With custom extra_body parameters
+        >>> options = ModelOptions(
+        ...     extra_body={"custom_param": "value", "beta_feature": True},
+        ...     usage_tracking=True  # Still tracks usage alongside custom params
+        ... )
+        >>>
+        >>> # With user tracking for cost monitoring
+        >>> options = ModelOptions(
+        ...     user="user_12345",  # Track costs per user
+        ...     temperature=0.7
+        ... )
 
     Note:
         - Not all options apply to all models
@@ -110,6 +154,10 @@ class ModelOptions(BaseModel):
         - reasoning_effort only works with models that support explicit reasoning
         - response_format is set internally by generate_structured()
         - cache_ttl accepts formats like "120s", "5m" (default), "1h" or None to disable caching
+        - stop sequences are limited to 4 by most providers
+        - user identifier helps track costs per end-user (max 256 chars)
+        - extra_body allows passing provider-specific parameters
+        - usage_tracking is enabled by default for cost monitoring
     """
 
     temperature: float | None = None
@@ -122,9 +170,12 @@ class ModelOptions(BaseModel):
     cache_ttl: str | None = "5m"
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
     max_completion_tokens: int | None = None
+    stop: str | list[str] | None = None
     response_format: type[BaseModel] | None = None
     verbosity: Literal["low", "medium", "high"] | None = None
     usage_tracking: bool = True
+    user: str | None = None
+    extra_body: dict[str, Any] | None = None
 
     def to_openai_completion_kwargs(self) -> dict[str, Any]:
         """Convert options to OpenAI API completion parameters.
@@ -142,10 +193,14 @@ class ModelOptions(BaseModel):
         API parameter mapping:
             - temperature -> temperature
             - max_completion_tokens -> max_completion_tokens
+            - stop -> stop (string or list of strings)
             - reasoning_effort -> reasoning_effort
             - search_context_size -> web_search_options.search_context_size
             - response_format -> response_format
             - service_tier -> service_tier
+            - verbosity -> verbosity
+            - user -> user (for cost tracking)
+            - extra_body -> extra_body (merged with usage tracking)
 
         Web Search Structure:
             When search_context_size is set, creates:
@@ -168,11 +223,17 @@ class ModelOptions(BaseModel):
             "extra_body": {},
         }
 
+        if self.extra_body:
+            kwargs["extra_body"] = self.extra_body
+
         if self.temperature:
             kwargs["temperature"] = self.temperature
 
         if self.max_completion_tokens:
             kwargs["max_completion_tokens"] = self.max_completion_tokens
+
+        if self.stop:
+            kwargs["stop"] = self.stop
 
         if self.reasoning_effort:
             kwargs["reasoning_effort"] = self.reasoning_effort
@@ -188,6 +249,9 @@ class ModelOptions(BaseModel):
 
         if self.verbosity:
             kwargs["verbosity"] = self.verbosity
+
+        if self.user:
+            kwargs["user"] = self.user
 
         if self.usage_tracking:
             kwargs["extra_body"]["usage"] = {"include": True}

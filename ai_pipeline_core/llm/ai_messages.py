@@ -279,8 +279,8 @@ class AIMessages(list[AIMessageType]):
         for message in self:
             if isinstance(message, Document):
                 serialized_document = message.serialize_model()
-                del serialized_document["content"]
-                messages.append(json.dumps(serialized_document, indent=2))
+                filtered_doc = {k: v for k, v in serialized_document.items() if k != "content"}
+                messages.append(json.dumps(filtered_doc, indent=2))
             elif isinstance(message, ModelResponse):
                 messages.append(message.content)
             else:

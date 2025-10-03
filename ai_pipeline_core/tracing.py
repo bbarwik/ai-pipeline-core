@@ -15,7 +15,7 @@ from functools import wraps
 from typing import Any, Callable, Literal, ParamSpec, TypeVar, cast, overload
 
 from lmnr import Attributes, Instruments, Laminar, observe
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Import for document trimming - needed for isinstance checks
 # These are lazy imports only used when trim_documents is enabled
@@ -226,8 +226,8 @@ class TraceInfo(BaseModel):
 
     session_id: str | None = None
     user_id: str | None = None
-    metadata: dict[str, str] = {}
-    tags: list[str] = []
+    metadata: dict[str, str] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
 
     def get_observe_kwargs(self) -> dict[str, Any]:
         """Convert TraceInfo to kwargs for Laminar's observe decorator.
@@ -502,11 +502,10 @@ def trace(
         observe_name = name or f.__name__
         _observe = observe
 
-        # Store the new parameters
         _session_id = session_id
         _user_id = user_id
-        _metadata = metadata or {}
-        _tags = tags or []
+        _metadata = metadata if metadata is not None else {}
+        _tags = tags if tags is not None else []
         _span_type = span_type
         _ignore_input = ignore_input
         _ignore_output = ignore_output
