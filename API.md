@@ -264,6 +264,19 @@ This is the main property you'll use with ModelResponse.
   >>> if "error" in response.content.lower():
   ...     # Handle error case
 
+#### ModelResponse.reasoning_content
+
+```python
+@property
+def reasoning_content(self) -> str
+```
+
+Get the reasoning content.
+
+**Returns**:
+
+  The reasoning content from the model, or empty string if none.
+
 ### StructuredModelResponse
 
 ```python
@@ -272,83 +285,7 @@ class StructuredModelResponse(ModelResponse, Generic[T])
 
 Response wrapper for structured/typed LLM output.
 
-Primary usage is adding to AIMessages and accessing .parsed property:
-
->>> class Analysis(BaseModel):
-...     sentiment: float
-...     summary: str
->>>
->>> response = await generate_structured(
-...     "gpt-5",
-...     response_format=Analysis,
-...     messages="Analyze this text..."
-... )
->>>
->>> # Primary usage: access parsed model
->>> analysis = response.parsed
->>> print(f"Sentiment: {analysis.sentiment}")
->>>
->>> # Can add to messages for conversation
->>> messages.append(response)
-
-The two main interactions:
-1. Accessing .parsed property for the structured data
-2. Adding to AIMessages for conversation continuity
-
-These patterns cover virtually all use cases. Advanced features exist
-but should only be used when absolutely necessary.
-
-Type Parameter:
-T: The Pydantic model type for the structured output.
-
-**Notes**:
-
-  Extends ModelResponse with type-safe parsed data access.
-  Other inherited properties should rarely be needed.
-
-#### StructuredModelResponse.parsed
-
-```python
-@property
-def parsed(self) -> T
-```
-
-Get the parsed Pydantic model instance.
-
-Primary property for accessing structured output.
-This is the main reason to use generate_structured().
-
-**Returns**:
-
-  Validated instance of the Pydantic model type T.
-
-**Raises**:
-
-- `ValueError` - If no parsed content available (internal error).
-
-**Example**:
-
-  >>> class UserInfo(BaseModel):
-  ...     name: str
-  ...     age: int
-  >>>
-  >>> response = await generate_structured(
-  ...     "gpt-5",
-  ...     response_format=UserInfo,
-  ...     messages="Extract user info..."
-  ... )
-  >>>
-  >>> # Primary usage: get the parsed model
-  >>> user = response.parsed
-  >>> print(f"{user.name} is {user.age} years old")
-  >>>
-  >>> # Can also add to messages
-  >>> messages.append(response)
-
-**Notes**:
-
-  Type-safe with full IDE support. This is the main property
-  you'll use with structured responses.
+Primary usage is accessing the .parsed property for the structured data.
 
 
 ## ai_pipeline_core.llm.ai_messages
@@ -417,6 +354,31 @@ accidental character iteration.
   >>> response = await llm.generate("gpt-5", messages=messages)
   >>> messages.append(response)  # Add the actual response
 
+#### AIMessages.approximate_tokens_count
+
+```python
+@property
+def approximate_tokens_count(self) -> int
+```
+
+Approximate tokens count for the messages.
+
+Uses tiktoken with gpt-4 encoding to estimate total token count
+across all messages in the conversation.
+
+**Returns**:
+
+  Approximate tokens count for all messages.
+
+**Raises**:
+
+- `ValueError` - If message contains unsupported type.
+
+**Example**:
+
+  >>> messages = AIMessages(["Hello", "World"])
+  >>> messages.approximate_tokens_count  # ~2-3 tokens
+
 
 ## ai_pipeline_core.llm.model_types
 
@@ -431,7 +393,7 @@ ModelName: TypeAlias = (
         "grok-4",
         # Small models
         "gemini-2.5-flash",
-        "gpt-5-mini",
+        "gpt-5-nano",
         "grok-4-fast",
         # Search models
         "gemini-2.5-flash-search",
@@ -720,8 +682,9 @@ directly into structured format:
   In most cases, leave as None to use framework defaults.
   Configure model behavior centrally via LiteLLM proxy settings when possible.
 
-  VISION/PDF MODEL COMPATIBILITY:
-  When using Documents with images/PDFs in structured output:
+**Notes**:
+
+  Vision/PDF model compatibility considerations:
   - Images require vision-capable models that also support structured output
   - PDFs require models with both document processing AND structured output support
   - Many models support either vision OR structured output, but not both
@@ -1230,8 +1193,6 @@ Only specify parameters when you have EXPLICIT requirements.
 **Arguments**:
 
 - `__fn` - Function to decorate (when used without parentheses).
-
-  Tracing parameters:
 - `trace_level` - When to trace ("always", "debug", "off").
   - "always": Always trace (default)
   - "debug": Only trace when LMNR_DEBUG="true"
@@ -1246,8 +1207,6 @@ Only specify parameters when you have EXPLICIT requirements.
   Also forces trace level to "always" if not already set.
 - `trace_trim_documents` - Trim document content in traces to first 100 chars (default True).
   Reduces trace size with large documents.
-
-  Prefect task parameters:
 - `name` - Task name (defaults to function name).
 - `description` - Human-readable task description.
 - `tags` - Tags for organization and filtering.
@@ -1341,13 +1300,8 @@ flow_options: FlowOptions, # Configuration (or subclass)
 
 **Arguments**:
 
-- `__fn` - Function to decorate (when used without parentheses).
-
-  Config parameter:
 - `config` - Required FlowConfig class for document loading/saving. Enables
   automatic loading from string paths and saving outputs.
-
-  Tracing parameters:
 - `trace_level` - When to trace ("always", "debug", "off").
   - "always": Always trace (default)
   - "debug": Only trace when LMNR_DEBUG="true"
@@ -1362,8 +1316,6 @@ flow_options: FlowOptions, # Configuration (or subclass)
   Also forces trace level to "always" if not already set.
 - `trace_trim_documents` - Trim document content in traces to first 100 chars (default True).
   Reduces trace size with large documents.
-
-  Prefect flow parameters:
 - `name` - Flow name (defaults to function name).
 - `version` - Flow version identifier.
 - `flow_run_name` - Static or dynamic run name.
@@ -2166,6 +2118,28 @@ text-based documents (check is_text property first).
   >>> # Binary document raises error:
   >>> binary_doc = MyDocument(name="image.png", content=png_bytes)
   >>> binary_doc.text  # Raises ValueError
+
+#### Document.approximate_tokens_count
+
+```python
+@property
+def approximate_tokens_count(self) -> int
+```
+
+Approximate tokens count for the document content.
+
+Uses tiktoken with gpt-4 encoding to estimate token count.
+For text documents, encodes the actual text. For non-text
+documents (images, PDFs, etc.), returns a fixed estimate of 1024 tokens.
+
+**Returns**:
+
+  Approximate number of tokens for this document.
+
+**Example**:
+
+  >>> doc = MyDocument.create(name="data.txt", content="Hello world")
+  >>> doc.approximate_tokens_count  # ~2 tokens
 
 #### Document.as_pydantic_model
 

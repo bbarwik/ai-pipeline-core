@@ -29,6 +29,7 @@ from typing import (
     overload,
 )
 
+import tiktoken
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -980,7 +981,7 @@ class Document(BaseModel, ABC):
         """Detect the MIME type from document content.
 
         Detection strategy (in order):
-        1. Returns 'application/x-empty' for empty content
+        1. Returns 'text/plain' for empty content
         2. Extension-based detection for known text formats (preferred)
         3. python-magic content analysis for unknown extensions
         4. Fallback to extension or 'application/octet-stream'
@@ -1102,6 +1103,28 @@ class Document(BaseModel, ABC):
         if not self.is_text:
             raise ValueError(f"Document is not text: {self.name}")
         return self.content.decode("utf-8")
+
+    @property
+    def approximate_tokens_count(self) -> int:
+        """Approximate tokens count for the document content.
+
+        @public
+
+        Uses tiktoken with gpt-4 encoding to estimate token count.
+        For text documents, encodes the actual text. For non-text
+        documents (images, PDFs, etc.), returns a fixed estimate of 1024 tokens.
+
+        Returns:
+            Approximate number of tokens for this document.
+
+        Example:
+            >>> doc = MyDocument.create(name="data.txt", content="Hello world")
+            >>> doc.approximate_tokens_count  # ~2 tokens
+        """
+        if self.is_text:
+            return len(tiktoken.encoding_for_model("gpt-4").encode(self.text))
+        else:
+            return 1024  # Fixed estimate for non-text documents
 
     def as_yaml(self) -> Any:
         r"""Parse document content as YAML.

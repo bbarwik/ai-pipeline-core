@@ -15,7 +15,7 @@ class TestModelOptions:
         assert options.search_context_size is None
         assert options.reasoning_effort is None
         assert options.retries == 3
-        assert options.retry_delay_seconds == 10
+        assert options.retry_delay_seconds == 20
         assert options.timeout == 600
         assert options.cache_ttl == "5m"
         assert options.max_completion_tokens is None
@@ -24,6 +24,7 @@ class TestModelOptions:
         assert options.verbosity is None
         assert options.usage_tracking is True
         assert options.user is None
+        assert options.metadata is None
         assert options.extra_body is None
 
     def test_to_openai_kwargs_defaults(self):

@@ -43,7 +43,7 @@ def detect_mime_type(content: bytes, name: str) -> str:
     r"""Detect MIME type from document content and filename.
 
     Uses a multi-stage detection strategy for maximum accuracy:
-    1. Returns 'application/x-empty' for empty content
+    1. Returns 'text/plain' for empty content
     2. Uses extension-based detection for known formats (most reliable)
     3. Falls back to python-magic content analysis
     4. Final fallback to extension or 'application/octet-stream'
@@ -57,7 +57,7 @@ def detect_mime_type(content: bytes, name: str) -> str:
         Never returns None or empty string.
 
     Fallback behavior:
-        - Empty content: 'application/x-empty'
+        - Empty content: 'text/plain'
         - Unknown extension with binary content: 'application/octet-stream'
         - Magic library failure: Falls back to extension or 'application/octet-stream'
 
@@ -75,13 +75,13 @@ def detect_mime_type(content: bytes, name: str) -> str:
         >>> detect_mime_type(b'Hello World', "text.txt")
         'text/plain'
         >>> detect_mime_type(b'', "empty.txt")
-        'application/x-empty'
+        'text/plain'
         >>> detect_mime_type(b'\\x89PNG', "image.xyz")
         'image/png'  # Magic detects PNG despite wrong extension
     """
     # Check for empty content
     if len(content) == 0:
-        return "application/x-empty"
+        return "text/plain"
 
     # Try extension-based detection first for known formats
     # This is more reliable for text formats that magic might misidentify

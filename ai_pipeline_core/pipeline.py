@@ -306,8 +306,6 @@ def pipeline_task(
 
     Args:
         __fn: Function to decorate (when used without parentheses).
-
-        Tracing parameters:
         trace_level: When to trace ("always", "debug", "off").
                     - "always": Always trace (default)
                     - "debug": Only trace when LMNR_DEBUG="true"
@@ -322,8 +320,6 @@ def pipeline_task(
              Also forces trace level to "always" if not already set.
         trace_trim_documents: Trim document content in traces to first 100 chars (default True).
                              Reduces trace size with large documents.
-
-        Prefect task parameters:
         name: Task name (defaults to function name).
         description: Human-readable task description.
         tags: Tags for organization and filtering.
@@ -523,13 +519,8 @@ def pipeline_flow(
         ) -> DocumentList             # Must return DocumentList
 
     Args:
-        __fn: Function to decorate (when used without parentheses).
-
-        Config parameter:
         config: Required FlowConfig class for document loading/saving. Enables
                 automatic loading from string paths and saving outputs.
-
-        Tracing parameters:
         trace_level: When to trace ("always", "debug", "off").
                     - "always": Always trace (default)
                     - "debug": Only trace when LMNR_DEBUG="true"
@@ -544,8 +535,6 @@ def pipeline_flow(
              Also forces trace level to "always" if not already set.
         trace_trim_documents: Trim document content in traces to first 100 chars (default True).
                              Reduces trace size with large documents.
-
-        Prefect flow parameters:
         name: Flow name (defaults to function name).
         version: Flow version identifier.
         flow_run_name: Static or dynamic run name.

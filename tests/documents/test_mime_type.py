@@ -128,10 +128,10 @@ class TestMimeTypeEdgeCases:
 
     def test_empty_content(self):
         """Test MIME type detection with empty content."""
-        # Empty content should still detect based on extension
-        assert detect_mime_type(b"", "empty.txt") == "application/x-empty"
-        assert detect_mime_type(b"", "empty.json") == "application/x-empty"
-        assert detect_mime_type(b"", "empty.yaml") == "application/x-empty"
+        # Empty content always returns text/plain regardless of extension
+        assert detect_mime_type(b"", "empty.txt") == "text/plain"
+        assert detect_mime_type(b"", "empty.json") == "text/plain"
+        assert detect_mime_type(b"", "empty.yaml") == "text/plain"
 
     def test_unknown_extensions(self):
         """Test MIME type detection with unknown extensions."""

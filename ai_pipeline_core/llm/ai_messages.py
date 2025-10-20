@@ -12,6 +12,7 @@ import json
 from copy import deepcopy
 from typing import Any, Callable, Iterable, SupportsIndex, Union
 
+import tiktoken
 from openai.types.chat import (
     ChatCompletionContentPartParam,
     ChatCompletionMessageParam,
@@ -300,6 +301,37 @@ class AIMessages(list[AIMessageType]):
         if not system_prompt:
             system_prompt = ""
         return hashlib.sha256((system_prompt + json.dumps(self.to_prompt())).encode()).hexdigest()
+
+    @property
+    def approximate_tokens_count(self) -> int:
+        """Approximate tokens count for the messages.
+
+        @public
+
+        Uses tiktoken with gpt-4 encoding to estimate total token count
+        across all messages in the conversation.
+
+        Returns:
+            Approximate tokens count for all messages.
+
+        Raises:
+            ValueError: If message contains unsupported type.
+
+        Example:
+            >>> messages = AIMessages(["Hello", "World"])
+            >>> messages.approximate_tokens_count  # ~2-3 tokens
+        """
+        count = 0
+        for message in self:
+            if isinstance(message, str):
+                count += len(tiktoken.encoding_for_model("gpt-4").encode(message))
+            elif isinstance(message, Document):
+                count += message.approximate_tokens_count
+            elif isinstance(message, ModelResponse):  # type: ignore
+                count += len(tiktoken.encoding_for_model("gpt-4").encode(message.content))
+            else:
+                raise ValueError(f"Unsupported message type: {type(message)}")
+        return count
 
     @staticmethod
     def document_to_prompt(document: Document) -> list[ChatCompletionContentPartParam]:

@@ -12,15 +12,17 @@ Key functions:
 """
 
 import asyncio
+import time
 from typing import Any, TypeVar
 
 from lmnr import Laminar
 from openai import AsyncOpenAI
+from openai.lib.streaming.chat import ContentDeltaEvent, ContentDoneEvent
 from openai.types.chat import (
     ChatCompletionMessageParam,
 )
 from prefect.logging import get_logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ai_pipeline_core.exceptions import LLMError
 from ai_pipeline_core.settings import settings
@@ -130,19 +132,31 @@ async def _generate(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
     ) as client:
-        # Use parse for structured output, create for regular
-        if completion_kwargs.get("response_format"):
-            raw_response = await client.chat.completions.with_raw_response.parse(  # type: ignore[var-annotated]
-                **completion_kwargs,
-            )
-        else:
-            raw_response = await client.chat.completions.with_raw_response.create(  # type: ignore[var-annotated]
-                **completion_kwargs
-            )
+        start_time, first_token_time = time.time(), None
+        async with client.chat.completions.stream(
+            model=model,
+            messages=messages,
+            **completion_kwargs,
+        ) as stream:
+            async for event in stream:
+                if isinstance(event, ContentDeltaEvent):
+                    if not first_token_time:
+                        first_token_time = time.time()
+                elif isinstance(event, ContentDoneEvent):
+                    pass
+            if not first_token_time:
+                first_token_time = time.time()
+            raw_response = await stream.get_final_completion()
 
-        response = ModelResponse(raw_response.parse())  # type: ignore[arg-type]
-        response.set_model_options(completion_kwargs)
-        response.set_headers(dict(raw_response.headers.items()))  # type: ignore[arg-type]
+        metadata = {
+            "time_taken": round(time.time() - start_time, 2),
+            "first_token_time": round(first_token_time - start_time, 2),
+        }
+        response = ModelResponse(
+            raw_response,
+            model_options=completion_kwargs,
+            metadata=metadata,
+        )
         return response
 
 
@@ -182,8 +196,6 @@ async def _generate_with_retry(
         context, messages, options.system_prompt, options.cache_ttl
     )
     completion_kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": processed_messages,
         **options.to_openai_completion_kwargs(),
     }
 
@@ -197,20 +209,18 @@ async def _generate_with_retry(
             ) as span:
                 response = await _generate(model, processed_messages, completion_kwargs)
                 span.set_attributes(response.get_laminar_metadata())
-                Laminar.set_span_output(response.content)
-                if not response.content:
-                    raise ValueError(f"Model {model} returned an empty response.")
+                Laminar.set_span_output([
+                    r for r in (response.reasoning_content, response.content) if r
+                ])
+                response.validate_output()
                 return response
-        except (asyncio.TimeoutError, ValueError, Exception) as e:
+        except (asyncio.TimeoutError, ValueError, ValidationError, Exception) as e:
             if not isinstance(e, asyncio.TimeoutError):
                 # disable cache if it's not a timeout because it may cause an error
                 completion_kwargs["extra_body"]["cache"] = {"no-cache": True}
 
             logger.warning(
-                "LLM generation failed (attempt %d/%d): %s",
-                attempt + 1,
-                options.retries,
-                e,
+                f"LLM generation failed (attempt {attempt + 1}/{options.retries}): {e}",
             )
             if attempt == options.retries - 1:
                 raise LLMError("Exhausted all retry attempts for LLM generation.") from e
@@ -453,8 +463,8 @@ async def generate_structured(
                 In most cases, leave as None to use framework defaults.
                 Configure model behavior centrally via LiteLLM proxy settings when possible.
 
-    VISION/PDF MODEL COMPATIBILITY:
-        When using Documents with images/PDFs in structured output:
+    Note:
+        Vision/PDF model compatibility considerations:
         - Images require vision-capable models that also support structured output
         - PDFs require models with both document processing AND structured output support
         - Many models support either vision OR structured output, but not both
@@ -536,28 +546,4 @@ async def generate_structured(
     except (ValueError, LLMError):
         raise  # Explicitly re-raise to satisfy DOC502
 
-    # Extract the parsed value from the response
-    parsed_value: T | None = None
-
-    # Check if response has choices and parsed content
-    if response.choices and hasattr(response.choices[0].message, "parsed"):
-        parsed: Any = response.choices[0].message.parsed  # type: ignore[attr-defined]
-
-        # If parsed is a dict, instantiate it as the response format class
-        if isinstance(parsed, dict):
-            parsed_value = response_format(**parsed)
-        # If it's already the right type, use it
-        elif isinstance(parsed, response_format):
-            parsed_value = parsed
-        else:
-            # Otherwise try to convert it
-            raise TypeError(
-                f"Unable to convert parsed response to {response_format.__name__}: "
-                f"got type {type(parsed).__name__}"  # type: ignore[reportUnknownArgumentType]
-            )
-
-    if parsed_value is None:
-        raise ValueError("No parsed content available from the model response")
-
-    # Create a StructuredModelResponse with the parsed value
-    return StructuredModelResponse[T](chat_completion=response, parsed_value=parsed_value)
+    return StructuredModelResponse[T].from_model_response(response)

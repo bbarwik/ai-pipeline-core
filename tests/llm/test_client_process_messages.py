@@ -1,11 +1,8 @@
 """Tests for LLM client message processing."""
 
-from ai_pipeline_core.llm import (
-    AIMessages,
-    ModelResponse,
-)
+from ai_pipeline_core.llm import AIMessages
 from ai_pipeline_core.llm.client import _process_messages  # pyright: ignore[reportPrivateUsage]
-from tests.test_helpers import ConcreteFlowDocument
+from tests.test_helpers import ConcreteFlowDocument, create_test_model_response
 
 
 class TestProcessMessages:
@@ -71,7 +68,7 @@ class TestProcessMessages:
         """Test complete message ordering with all components."""
         # Create mixed context
         doc = ConcreteFlowDocument(name="context.txt", content=b"Document content")
-        context_response = ModelResponse(
+        context_response = create_test_model_response(
             id="ctx-resp",
             object="chat.completion",
             created=1234567890,
@@ -124,7 +121,7 @@ class TestProcessMessages:
     def test_cache_control_only_on_last_context(self):
         """Test that only the last message in context gets cache control."""
         # Mix of user and assistant messages in context
-        response = ModelResponse(
+        response = create_test_model_response(
             id="test",
             object="chat.completion",
             created=1234567890,
@@ -198,7 +195,7 @@ class TestProcessMessages:
 
     def test_assistant_as_last_context_gets_cache(self):
         """Test that assistant message as last context gets cache control."""
-        response = ModelResponse(
+        response = create_test_model_response(
             id="test",
             object="chat.completion",
             created=1234567890,

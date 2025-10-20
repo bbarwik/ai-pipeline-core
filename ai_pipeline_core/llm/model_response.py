@@ -6,13 +6,17 @@ Provides enhanced response classes that use OpenAI-compatible base types via Lit
 with additional metadata, cost tracking, and structured output support.
 """
 
-import copy
+import json
+from copy import deepcopy
 from typing import Any, Generic, TypeVar
 
-from openai.types.chat import ChatCompletion, ParsedChatCompletion
-from pydantic import BaseModel, Field
+from openai.types.chat import ChatCompletion
+from pydantic import BaseModel
 
-T = TypeVar("T", bound=BaseModel)
+T = TypeVar(
+    "T",
+    bound=BaseModel,
+)
 """Type parameter for structured response Pydantic models."""
 
 
@@ -52,42 +56,37 @@ class ModelResponse(ChatCompletion):
         when absolutely necessary.
     """
 
-    headers: dict[str, str] = Field(default_factory=dict)
-    model_options: dict[str, Any] = Field(default_factory=dict)
+    def __init__(
+        self,
+        chat_completion: ChatCompletion,
+        model_options: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> None:
+        """Initialize ModelResponse from ChatCompletion.
 
-    def __init__(self, chat_completion: ChatCompletion | None = None, **kwargs: Any) -> None:
-        """Initialize ModelResponse from ChatCompletion or kwargs.
-
-        Can be initialized from an existing ChatCompletion object or
-        directly from keyword arguments. Automatically initializes
-        headers dict if not provided.
+        Wraps an OpenAI ChatCompletion object with additional metadata
+        and model options for tracking and observability.
 
         Args:
-            chat_completion: Optional ChatCompletion to wrap.
-            **kwargs: Direct initialization parameters if no
-                     ChatCompletion provided.
+            chat_completion: ChatCompletion object from the API.
+            model_options: Model configuration options used for the request.
+                          Stored for metadata extraction and tracing.
+            metadata: Custom metadata for tracking (time_taken, first_token_time, etc.).
+                     Includes timing information and custom tags.
 
         Example:
-            >>> # From ChatCompletion
-            >>> response = ModelResponse(chat_completion_obj)
-            >>>
-            >>> # Direct initialization (mainly for testing)
+            >>> # Usually created internally by generate()
             >>> response = ModelResponse(
-            ...     id="test",
-            ...     model="gpt-5",
-            ...     choices=[...]
+            ...     chat_completion=completion,
+            ...     model_options={"temperature": 0.7, "model": "gpt-4"},
+            ...     metadata={"time_taken": 1.5, "first_token_time": 0.3}
             ... )
         """
-        if chat_completion:
-            # Copy all attributes from the ChatCompletion instance
-            data = chat_completion.model_dump()
-            data["headers"] = {}  # Add default headers
-            super().__init__(**data)
-        else:
-            # Initialize from kwargs
-            if "headers" not in kwargs:
-                kwargs["headers"] = {}
-            super().__init__(**kwargs)
+        data = chat_completion.model_dump()
+        super().__init__(**data)
+
+        self._model_options = model_options
+        self._metadata = metadata
 
     @property
     def content(self) -> str:
@@ -113,38 +112,21 @@ class ModelResponse(ChatCompletion):
         content = self.choices[0].message.content or ""
         return content.split("</think>")[-1].strip()
 
-    def set_model_options(self, options: dict[str, Any]) -> None:
-        """Store the model configuration used for generation.
+    @property
+    def reasoning_content(self) -> str:
+        """Get the reasoning content.
 
-        Saves a deep copy of the options used for this generation,
-        excluding the messages for brevity.
+        @public
 
-        Args:
-            options: Dictionary of model options from the API call.
-
-        Note:
-            Messages are removed to avoid storing large prompts.
-            Called internally by the generation functions.
+        Returns:
+            The reasoning content from the model, or empty string if none.
         """
-        self.model_options = copy.deepcopy(options)
-        if "messages" in self.model_options:
-            del self.model_options["messages"]
-
-    def set_headers(self, headers: dict[str, str]) -> None:
-        """Store HTTP response headers.
-
-        Saves response headers which contain LiteLLM metadata
-        including cost information and call IDs.
-
-        Args:
-            headers: Dictionary of HTTP headers from the response.
-
-        Headers of interest:
-            - x-litellm-response-cost: Generation cost
-            - x-litellm-call-id: Unique call identifier
-            - x-litellm-model-id: Actual model used
-        """
-        self.headers = copy.deepcopy(headers)
+        message = self.choices[0].message
+        if reasoning_content := getattr(message, "reasoning_content", None):
+            return reasoning_content
+        if not message.content or "</think>" not in message.content:
+            return ""
+        return message.content.split("</think>")[0].strip()
 
     def get_laminar_metadata(self) -> dict[str, str | int | float]:
         """Extract metadata for LMNR (Laminar) observability including cost tracking.
@@ -224,25 +206,17 @@ class ModelResponse(ChatCompletion):
             - Cached tokens reduce actual cost but may not be reflected
             - Used internally by tracing but accessible for cost analysis
         """
-        metadata: dict[str, str | int | float] = {}
-
-        litellm_id = self.headers.get("x-litellm-call-id")
-        cost = float(self.headers.get("x-litellm-response-cost") or 0)
-
-        # Add all x-litellm-* headers
-        for header, value in self.headers.items():
-            if header.startswith("x-litellm-"):
-                header_name = header.replace("x-litellm-", "").lower()
-                metadata[f"litellm.{header_name}"] = value
+        metadata: dict[str, str | int | float] = deepcopy(self._metadata)
 
         # Add base metadata
         metadata.update({
-            "gen_ai.response.id": litellm_id or self.id,
+            "gen_ai.response.id": self.id,
             "gen_ai.response.model": self.model,
             "get_ai.system": "litellm",
         })
 
         # Add usage metadata if available
+        cost = None
         if self.usage:
             metadata.update({
                 "gen_ai.usage.prompt_tokens": self.usage.prompt_tokens,
@@ -273,11 +247,44 @@ class ModelResponse(ChatCompletion):
                 "get_ai.cost": cost,
             })
 
-        if self.model_options:
-            for key, value in self.model_options.items():
-                metadata[f"model_options.{key}"] = str(value)
+        for key, value in self._model_options.items():
+            if "messages" in key:
+                continue
+            metadata[f"model_options.{key}"] = str(value)
+
+        other_fields = self.__dict__
+        for key, value in other_fields.items():
+            if key in ["_model_options", "_metadata", "choices", "usage"]:
+                continue
+            try:
+                metadata[f"response.raw.{key}"] = json.dumps(value, indent=2, default=str)
+            except Exception:
+                metadata[f"response.raw.{key}"] = str(value)
+
+        message = self.choices[0].message
+        for key, value in message.__dict__.items():
+            if key in ["content"]:
+                continue
+            metadata[f"response.raw.message.{key}"] = json.dumps(value, indent=2, default=str)
 
         return metadata
+
+    def validate_output(self) -> None:
+        """Validate response output content and format.
+
+        Checks that response has non-empty content and validates against
+        response_format if structured output was requested.
+
+        Raises:
+            ValueError: If response content is empty.
+            ValidationError: If content doesn't match response_format schema.
+        """
+        if not self.content:
+            raise ValueError("Empty response content")
+
+        if response_format := self._model_options.get("response_format"):
+            if isinstance(response_format, BaseModel):
+                response_format.model_validate_json(self.content)
 
 
 class StructuredModelResponse(ModelResponse, Generic[T]):
@@ -285,118 +292,39 @@ class StructuredModelResponse(ModelResponse, Generic[T]):
 
     @public
 
-    Primary usage is adding to AIMessages and accessing .parsed property:
-
-        >>> class Analysis(BaseModel):
-        ...     sentiment: float
-        ...     summary: str
-        >>>
-        >>> response = await generate_structured(
-        ...     "gpt-5",
-        ...     response_format=Analysis,
-        ...     messages="Analyze this text..."
-        ... )
-        >>>
-        >>> # Primary usage: access parsed model
-        >>> analysis = response.parsed
-        >>> print(f"Sentiment: {analysis.sentiment}")
-        >>>
-        >>> # Can add to messages for conversation
-        >>> messages.append(response)
-
-    The two main interactions:
-    1. Accessing .parsed property for the structured data
-    2. Adding to AIMessages for conversation continuity
-
-    These patterns cover virtually all use cases. Advanced features exist
-    but should only be used when absolutely necessary.
-
-    Type Parameter:
-        T: The Pydantic model type for the structured output.
-
-    Note:
-        Extends ModelResponse with type-safe parsed data access.
-        Other inherited properties should rarely be needed.
+    Primary usage is accessing the .parsed property for the structured data.
     """
 
-    def __init__(
-        self,
-        chat_completion: ChatCompletion | None = None,
-        parsed_value: T | None = None,
-        **kwargs: Any,
-    ) -> None:
-        """Initialize with ChatCompletion and parsed value.
+    @classmethod
+    def from_model_response(cls, model_response: ModelResponse) -> "StructuredModelResponse[T]":
+        """Convert a ModelResponse to StructuredModelResponse.
 
-        Creates a structured response from a base completion and
-        optionally a pre-parsed value. Can extract parsed value
-        from ParsedChatCompletion automatically.
+        Takes an existing ModelResponse and converts it to a StructuredModelResponse
+        for accessing parsed structured output. Used internally by generate_structured().
 
         Args:
-            chat_completion: Base chat completion response.
-            parsed_value: Pre-parsed Pydantic model instance.
-                         If None, attempts extraction from
-                         ParsedChatCompletion.
-            **kwargs: Additional ChatCompletion parameters.
+            model_response: The ModelResponse to convert.
 
-        Extraction behavior:
-            1. Use provided parsed_value if given
-            2. Extract from ParsedChatCompletion if available
-            3. Store as None (access will raise ValueError)
-
-        Note:
-            Usually created internally by generate_structured().
-            The parsed value is validated by Pydantic automatically.
+        Returns:
+            StructuredModelResponse with lazy parsing support.
         """
-        super().__init__(chat_completion, **kwargs)
-        self._parsed_value: T | None = parsed_value
-
-        # Extract parsed value from ParsedChatCompletion if available
-        if chat_completion and isinstance(chat_completion, ParsedChatCompletion):
-            if chat_completion.choices:  # type: ignore[attr-defined]
-                message = chat_completion.choices[0].message  # type: ignore[attr-defined]
-                if hasattr(message, "parsed"):  # type: ignore
-                    self._parsed_value = message.parsed  # type: ignore[attr-defined]
+        model_response.__class__ = cls
+        return model_response  # type: ignore[return-value]
 
     @property
     def parsed(self) -> T:
-        """Get the parsed Pydantic model instance.
+        """Get the parsed structured output.
 
-        @public
-
-        Primary property for accessing structured output.
-        This is the main reason to use generate_structured().
+        Lazily parses the JSON content into the specified Pydantic model.
+        Result is cached after first access.
 
         Returns:
-            Validated instance of the Pydantic model type T.
+            Parsed Pydantic model instance.
 
         Raises:
-            ValueError: If no parsed content available (internal error).
-
-        Example:
-            >>> class UserInfo(BaseModel):
-            ...     name: str
-            ...     age: int
-            >>>
-            >>> response = await generate_structured(
-            ...     "gpt-5",
-            ...     response_format=UserInfo,
-            ...     messages="Extract user info..."
-            ... )
-            >>>
-            >>> # Primary usage: get the parsed model
-            >>> user = response.parsed
-            >>> print(f"{user.name} is {user.age} years old")
-            >>>
-            >>> # Can also add to messages
-            >>> messages.append(response)
-
-        Note:
-            Type-safe with full IDE support. This is the main property
-            you'll use with structured responses.
+            ValidationError: If content doesn't match the response_format schema.
         """
-        if self._parsed_value is not None:
-            return self._parsed_value
-
-        raise ValueError(
-            "No parsed content available. This should not happen for StructuredModelResponse."
-        )
+        if not hasattr(self, "_parsed_value"):
+            response_format = self._model_options.get("response_format")
+            self._parsed_value: T = response_format.model_validate_json(self.content)  # type: ignore[return-value]
+        return self._parsed_value

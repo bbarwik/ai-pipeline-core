@@ -85,8 +85,8 @@ class TestConstructorWithString:
             content="",
         )
         assert doc.content == b""
-        # Empty content has mime type application/x-empty which is not text
-        assert doc.mime_type == "application/x-empty"
+        # Empty content has mime type text/plain
+        assert doc.mime_type == "text/plain"
 
     def test_constructor_with_multiline_string(self):
         """Test constructing document with multiline string."""
@@ -135,8 +135,8 @@ class TestConstructorWithListForMarkdown:
             content=[],
         )
         assert doc.content == b""
-        # Empty content has mime type application/x-empty which is not text
-        assert doc.mime_type == "application/x-empty"
+        # Empty content has mime type text/plain
+        assert doc.mime_type == "text/plain"
 
     def test_constructor_markdown_with_single_item_list(self):
         """Test constructing markdown document with single item list."""
