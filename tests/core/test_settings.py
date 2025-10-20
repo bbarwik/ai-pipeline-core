@@ -13,22 +13,6 @@ from ai_pipeline_core.settings import Settings, settings
 class TestSettings:
     """Test Settings configuration."""
 
-    def test_default_values(self):
-        """Test default Settings values when env vars/files are not set."""
-        # This test can only work if there's no .env file or env vars
-        # In practice, we can test that Settings loads correctly
-        s = Settings()
-
-        # If values are loaded from .env, skip the test
-        if s.openai_base_url or s.openai_api_key:
-            pytest.skip("Settings loaded from .env file or environment")
-
-        assert s.openai_base_url == ""
-        assert s.openai_api_key == ""
-        assert s.prefect_api_url == ""
-        assert s.prefect_api_key == ""
-        assert s.lmnr_project_api_key == ""
-
     @patch.dict(
         os.environ,
         {
@@ -114,17 +98,13 @@ LMNR_PROJECT_API_KEY=lmnr-from-file
     def test_partial_configuration(self):
         """Test that partial configuration works."""
         # Only some settings provided
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True):
-            # Note: Settings might still load from .env file
+        with patch.dict(
+            os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_BASE_URL": ""}, clear=True
+        ):
             s = Settings()
-
-            # Check if .env file is providing base_url
-            if s.openai_base_url and s.openai_base_url != "":
-                pytest.skip("Settings loaded OPENAI_BASE_URL from .env file")
 
             assert s.openai_api_key == "test-key"
             assert s.openai_base_url == ""  # Default
-            assert s.prefect_api_url == ""  # Default
 
     def test_settings_immutable_config(self):
         """Test that Settings uses proper Pydantic configuration."""

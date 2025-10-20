@@ -8,10 +8,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import Field
 
-from ai_pipeline_core.documents import DocumentList, FlowDocument
-from ai_pipeline_core.flow.config import FlowConfig
-from ai_pipeline_core.flow.options import FlowOptions
-from ai_pipeline_core.pipeline import pipeline_flow
+from ai_pipeline_core import DocumentList, FlowConfig, FlowDocument, FlowOptions, pipeline_flow
 from ai_pipeline_core.simple_runner.cli import run_cli
 from ai_pipeline_core.simple_runner.simple_runner import (
     run_pipeline,

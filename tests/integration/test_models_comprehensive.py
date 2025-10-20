@@ -36,17 +36,14 @@ async def test_llm_model_basic_math(model: ModelName):
     messages = AIMessages([question])
     options = ModelOptions(retries=1)
 
-    try:
-        response = await generate(model=model, messages=messages, options=options)
-        logger.info(f"Model {model} response (math):\n{response.content}")
+    response = await generate(model=model, messages=messages, options=options)
+    logger.info(f"Model {model} response (math):\n{response.content}")
 
-        assert response.content is not None
-        assert "109" in response.content, (
-            f"Model {model} did not return correct answer for math question.\n"
-            f"Response: {response.content}"
-        )
-    except Exception as e:
-        pytest.skip(f"Model {model} not available: {e}")
+    assert response.content is not None
+    assert "109" in response.content, (
+        f"Model {model} did not return correct answer for math question.\n"
+        f"Response: {response.content}"
+    )
 
 
 @pytest.mark.asyncio
@@ -65,27 +62,18 @@ async def test_llm_model_search_feature(model: ModelName):
     # Enable search context for search models
     options = ModelOptions(search_context_size="high")
 
-    try:
-        response = await generate(model=model, messages=messages, options=options)
-        logger.info(f"Model {model} response (search):\n{response.content}")
+    response = await generate(model=model, messages=messages, options=options)
+    logger.info(f"Model {model} response (search):\n{response.content}")
 
-        assert response.content is not None
-        content_lower = response.content.lower()
+    assert response.content is not None
+    content_lower = response.content.lower()
 
-        # Search models should either find the info or indicate they can't search
-        # We check if they mention search-related keywords or the actual answer
-        search_keywords = ["search", "internet", "unable", "cannot", "can't"]
-        answer_keywords = ["robert", "leo", "prevost", "pope", "2025"]
+    # Search models should find the info
+    answer_keywords = ["robert", "leo", "prevost", "pope", "2025"]
 
-        has_search_response = any(word in content_lower for word in search_keywords)
-        has_answer = any(word in content_lower for word in answer_keywords)
+    has_answer = any(word in content_lower for word in answer_keywords)
 
-        assert has_search_response or has_answer, (
-            f"Model {model} did not provide a search response or answer.\n"
-            f"Response: {response.content}"
-        )
-    except Exception as e:
-        pytest.skip(f"Search model {model} not available: {e}")
+    assert has_answer, f"Model {model} did not provide an answer.\nResponse: {response.content}"
 
 
 @pytest.mark.asyncio
@@ -102,29 +90,26 @@ async def test_llm_model_no_search_feature(model: ModelName):
     )
     messages = AIMessages([question])
 
-    try:
-        response = await generate(model=model, messages=messages)
-        logger.info(f"Model {model} response (no search):\n{response.content}")
+    response = await generate(model=model, messages=messages)
+    logger.info(f"Model {model} response (no search):\n{response.content}")
 
-        assert response.content is not None
-        content_lower = response.content.lower()
+    assert response.content is not None
+    content_lower = response.content.lower()
 
-        # These specific names should not appear as they require real-time search
-        # (they are from 2025 which is beyond training data)
-        specific_names = ["robert", "leo", "prevost"]
+    # These specific names should not appear as they require real-time search
+    # (they are from 2025 which is beyond training data)
+    specific_names = ["robert", "leo", "prevost"]
 
-        # It's OK if they mention they can't search or don't have the info
-        inability_keywords = ["cannot", "can't", "unable", "don't have", "not able", "search"]
-        has_inability = any(word in content_lower for word in inability_keywords)
+    # It's OK if they mention they can't search or don't have the info
+    inability_keywords = ["cannot", "can't", "unable", "don't have", "not able", "search"]
+    has_inability = any(word in content_lower for word in inability_keywords)
 
-        # If they don't express inability, they shouldn't have the specific names
-        if not has_inability:
-            assert not any(name in content_lower for name in specific_names), (
-                f"Model {model} mentioned specific 2025 names without search capability.\n"
-                f"Response: {response.content}"
-            )
-    except Exception as e:
-        pytest.skip(f"Model {model} not available: {e}")
+    # If they don't express inability, they shouldn't have the specific names
+    if not has_inability:
+        assert not any(name in content_lower for name in specific_names), (
+            f"Model {model} mentioned specific 2025 names without search capability.\n"
+            f"Response: {response.content}"
+        )
 
 
 @pytest.mark.asyncio
@@ -144,17 +129,14 @@ async def test_llm_model_text_file_attachment(model: ModelName):
         "What is the sum of the numbers in the attached files?",
     ])
 
-    try:
-        response = await generate(model=model, messages=messages)
-        logger.info(f"Model {model} response (file attachment):\n{response.content}")
+    response = await generate(model=model, messages=messages)
+    logger.info(f"Model {model} response (file attachment):\n{response.content}")
 
-        assert response.content is not None
-        assert "943" in response.content, (
-            f"Model {model} did not return correct sum for file attachment test.\n"
-            f"Response: {response.content}"
-        )
-    except Exception as e:
-        pytest.skip(f"Model {model} not available: {e}")
+    assert response.content is not None
+    assert "943" in response.content, (
+        f"Model {model} did not return correct sum for file attachment test.\n"
+        f"Response: {response.content}"
+    )
 
 
 @pytest.mark.asyncio
@@ -177,40 +159,34 @@ async def test_llm_model_image_file_attachment(model: ModelName):
         "What is on the image? Describe what you see.",
     ])
 
-    try:
-        response = await generate(model=model, messages=messages)
-        logger.info(f"Model {model} response (image attachment):\n{response.content}")
+    response = await generate(model=model, messages=messages)
+    logger.info(f"Model {model} response (image attachment):\n{response.content}")
 
-        assert response.content is not None
-        content_lower = response.content.lower()
+    assert response.content is not None
+    content_lower = response.content.lower()
 
-        # The image should contain something recognizable
-        # We're looking for any reasonable description keywords
-        keywords = [
-            "image",
-            "picture",
-            "shows",
-            "contains",
-            "see",
-            "visible",
-            "openai",
-            "api",
-            "response",
-            "client",
-            "python",
-            "code",
-            "text",
-        ]
+    # The image should contain something recognizable
+    # We're looking for any reasonable description keywords
+    keywords = [
+        "image",
+        "picture",
+        "shows",
+        "contains",
+        "see",
+        "visible",
+        "openai",
+        "api",
+        "response",
+        "client",
+        "python",
+        "code",
+        "text",
+    ]
 
-        assert any(word in content_lower for word in keywords), (
-            f"Model {model} did not provide a reasonable image description.\n"
-            f"Response: {response.content}"
-        )
-    except Exception as e:
-        if "image" in str(e).lower() or "support" in str(e).lower():
-            pytest.skip(f"Model {model} does not support images: {e}")
-        else:
-            pytest.skip(f"Model {model} not available: {e}")
+    assert any(word in content_lower for word in keywords), (
+        f"Model {model} did not provide a reasonable image description.\n"
+        f"Response: {response.content}"
+    )
 
 
 @pytest.mark.asyncio
@@ -233,25 +209,19 @@ async def test_llm_model_pdf_file_attachment(model: ModelName):
         "What is this PDF about? What are the main topics or keywords mentioned?",
     ])
 
-    try:
-        response = await generate(model=model, messages=messages)
-        logger.info(f"Model {model} response (PDF attachment):\n{response.content}")
+    response = await generate(model=model, messages=messages)
+    logger.info(f"Model {model} response (PDF attachment):\n{response.content}")
 
-        assert response.content is not None
-        content_lower = response.content.lower()
+    assert response.content is not None
+    content_lower = response.content.lower()
 
-        # Expected keywords from the PDF content
-        keywords = ["yukon", "education", "canada", "territory", "school", "learning"]
+    # Expected keywords from the PDF content
+    keywords = ["yukon", "education", "canada", "territory", "school", "learning"]
 
-        assert any(word in content_lower for word in keywords), (
-            f"Model {model} did not mention expected PDF content keywords.\n"
-            f"Response: {response.content}"
-        )
-    except Exception as e:
-        if "pdf" in str(e).lower() or "support" in str(e).lower():
-            pytest.skip(f"Model {model} does not support PDFs: {e}")
-        else:
-            pytest.skip(f"Model {model} not available: {e}")
+    assert any(word in content_lower for word in keywords), (
+        f"Model {model} did not mention expected PDF content keywords.\n"
+        f"Response: {response.content}"
+    )
 
 
 @pytest.mark.asyncio
@@ -261,30 +231,27 @@ async def test_llm_model_conversation_context(model: ModelName):
     # First message
     messages1 = AIMessages(["My name is Alice. Remember this name."])
 
-    try:
-        response1 = await generate(
-            model=model, messages=messages1, options=ModelOptions(max_completion_tokens=1000)
-        )
+    response1 = await generate(
+        model=model, messages=messages1, options=ModelOptions(max_completion_tokens=1000)
+    )
 
-        # Follow-up with context
-        messages2 = AIMessages([
-            "My name is Alice. Remember this name.",
-            response1,
-            "What is my name?",
-        ])
+    # Follow-up with context
+    messages2 = AIMessages([
+        "My name is Alice. Remember this name.",
+        response1,
+        "What is my name?",
+    ])
 
-        response2 = await generate(
-            model=model, messages=messages2, options=ModelOptions(max_completion_tokens=1000)
-        )
+    response2 = await generate(
+        model=model, messages=messages2, options=ModelOptions(max_completion_tokens=1000)
+    )
 
-        logger.info(f"Model {model} response (context):\n{response2.content}")
+    logger.info(f"Model {model} response (context):\n{response2.content}")
 
-        assert response2.content is not None
-        assert "alice" in response2.content.lower(), (
-            f"Model {model} did not remember the name from context.\nResponse: {response2.content}"
-        )
-    except Exception as e:
-        pytest.skip(f"Model {model} not available: {e}")
+    assert response2.content is not None
+    assert "alice" in response2.content.lower(), (
+        f"Model {model} did not remember the name from context.\nResponse: {response2.content}"
+    )
 
 
 @pytest.mark.asyncio
@@ -295,16 +262,12 @@ async def test_llm_model_with_options(model: ModelName):
 
     options = ModelOptions(max_completion_tokens=1000, retries=2, retry_delay_seconds=1, timeout=30)
 
-    try:
-        response = await generate(model=model, messages=messages, options=options)
-        logger.info(f"Model {model} response (options test):\n{response.content}")
+    response = await generate(model=model, messages=messages, options=options)
+    logger.info(f"Model {model} response (options test):\n{response.content}")
 
-        assert response.content is not None
-        # Check that response is reasonably short (respecting max_tokens)
-        word_count = len(response.content.split())
-        assert word_count <= 10, (
-            f"Model {model} response too long despite max_tokens limit.\n"
-            f"Response: {response.content}"
-        )
-    except Exception as e:
-        pytest.skip(f"Model {model} not available: {e}")
+    assert response.content is not None
+    # Check that response is reasonably short (respecting max_tokens)
+    word_count = len(response.content.split())
+    assert word_count <= 10, (
+        f"Model {model} response too long despite max_tokens limit.\nResponse: {response.content}"
+    )
