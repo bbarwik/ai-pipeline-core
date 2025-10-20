@@ -88,6 +88,12 @@ class ModelOptions(BaseModel):
              and detect abuse. Maximum length is typically 256 characters.
              Useful for multi-tenant applications or per-user billing.
 
+        metadata: Custom metadata tags for tracking and observability.
+                 Dictionary of string key-value pairs for tagging requests.
+                 Useful for tracking experiments, versions, or custom attributes.
+                 Maximum of 16 key-value pairs, each key/value max 64 characters.
+                 Passed through to LMNR tracing and API provider metadata.
+
         extra_body: Additional provider-specific parameters to pass in request body.
                    Dictionary of custom parameters not covered by standard options.
                    Merged with usage_tracking if both are set.
@@ -147,6 +153,12 @@ class ModelOptions(BaseModel):
         ...     user="user_12345",  # Track costs per user
         ...     temperature=0.7
         ... )
+        >>>
+        >>> # With metadata for tracking and observability
+        >>> options = ModelOptions(
+        ...     metadata={"experiment": "v1", "version": "2.0", "feature": "search"},
+        ...     temperature=0.7
+        ... )
 
     Note:
         - Not all options apply to all models
@@ -165,7 +177,7 @@ class ModelOptions(BaseModel):
     search_context_size: Literal["low", "medium", "high"] | None = None
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     retries: int = 3
-    retry_delay_seconds: int = 10
+    retry_delay_seconds: int = 20
     timeout: int = 600
     cache_ttl: str | None = "5m"
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
@@ -175,6 +187,7 @@ class ModelOptions(BaseModel):
     verbosity: Literal["low", "medium", "high"] | None = None
     usage_tracking: bool = True
     user: str | None = None
+    metadata: dict[str, str] | None = None
     extra_body: dict[str, Any] | None = None
 
     def to_openai_completion_kwargs(self) -> dict[str, Any]:
@@ -200,6 +213,7 @@ class ModelOptions(BaseModel):
             - service_tier -> service_tier
             - verbosity -> verbosity
             - user -> user (for cost tracking)
+            - metadata -> metadata (for tracking/observability)
             - extra_body -> extra_body (merged with usage tracking)
 
         Web Search Structure:
@@ -253,7 +267,11 @@ class ModelOptions(BaseModel):
         if self.user:
             kwargs["user"] = self.user
 
+        if self.metadata:
+            kwargs["metadata"] = self.metadata
+
         if self.usage_tracking:
             kwargs["extra_body"]["usage"] = {"include": True}
+            kwargs["stream_options"] = {"include_usage": True}
 
         return kwargs

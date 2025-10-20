@@ -2,8 +2,8 @@
 
 import pytest
 
-from ai_pipeline_core.llm import AIMessages, ModelResponse
-from tests.test_helpers import ConcreteFlowDocument
+from ai_pipeline_core.llm import AIMessages
+from tests.test_helpers import ConcreteFlowDocument, create_test_model_response
 
 
 class TestAIMessagesBasic:
@@ -85,7 +85,7 @@ class TestAIMessagesBasic:
         assert "Wrong message type" in str(exc_info.value)
 
         # ModelResponse as last should raise
-        response = ModelResponse(
+        response = create_test_model_response(
             id="test",
             object="chat.completion",
             created=1234567890,
@@ -115,7 +115,7 @@ class TestAIMessagesBasic:
         assert messages_doc.get_last_message() == doc
 
         # ModelResponse
-        response = ModelResponse(
+        response = create_test_model_response(
             id="test",
             object="chat.completion",
             created=1234567890,
@@ -144,7 +144,7 @@ class TestAIMessagesBasic:
 
     def test_to_prompt_model_response(self):
         """Test converting ModelResponse to assistant message."""
-        response = ModelResponse(
+        response = create_test_model_response(
             id="test",
             object="chat.completion",
             created=1234567890,
@@ -172,7 +172,7 @@ class TestAIMessagesBasic:
     def test_to_prompt_mixed_types(self):
         """Test converting mixed message types."""
         doc = ConcreteFlowDocument(name="test.txt", content=b"Document content")
-        response = ModelResponse(
+        response = create_test_model_response(
             id="test",
             object="chat.completion",
             created=1234567890,
@@ -253,7 +253,7 @@ class TestAIMessagesBasic:
     def test_get_prompt_cache_key_with_complex_messages(self):
         """Test cache key with complex message types."""
         doc = ConcreteFlowDocument(name="test.txt", content=b"content")
-        response = ModelResponse(
+        response = create_test_model_response(
             id="test",
             object="chat.completion",
             created=1234567890,
@@ -280,3 +280,59 @@ class TestAIMessagesBasic:
         messages3 = AIMessages(["Hello", doc2, response])
         key3 = messages3.get_prompt_cache_key()
         assert key1 != key3
+
+    def test_approximate_tokens_count_string(self):
+        """Test approximate tokens count for string messages."""
+        messages = AIMessages(["Hello", "World"])
+        count = messages.approximate_tokens_count
+        assert count > 0
+        assert isinstance(count, int)
+
+    def test_approximate_tokens_count_with_document(self):
+        """Test approximate tokens count with document messages."""
+        doc = ConcreteFlowDocument(name="test.txt", content=b"Document content")
+        messages = AIMessages(["Hello", doc])
+        count = messages.approximate_tokens_count
+        assert count > 0
+        assert isinstance(count, int)
+
+    def test_approximate_tokens_count_with_response(self):
+        """Test approximate tokens count with model response."""
+        response = create_test_model_response(
+            id="test",
+            object="chat.completion",
+            created=1234567890,
+            model="test-model",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Response text"},
+                    "finish_reason": "stop",
+                }
+            ],
+        )
+        messages = AIMessages(["Hello", response])
+        count = messages.approximate_tokens_count
+        assert count > 0
+        assert isinstance(count, int)
+
+    def test_approximate_tokens_count_mixed(self):
+        """Test approximate tokens count with mixed message types."""
+        doc = ConcreteFlowDocument(name="test.txt", content=b"Document content")
+        response = create_test_model_response(
+            id="test",
+            object="chat.completion",
+            created=1234567890,
+            model="test-model",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Response"},
+                    "finish_reason": "stop",
+                }
+            ],
+        )
+        messages = AIMessages(["User message", doc, response, "Follow-up"])
+        count = messages.approximate_tokens_count
+        assert count > 0
+        assert isinstance(count, int)

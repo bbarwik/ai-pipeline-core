@@ -3,7 +3,7 @@
 import pytest
 
 from ai_pipeline_core.llm import AIMessages, ModelResponse
-from tests.test_helpers import ConcreteFlowDocument
+from tests.test_helpers import ConcreteFlowDocument, create_test_model_response
 
 
 class TestAIMessagesFreeze:
@@ -54,7 +54,7 @@ class TestAIMessagesFreeze:
     def test_copy_creates_unfrozen(self) -> None:
         """Test that copy creates unfrozen deep copy."""
         doc = ConcreteFlowDocument(name="test.txt", content=b"content")
-        response = ModelResponse(
+        response = create_test_model_response(
             id="test",
             object="chat.completion",
             created=1234567890,
@@ -195,7 +195,7 @@ class TestAIMessagesFreeze:
     def test_frozen_allows_read_operations(self) -> None:
         """Test that frozen list allows read operations."""
         doc = ConcreteFlowDocument(name="test.txt", content=b"content")
-        response = ModelResponse(
+        response = create_test_model_response(
             id="test",
             object="chat.completion",
             created=1234567890,
@@ -250,7 +250,7 @@ class TestAIMessagesFreeze:
 
     def test_frozen_with_model_response(self) -> None:
         """Test frozen list with ModelResponse."""
-        response1 = ModelResponse(
+        response1 = create_test_model_response(
             id="test1",
             object="chat.completion",
             created=1234567890,
@@ -263,7 +263,7 @@ class TestAIMessagesFreeze:
                 }
             ],
         )
-        response2 = ModelResponse(
+        response2 = create_test_model_response(
             id="test2",
             object="chat.completion",
             created=1234567891,
@@ -337,7 +337,7 @@ class TestAIMessagesFreeze:
     def test_copy_preserves_message_types(self) -> None:
         """Test that copy preserves exact message types and content."""
         doc = ConcreteFlowDocument(name="test.txt", content=b"doc content", description="Test")
-        response = ModelResponse(
+        response = create_test_model_response(
             id="test-id",
             object="chat.completion",
             created=1234567890,

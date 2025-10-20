@@ -169,6 +169,8 @@ class TestCacheTTL:
             mock_response = AsyncMock()
             mock_response.content = "test response"
             mock_response.get_laminar_metadata = lambda: {}
+            mock_response.reasoning_content = ""
+            mock_response.validate_output = lambda: None
             mock_generate.return_value = mock_response
 
             # Test with custom cache_ttl in options
@@ -188,8 +190,9 @@ class TestCacheTTL:
 
             # Check that _generate was called with correct cache_ttl
             assert mock_generate.called
+            # _generate takes (model, messages, completion_kwargs)
             call_args = mock_generate.call_args[0]
-            processed_messages = call_args[1]
+            processed_messages = call_args[1]  # messages is second positional arg
 
             # Find context message with cache_control
             context_msg = next(
