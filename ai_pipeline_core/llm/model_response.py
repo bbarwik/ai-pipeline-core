@@ -11,6 +11,7 @@ from copy import deepcopy
 from typing import Any, Generic, TypeVar
 
 from openai.types.chat import ChatCompletion
+from openai.types.completion_usage import CompletionUsage
 from pydantic import BaseModel
 
 T = TypeVar(
@@ -61,6 +62,7 @@ class ModelResponse(ChatCompletion):
         chat_completion: ChatCompletion,
         model_options: dict[str, Any],
         metadata: dict[str, Any],
+        usage: CompletionUsage | None = None,
     ) -> None:
         """Initialize ModelResponse from ChatCompletion.
 
@@ -73,6 +75,7 @@ class ModelResponse(ChatCompletion):
                           Stored for metadata extraction and tracing.
             metadata: Custom metadata for tracking (time_taken, first_token_time, etc.).
                      Includes timing information and custom tags.
+            usage: Optional usage information from streaming response.
 
         Example:
             >>> # Usually created internally by generate()
@@ -83,10 +86,19 @@ class ModelResponse(ChatCompletion):
             ... )
         """
         data = chat_completion.model_dump()
+
+        # fixes issue where the role is "assistantassistant" instead of "assistant"
+        for i in range(len(data["choices"])):
+            if role := data["choices"][i]["message"].get("role"):
+                if role.startswith("assistant") and role != "assistant":
+                    data["choices"][i]["message"]["role"] = "assistant"
+
         super().__init__(**data)
 
         self._model_options = model_options
         self._metadata = metadata
+        if usage:
+            self.usage = usage
 
     @property
     def content(self) -> str:

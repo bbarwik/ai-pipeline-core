@@ -1,7 +1,5 @@
 """Unit tests for GcsStorage with mocked GCS dependencies."""
 
-from __future__ import annotations
-
 import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch

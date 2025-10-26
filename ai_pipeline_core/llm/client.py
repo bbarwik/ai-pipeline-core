@@ -17,7 +17,7 @@ from typing import Any, TypeVar
 
 from lmnr import Laminar
 from openai import AsyncOpenAI
-from openai.lib.streaming.chat import ContentDeltaEvent, ContentDoneEvent
+from openai.lib.streaming.chat import ChunkEvent, ContentDeltaEvent, ContentDoneEvent
 from openai.types.chat import (
     ChatCompletionMessageParam,
 )
@@ -103,6 +103,42 @@ def _process_messages(
     return processed_messages
 
 
+def _model_name_to_openrouter_model(model: ModelName) -> str:
+    """Convert a model name to an OpenRouter model name.
+
+    Args:
+        model: Model name to convert.
+
+    Returns:
+        OpenRouter model name.
+    """
+    if model == "gpt-4o-search":
+        return "openai/gpt-4o-search-preview"
+    if model == "gemini-2.5-flash-search":
+        return "google/gemini-2.5-flash:online"
+    if model == "grok-4-fast-search":
+        return "x-ai/grok-4-fast:online"
+    if model == "sonar-pro-search":
+        return "perplexity/sonar-reasoning-pro"
+    if model.startswith("gemini"):
+        return f"google/{model}"
+    elif model.startswith("gpt"):
+        return f"openai/{model}"
+    elif model.startswith("grok"):
+        return f"x-ai/{model}"
+    elif model.startswith("claude"):
+        return f"anthropic/{model}"
+    elif model.startswith("qwen3"):
+        return f"qwen/{model}"
+    elif model.startswith("deepseek-"):
+        return f"deepseek/{model}"
+    elif model.startswith("glm-"):
+        return f"z-ai/{model}"
+    elif model.startswith("kimi-"):
+        return f"moonshotai/{model}"
+    return model
+
+
 async def _generate(
     model: str, messages: list[ChatCompletionMessageParam], completion_kwargs: dict[str, Any]
 ) -> ModelResponse:
@@ -128,11 +164,16 @@ async def _generate(
         - Captures response headers for cost tracking
         - Response includes model options for debugging
     """
+    if "openrouter" in settings.openai_base_url.lower():
+        model = _model_name_to_openrouter_model(model)
+
     async with AsyncOpenAI(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
     ) as client:
-        start_time, first_token_time = time.time(), None
+        start_time = time.time()
+        first_token_time = None
+        usage = None
         async with client.chat.completions.stream(
             model=model,
             messages=messages,
@@ -144,6 +185,9 @@ async def _generate(
                         first_token_time = time.time()
                 elif isinstance(event, ContentDoneEvent):
                     pass
+                elif isinstance(event, ChunkEvent):
+                    if event.chunk.usage:  # used to fix a bug with missing usage data
+                        usage = event.chunk.usage
             if not first_token_time:
                 first_token_time = time.time()
             raw_response = await stream.get_final_completion()
@@ -156,6 +200,7 @@ async def _generate(
             raw_response,
             model_options=completion_kwargs,
             metadata=metadata,
+            usage=usage,
         )
         return response
 

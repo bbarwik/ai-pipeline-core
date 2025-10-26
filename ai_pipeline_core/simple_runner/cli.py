@@ -1,7 +1,5 @@
 """Command-line interface for simple pipeline execution."""
 
-from __future__ import annotations
-
 import asyncio
 import os
 import sys

@@ -6,8 +6,6 @@ This module centralizes:
   ``observe`` instrumentation, and optional support for test runs.
 """
 
-from __future__ import annotations
-
 import inspect
 import json
 import os

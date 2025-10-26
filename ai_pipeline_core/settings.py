@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     # Prefect Configuration
     prefect_api_url: str = ""
     prefect_api_key: str = ""
+    prefect_api_auth_string: str = ""
+    prefect_work_pool_name: str = "default"
+    prefect_work_queue_name: str = "default"
+    prefect_gcs_bucket: str = ""
 
     # Observability
     lmnr_project_api_key: str = ""
@@ -135,6 +139,4 @@ class Settings(BaseSettings):
     gcs_service_account_file: str = ""  # Path to GCS service account JSON file
 
 
-# Legacy: Module-level instance for backwards compatibility
-# Applications should create their own settings instance
 settings = Settings()
