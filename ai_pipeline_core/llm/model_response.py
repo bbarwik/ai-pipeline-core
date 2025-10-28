@@ -266,7 +266,7 @@ class ModelResponse(ChatCompletion):
 
         other_fields = self.__dict__
         for key, value in other_fields.items():
-            if key in ["_model_options", "_metadata", "choices", "usage"]:
+            if key in ["_model_options", "_metadata", "choices"]:
                 continue
             try:
                 metadata[f"response.raw.{key}"] = json.dumps(value, indent=2, default=str)

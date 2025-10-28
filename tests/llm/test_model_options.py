@@ -17,7 +17,7 @@ class TestModelOptions:
         assert options.retries == 3
         assert options.retry_delay_seconds == 20
         assert options.timeout == 600
-        assert options.cache_ttl == "5m"
+        assert options.cache_ttl == "300s"
         assert options.max_completion_tokens is None
         assert options.stop is None
         assert options.response_format is None

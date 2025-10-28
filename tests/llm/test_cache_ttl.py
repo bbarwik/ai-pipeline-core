@@ -10,17 +10,17 @@ class TestCacheTTL:
     """Test cache_ttl functionality."""
 
     def test_model_options_default_cache_ttl(self):
-        """Test ModelOptions has default cache_ttl of 5m."""
+        """Test ModelOptions has default cache_ttl of 300s."""
         options = ModelOptions()
-        assert options.cache_ttl == "5m"
+        assert options.cache_ttl == "300s"
 
     def test_model_options_custom_cache_ttl(self):
         """Test ModelOptions accepts custom cache_ttl values."""
         options = ModelOptions(cache_ttl="300s")
         assert options.cache_ttl == "300s"
 
-        options = ModelOptions(cache_ttl="5m")
-        assert options.cache_ttl == "5m"
+        options = ModelOptions(cache_ttl="10m")
+        assert options.cache_ttl == "10m"
 
     def test_model_options_none_cache_ttl(self):
         """Test ModelOptions accepts None to disable caching."""
@@ -28,19 +28,19 @@ class TestCacheTTL:
         assert options.cache_ttl is None
 
     def test_process_messages_default_cache_ttl(self):
-        """Test _process_messages uses default cache_ttl of 5m."""
+        """Test _process_messages uses default cache_ttl of 300s."""
         context = AIMessages(["context message"])
         messages = AIMessages(["query message"])
 
         result = _process_messages(context, messages)
 
         # Find the context message
-        context_msg = next((msg for msg in result if msg.get("content") == "context message"), None)
+        context_msg = next((msg for msg in result if "cache_control" in msg), None)
         assert context_msg is not None
         context_msg_dict = cast(dict[str, Any], context_msg)
         assert "cache_control" in context_msg_dict
         assert context_msg_dict["cache_control"]["type"] == "ephemeral"
-        assert context_msg_dict["cache_control"]["ttl"] == "5m"
+        assert context_msg_dict["cache_control"]["ttl"] == "300s"
 
     def test_process_messages_custom_cache_ttl(self):
         """Test _process_messages uses custom cache_ttl."""
@@ -50,7 +50,7 @@ class TestCacheTTL:
         result = _process_messages(context, messages, cache_ttl="300s")
 
         # Find the context message
-        context_msg = next((msg for msg in result if msg.get("content") == "context message"), None)
+        context_msg = next((msg for msg in result if "cache_control" in msg), None)
         assert context_msg is not None
         context_msg_dict = cast(dict[str, Any], context_msg)
         assert "cache_control" in context_msg_dict
@@ -64,10 +64,9 @@ class TestCacheTTL:
 
         result = _process_messages(context, messages, cache_ttl=None)
 
-        # Find the context message
-        context_msg = next((msg for msg in result if msg.get("content") == "context message"), None)
-        assert context_msg is not None
-        assert "cache_control" not in context_msg
+        # No message should have cache_control when cache_ttl is None
+        context_msg = next((msg for msg in result if "cache_control" in msg), None)
+        assert context_msg is None
 
     def test_process_messages_with_system_prompt(self):
         """Test _process_messages with system prompt and cache_ttl."""
@@ -84,7 +83,7 @@ class TestCacheTTL:
         assert "cache_control" not in result[0]  # System prompt not cached
 
         # Context message should have cache_control
-        context_msg = next((msg for msg in result if msg.get("content") == "context message"), None)
+        context_msg = next((msg for msg in result if "cache_control" in msg), None)
         assert context_msg is not None
         context_msg_dict = cast(dict[str, Any], context_msg)
         assert context_msg_dict["cache_control"]["ttl"] == "180s"
@@ -111,7 +110,8 @@ class TestCacheTTL:
         assert len(cached_messages) == 1
 
         # Last context message should have cache_control
-        assert cached_messages[0]["content"] == "context3"
+        # Content is now structured as [{"type": "text", "text": "context3"}]
+        assert cached_messages[0]["content"][0]["text"] == "context3"
         cached_msg_dict = cast(dict[str, Any], cached_messages[0])
         assert cached_msg_dict["cache_control"]["ttl"] == "60s"
 
@@ -135,7 +135,8 @@ class TestCacheTTL:
 
         for ttl in ["1h", "30m", "90s", "2h", "45m"]:
             result = _process_messages(context, messages, cache_ttl=ttl)
-            context_msg = next((msg for msg in result if msg.get("content") == "context"), None)
+            context_msg = next((msg for msg in result if "cache_control" in msg), None)
+            assert context_msg is not None
             context_msg_dict = cast(dict[str, Any], context_msg)
             assert context_msg_dict["cache_control"]["ttl"] == ttl
 
@@ -151,9 +152,8 @@ class TestCacheTTL:
         result = _process_messages(context, messages, cache_ttl="")
 
         # Empty string is falsy, so no cache_control is added
-        context_msg = next((msg for msg in result if msg.get("content") == "context"), None)
-        assert context_msg is not None
-        assert "cache_control" not in context_msg
+        context_msg = next((msg for msg in result if "cache_control" in msg), None)
+        assert context_msg is None
 
     def test_cache_ttl_from_model_options(self):
         """Test that cache_ttl from ModelOptions is passed to _process_messages."""
@@ -195,9 +195,7 @@ class TestCacheTTL:
             processed_messages = call_args[1]  # messages is second positional arg
 
             # Find context message with cache_control
-            context_msg = next(
-                (msg for msg in processed_messages if msg.get("content") == "context"), None
-            )
+            context_msg = next((msg for msg in processed_messages if "cache_control" in msg), None)
             assert context_msg is not None
             context_msg_dict = cast(dict[str, Any], context_msg)
             assert context_msg_dict["cache_control"]["ttl"] == "600s"
@@ -206,7 +204,7 @@ class TestCacheTTL:
         """Test that ModelOptions correctly integrates cache_ttl."""
         # Test default value
         default_options = ModelOptions()
-        assert default_options.cache_ttl == "5m"
+        assert default_options.cache_ttl == "300s"
 
         # Test that to_openai_completion_kwargs doesn't include cache_ttl
         # (it's handled separately in _process_messages)
@@ -233,7 +231,7 @@ class TestCacheTTL:
             if "cache_control" in msg:
                 cache_control_count += 1
                 # Should be the last context message (ctx4)
-                assert msg["content"] == "ctx4"
+                assert msg["content"][0]["text"] == "ctx4"
                 msg_dict = cast(dict[str, Any], msg)
                 assert msg_dict["cache_control"]["type"] == "ephemeral"
                 assert msg_dict["cache_control"]["ttl"] == "200s"

@@ -139,8 +139,8 @@ All AI interactions through LiteLLM proxy (OpenAI API compatible). Built-in retr
 - **ModelResponse/StructuredModelResponse**: Focus on `.content` and `.parsed` properties
 
 **Key Features**:
-- Context caching saves 50-90% tokens with configurable TTL (default 120s)
-- Cache TTL configurable via ModelOptions.cache_ttl ("120s", "5m", None to disable)
+- Context caching saves 50-90% tokens with configurable TTL (default 300s)
+- Cache TTL configurable via ModelOptions.cache_ttl ("120s", "300s", None to disable)
 - Retry uses FIXED delay (default 10s), NOT exponential backoff
 - Messages can be string or AIMessages
 - Context/messages split is for caching efficiency

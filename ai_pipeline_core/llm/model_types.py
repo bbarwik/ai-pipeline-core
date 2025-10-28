@@ -20,7 +20,7 @@ ModelName: TypeAlias = (
         "grok-4",
         # Small models
         "gemini-2.5-flash",
-        "gpt-5-nano",
+        "gpt-5-mini",
         "grok-4-fast",
         # Search models
         "gemini-2.5-flash-search",

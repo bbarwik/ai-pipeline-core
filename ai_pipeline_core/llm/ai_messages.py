@@ -260,11 +260,14 @@ class AIMessages(list[AIMessageType]):
 
         for message in self:
             if isinstance(message, str):
-                messages.append({"role": "user", "content": message})
+                messages.append({"role": "user", "content": [{"type": "text", "text": message}]})
             elif isinstance(message, Document):
                 messages.append({"role": "user", "content": AIMessages.document_to_prompt(message)})
             elif isinstance(message, ModelResponse):  # type: ignore
-                messages.append({"role": "assistant", "content": message.content})
+                messages.append({
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": message.content}],
+                })
             else:
                 raise ValueError(f"Unsupported message type: {type(message)}")
 

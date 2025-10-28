@@ -7,8 +7,8 @@ This script:
 3. Creates/updates a Prefect deployment using the RunnerDeployment pattern
 
 Requirements:
-- .env file with PREFECT_API_URL and optionally PREFECT_API_KEY
-- .env file with PREFECT_GCS_BUCKET
+- Settings configured with PREFECT_API_URL and optionally PREFECT_API_KEY
+- Settings configured with PREFECT_GCS_BUCKET
 - pyproject.toml with project name and version
 - Local package installed for flow metadata extraction
 
@@ -18,7 +18,6 @@ Usage:
 
 import argparse
 import asyncio
-import os
 import subprocess
 import sys
 import tomllib
@@ -35,14 +34,6 @@ from ai_pipeline_core.settings import settings
 from ai_pipeline_core.storage import Storage
 
 # ============================================================================
-# Configuration
-# ============================================================================
-
-WORK_POOL_NAME = settings.prefect_work_pool_name
-DEFAULT_WORK_QUEUE = settings.prefect_work_queue_name
-PREDEFINED_BUCKET = settings.prefect_gcs_bucket
-
-# ============================================================================
 # Deployer Class
 # ============================================================================
 
@@ -57,7 +48,7 @@ class Deployer:
     def __init__(self):
         """Initialize deployer."""
         self.config = self._load_config()
-        self._setup_prefect_env()
+        self._validate_prefect_settings()
 
     def _load_config(self) -> dict[str, Any]:
         """Load and normalize project configuration from pyproject.toml.
@@ -65,10 +56,10 @@ class Deployer:
         Returns:
             Configuration dictionary with project metadata and deployment settings.
         """
-        if not PREDEFINED_BUCKET:
+        if not settings.prefect_gcs_bucket:
             self._die(
-                "PREFECT_GCS_BUCKET not found in .env file.\n"
-                "Create a .env file with:\n"
+                "PREFECT_GCS_BUCKET not configured in settings.\n"
+                "Configure via environment variable or .env file:\n"
                 "  PREFECT_GCS_BUCKET=your-bucket-name"
             )
 
@@ -97,32 +88,22 @@ class Deployer:
             "name": name,
             "package": package_name,
             "version": version,
-            "bucket": PREDEFINED_BUCKET,
+            "bucket": settings.prefect_gcs_bucket,
             "folder": f"flows/{flow_folder}",
             "tarball": f"{package_name}-{version}.tar.gz",
-            "work_pool": WORK_POOL_NAME,
-            "work_queue": DEFAULT_WORK_QUEUE,
+            "work_pool": settings.prefect_work_pool_name,
+            "work_queue": settings.prefect_work_queue_name,
         }
 
-    def _setup_prefect_env(self):
-        """Configure Prefect environment variables from .env file."""
-        self.api_url = os.getenv("PREFECT_API_URL")
+    def _validate_prefect_settings(self):
+        """Validate that required Prefect settings are configured."""
+        self.api_url = settings.prefect_api_url
         if not self.api_url:
             self._die(
-                "PREFECT_API_URL not found in .env file.\n"
-                "Create a .env file with:\n"
+                "PREFECT_API_URL not configured in settings.\n"
+                "Configure via environment variable or .env file:\n"
                 "  PREFECT_API_URL=https://api.prefect.cloud/api/accounts/.../workspaces/..."
             )
-
-        os.environ["PREFECT_API_URL"] = self.api_url
-
-        # Optional: API key for authentication
-        if api_key := os.getenv("PREFECT_API_KEY"):
-            os.environ["PREFECT_API_KEY"] = api_key
-
-        # Optional: Alternative auth method
-        if api_auth := os.getenv("PREFECT_API_AUTH_STRING"):
-            os.environ["PREFECT_API_AUTH_STRING"] = api_auth
 
     def _run(self, cmd: str, check: bool = True) -> Optional[str]:
         """Execute shell command and return output.
@@ -345,12 +326,16 @@ Example:
   python -m ai_pipeline_core.utils.deploy
 
 Prerequisites:
-  - .env file with PREFECT_API_URL (and optionally PREFECT_API_KEY)
-  - .env file with PREFECT_GCS_BUCKET
+  - Settings configured with PREFECT_API_URL (and optionally PREFECT_API_KEY)
+  - Settings configured with PREFECT_GCS_BUCKET
   - pyproject.toml with project name and version
   - Package installed locally: pip install -e .
   - GCP authentication configured (via service account or default credentials)
   - Work pool created in Prefect UI or CLI
+
+Settings can be configured via:
+  - Environment variables (e.g., export PREFECT_API_URL=...)
+  - .env file in the current directory
         """,
     )
 

@@ -72,7 +72,7 @@ class TestCoreModelsIntegration:
             "Answer this math question with a simple response. What is 5 times 3? "
             "Provide your answer and confidence level from 0 to 1."
         ])
-        options = ModelOptions(max_completion_tokens=1000)
+        options = ModelOptions(max_completion_tokens=4000)
 
         response = await generate_structured(
             model=model, response_format=SimpleResponse, messages=messages, options=options

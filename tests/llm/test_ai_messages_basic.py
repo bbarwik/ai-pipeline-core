@@ -138,9 +138,14 @@ class TestAIMessagesBasic:
 
         assert len(prompt) == 2
         assert prompt[0]["role"] == "user"
-        assert prompt[0]["content"] == "Hello"
+        assert isinstance(prompt[0]["content"], list)
+        assert prompt[0]["content"][0]["type"] == "text"
+        assert prompt[0]["content"][0]["text"] == "Hello"
         assert prompt[1]["role"] == "user"
-        assert prompt[1]["content"] == "How are you?"
+        assert "content" in prompt[1]
+        assert isinstance(prompt[1]["content"], list)
+        assert prompt[1]["content"][0]["type"] == "text"
+        assert prompt[1]["content"][0]["text"] == "How are you?"
 
     def test_to_prompt_model_response(self):
         """Test converting ModelResponse to assistant message."""
@@ -163,11 +168,18 @@ class TestAIMessagesBasic:
 
         assert len(prompt) == 3
         assert prompt[0]["role"] == "user"
-        assert prompt[0]["content"] == "Hello"
+        assert isinstance(prompt[0]["content"], list)
+        assert prompt[0]["content"][0]["type"] == "text"
+        assert prompt[0]["content"][0]["text"] == "Hello"
         assert prompt[1]["role"] == "assistant"
-        assert prompt[1].get("content") == "I am an AI assistant"  # type: ignore[attr-defined]
+        assert "content" in prompt[1]
+        assert isinstance(prompt[1]["content"], list)
+        assert prompt[1]["content"][0]["type"] == "text"
+        assert prompt[1]["content"][0]["text"] == "I am an AI assistant"
         assert prompt[2]["role"] == "user"
-        assert prompt[2]["content"] == "Thanks"
+        assert isinstance(prompt[2]["content"], list)
+        assert prompt[2]["content"][0]["type"] == "text"
+        assert prompt[2]["content"][0]["text"] == "Thanks"
 
     def test_to_prompt_mixed_types(self):
         """Test converting mixed message types."""
@@ -191,14 +203,21 @@ class TestAIMessagesBasic:
 
         assert len(prompt) == 4
         assert prompt[0]["role"] == "user"
-        assert prompt[0]["content"] == "Start"
+        assert isinstance(prompt[0]["content"], list)
+        assert prompt[0]["content"][0]["type"] == "text"
+        assert prompt[0]["content"][0]["text"] == "Start"
         assert prompt[1]["role"] == "user"
         # Document content will be a list of parts
         assert isinstance(prompt[1]["content"], list)
         assert prompt[2]["role"] == "assistant"
-        assert prompt[2].get("content") == "Response"  # type: ignore[attr-defined]
+        assert "content" in prompt[2]
+        assert isinstance(prompt[2]["content"], list)
+        assert prompt[2]["content"][0]["type"] == "text"
+        assert prompt[2]["content"][0]["text"] == "Response"
         assert prompt[3]["role"] == "user"
-        assert prompt[3]["content"] == "End"
+        assert isinstance(prompt[3]["content"], list)
+        assert prompt[3]["content"][0]["type"] == "text"
+        assert prompt[3]["content"][0]["text"] == "End"
 
     def test_to_prompt_empty(self):
         """Test converting empty messages."""

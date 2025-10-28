@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Complete showcase of ai_pipeline_core features (v0.2.6)
+"""Complete showcase of ai_pipeline_core features (v0.2.7)
 
 This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
   • Settings configuration with environment variables and .env files
@@ -295,7 +295,7 @@ async def traced_operation(data: str) -> dict[str, Any]:
     trace_cost=0.01,  # Track total cost for this flow (e.g., $0.01 per run)
     trace_trim_documents=False,  # Keep full documents in flow traces
     retries=2,
-    timeout_seconds=600,
+    timeout_seconds=1200,
 )
 async def stage1_flow(
     project_name: str, documents: DocumentList, flow_options: ShowcaseFlowOptions
@@ -512,7 +512,7 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
             name="data.json",
             content={
                 "project": "ai-pipeline-core",
-                "version": "0.2.6",
+                "version": "0.2.7",
                 "features": ["async", "typed", "observable"],
                 "models": [m.model_dump() for m in sample_models],
             },

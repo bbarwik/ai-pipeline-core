@@ -45,7 +45,7 @@ class ModelOptions(BaseModel):
 
         timeout: Maximum seconds to wait for response (default: 300).
 
-        cache_ttl: Cache TTL for context messages (default: "5m").
+        cache_ttl: Cache TTL for context messages (default: "300s").
                    String format like "60s", "5m", or None to disable caching.
                    Applied to the last context message for efficient token reuse.
 
@@ -165,7 +165,7 @@ class ModelOptions(BaseModel):
         - search_context_size only works with search models
         - reasoning_effort only works with models that support explicit reasoning
         - response_format is set internally by generate_structured()
-        - cache_ttl accepts formats like "120s", "5m" (default), "1h" or None to disable caching
+        - cache_ttl accepts formats like "120s", "5m", "1h" or None (default: "300s")
         - stop sequences are limited to 4 by most providers
         - user identifier helps track costs per end-user (max 256 chars)
         - extra_body allows passing provider-specific parameters
@@ -179,7 +179,7 @@ class ModelOptions(BaseModel):
     retries: int = 3
     retry_delay_seconds: int = 20
     timeout: int = 600
-    cache_ttl: str | None = "5m"
+    cache_ttl: str | None = "300s"
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
     max_completion_tokens: int | None = None
     stop: str | list[str] | None = None

@@ -39,7 +39,7 @@ def _process_messages(
     context: AIMessages,
     messages: AIMessages,
     system_prompt: str | None = None,
-    cache_ttl: str | None = "5m",
+    cache_ttl: str | None = "300s",
 ) -> list[ChatCompletionMessageParam]:
     """Process and format messages for LLM API consumption.
 
@@ -51,7 +51,7 @@ def _process_messages(
         context: Messages to be cached (typically expensive/static content).
         messages: Regular messages without caching (dynamic queries).
         system_prompt: Optional system instructions for the model.
-        cache_ttl: Cache TTL for context messages (e.g. "120s", "5m", "1h").
+        cache_ttl: Cache TTL for context messages (e.g. "120s", "300s", "1h").
                    Set to None or empty string to disable caching.
 
     Returns:
@@ -86,9 +86,14 @@ def _process_messages(
         # Use AIMessages.to_prompt() for context
         context_messages = context.to_prompt()
 
-        # Apply caching to last context message if cache_ttl is set
+        # Apply caching to last context message and last content part if cache_ttl is set
         if cache_ttl:
             context_messages[-1]["cache_control"] = {  # type: ignore
+                "type": "ephemeral",
+                "ttl": cache_ttl,
+            }
+            assert isinstance(context_messages[-1]["content"], list)  # type: ignore
+            context_messages[-1]["content"][-1]["cache_control"] = {  # type: ignore
                 "type": "ephemeral",
                 "ttl": cache_ttl,
             }
@@ -237,6 +242,10 @@ async def _generate_with_retry(
     if not context and not messages:
         raise ValueError("Either context or messages must be provided")
 
+    if "gemini" in model.lower() and context.approximate_tokens_count < 5000:
+        # Bug fix for minimum explicit context size for Gemini models
+        options.cache_ttl = None
+
     processed_messages = _process_messages(
         context, messages, options.system_prompt, options.cache_ttl
     )
@@ -374,26 +383,11 @@ async def generate(
         ... ])
         >>> response = await llm.generate("gpt-5", messages=messages)
 
-        Configuration via LiteLLM Proxy:
-        >>> # Configure temperature in litellm_config.yaml:
-        >>> # model_list:
-        >>> #   - model_name: gpt-5
-        >>> #     litellm_params:
-        >>> #       model: openai/gpt-4o
-        >>> #       temperature: 0.3
-        >>> #       max_tokens: 1000
-        >>>
-        >>> # Configure retry logic in proxy:
-        >>> # general_settings:
-        >>> #   master_key: sk-1234
-        >>> #   max_retries: 5
-        >>> #   retry_delay: 15
-
     Performance:
         - Context caching saves ~50-90% tokens on repeated calls
         - First call: full token cost
         - Subsequent calls (within cache TTL): only messages tokens
-        - Default cache TTL is 5m (production-optimized)
+        - Default cache TTL is 300s/5 minutes (production-optimized)
         - Default retry logic: 3 attempts with 10s delay (production-optimized)
 
     Caching:

@@ -393,7 +393,7 @@ ModelName: TypeAlias = (
         "grok-4",
         # Small models
         "gemini-2.5-flash",
-        "gpt-5-nano",
+        "gpt-5-mini",
         "grok-4-fast",
         # Search models
         "gemini-2.5-flash-search",
@@ -568,26 +568,11 @@ Best Practices:
   ... ])
   >>> response = await llm.generate("gpt-5", messages=messages)
 
-  Configuration via LiteLLM Proxy:
-  >>> # Configure temperature in litellm_config.yaml:
-  >>> # model_list:
-  >>> #   - model_name: gpt-5
-  >>> #     litellm_params:
-  >>> #       model: openai/gpt-4o
-  >>> #       temperature: 0.3
-  >>> #       max_tokens: 1000
-  >>>
-  >>> # Configure retry logic in proxy:
-  >>> # general_settings:
-  >>> #   master_key: sk-1234
-  >>> #   max_retries: 5
-  >>> #   retry_delay: 15
-
   Performance:
   - Context caching saves ~50-90% tokens on repeated calls
   - First call: full token cost
   - Subsequent calls (within cache TTL): only messages tokens
-  - Default cache TTL is 5m (production-optimized)
+  - Default cache TTL is 300s/5 minutes (production-optimized)
   - Default retry logic: 3 attempts with 10s delay (production-optimized)
 
   Caching:

@@ -30,9 +30,13 @@ class TestProcessMessages:
 
         assert len(result) == 2
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == "Hello"
+        assert isinstance(result[0]["content"], list)
+        assert result[0]["content"][0]["type"] == "text"
+        assert result[0]["content"][0]["text"] == "Hello"
         assert result[1]["role"] == "user"
-        assert result[1]["content"] == "How are you?"
+        assert isinstance(result[1]["content"], list)
+        assert result[1]["content"][0]["type"] == "text"
+        assert result[1]["content"][0]["text"] == "How are you?"
 
         # No cache control on regular messages
         assert "cache_control" not in result[0]
@@ -49,19 +53,30 @@ class TestProcessMessages:
 
         # First context message should NOT have cache control
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == "Context message 1"
+        assert isinstance(result[0]["content"], list)
+        assert result[0]["content"][0]["type"] == "text"
+        assert result[0]["content"][0]["text"] == "Context message 1"
         assert "cache_control" not in result[0]
 
         # Last context message should have cache control
         assert result[1]["role"] == "user"
-        assert result[1]["content"] == "Context message 2"
+        assert isinstance(result[1]["content"], list)
+        assert result[1]["content"][0]["type"] == "text"
+        assert result[1]["content"][0]["text"] == "Context message 2"
         assert "cache_control" in result[1]
         assert result[1]["cache_control"]["type"] == "ephemeral"
-        assert result[1]["cache_control"]["ttl"] == "5m"
+        assert result[1]["cache_control"]["ttl"] == "300s"
+        # Also check that the last content part has cache_control
+        assert isinstance(result[1]["content"], list)
+        assert "cache_control" in result[1]["content"][0]
+        assert result[1]["content"][0]["cache_control"]["type"] == "ephemeral"
+        assert result[1]["content"][0]["cache_control"]["ttl"] == "300s"
 
         # Regular message should not have cache control
         assert result[2]["role"] == "user"
-        assert result[2]["content"] == "Regular message"
+        assert isinstance(result[2]["content"], list)
+        assert result[2]["content"][0]["type"] == "text"
+        assert result[2]["content"][0]["text"] == "Regular message"
         assert "cache_control" not in result[2]
 
     def test_full_message_ordering(self):
@@ -95,7 +110,9 @@ class TestProcessMessages:
         assert result[0]["content"] == "System instructions"
 
         assert result[1]["role"] == "user"
-        assert result[1]["content"] == "Context string"
+        assert isinstance(result[1]["content"], list)
+        assert result[1]["content"][0]["type"] == "text"
+        assert result[1]["content"][0]["text"] == "Context string"
         assert "cache_control" not in result[1]  # Not the last context message
 
         assert result[2]["role"] == "user"
@@ -104,18 +121,28 @@ class TestProcessMessages:
         assert "cache_control" not in result[2]  # Not the last context message
 
         assert result[3]["role"] == "assistant"
-        assert result[3].get("content") == "Context response"  # type: ignore[attr-defined]
+        assert "content" in result[3]
+        assert isinstance(result[3]["content"], list)
+        assert result[3]["content"][0]["type"] == "text"
+        assert result[3]["content"][0]["text"] == "Context response"
         # Last context message gets cache control (even if assistant)
         assert "cache_control" in result[3]
         assert result[3]["cache_control"]["type"] == "ephemeral"
-        assert result[3]["cache_control"]["ttl"] == "5m"
+        assert result[3]["cache_control"]["ttl"] == "300s"
+        # Also check that the content part has cache_control
+        assert "cache_control" in result[3]["content"][0]
+        assert result[3]["content"][0]["cache_control"]["ttl"] == "300s"
 
         assert result[4]["role"] == "user"
-        assert result[4]["content"] == "User question"
+        assert isinstance(result[4]["content"], list)
+        assert result[4]["content"][0]["type"] == "text"
+        assert result[4]["content"][0]["text"] == "User question"
         assert "cache_control" not in result[4]
 
         assert result[5]["role"] == "user"
-        assert result[5]["content"] == "Follow-up"
+        assert isinstance(result[5]["content"], list)
+        assert result[5]["content"][0]["type"] == "text"
+        assert result[5]["content"][0]["text"] == "Follow-up"
         assert "cache_control" not in result[5]
 
     def test_cache_control_only_on_last_context(self):
@@ -151,7 +178,7 @@ class TestProcessMessages:
         assert result[2]["role"] == "user"
         assert "cache_control" in result[2]
         assert result[2]["cache_control"]["type"] == "ephemeral"
-        assert result[2]["cache_control"]["ttl"] == "5m"
+        assert result[2]["cache_control"]["ttl"] == "300s"
 
     def test_no_system_prompt_when_none(self):
         """Test that no system message is added when prompt is None."""
@@ -170,7 +197,9 @@ class TestProcessMessages:
         # Empty string should NOT add system message (falsy check)
         assert len(result) == 1
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == "Test"
+        assert isinstance(result[0]["content"], list)
+        assert result[0]["content"][0]["type"] == "text"
+        assert result[0]["content"][0]["text"] == "Test"
 
     def test_single_context_message_gets_cache(self):
         """Test that a single context message gets cache control."""
@@ -183,14 +212,22 @@ class TestProcessMessages:
 
         # Single context message should get cache control
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == "Single context message"
+        assert isinstance(result[0]["content"], list)
+        assert result[0]["content"][0]["type"] == "text"
+        assert result[0]["content"][0]["text"] == "Single context message"
         assert "cache_control" in result[0]
         assert result[0]["cache_control"]["type"] == "ephemeral"
-        assert result[0]["cache_control"]["ttl"] == "5m"
+        assert result[0]["cache_control"]["ttl"] == "300s"
+        # Also check that the content part has cache_control
+        assert "cache_control" in result[0]["content"][0]
+        assert result[0]["content"][0]["cache_control"]["type"] == "ephemeral"
+        assert result[0]["content"][0]["cache_control"]["ttl"] == "300s"
 
         # Regular message should not have cache control
         assert result[1]["role"] == "user"
-        assert result[1]["content"] == "Regular message"
+        assert isinstance(result[1]["content"], list)
+        assert result[1]["content"][0]["type"] == "text"
+        assert result[1]["content"][0]["text"] == "Regular message"
         assert "cache_control" not in result[1]
 
     def test_assistant_as_last_context_gets_cache(self):
@@ -224,7 +261,7 @@ class TestProcessMessages:
         assert result[1]["role"] == "assistant"
         assert "cache_control" in result[1]
         assert result[1]["cache_control"]["type"] == "ephemeral"
-        assert result[1]["cache_control"]["ttl"] == "5m"
+        assert result[1]["cache_control"]["ttl"] == "300s"
 
         # Regular message no cache
         assert result[2]["role"] == "user"
