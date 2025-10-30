@@ -61,11 +61,11 @@ class FlowOptions(BaseSettings):
     """
 
     core_model: ModelName = Field(
-        default="gpt-5",
+        default="gemini-2.5-pro",
         description="Primary model for complex analysis and generation tasks.",
     )
     small_model: ModelName = Field(
-        default="gpt-5-mini",
+        default="grok-4-fast",
         description="Fast, cost-effective model for simple tasks and orchestration.",
     )
 

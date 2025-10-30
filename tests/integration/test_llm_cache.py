@@ -60,9 +60,9 @@ async def test_prompt_caching(model: ModelName):
     3. The caching mechanism works across different user messages
     """
     # Create large context message (10kb)
-    large_context = create_large_context(10)
+    large_context = create_large_context(20)
     context = AIMessages([large_context])
-    assert context.approximate_tokens_count > 5000 and context.approximate_tokens_count < 10000
+    assert context.approximate_tokens_count > 10000 and context.approximate_tokens_count < 20000
 
     # First request with large context
     messages = AIMessages(["don't think, answer as quickly as possible 'working'"])

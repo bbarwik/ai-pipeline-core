@@ -108,6 +108,38 @@ def _process_messages(
     return processed_messages
 
 
+def _remove_cache_control(
+    messages: list[ChatCompletionMessageParam],
+) -> list[ChatCompletionMessageParam]:
+    """Remove cache control directives from messages.
+
+    Internal utility that strips cache_control fields from both message-level
+    and content-level entries. Used in retry logic when cache-related errors
+    occur during LLM API calls.
+
+    Args:
+        messages: List of messages that may contain cache_control directives.
+
+    Returns:
+        The same message list (modified in-place) with all cache_control
+        fields removed from both messages and their content items.
+
+    Note:
+        This function modifies the input list in-place but also returns it
+        for convenience. Handles both list-based content (multipart) and
+        string content (simple messages).
+    """
+    for message in messages:
+        if content := message.get("content"):
+            if isinstance(content, list):
+                for item in content:
+                    if "cache_control" in item:
+                        del item["cache_control"]
+        if "cache_control" in message:
+            del message["cache_control"]
+    return messages  # type: ignore
+
+
 def _model_name_to_openrouter_model(model: ModelName) -> str:
     """Convert a model name to an OpenRouter model name.
 
@@ -242,7 +274,7 @@ async def _generate_with_retry(
     if not context and not messages:
         raise ValueError("Either context or messages must be provided")
 
-    if "gemini" in model.lower() and context.approximate_tokens_count < 5000:
+    if "gemini" in model.lower() and context.approximate_tokens_count < 10000:
         # Bug fix for minimum explicit context size for Gemini models
         options.cache_ttl = None
 
@@ -272,6 +304,8 @@ async def _generate_with_retry(
             if not isinstance(e, asyncio.TimeoutError):
                 # disable cache if it's not a timeout because it may cause an error
                 completion_kwargs["extra_body"]["cache"] = {"no-cache": True}
+                # sometimes there are issues with cache so cache is removed in case of failure
+                processed_messages = _remove_cache_control(processed_messages)
 
             logger.warning(
                 f"LLM generation failed (attempt {attempt + 1}/{options.retries}): {e}",

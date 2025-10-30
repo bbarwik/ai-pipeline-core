@@ -18,8 +18,8 @@ class TestFlowOptionsInheritance:
     def test_base_flow_options_defaults(self):
         """Test that base FlowOptions has correct defaults."""
         options = FlowOptions()
-        assert options.core_model == "gpt-5"
-        assert options.small_model == "gpt-5-mini"
+        assert options.core_model == "gemini-2.5-pro"
+        assert options.small_model == "grok-4-fast"
 
     def test_base_flow_options_custom_values(self):
         """Test setting custom values for base FlowOptions."""
@@ -62,8 +62,8 @@ class TestFlowOptionsInheritance:
 
         # Test with defaults
         options = ProjectFlowOptions()
-        assert options.core_model == "gpt-5"
-        assert options.small_model == "gpt-5-mini"
+        assert options.core_model == "gemini-2.5-pro"
+        assert options.small_model == "grok-4-fast"
         assert options.batch_max_chars == 100_000
         assert options.batch_max_files == 25
         assert options.enable_caching is True
@@ -184,8 +184,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert isinstance(project_name, str)
             assert isinstance(documents, DocumentList)
             assert isinstance(flow_options, FlowOptions)
-            assert flow_options.core_model == "gpt-5"
-            assert flow_options.small_model == "gpt-5-mini"
+            assert flow_options.core_model == "gemini-2.5-pro"
+            assert flow_options.small_model == "grok-4-fast"
             # Return output document
             return DocumentList([OutputDocument(name="output", content=b"test")])
 
@@ -265,7 +265,7 @@ class TestDocumentsFlowWithInheritedOptions:
             project_name: str, documents: DocumentList, flow_options: AdvancedFlowOptions
         ) -> DocumentList:
             # Access inherited fields
-            assert flow_options.core_model == "gpt-5"
+            assert flow_options.core_model == "gemini-2.5-pro"
             assert flow_options.small_model == "custom-small"
 
             # Access custom fields
@@ -358,7 +358,7 @@ class TestDocumentsFlowWithInheritedOptions:
             project_name: str, documents: DocumentList, flow_options: SpecificProjectOptions
         ) -> DocumentList:
             # Can access all levels of inheritance
-            assert flow_options.core_model == "gpt-5"  # From FlowOptions
+            assert flow_options.core_model == "gemini-2.5-pro"  # From FlowOptions
             assert flow_options.organization == "custom-org"  # From BaseProjectOptions
             assert flow_options.environment == "production"  # From BaseProjectOptions
             assert flow_options.feature_flags["new_feature"] is True  # From SpecificProjectOptions
