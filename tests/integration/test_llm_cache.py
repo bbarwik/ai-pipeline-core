@@ -15,7 +15,7 @@ HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
 
 # Filter models that support caching, only Gemini 2.5 for now due to explicit caching support
 CACHE_SUPPORTED_MODELS: tuple[ModelName, ...] = tuple(
-    model for model in ALL_MODELS if model in ["gemini-2.5-flash"]
+    model for model in ALL_MODELS if model in ["gemini-2.5-flash", "gemini-2.5-pro"]
 )
 
 # Skip all tests if API keys not configured
@@ -60,8 +60,10 @@ async def test_prompt_caching(model: ModelName):
     3. The caching mechanism works across different user messages
     """
     # Create large context message (10kb)
+    system_prompt = "You are a helpful assistant."
+    small_context = create_large_context(1)
     large_context = create_large_context(20)
-    context = AIMessages([large_context])
+    context = AIMessages([small_context, large_context, small_context])
     assert context.approximate_tokens_count > 10000 and context.approximate_tokens_count < 20000
 
     # First request with large context
@@ -71,7 +73,7 @@ async def test_prompt_caching(model: ModelName):
         model=model,
         context=context,
         messages=messages,
-        options=ModelOptions(reasoning_effort="low", retries=1),
+        options=ModelOptions(reasoning_effort="low", retries=1, system_prompt=system_prompt),
     )
 
     # Verify first response
@@ -93,7 +95,7 @@ async def test_prompt_caching(model: ModelName):
         model=model,
         context=context,  # Same context should be cached
         messages=messages,
-        options=ModelOptions(reasoning_effort="low", retries=1),
+        options=ModelOptions(reasoning_effort="low", retries=1, system_prompt=system_prompt),
     )
 
     # Verify second response

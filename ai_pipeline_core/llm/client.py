@@ -45,31 +45,30 @@ def _process_messages(
 
     Internal function that combines context and messages into a single
     list of API-compatible messages. Applies caching directives to
-    context messages for efficiency.
+    system prompt and context messages for efficiency.
 
     Args:
         context: Messages to be cached (typically expensive/static content).
         messages: Regular messages without caching (dynamic queries).
         system_prompt: Optional system instructions for the model.
-        cache_ttl: Cache TTL for context messages (e.g. "120s", "300s", "1h").
+        cache_ttl: Cache TTL for system and context messages (e.g. "120s", "300s", "1h").
                    Set to None or empty string to disable caching.
 
     Returns:
         List of formatted messages ready for API calls, with:
-        - System prompt at the beginning (if provided)
-        - Context messages with cache_control on the last one (if cache_ttl)
+        - System prompt at the beginning with cache_control (if provided and cache_ttl set)
+        - Context messages with cache_control on all messages (if cache_ttl set)
         - Regular messages without caching
 
     System Prompt Location:
         The system prompt parameter is always injected as the FIRST message
-        with role="system". It is NOT cached with context, allowing dynamic
-        system prompts without breaking cache efficiency.
+        with role="system". It is cached along with context when cache_ttl is set.
 
     Cache behavior:
-        The last context message gets ephemeral caching with specified TTL
+        All system and context messages get ephemeral caching with specified TTL
         to reduce token usage on repeated calls with same context.
         If cache_ttl is None or empty string (falsy), no caching is applied.
-        Only the last context message receives cache_control to maximize efficiency.
+        All system and context messages receive cache_control to maximize cache efficiency.
 
     Note:
         This is an internal function used by _generate_with_retry().
@@ -79,26 +78,28 @@ def _process_messages(
 
     # Add system prompt if provided
     if system_prompt:
-        processed_messages.append({"role": "system", "content": system_prompt})
+        processed_messages.append({
+            "role": "system",
+            "content": [{"type": "text", "text": system_prompt}],
+        })
 
     # Process context messages with caching if provided
     if context:
         # Use AIMessages.to_prompt() for context
         context_messages = context.to_prompt()
-
-        # Apply caching to last context message and last content part if cache_ttl is set
-        if cache_ttl:
-            context_messages[-1]["cache_control"] = {  # type: ignore
-                "type": "ephemeral",
-                "ttl": cache_ttl,
-            }
-            assert isinstance(context_messages[-1]["content"], list)  # type: ignore
-            context_messages[-1]["content"][-1]["cache_control"] = {  # type: ignore
-                "type": "ephemeral",
-                "ttl": cache_ttl,
-            }
-
         processed_messages.extend(context_messages)
+
+    if cache_ttl:
+        for message in processed_messages:
+            message["cache_control"] = {  # type: ignore
+                "type": "ephemeral",
+                "ttl": cache_ttl,
+            }
+            if isinstance(message["content"], list):  # type: ignore
+                message["content"][-1]["cache_control"] = {  # type: ignore
+                    "type": "ephemeral",
+                    "ttl": cache_ttl,
+                }
 
     # Process regular messages without caching
     if messages:
@@ -156,7 +157,7 @@ def _model_name_to_openrouter_model(model: ModelName) -> str:
     if model == "grok-4-fast-search":
         return "x-ai/grok-4-fast:online"
     if model == "sonar-pro-search":
-        return "perplexity/sonar-reasoning-pro"
+        return "perplexity/sonar-pro-search"
     if model.startswith("gemini"):
         return f"google/{model}"
     elif model.startswith("gpt"):

@@ -1,7 +1,7 @@
 """Tests for LLM client retry and structured generation."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -29,20 +29,6 @@ class TestRetryLogic:
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
             # First two calls fail, third succeeds
-            AsyncMock(
-                side_effect=[
-                    asyncio.TimeoutError("Timeout 1"),
-                    asyncio.TimeoutError("Timeout 2"),
-                    MagicMock(
-                        choices=[MagicMock(message=MagicMock(content="Success"))],
-                        id="test-id",
-                        object="chat.completion",
-                        created=1234567890,
-                        model="test-model",
-                        usage=None,
-                    ),
-                ]
-            )
             mock_client.chat.completions.with_raw_response.create = MagicMock(
                 return_value=MagicMock(
                     parse=MagicMock(

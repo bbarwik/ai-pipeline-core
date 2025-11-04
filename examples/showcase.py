@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Complete showcase of ai_pipeline_core features (v0.2.8)
+"""Complete showcase of ai_pipeline_core features (v0.2.9)
 
 This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
   • Settings configuration with environment variables and .env files
@@ -512,7 +512,7 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
             name="data.json",
             content={
                 "project": "ai-pipeline-core",
-                "version": "0.2.8",
+                "version": "0.2.9",
                 "features": ["async", "typed", "observable"],
                 "models": [m.model_dump() for m in sample_models],
             },

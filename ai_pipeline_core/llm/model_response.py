@@ -88,10 +88,13 @@ class ModelResponse(ChatCompletion):
         data = chat_completion.model_dump()
 
         # fixes issue where the role is "assistantassistant" instead of "assistant"
+        valid_finish_reasons = {"stop", "length", "tool_calls", "content_filter", "function_call"}
         for i in range(len(data["choices"])):
-            if role := data["choices"][i]["message"].get("role"):
-                if role.startswith("assistant") and role != "assistant":
-                    data["choices"][i]["message"]["role"] = "assistant"
+            data["choices"][i]["message"]["role"] = "assistant"
+            # Only update finish_reason if it's not already a valid value
+            current_finish_reason = data["choices"][i].get("finish_reason")
+            if current_finish_reason not in valid_finish_reasons:
+                data["choices"][i]["finish_reason"] = "stop"
 
         super().__init__(**data)
 

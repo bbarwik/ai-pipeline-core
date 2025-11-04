@@ -77,16 +77,18 @@ class TestCacheTTL:
             context, messages, system_prompt="You are helpful", cache_ttl="180s"
         )
 
-        # System prompt should be first
+        # System prompt should be first with structured content and cache_control
         assert result[0]["role"] == "system"
-        assert result[0]["content"] == "You are helpful"
-        assert "cache_control" not in result[0]  # System prompt not cached
+        content = cast(list[dict[str, Any]], result[0]["content"])
+        assert content[0]["type"] == "text"
+        assert content[0]["text"] == "You are helpful"
+        result_0 = cast(dict[str, Any], result[0])
+        assert result_0["cache_control"]["ttl"] == "180s"
 
-        # Context message should have cache_control
-        context_msg = next((msg for msg in result if "cache_control" in msg), None)
-        assert context_msg is not None
-        context_msg_dict = cast(dict[str, Any], context_msg)
-        assert context_msg_dict["cache_control"]["ttl"] == "180s"
+        # Context message should also have cache_control
+        assert result[1]["role"] == "user"
+        result_1 = cast(dict[str, Any], result[1])
+        assert result_1["cache_control"]["ttl"] == "180s"
 
     def test_process_messages_no_context(self):
         """Test _process_messages with no context doesn't add cache_control."""
@@ -99,21 +101,21 @@ class TestCacheTTL:
             assert "cache_control" not in msg
 
     def test_process_messages_multiple_context_messages(self):
-        """Test only last context message gets cache_control."""
+        """Test all context messages get cache_control."""
         context = AIMessages(["context1", "context2", "context3"])
         messages = AIMessages(["query"])
 
         result = _process_messages(context, messages, cache_ttl="60s")
 
-        # Count messages with cache_control
+        # All context messages should have cache_control
         cached_messages = [msg for msg in result if "cache_control" in msg]
-        assert len(cached_messages) == 1
+        assert len(cached_messages) == 3
 
-        # Last context message should have cache_control
-        # Content is now structured as [{"type": "text", "text": "context3"}]
-        assert cached_messages[0]["content"][0]["text"] == "context3"
-        cached_msg_dict = cast(dict[str, Any], cached_messages[0])
-        assert cached_msg_dict["cache_control"]["ttl"] == "60s"
+        # Verify each context message has cache_control
+        for i, msg in enumerate(cached_messages):
+            msg_dict = cast(dict[str, Any], msg)
+            assert msg_dict["cache_control"]["ttl"] == "60s"
+            assert msg_dict["content"][0]["text"] == f"context{i + 1}"
 
     def test_cache_ttl_various_formats(self):
         """Test various cache_ttl time formats."""
@@ -158,7 +160,7 @@ class TestCacheTTL:
     def test_cache_ttl_from_model_options(self):
         """Test that cache_ttl from ModelOptions is passed to _process_messages."""
         import asyncio
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import MagicMock, patch
 
         from ai_pipeline_core.llm.client import (
             _generate_with_retry,  # pyright: ignore[reportPrivateUsage]
@@ -166,7 +168,7 @@ class TestCacheTTL:
 
         # Mock the _generate function to avoid actual API calls
         with patch("ai_pipeline_core.llm.client._generate") as mock_generate:
-            mock_response = AsyncMock()
+            mock_response = MagicMock()
             mock_response.content = "test response"
             mock_response.get_laminar_metadata = lambda: {}
             mock_response.reasoning_content = ""
@@ -219,27 +221,20 @@ class TestCacheTTL:
         assert "cache_ttl" not in kwargs
 
     def test_cache_ttl_only_on_last_context_message(self):
-        """Verify cache_control is only applied to the last context message."""
+        """Verify cache_control is applied to all context messages but not regular messages."""
         context = AIMessages(["ctx1", "ctx2", "ctx3", "ctx4"])
         messages = AIMessages(["msg1", "msg2"])
 
         result = _process_messages(context, messages, cache_ttl="200s")
 
-        # Check each message
-        cache_control_count = 0
-        for i, msg in enumerate(result):
-            if "cache_control" in msg:
-                cache_control_count += 1
-                # Should be the last context message (ctx4)
-                assert msg["content"][0]["text"] == "ctx4"
-                msg_dict = cast(dict[str, Any], msg)
-                assert msg_dict["cache_control"]["type"] == "ephemeral"
-                assert msg_dict["cache_control"]["ttl"] == "200s"
+        # First 4 messages are context - all should have cache_control
+        for idx in range(4):
+            msg_dict = cast(dict[str, Any], result[idx])
+            assert "cache_control" in msg_dict
+            assert msg_dict["cache_control"]["type"] == "ephemeral"
+            assert msg_dict["cache_control"]["ttl"] == "200s"
+            assert msg_dict["content"][0]["text"] == f"ctx{idx + 1}"
 
-        # Only one message should have cache_control
-        assert cache_control_count == 1
-
-        # Regular messages should not have cache_control
-        regular_messages = [msg for msg in result if msg.get("content") in ["msg1", "msg2"]]
-        for msg in regular_messages:
-            assert "cache_control" not in msg
+        # Last 2 messages are regular - should not have cache_control
+        for idx in range(4, 6):
+            assert "cache_control" not in result[idx]
