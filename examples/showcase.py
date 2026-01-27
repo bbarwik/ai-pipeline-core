@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Complete showcase of ai_pipeline_core features (v0.2.9)
+"""Complete showcase of ai_pipeline_core features (v0.3.0)
 
 This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
   • Settings configuration with environment variables and .env files
@@ -8,10 +8,10 @@ This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
     - Document: Abstract base with MIME detection and content validation
     - FlowDocument: Persisted across flow runs
     - TaskDocument: Temporary within task execution
-    - TemporaryDocument: Never persisted (NEW in v0.1.9+)
+    - TemporaryDocument: Never persisted
     - DocumentList: Type-safe container with validation
   • Pipeline decorators (pipeline_flow, pipeline_task) with LMNR tracing
-    - NEW: Cost tracking via trace_cost parameter (v0.1.14+)
+    - Cost tracking via trace_cost parameter
   • Prefect utilities (flow, task, prefect_test_harness, disable_run_logger)
   • LLM module with smart caching and structured outputs:
     - generate/generate_structured with context caching
@@ -20,7 +20,7 @@ This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
     - ModelResponse with cost tracking metadata
   • Tracing (trace, TraceLevel, TraceInfo) for observability with cost tracking
   • PromptManager for Jinja2 templates with smart path resolution
-  • Simple runner module (run_cli, run_pipeline, load/save documents)
+  • PipelineDeployment for unified local/CLI/production execution
 
 Prerequisites:
   - OPENAI_API_KEY and OPENAI_BASE_URL configured (can be set in .env)
@@ -46,9 +46,9 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, Field
 
 # Import ALL exports from ai_pipeline_core.__init__
-# Note: These are the public exports as of v0.1.12
 from ai_pipeline_core import (
     AIMessages,
+    DeploymentResult,
     DocumentList,
     FlowConfig,
     FlowDocument,
@@ -56,6 +56,7 @@ from ai_pipeline_core import (
     LoggingConfig,
     ModelName,
     ModelResponse,
+    PipelineDeployment,
     PromptManager,
     StructuredLoggerMixin,
     TaskDocument,
@@ -71,7 +72,6 @@ from ai_pipeline_core import (
     trace,
 )
 from ai_pipeline_core.prefect import flow, task
-from ai_pipeline_core.simple_runner import run_cli
 
 setup_logging(level="INFO")  # Can also pass config_path for YAML config
 logger = get_pipeline_logger(__name__)
@@ -479,7 +479,36 @@ async def cleanup_flow(project_name: str) -> None:
     # Could perform cleanup tasks here
 
 
-def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
+class ShowcaseResult(DeploymentResult):
+    """Result from showcase pipeline."""
+
+    documents_count: int = 0
+    output_files: list[str] = Field(default_factory=list)
+
+
+class ShowcasePipeline(PipelineDeployment[ShowcaseFlowOptions, ShowcaseResult]):
+    """Showcase pipeline demonstrating PipelineDeployment usage."""
+
+    flows = [stage1_flow, stage2_flow]
+
+    @staticmethod
+    def build_result(
+        project_name: str,
+        documents: DocumentList,
+        options: ShowcaseFlowOptions,
+    ) -> ShowcaseResult:
+        output_docs = [doc for doc in documents if isinstance(doc, EnhancedDocument)]
+        return ShowcaseResult(
+            success=True,
+            documents_count=len(output_docs),
+            output_files=[doc.name for doc in output_docs],
+        )
+
+
+showcase_pipeline = ShowcasePipeline()
+
+
+def initialize_showcase(options: ShowcaseFlowOptions) -> tuple[str, DocumentList]:
     """Initialize with sample documents for CLI mode."""
     logger.info("Initializing showcase with sample data")
 
@@ -512,7 +541,7 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
             name="data.json",
             content={
                 "project": "ai-pipeline-core",
-                "version": "0.2.9",
+                "version": "0.3.0",
                 "features": ["async", "typed", "observable"],
                 "models": [m.model_dump() for m in sample_models],
             },
@@ -527,13 +556,11 @@ def initialize_showcase(options: FlowOptions) -> tuple[str, DocumentList]:
 
 
 def main():
-    """Main entry point - CLI mode with run_cli."""
+    """Main entry point - CLI mode with PipelineDeployment."""
     logging_config = LoggingConfig()
     logging_config.apply()
 
-    run_cli(
-        flows=[stage1_flow, stage2_flow],
-        options_cls=ShowcaseFlowOptions,
+    showcase_pipeline.run_cli(
         initializer=initialize_showcase,
         trace_name="showcase",
     )

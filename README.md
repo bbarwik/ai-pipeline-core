@@ -18,7 +18,7 @@ AI Pipeline Core is a production-ready framework that combines document processi
 - **Structured Output**: Type-safe generation with Pydantic model validation
 - **Workflow Orchestration**: Prefect-based flows and tasks with automatic retries
 - **Observability**: Built-in distributed tracing via Laminar (LMNR) with cost tracking for debugging and monitoring
-- **Local Development**: Simple runner for testing pipelines without infrastructure
+- **Deployment**: Unified pipeline execution for local, CLI, and production environments
 
 ## Installation
 
@@ -132,7 +132,7 @@ doc = MyDocument.create(
 # Parse back to original type
 data = doc.parse(dict)  # Returns {"key": "value"}
 
-# Document provenance tracking (new in v0.1.14)
+# Document provenance tracking
 doc_with_sources = MyDocument.create(
     name="derived.json",
     content={"result": "processed"},
@@ -179,15 +179,15 @@ if doc.is_text:
 # Parse structured data
 data = doc.as_json()  # or as_yaml(), as_pydantic_model()
 
-# Convert between document types (new in v0.2.1)
+# Convert between document types
 task_doc = flow_doc.model_convert(TaskDocument)  # Convert FlowDocument to TaskDocument
 new_doc = doc.model_convert(OtherDocType, content={"new": "data"})  # With content update
 
-# Enhanced filtering (new in v0.1.14)
+# Enhanced filtering
 filtered = documents.filter_by([Doc1, Doc2, Doc3])  # Multiple types
 named = documents.filter_by(["file1.txt", "file2.txt"])  # Multiple names
 
-# Immutable collections (new in v0.2.1)
+# Immutable collections
 frozen_docs = DocumentList(docs, frozen=True)  # Immutable document list
 frozen_msgs = AIMessages(messages, frozen=True)  # Immutable message list
 ```
@@ -223,7 +223,7 @@ r2 = await llm.generate(
     messages="Key points?"   # Different query
 )
 
-# Custom cache TTL (new in v0.1.14)
+# Custom cache TTL
 response = await llm.generate(
     model="gpt-5",
     context=static_context,
@@ -272,12 +272,12 @@ from ai_pipeline_core import pipeline_flow, pipeline_task, set_trace_cost
 @pipeline_task  # Automatic retry, tracing, and monitoring
 async def process_chunk(data: str) -> str:
     result = await transform(data)
-    set_trace_cost(0.05)  # Track costs (new in v0.1.14)
+    set_trace_cost(0.05)  # Track costs
     return result
 
 @pipeline_flow(
     config=MyFlowConfig,
-    trace_trim_documents=True  # Trim large documents in traces (new in v0.2.1)
+    trace_trim_documents=True  # Trim large documents in traces
 )
 async def main_flow(
     project_name: str,
@@ -413,18 +413,21 @@ For AI assistants:
 ```
 ai-pipeline-core/
 ├── ai_pipeline_core/
-│   ├── documents/      # Document abstraction system
-│   ├── flow/           # Flow configuration and options
-│   ├── llm/            # LLM client and response handling
-│   ├── logging/        # Logging infrastructure
-│   ├── tracing.py      # Distributed tracing
-│   ├── pipeline.py     # Pipeline decorators
+│   ├── deployment/      # Pipeline deployment and execution
+│   ├── documents/       # Document abstraction system
+│   ├── flow/            # Flow configuration and options
+│   ├── llm/             # LLM client and response handling
+│   ├── logging/         # Logging infrastructure
+│   ├── prompt_builder/  # Document-aware prompt construction
+│   ├── pipeline.py      # Pipeline decorators
+│   ├── progress.py      # Intra-flow progress tracking
 │   ├── prompt_manager.py # Jinja2 template management
-│   └── settings.py     # Configuration management
-├── tests/              # Comprehensive test suite
-├── examples/           # Usage examples
-├── API.md             # Complete API reference
-└── pyproject.toml     # Project configuration
+│   ├── settings.py      # Configuration management
+│   └── tracing.py       # Distributed tracing
+├── tests/               # Comprehensive test suite
+├── examples/            # Usage examples
+├── API.md               # Complete API reference
+└── pyproject.toml       # Project configuration
 ```
 
 ## Contributing

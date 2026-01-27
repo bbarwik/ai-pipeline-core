@@ -18,7 +18,7 @@ class FlowDocument(Document):
 
     FlowDocument is used for data that needs to be saved between pipeline
     steps and across multiple flow executions. These documents are typically
-    written to the file system using the simple_runner utilities.
+    written to the file system using the deployment utilities.
 
     Key characteristics:
     - Persisted to file system between pipeline steps

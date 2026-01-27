@@ -53,7 +53,7 @@ class FlowOptions(BaseSettings):
         - Frozen (immutable) after creation
         - Extra fields ignored (not strict)
         - Can be populated from environment variables
-        - Used by simple_runner.cli for command-line parsing
+        - Used by PipelineDeployment.run_cli for command-line parsing
 
     Note:
         The base class provides model selection. Subclasses should

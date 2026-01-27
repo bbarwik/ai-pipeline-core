@@ -66,6 +66,10 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+# claude and cursor
+.claude
+.cursor
+
 # Sphinx documentation
 docs/_build/
 

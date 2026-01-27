@@ -154,8 +154,6 @@ def _model_name_to_openrouter_model(model: ModelName) -> str:
         return "openai/gpt-4o-search-preview"
     if model == "gemini-2.5-flash-search":
         return "google/gemini-2.5-flash:online"
-    if model == "grok-4-fast-search":
-        return "x-ai/grok-4-fast:online"
     if model == "sonar-pro-search":
         return "perplexity/sonar-pro-search"
     if model.startswith("gemini"):
@@ -295,7 +293,7 @@ async def _generate_with_retry(
                 model, span_type="LLM", input=processed_messages
             ) as span:
                 response = await _generate(model, processed_messages, completion_kwargs)
-                span.set_attributes(response.get_laminar_metadata())
+                span.set_attributes(response.get_laminar_metadata())  # pyright: ignore[reportArgumentType]
                 Laminar.set_span_output([
                     r for r in (response.reasoning_content, response.content) if r
                 ])

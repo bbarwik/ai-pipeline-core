@@ -1,40 +1,4 @@
 {
-    "name": "ai-pipeline-core development",
-    "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
-    "remoteUser": "vscode",
-    "runArgs": [
-        "--network=shared_network"
-    ],
-    "features": {
-        "ghcr.io/anthropics/devcontainer-features/claude-code:latest": {},
-        "ghcr.io/devcontainers/features/github-cli:1": {}
-    },
-    "containerEnv": {
-        "PYTHONPATH": "/workspaces/ai-pipeline-core",
-        "PYTHONDONTWRITEBYTECODE": "1"
-    },
-    "mounts": [
-        "type=bind,source=${env:HOME}/.claude,target=/home/vscode/.claude",
-        "type=bind,source=${env:HOME}/.claude.json,target=/home/vscode/.claude.json",
-        "type=bind,source=${env:HOME}/.config/gh,target=/home/vscode/.config/gh"
-    ],
-	"customizations": {
-		"vscode": {
-            "settings": {
-                "[python]": {
-                    "editor.defaultFormatter": "charliermarsh.ruff",
-                    "editor.formatOnSave": true
-                },
-                "editor.codeActionsOnSave": {
-                    "source.fixAll": true
-                }
-            },
-            "extensions": [
-                "ms-python.python",
-                "charliermarsh.ruff",
-                "ms-vscode.makefile-tools"
-            ]
-		}
-	},
-    "postCreateCommand": "python -m pip install --upgrade pip && pip3 install -e '.[dev]' && pre-commit install"
+  "name": "ai-pipeline-core",
+  "image": "ghcr.io/researchtech-inc/devcontainers/python-ai"
 }

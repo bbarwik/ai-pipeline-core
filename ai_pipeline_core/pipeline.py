@@ -605,7 +605,7 @@ def pipeline_flow(
         - pipeline_task: For task-level decoration
         - FlowConfig: Type-safe flow configuration
         - FlowOptions: Base class for flow options
-        - simple_runner.run_pipeline: Execute flows locally
+        - PipelineDeployment: Execute flows locally or remotely
     """
     flow_decorator: Callable[..., Any] = _prefect_flow
 

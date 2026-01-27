@@ -121,7 +121,7 @@ class TestCoreModelsIntegration:
 
         # Configure aggressive retry settings
         options = ModelOptions(
-            retries=3, retry_delay_seconds=1, timeout=5, max_completion_tokens=1000
+            retries=3, retry_delay_seconds=1, timeout=30, max_completion_tokens=1000
         )
 
         response = await generate(model=model, messages=messages, options=options)

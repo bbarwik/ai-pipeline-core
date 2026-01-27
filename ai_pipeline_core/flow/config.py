@@ -39,11 +39,13 @@ class FlowConfig(ABC):
     Class Variables:
         INPUT_DOCUMENT_TYPES: List of FlowDocument types this flow accepts
         OUTPUT_DOCUMENT_TYPE: Single FlowDocument type this flow produces
+        WEIGHT: Weight for progress calculation (default 1.0, based on avg duration)
 
     Validation Rules:
         - INPUT_DOCUMENT_TYPES and OUTPUT_DOCUMENT_TYPE must be defined
         - OUTPUT_DOCUMENT_TYPE cannot be in INPUT_DOCUMENT_TYPES (prevents cycles)
         - Field names must be exact (common typos are detected)
+        - WEIGHT must be a positive number
 
     Why this matters:
         Flows connect in pipelines where one flow's output becomes another's input.
@@ -54,6 +56,7 @@ class FlowConfig(ABC):
         >>> class ProcessingFlowConfig(FlowConfig):
         ...     INPUT_DOCUMENT_TYPES = [RawDataDocument]
         ...     OUTPUT_DOCUMENT_TYPE = ProcessedDocument  # Different type!
+        ...     WEIGHT = 45.0  # Average ~45 minutes
         >>>
         >>> # Use in @pipeline_flow - RECOMMENDED PATTERN
         >>> @pipeline_flow(config=ProcessingFlowConfig, name="processing")
@@ -72,11 +75,12 @@ class FlowConfig(ABC):
     Note:
         - Validation happens at class definition time
         - Helps catch configuration errors early
-        - Used by simple_runner to manage document flow
+        - Used by PipelineDeployment to manage document flow
     """
 
     INPUT_DOCUMENT_TYPES: ClassVar[list[type[FlowDocument]]]
     OUTPUT_DOCUMENT_TYPE: ClassVar[type[FlowDocument]]
+    WEIGHT: ClassVar[float] = 1.0
 
     def __init_subclass__(cls, **kwargs: Any):
         """Validate flow configuration at subclass definition time.
@@ -106,7 +110,7 @@ class FlowConfig(ABC):
             return
 
         # Check for invalid field names (common mistakes)
-        allowed_fields = {"INPUT_DOCUMENT_TYPES", "OUTPUT_DOCUMENT_TYPE"}
+        allowed_fields = {"INPUT_DOCUMENT_TYPES", "OUTPUT_DOCUMENT_TYPE", "WEIGHT"}
         class_attrs = {name for name in dir(cls) if not name.startswith("_") and name.isupper()}
 
         # Find fields that look like they might be mistakes
@@ -143,6 +147,13 @@ class FlowConfig(ABC):
             raise TypeError(
                 f"FlowConfig {cls.__name__}: OUTPUT_DOCUMENT_TYPE "
                 f"({cls.OUTPUT_DOCUMENT_TYPE.__name__}) cannot be in INPUT_DOCUMENT_TYPES"
+            )
+
+        # Validate WEIGHT
+        weight = getattr(cls, "WEIGHT", 1.0)
+        if not isinstance(weight, (int, float)) or weight <= 0:
+            raise TypeError(
+                f"FlowConfig {cls.__name__}: WEIGHT must be a positive number, got {weight}"
             )
 
     @classmethod

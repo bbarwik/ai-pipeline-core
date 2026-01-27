@@ -23,7 +23,7 @@ class TemporaryDocument(Document):
     - Can be instantiated directly (not abstract)
     - Cannot be subclassed (annotated with Python's @final decorator in code)
     - Useful for transient data like API responses or intermediate calculations
-    - Ignored by simple_runner save operations
+    - Ignored by deployment save operations
     - Useful for tests and debugging
 
     Creating TemporaryDocuments:

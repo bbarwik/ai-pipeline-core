@@ -26,7 +26,6 @@ ModelName: TypeAlias = (
         "gemini-2.5-flash-search",
         "sonar-pro-search",
         "gpt-4o-search",
-        "grok-4-fast-search",
     ]
     | str
 )

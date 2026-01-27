@@ -29,7 +29,7 @@ AI Pipeline Core is a high-performance async framework for building type-safe AI
    - No `requests` library - use `httpx` with async
    - No `time.sleep()` - use `asyncio.sleep()`
    - No blocking database calls
-   - Exception: Local file I/O in simple_runner module may use sync functions for simplicity
+   - Exception: Local file I/O in deployment module may use sync functions for simplicity
 
 4. **Strong Typing with Pydantic**
    - Every function must have complete type hints
@@ -187,6 +187,29 @@ class ProjectSettings(Settings):
 settings = ProjectSettings()
 ```
 
+### Deployment (`ai_pipeline_core/deployment/`)
+Unified pipeline execution for local, CLI, and production environments.
+
+- **PipelineDeployment**: Generic base class (`[TOptions, TResult]`) for defining pipeline deployments with `__init_subclass__` validation
+- **DeploymentContext**: Runtime context for pipeline execution
+- **DeploymentResult**: Base result model for pipeline outcomes
+- **Contract models**: Pydantic models for run states (PendingRun, ProgressRun, CompletedRun, FailedRun)
+- **Helpers**: Webhook delivery, document upload/download, GCS integration
+
+### Prompt Builder (`ai_pipeline_core/prompt_builder/`)
+Document-aware prompt construction with global cache coordination for LLM interactions.
+
+- **PromptBuilder**: Builds structured prompts from documents, variables, and Jinja2 templates
+- **EnvironmentVariable**: Named key-value pairs for prompt context
+- **GlobalCacheLock**: Coordinates context caching across concurrent LLM calls
+
+### Progress Tracking (`ai_pipeline_core/progress.py`)
+Intra-flow progress reporting via webhook delivery queue.
+
+- **ProgressContext**: Tracks step/weight progress within multi-flow deployments
+- **update()**: Report progress fraction from within pipeline tasks
+- **flow_context()**: Context manager for per-flow progress tracking
+
 ### Logging (`ai_pipeline_core/logging/`)
 Unified Prefect-integrated logging. Replaces Python's logging module entirely. Never import `logging` directly.
 
@@ -334,7 +357,7 @@ class InvalidConfig(FlowConfig):
 - Test with proper Document types, not raw data
 - Coverage target: >80%
 - **Test fixtures**: conftest.py provides session-scoped `prefect_test_fixture` - don't create nested test harnesses
-- **CLI testing**: run_cli automatically detects test environment via Prefect settings
+- **CLI testing**: PipelineDeployment.run_cli automatically detects test environment via Prefect settings
 
 ## Code Elegance Principles
 

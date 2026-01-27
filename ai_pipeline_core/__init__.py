@@ -82,7 +82,8 @@ Optional Environment Variables:
     - LMNR_DEBUG: Set to "true" to enable debug-level traces
 """
 
-from . import llm
+from . import llm, progress
+from .deployment import DeploymentContext, DeploymentResult, PipelineDeployment
 from .documents import (
     Document,
     DocumentList,
@@ -114,11 +115,13 @@ from .logging import (
 from .logging import get_pipeline_logger as get_logger
 from .pipeline import pipeline_flow, pipeline_task
 from .prefect import disable_run_logger, prefect_test_harness
+from .prompt_builder import EnvironmentVariable, PromptBuilder
 from .prompt_manager import PromptManager
 from .settings import Settings
 from .tracing import TraceInfo, TraceLevel, set_trace_cost, trace
+from .utils.remote_deployment import remote_deployment
 
-__version__ = "0.2.9"
+__version__ = "0.3.0"
 
 __all__ = [
     # Config/Settings
@@ -148,6 +151,12 @@ __all__ = [
     # Prefect decorators (clean, no tracing)
     "prefect_test_harness",
     "disable_run_logger",
+    # Deployment
+    "PipelineDeployment",
+    "DeploymentContext",
+    "DeploymentResult",
+    "remote_deployment",
+    "progress",
     # LLM
     "llm",  # for backward compatibility
     "generate",
@@ -163,8 +172,9 @@ __all__ = [
     "TraceLevel",
     "TraceInfo",
     "set_trace_cost",
+    # Prompt Builder
+    "PromptBuilder",
+    "EnvironmentVariable",
     # Utils
     "PromptManager",
-    "generate",
-    "generate_structured",
 ]

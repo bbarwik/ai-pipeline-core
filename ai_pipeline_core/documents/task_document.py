@@ -40,7 +40,7 @@ class TaskDocument(Document):
 
     Note:
         - Cannot instantiate TaskDocument directly - must subclass
-        - Not saved by simple_runner utilities
+        - Not saved by deployment utilities
         - Reduces I/O overhead for temporary data
         - No additional abstract methods to implement
     """

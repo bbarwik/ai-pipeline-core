@@ -657,7 +657,7 @@ def trace(
             """
             observe_params = _prepare_and_get_observe_params(kwargs)
             observed_func = _observe(**observe_params)(f)
-            return await observed_func(*args, **kwargs)
+            return await observed_func(*args, **kwargs)  # pyright: ignore[reportGeneralTypeIssues]
 
         wrapper = async_wrapper if is_coroutine else sync_wrapper
 
