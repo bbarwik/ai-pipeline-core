@@ -80,7 +80,7 @@ Quick Start:
 ... ) -> DocumentList:
 ...     # Messages accept AIMessages or str. Wrap documents: AIMessages([doc])
 ...     response = await llm.generate(
-...         "gpt-5",
+...         "gpt-5.1",
 ...         messages=AIMessages([documents[0]])
 ...     )
 ...     result = OutputDoc.create(
@@ -223,7 +223,7 @@ Best Practices:
 
 **Arguments**:
 
-- `model` - Model to use (e.g., "gpt-5", "gemini-2.5-pro", "grok-4").
+- `model` - Model to use (e.g., "gpt-5.1", "gemini-3-pro", "grok-4.1-fast").
   Accepts predefined models or any string for custom models.
 - `context` - Static context to cache (documents, examples, instructions).
   Defaults to None (empty context). Cached for 5 minutes by default.
@@ -253,17 +253,17 @@ Best Practices:
   Wrap Documents in AIMessages - DO NOT pass directly or convert to .text:
 
   # CORRECT - wrap Document in AIMessages
-  response = await llm.generate("gpt-5", messages=AIMessages([my_document]))
+  response = await llm.generate("gpt-5.1", messages=AIMessages([my_document]))
 
   # WRONG - don't pass Document directly
-  response = await llm.generate("gpt-5", messages=my_document)  # NO!
+  response = await llm.generate("gpt-5.1", messages=my_document)  # NO!
 
   # WRONG - don't convert to string yourself
-  response = await llm.generate("gpt-5", messages=my_document.text)  # NO!
+  response = await llm.generate("gpt-5.1", messages=my_document.text)  # NO!
 
   VISION/PDF MODEL COMPATIBILITY:
   When using Documents containing images or PDFs, ensure your model supports these formats:
-  - Images require vision-capable models (gpt-4o, gemini-pro-vision, claude-3-sonnet)
+  - Images require vision-capable models (gpt-5.1, gemini-3-flash, gemini-3-pro)
   - PDFs require document processing support (varies by provider)
   - Non-compatible models will raise ValueError or fall back to text extraction
   - Check model capabilities before including visual/PDF content
@@ -282,7 +282,7 @@ Best Practices:
 **Example**:
 
   >>> # CORRECT - No options parameter (this is the recommended pattern)
-  >>> response = await llm.generate("gpt-5", messages="Explain quantum computing")
+  >>> response = await llm.generate("gpt-5.1", messages="Explain quantum computing")
   >>> print(response.content)  # In production, use get_pipeline_logger instead of print
 
   >>> # With context caching for efficiency
@@ -290,10 +290,10 @@ Best Practices:
   >>> static_doc = AIMessages([large_document, "few-shot example: ..."])
   >>>
   >>> # First call: caches context
-  >>> r1 = await llm.generate("gpt-5", context=static_doc, messages="Summarize")
+  >>> r1 = await llm.generate("gpt-5.1", context=static_doc, messages="Summarize")
   >>>
   >>> # Second call: reuses cache, saves tokens!
-  >>> r2 = await llm.generate("gpt-5", context=static_doc, messages="Key points?")
+  >>> r2 = await llm.generate("gpt-5.1", context=static_doc, messages="Key points?")
 
   >>> # Multi-turn conversation
   >>> messages = AIMessages([
@@ -301,7 +301,7 @@ Best Practices:
   ...     previous_response,
   ...     "Can you give an example?"
   ... ])
-  >>> response = await llm.generate("gpt-5", messages=messages)
+  >>> response = await llm.generate("gpt-5.1", messages=messages)
 
   Performance:
   - Context caching saves ~50-90% tokens on repeated calls
@@ -375,7 +375,7 @@ directly into structured format:
 
 >>> # Step 1: Research/analysis with generate() - no options parameter
 >>> research = await llm.generate(
-...     "gpt-5",
+...     "gpt-5.1",
 ...     messages="Research and analyze this complex topic..."
 ... )
 >>>
@@ -437,7 +437,7 @@ directly into structured format:
   >>>
   >>> # CORRECT - No options parameter
   >>> response = await llm.generate_structured(
-  ...     "gpt-5",
+  ...     "gpt-5.1",
   ...     response_format=Analysis,
   ...     messages="Analyze this product review: ..."
   ... )
@@ -478,17 +478,15 @@ directly into structured format:
 ModelName: TypeAlias = (
     Literal[
         # Core models
-        "gemini-2.5-pro",
-        "gpt-5",
-        "grok-4",
+        "gemini-3-pro",
+        "gpt-5.1",
         # Small models
-        "gemini-2.5-flash",
+        "gemini-3-flash",
         "gpt-5-mini",
-        "grok-4-fast",
+        "grok-4.1-fast",
         # Search models
-        "gemini-2.5-flash-search",
+        "gemini-3-flash-search",
         "sonar-pro-search",
-        "gpt-4o-search",
     ]
     | str
 )
@@ -501,15 +499,15 @@ string for custom models. The type is a union of predefined literals
 and str, giving you the best of both worlds: suggestions for known
 models and flexibility for custom ones.
 
-Note: These are example common model names as of Q3 2025. Actual availability
+Note: These are example common model names as of Q1 2026. Actual availability
 depends on your LiteLLM proxy configuration and provider access.
 
 Model categories:
-Core models (gemini-2.5-pro, gpt-5, grok-4):
+Core models (gemini-3-pro, gpt-5.1):
 High-capability models for complex tasks requiring deep reasoning,
 nuanced understanding, or creative generation.
 
-Small models (gemini-2.5-flash, gpt-5-mini, grok-4-fast):
+Small models (gemini-3-flash, gpt-5-mini, grok-4.1-fast):
 Efficient models optimized for speed and cost, suitable for
 simpler tasks or high-volume processing.
 
@@ -528,7 +526,7 @@ ModelName now includes str, so you can use any model name directly:
   >>> from ai_pipeline_core import llm, ModelName
   >>>
   >>> # Predefined model with IDE autocomplete
-  >>> model: ModelName = "gpt-5"  # IDE suggests common models
+  >>> model: ModelName = "gpt-5.1"  # IDE suggests common models
   >>> response = await llm.generate(model, messages="Hello")
   >>>
   >>> # Custom model works directly
@@ -536,7 +534,7 @@ ModelName now includes str, so you can use any model name directly:
   >>> response = await llm.generate(model, messages="Hello")
   >>>
   >>> # Both types work seamlessly
-  >>> models: list[ModelName] = ["gpt-5", "custom-llm", "gemini-2.5-pro"]
+  >>> models: list[ModelName] = ["gpt-5.1", "custom-llm", "gemini-3-pro"]
 
 **Notes**:
 
@@ -562,7 +560,7 @@ Response wrapper for LLM text generation.
 
 Primary usage is adding to AIMessages for multi-turn conversations:
 
->>> response = await llm.generate("gpt-5", messages=messages)
+>>> response = await llm.generate("gpt-5.1", messages=messages)
 >>> messages.append(response)  # Add assistant response to conversation
 >>> print(response.content)  # Access generated text
 
@@ -578,7 +576,7 @@ like token usage and cost tracking are available but rarely needed.
   >>> from ai_pipeline_core import llm, AIMessages
   >>>
   >>> messages = AIMessages(["Explain quantum computing"])
-  >>> response = await llm.generate("gpt-5", messages=messages)
+  >>> response = await llm.generate("gpt-5.1", messages=messages)
   >>>
   >>> # Primary usage: add to conversation
   >>> messages.append(response)
@@ -610,7 +608,7 @@ This is the main property you'll use with ModelResponse.
 
 **Example**:
 
-  >>> response = await generate("gpt-5", messages="Hello")
+  >>> response = await generate("gpt-5.1", messages="Hello")
   >>> text = response.content  # The generated response
   >>>
   >>> # Common pattern: add to messages then use content
@@ -683,7 +681,7 @@ Conversion Rules:
 Note: Document conversion is automatic. Text content becomes user text messages.
 
 VISION/PDF MODEL COMPATIBILITY WARNING:
-Images require vision-capable models (e.g., gpt-4o, gemini-pro-vision, claude-3-haiku).
+Images require vision-capable models (e.g., gpt-5.1, gemini-3-flash, gemini-3-pro).
 Non-vision models will raise ValueError when encountering image documents.
 PDFs require models with document processing support - check your model's capabilities
 before including PDF documents in messages. Unsupported models may fall back to
@@ -705,7 +703,7 @@ accidental character iteration.
   >>> from ai_pipeline_core import llm
   >>> messages = AIMessages()
   >>> messages.append("What is the capital of France?")
-  >>> response = await llm.generate("gpt-5", messages=messages)
+  >>> response = await llm.generate("gpt-5.1", messages=messages)
   >>> messages.append(response)  # Add the actual response
 
 #### AIMessages.approximate_tokens_count
@@ -2117,7 +2115,7 @@ This class is designed to be subclassed for flow-specific configuration:
 
   >>> # Or create programmatically:
   >>> options = MyFlowOptions(
-  ...     core_model="gemini-2.5-pro",
+  ...     core_model="gemini-3-pro",
   ...     temperature=0.9
   ... )
 

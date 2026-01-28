@@ -18,8 +18,8 @@ class TestFlowOptionsInheritance:
     def test_base_flow_options_defaults(self):
         """Test that base FlowOptions has correct defaults."""
         options = FlowOptions()
-        assert options.core_model == "gemini-2.5-pro"
-        assert options.small_model == "grok-4-fast"
+        assert options.core_model == "gemini-3-pro"
+        assert options.small_model == "grok-4.1-fast"
 
     def test_base_flow_options_custom_values(self):
         """Test setting custom values for base FlowOptions."""
@@ -30,19 +30,17 @@ class TestFlowOptionsInheritance:
     def test_flow_options_accepts_model_name_type(self):
         """Test that FlowOptions accepts ModelName type literals."""
         options = FlowOptions(
-            core_model="gpt-5",  # This is a valid ModelName
+            core_model="gpt-5.1",  # This is a valid ModelName
             small_model="gpt-5-mini",  # This is a valid ModelName
         )
-        assert options.core_model == "gpt-5"
+        assert options.core_model == "gpt-5.1"
         assert options.small_model == "gpt-5-mini"
 
     def test_flow_options_accepts_arbitrary_strings(self):
         """Test that FlowOptions accepts arbitrary string model names."""
-        options = FlowOptions(
-            core_model="anthropic/claude-3-opus", small_model="anthropic/claude-3-haiku"
-        )
-        assert options.core_model == "anthropic/claude-3-opus"
-        assert options.small_model == "anthropic/claude-3-haiku"
+        options = FlowOptions(core_model="custom/my-model", small_model="custom/my-small-model")
+        assert options.core_model == "custom/my-model"
+        assert options.small_model == "custom/my-small-model"
 
     def test_flow_options_is_frozen(self):
         """Test that FlowOptions instances are immutable."""
@@ -62,8 +60,8 @@ class TestFlowOptionsInheritance:
 
         # Test with defaults
         options = ProjectFlowOptions()
-        assert options.core_model == "gemini-2.5-pro"
-        assert options.small_model == "grok-4-fast"
+        assert options.core_model == "gemini-3-pro"
+        assert options.small_model == "grok-4.1-fast"
         assert options.batch_max_chars == 100_000
         assert options.batch_max_files == 25
         assert options.enable_caching is True
@@ -83,12 +81,12 @@ class TestFlowOptionsInheritance:
             """Extended options with model lists."""
 
             supporting_models: list[str] = Field(default_factory=list)
-            search_models: list[str] = Field(default_factory=lambda: ["gpt-4o-search"])
+            search_models: list[str] = Field(default_factory=lambda: ["sonar-pro-search"])
             tags: list[str] = Field(default_factory=list)
 
         options = ExtendedFlowOptions(supporting_models=["model1", "model2"], tags=["tag1", "tag2"])
         assert options.supporting_models == ["model1", "model2"]
-        assert options.search_models == ["gpt-4o-search"]
+        assert options.search_models == ["sonar-pro-search"]
         assert options.tags == ["tag1", "tag2"]
 
     def test_inherited_flow_options_with_nested_models(self):
@@ -151,7 +149,7 @@ class TestFlowOptionsInheritance:
 
         # Valid high temperature with different models
         options = ValidatedFlowOptions(
-            temperature=1.8, core_model="gpt-5", small_model="gpt-5-mini"
+            temperature=1.8, core_model="gpt-5.1", small_model="gpt-5-mini"
         )
         assert options.temperature == 1.8
 
@@ -184,8 +182,8 @@ class TestDocumentsFlowWithInheritedOptions:
             assert isinstance(project_name, str)
             assert isinstance(documents, DocumentList)
             assert isinstance(flow_options, FlowOptions)
-            assert flow_options.core_model == "gemini-2.5-pro"
-            assert flow_options.small_model == "grok-4-fast"
+            assert flow_options.core_model == "gemini-3-pro"
+            assert flow_options.small_model == "grok-4.1-fast"
             # Return output document
             return DocumentList([OutputDocument(name="output", content=b"test")])
 
@@ -265,7 +263,7 @@ class TestDocumentsFlowWithInheritedOptions:
             project_name: str, documents: DocumentList, flow_options: AdvancedFlowOptions
         ) -> DocumentList:
             # Access inherited fields
-            assert flow_options.core_model == "gemini-2.5-pro"
+            assert flow_options.core_model == "gemini-3-pro"
             assert flow_options.small_model == "custom-small"
 
             # Access custom fields
@@ -358,7 +356,7 @@ class TestDocumentsFlowWithInheritedOptions:
             project_name: str, documents: DocumentList, flow_options: SpecificProjectOptions
         ) -> DocumentList:
             # Can access all levels of inheritance
-            assert flow_options.core_model == "gemini-2.5-pro"  # From FlowOptions
+            assert flow_options.core_model == "gemini-3-pro"  # From FlowOptions
             assert flow_options.organization == "custom-org"  # From BaseProjectOptions
             assert flow_options.environment == "production"  # From BaseProjectOptions
             assert flow_options.feature_flags["new_feature"] is True  # From SpecificProjectOptions
@@ -381,9 +379,9 @@ class TestDocumentsFlowWithInheritedOptions:
     def test_flow_options_with_pydantic_fields(self):
         """Test FlowOptions with Pydantic Field definitions (reproduces user issue)."""
         # Define constants like the user has
-        PRIMARY_MODELS = ["gpt-5", "gpt-5-mini"]
-        SMALL_MODELS = ["gpt-5-mini", "gemini-2.5-flash"]
-        SEARCH_MODELS = ["sonar", "gemini-2.5-flash-search"]
+        PRIMARY_MODELS = ["gpt-5.1", "gpt-5-mini"]
+        SMALL_MODELS = ["gpt-5-mini", "gemini-3-flash"]
+        SEARCH_MODELS = ["sonar", "gemini-3-flash-search"]
 
         class ProjectFlowOptions(FlowOptions):
             """Project-specific flow options extending the base FlowOptions."""

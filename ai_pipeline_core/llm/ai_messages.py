@@ -53,7 +53,7 @@ class AIMessages(list[AIMessageType]):
     Note: Document conversion is automatic. Text content becomes user text messages.
 
     VISION/PDF MODEL COMPATIBILITY WARNING:
-    Images require vision-capable models (e.g., gpt-4o, gemini-pro-vision, claude-3-haiku).
+    Images require vision-capable models (e.g., gpt-5.1, gemini-3-flash, gemini-3-pro).
     Non-vision models will raise ValueError when encountering image documents.
     PDFs require models with document processing support - check your model's capabilities
     before including PDF documents in messages. Unsupported models may fall back to
@@ -74,7 +74,7 @@ class AIMessages(list[AIMessageType]):
         >>> from ai_pipeline_core import llm
         >>> messages = AIMessages()
         >>> messages.append("What is the capital of France?")
-        >>> response = await llm.generate("gpt-5", messages=messages)
+        >>> response = await llm.generate("gpt-5.1", messages=messages)
         >>> messages.append(response)  # Add the actual response
     """
 
@@ -264,10 +264,31 @@ class AIMessages(list[AIMessageType]):
             elif isinstance(message, Document):
                 messages.append({"role": "user", "content": AIMessages.document_to_prompt(message)})
             elif isinstance(message, ModelResponse):  # type: ignore
-                messages.append({
+                # Build base assistant message
+                assistant_message: ChatCompletionMessageParam = {
                     "role": "assistant",
                     "content": [{"type": "text", "text": message.content}],
-                })
+                }
+
+                # Preserve reasoning_content (Gemini Flash 3+, O1, O3, GPT-5)
+                if reasoning_content := message.reasoning_content:
+                    assistant_message["reasoning_content"] = reasoning_content  # type: ignore[typeddict-item]
+
+                # Preserve thinking_blocks (structured thinking)
+                if hasattr(message.choices[0].message, "thinking_blocks"):
+                    thinking_blocks = getattr(message.choices[0].message, "thinking_blocks", None)
+                    if thinking_blocks:
+                        assistant_message["thinking_blocks"] = thinking_blocks  # type: ignore[typeddict-item]
+
+                # Preserve provider_specific_fields (thought_signatures for Gemini multi-turn)
+                if hasattr(message.choices[0].message, "provider_specific_fields"):
+                    provider_fields = getattr(
+                        message.choices[0].message, "provider_specific_fields", None
+                    )
+                    if provider_fields:
+                        assistant_message["provider_specific_fields"] = provider_fields  # type: ignore[typeddict-item]
+
+                messages.append(assistant_message)
             else:
                 raise ValueError(f"Unsupported message type: {type(message)}")
 

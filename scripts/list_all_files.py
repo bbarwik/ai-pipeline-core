@@ -343,7 +343,7 @@ def main() -> int:
 
     try:
         excluded = get_ai_exclusions(
-            client, "grok-4-fast", args.criteria,
+            client, "grok-4.1-fast", args.criteria,
             args.max_bytes, files_dict, tree_string
         )
     except Exception as e:

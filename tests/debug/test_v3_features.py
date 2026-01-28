@@ -214,19 +214,19 @@ class TestSplitIndexes:
         try:
             now_ns = int(time.time() * 1e9)
             writer.on_span_start("trace001", "flow1", None, "main_flow")
-            writer.on_span_start("trace001", "llm1", "flow1", "gpt-4-call")
+            writer.on_span_start("trace001", "llm1", "flow1", "gpt-5.1-call")
 
             writer.on_span_end(
                 WriteJob(
                     trace_id="trace001",
                     span_id="llm1",
-                    name="gpt-4-call",
+                    name="gpt-5.1-call",
                     parent_id="flow1",
                     attributes={
                         "lmnr.span.type": "LLM",
                         "gen_ai.usage.input_tokens": 1000,
                         "gen_ai.usage.output_tokens": 500,
-                        "gen_ai.response.model": "gpt-4",
+                        "gen_ai.response.model": "gpt-5.1",
                         "gen_ai.usage.cost": 0.05,
                     },
                     events=[],
@@ -268,7 +268,7 @@ class TestSplitIndexes:
 
         # Check LLM call entry has parent context
         call = llm_index["calls"][0]
-        assert call["model"] == "gpt-4"
+        assert call["model"] == "gpt-5.1"
         assert call["input_tokens"] == 1000
         assert call["output_tokens"] == 500
         assert "(in main_flow)" in call["name"]  # Parent context added

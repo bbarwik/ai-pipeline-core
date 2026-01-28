@@ -40,7 +40,7 @@ class TestModelResponseMetadata:
     def test_model_options_stored(self):
         """Test that model options are stored and retrievable."""
         model_options = {
-            "model": "gpt-4",
+            "model": "gpt-5.1",
             "temperature": 0.7,
             "max_tokens": 1000,
         }
@@ -49,7 +49,7 @@ class TestModelResponseMetadata:
                 id="test",
                 object="chat.completion",
                 created=1234567890,
-                model="gpt-4",
+                model="gpt-5.1",
                 choices=[
                     {
                         "index": 0,
@@ -64,14 +64,14 @@ class TestModelResponseMetadata:
 
         laminar_metadata = response.get_laminar_metadata()
         assert "model_options.model" in laminar_metadata
-        assert laminar_metadata["model_options.model"] == "gpt-4"
+        assert laminar_metadata["model_options.model"] == "gpt-5.1"
         assert "model_options.temperature" in laminar_metadata
         assert laminar_metadata["model_options.temperature"] == "0.7"
 
     def test_metadata_excludes_messages(self):
         """Test that messages are excluded from metadata."""
         model_options = {
-            "model": "gpt-4",
+            "model": "gpt-5.1",
             "messages": [{"role": "user", "content": "long message"}],
             "temperature": 0.7,
         }
@@ -80,7 +80,7 @@ class TestModelResponseMetadata:
                 id="test",
                 object="chat.completion",
                 created=1234567890,
-                model="gpt-4",
+                model="gpt-5.1",
                 choices=[
                     {
                         "index": 0,
@@ -571,7 +571,7 @@ class TestModelResponseLaminarMetadata:
                 id="test-id",
                 object="chat.completion",
                 created=1234567890,
-                model="gpt-4",
+                model="gpt-5.1",
                 usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
                 choices=[
                     {
@@ -581,7 +581,7 @@ class TestModelResponseLaminarMetadata:
                     }
                 ],
             ),
-            model_options={"model": "gpt-4", "temperature": 0.7},
+            model_options={"model": "gpt-5.1", "temperature": 0.7},
             metadata={"time_taken": 2.5, "first_token_time": 0.5},
         )
 

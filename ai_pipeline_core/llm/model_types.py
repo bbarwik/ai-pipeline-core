@@ -15,17 +15,15 @@ from typing import Literal, TypeAlias
 ModelName: TypeAlias = (
     Literal[
         # Core models
-        "gemini-2.5-pro",
-        "gpt-5",
-        "grok-4",
+        "gemini-3-pro",
+        "gpt-5.1",
         # Small models
-        "gemini-2.5-flash",
+        "gemini-3-flash",
         "gpt-5-mini",
-        "grok-4-fast",
+        "grok-4.1-fast",
         # Search models
-        "gemini-2.5-flash-search",
+        "gemini-3-flash-search",
         "sonar-pro-search",
-        "gpt-4o-search",
     ]
     | str
 )
@@ -38,15 +36,15 @@ string for custom models. The type is a union of predefined literals
 and str, giving you the best of both worlds: suggestions for known
 models and flexibility for custom ones.
 
-Note: These are example common model names as of Q3 2025. Actual availability
+Note: These are example common model names as of Q1 2026. Actual availability
 depends on your LiteLLM proxy configuration and provider access.
 
 Model categories:
-    Core models (gemini-2.5-pro, gpt-5, grok-4):
+    Core models (gemini-3-pro, gpt-5.1):
         High-capability models for complex tasks requiring deep reasoning,
         nuanced understanding, or creative generation.
 
-    Small models (gemini-2.5-flash, gpt-5-mini, grok-4-fast):
+    Small models (gemini-3-flash, gpt-5-mini, grok-4.1-fast):
         Efficient models optimized for speed and cost, suitable for
         simpler tasks or high-volume processing.
 
@@ -64,7 +62,7 @@ Example:
     >>> from ai_pipeline_core import llm, ModelName
     >>>
     >>> # Predefined model with IDE autocomplete
-    >>> model: ModelName = "gpt-5"  # IDE suggests common models
+    >>> model: ModelName = "gpt-5.1"  # IDE suggests common models
     >>> response = await llm.generate(model, messages="Hello")
     >>>
     >>> # Custom model works directly
@@ -72,7 +70,7 @@ Example:
     >>> response = await llm.generate(model, messages="Hello")
     >>>
     >>> # Both types work seamlessly
-    >>> models: list[ModelName] = ["gpt-5", "custom-llm", "gemini-2.5-pro"]
+    >>> models: list[ModelName] = ["gpt-5.1", "custom-llm", "gemini-3-pro"]
 
 Note:
     The ModelName type includes both predefined literals and str,

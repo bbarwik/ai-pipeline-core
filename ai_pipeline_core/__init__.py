@@ -59,7 +59,7 @@ Quick Start:
     ... ) -> DocumentList:
     ...     # Messages accept AIMessages or str. Wrap documents: AIMessages([doc])
     ...     response = await llm.generate(
-    ...         "gpt-5",
+    ...         "gpt-5.1",
     ...         messages=AIMessages([documents[0]])
     ...     )
     ...     result = OutputDoc.create(
@@ -130,7 +130,7 @@ from .settings import Settings
 from .tracing import TraceInfo, TraceLevel, set_trace_cost, trace
 from .utils.remote_deployment import remote_deployment
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 __all__ = [
     # Config/Settings

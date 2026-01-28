@@ -29,7 +29,7 @@ class TestLLMIntegration:
         messages = AIMessages(["Say 'Hello, World!' and nothing else."])
 
         response = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages,
             options=ModelOptions(max_completion_tokens=1000),
         )
@@ -50,7 +50,7 @@ class TestLLMIntegration:
         messages = AIMessages(["Return a JSON with greeting='Hello' and number=42"])
 
         response = await generate_structured(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             response_format=SimpleResponse,
             messages=messages,
             options=ModelOptions(max_completion_tokens=1000),
@@ -72,7 +72,7 @@ class TestLLMIntegration:
         messages = AIMessages(["What is the capital of France? Answer in one word."])
 
         response = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             context=context,
             messages=messages,
             options=ModelOptions(max_completion_tokens=1000),
@@ -86,7 +86,7 @@ class TestLLMIntegration:
         # First exchange
         messages1 = AIMessages(["My name is Alice. Remember it."])
         response1 = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages1,
             options=ModelOptions(max_completion_tokens=1000),
         )
@@ -95,7 +95,7 @@ class TestLLMIntegration:
         messages2 = AIMessages(["My name is Alice. Remember it.", response1, "What is my name?"])
 
         response2 = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages2,
             options=ModelOptions(max_completion_tokens=1000),
         )
@@ -108,7 +108,7 @@ class TestLLMIntegration:
         messages = AIMessages(["What are you?"])
 
         response = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages,
             options=ModelOptions(
                 system_prompt="You are a pirate. Always respond like a pirate.",
@@ -129,7 +129,7 @@ class TestLLMIntegration:
         messages = AIMessages(["Hello"])
 
         response = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages,
             options=ModelOptions(
                 retries=2, retry_delay_seconds=1, timeout=10, max_completion_tokens=1000
@@ -150,7 +150,7 @@ class TestLLMIntegration:
         async def traced_generation():
             messages = AIMessages(["Say 'traced'"])
             return await generate(
-                model="gemini-2.5-flash",
+                model="gemini-3-flash",
                 messages=messages,
                 options=ModelOptions(max_completion_tokens=1000),
             )
@@ -187,7 +187,7 @@ class TestLLMIntegration:
         messages = AIMessages(["Say 'metadata test' quickly"])
 
         response = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages,
             options=ModelOptions(max_completion_tokens=100),
         )
@@ -210,7 +210,7 @@ class TestLLMIntegration:
         messages = AIMessages(["Solve: 2 + 2 = ?"])
 
         response = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages,
             options=ModelOptions(max_completion_tokens=1000),
         )
@@ -235,7 +235,7 @@ class TestLLMIntegration:
         messages = AIMessages(["What is 10 + 15? Return JSON with equation and answer."])
 
         response = await generate_structured(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             response_format=MathResult,
             messages=messages,
             options=ModelOptions(max_completion_tokens=1000),
@@ -261,7 +261,7 @@ class TestLLMIntegration:
         messages = AIMessages(["Count to 3"])
 
         response = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages,
             options=ModelOptions(
                 max_completion_tokens=100,
@@ -289,7 +289,7 @@ class TestLLMIntegration:
         count1 = messages1.approximate_tokens_count
 
         response1 = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages1,
             options=ModelOptions(max_completion_tokens=50),
         )
@@ -306,7 +306,7 @@ class TestLLMIntegration:
         assert count2 > count1
 
         response2 = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages2,
             options=ModelOptions(max_completion_tokens=50),
         )
@@ -326,7 +326,7 @@ class TestLLMIntegration:
         messages = AIMessages(["Say 'metadata test'"])
 
         response = await generate(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash",
             messages=messages,
             options=ModelOptions(
                 metadata=metadata,

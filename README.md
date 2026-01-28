@@ -79,7 +79,7 @@ async def analyze_flow(
     for doc in documents:
         # Use AIMessages for LLM interaction
         response = await llm.generate(
-            model="gpt-5",
+            model="gpt-5.1",
             messages=AIMessages([doc])
         )
 
@@ -106,7 +106,7 @@ class Analysis(BaseModel):
 
 # Generate structured output
 response = await llm.generate_structured(
-    model="gpt-5",
+    model="gpt-5.1",
     response_format=Analysis,
     messages="Analyze this product review: ..."
 )
@@ -201,7 +201,7 @@ from ai_pipeline_core import llm, AIMessages, ModelOptions
 
 # Simple generation
 response = await llm.generate(
-    model="gpt-5",
+    model="gpt-5.1",
     messages="Explain quantum computing"
 )
 print(response.content)
@@ -211,21 +211,21 @@ static_context = AIMessages([large_document])
 
 # First call: caches context
 r1 = await llm.generate(
-    model="gpt-5",
+    model="gpt-5.1",
     context=static_context,  # Cached for 120 seconds by default
     messages="Summarize"     # Dynamic query
 )
 
 # Second call: reuses cache
 r2 = await llm.generate(
-    model="gpt-5",
+    model="gpt-5.1",
     context=static_context,  # Reused from cache!
     messages="Key points?"   # Different query
 )
 
 # Custom cache TTL
 response = await llm.generate(
-    model="gpt-5",
+    model="gpt-5.1",
     context=static_context,
     messages="Analyze",
     options=ModelOptions(cache_ttl="300s")  # Cache for 5 minutes
@@ -233,7 +233,7 @@ response = await llm.generate(
 
 # Disable caching for dynamic contexts
 response = await llm.generate(
-    model="gpt-5",
+    model="gpt-5.1",
     context=dynamic_context,
     messages="Process",
     options=ModelOptions(cache_ttl=None)  # No caching

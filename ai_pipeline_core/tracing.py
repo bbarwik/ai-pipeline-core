@@ -327,7 +327,7 @@ def _setup_debug_processor(debug_path: str) -> None:
 
         config = TraceDebugConfig(
             path=Path(debug_path),
-            max_inline_bytes=int(os.environ.get("TRACE_DEBUG_MAX_INLINE", 10000)),
+            max_element_bytes=int(os.environ.get("TRACE_DEBUG_MAX_INLINE", 10000)),
             max_traces=int(os.environ.get("TRACE_DEBUG_MAX_TRACES", 20)) or None,
         )
 
@@ -336,8 +336,9 @@ def _setup_debug_processor(debug_path: str) -> None:
 
         # Add to tracer provider
         provider = trace.get_tracer_provider()
-        if hasattr(provider, "add_span_processor"):
-            provider.add_span_processor(processor)
+        add_processor = getattr(provider, "add_span_processor", None)
+        if add_processor is not None:
+            add_processor(processor)
 
         # Register shutdown
         import atexit  # noqa: PLC0415
@@ -779,7 +780,7 @@ def set_trace_cost(cost: float | str) -> None:
         >>> @pipeline_task
         >>> async def enriched_generation(prompt: str) -> str:
         ...     # LLM cost tracked automatically via ModelResponse
-        ...     response = await llm.generate("gpt-5", messages=prompt)
+        ...     response = await llm.generate("gpt-5.1", messages=prompt)
         ...
         ...     # Add cost for post-processing
         ...     processing_cost = 0.02  # Fixed cost for enrichment

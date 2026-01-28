@@ -355,3 +355,91 @@ class TestAIMessagesBasic:
         count = messages.approximate_tokens_count
         assert count > 0
         assert isinstance(count, int)
+
+
+class TestAIMessagesMutationMethods:
+    """Test non-frozen mutation methods for AIMessages."""
+
+    def test_insert(self):
+        """Test insert method on non-frozen list."""
+        messages = AIMessages(["first", "third"])
+        messages.insert(1, "second")
+        assert list(messages) == ["first", "second", "third"]
+
+    def test_setitem(self):
+        """Test __setitem__ on non-frozen list."""
+        messages = AIMessages(["a", "b", "c"])
+        messages[1] = "B"
+        assert messages[1] == "B"
+
+    def test_iadd(self):
+        """Test += on non-frozen list."""
+        messages = AIMessages(["a"])
+        messages += ["b", "c"]
+        assert list(messages) == ["a", "b", "c"]
+
+    def test_delitem(self):
+        """Test del on non-frozen list."""
+        messages = AIMessages(["a", "b", "c"])
+        del messages[1]
+        assert list(messages) == ["a", "c"]
+
+    def test_pop(self):
+        """Test pop on non-frozen list."""
+        messages = AIMessages(["a", "b", "c"])
+        popped = messages.pop()
+        assert popped == "c"
+        assert list(messages) == ["a", "b"]
+
+    def test_remove(self):
+        """Test remove on non-frozen list."""
+        messages = AIMessages(["a", "b", "c"])
+        messages.remove("b")
+        assert list(messages) == ["a", "c"]
+
+    def test_clear(self):
+        """Test clear on non-frozen list."""
+        messages = AIMessages(["a", "b"])
+        messages.clear()
+        assert len(messages) == 0
+
+    def test_reverse(self):
+        """Test reverse on non-frozen list."""
+        messages = AIMessages(["a", "b", "c"])
+        messages.reverse()
+        assert list(messages) == ["c", "b", "a"]
+
+    def test_sort(self):
+        """Test sort on non-frozen list."""
+        messages = AIMessages(["c", "a", "b"])
+        messages.sort()
+        assert list(messages) == ["a", "b", "c"]
+
+    def test_sort_with_key(self):
+        """Test sort with key function."""
+        messages = AIMessages(["bb", "a", "ccc"])
+        messages.sort(key=lambda x: len(str(x)))
+        assert list(messages) == ["a", "bb", "ccc"]
+
+    def test_to_tracing_log(self):
+        """Test to_tracing_log with mixed message types."""
+        doc = ConcreteFlowDocument(name="test.txt", content=b"doc content")
+        response = create_test_model_response(
+            id="test",
+            object="chat.completion",
+            created=1234567890,
+            model="test-model",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "AI response"},
+                    "finish_reason": "stop",
+                }
+            ],
+        )
+        messages = AIMessages(["Hello", doc, response])
+        log = messages.to_tracing_log()
+        assert len(log) == 3
+        assert log[0] == "Hello"
+        assert "test.txt" in log[1]  # Document serialized
+        assert log[2] == "AI response"

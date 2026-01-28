@@ -103,9 +103,9 @@ class TestSearchModelsIntegration:
 
         # Check for expected search models
         expected_search_models = [
-            "gemini-2.5-flash-search",
+            "gemini-3-flash-search",
             "sonar-pro-search",
-            "gpt-4o-search",
+            "sonar-pro-search",
         ]
 
         for expected in expected_search_models:

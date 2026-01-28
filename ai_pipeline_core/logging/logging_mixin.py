@@ -117,7 +117,7 @@ class StructuredLoggerMixin(LoggerMixin):
 
         Example:
             self.log_metric("processing_time", 1.23, "seconds",
-                          document_type="pdf", model="gpt-4")
+                          document_type="pdf", model="gpt-5.1")
         """
         self.logger.info(
             f"Metric: {metric_name}",
@@ -140,7 +140,7 @@ class StructuredLoggerMixin(LoggerMixin):
 
         Example:
             self.log_span("llm_generation", 1234.5,
-                         model="gpt-4", tokens=500)
+                         model="gpt-5.1", tokens=500)
         """
         self.logger.info(
             f"Span: {operation}",

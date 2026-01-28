@@ -38,7 +38,7 @@ class TestModelResponse:
             id="chat-id",
             object="chat.completion",
             created=1234567890,
-            model="gpt-4",
+            model="gpt-5.1",
             choices=[
                 Choice(
                     index=0,
@@ -54,7 +54,7 @@ class TestModelResponse:
             metadata={},
         )
         assert response.id == "chat-id"
-        assert response.model == "gpt-4"
+        assert response.model == "gpt-5.1"
         assert response.content == "Hello from GPT-4"
 
     def test_content_property(self):
@@ -123,7 +123,7 @@ class TestModelResponse:
             id="resp-id",
             object="chat.completion",
             created=1234567890,
-            model="gpt-4",
+            model="gpt-5.1",
             choices=[
                 {
                     "index": 0,
@@ -136,7 +136,7 @@ class TestModelResponse:
         metadata = response.get_laminar_metadata()
 
         assert metadata["gen_ai.response.id"] == "resp-id"
-        assert metadata["gen_ai.response.model"] == "gpt-4"
+        assert metadata["gen_ai.response.model"] == "gpt-5.1"
         assert metadata["get_ai.system"] == "litellm"
 
     def test_get_laminar_metadata_with_usage(self):
@@ -168,7 +168,7 @@ class TestModelResponse:
             id="test",
             object="chat.completion",
             created=1234567890,
-            model="o1-preview",
+            model="gpt-5.1",
             usage={
                 "prompt_tokens": 100,
                 "completion_tokens": 50,
@@ -193,7 +193,7 @@ class TestModelResponse:
             id="test",
             object="chat.completion",
             created=1234567890,
-            model="gpt-4",
+            model="gpt-5.1",
             usage={
                 "prompt_tokens": 100,
                 "completion_tokens": 50,
@@ -295,7 +295,7 @@ class TestStructuredModelResponse:
             id="test",
             object="chat.completion",
             created=1234567890,
-            model="gpt-4",
+            model="gpt-5.1",
             choices=[
                 {
                     "index": 0,
@@ -311,7 +311,7 @@ class TestStructuredModelResponse:
         response._model_options["response_format"] = self.ExampleModel  # type: ignore[reportPrivateUsage]
 
         # Should have ModelResponse properties
-        assert response.model == "gpt-4"
+        assert response.model == "gpt-5.1"
 
         # Should have parsed property
         parsed = response.parsed
@@ -320,4 +320,4 @@ class TestStructuredModelResponse:
 
         # Should support metadata extraction
         metadata = response.get_laminar_metadata()
-        assert metadata["gen_ai.response.model"] == "gpt-4"
+        assert metadata["gen_ai.response.model"] == "gpt-5.1"

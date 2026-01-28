@@ -28,7 +28,7 @@ class ModelResponse(ChatCompletion):
 
     Primary usage is adding to AIMessages for multi-turn conversations:
 
-        >>> response = await llm.generate("gpt-5", messages=messages)
+        >>> response = await llm.generate("gpt-5.1", messages=messages)
         >>> messages.append(response)  # Add assistant response to conversation
         >>> print(response.content)  # Access generated text
 
@@ -43,7 +43,7 @@ class ModelResponse(ChatCompletion):
         >>> from ai_pipeline_core import llm, AIMessages
         >>>
         >>> messages = AIMessages(["Explain quantum computing"])
-        >>> response = await llm.generate("gpt-5", messages=messages)
+        >>> response = await llm.generate("gpt-5.1", messages=messages)
         >>>
         >>> # Primary usage: add to conversation
         >>> messages.append(response)
@@ -81,7 +81,7 @@ class ModelResponse(ChatCompletion):
             >>> # Usually created internally by generate()
             >>> response = ModelResponse(
             ...     chat_completion=completion,
-            ...     model_options={"temperature": 0.7, "model": "gpt-4"},
+            ...     model_options={"temperature": 0.7, "model": "gpt-5.1"},
             ...     metadata={"time_taken": 1.5, "first_token_time": 0.3}
             ... )
         """
@@ -116,7 +116,7 @@ class ModelResponse(ChatCompletion):
             Generated text from the model, or empty string if none.
 
         Example:
-            >>> response = await generate("gpt-5", messages="Hello")
+            >>> response = await generate("gpt-5.1", messages="Hello")
             >>> text = response.content  # The generated response
             >>>
             >>> # Common pattern: add to messages then use content
@@ -185,7 +185,7 @@ class ModelResponse(ChatCompletion):
 
         Example:
             >>> response = await llm.generate(
-            ...     "gpt-5",
+            ...     "gpt-5.1",
             ...     context=large_doc,
             ...     messages="Summarize this"
             ... )

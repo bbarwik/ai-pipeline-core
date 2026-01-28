@@ -144,7 +144,7 @@ class PromptBuilder(BaseModel):
             options.service_tier = None
             options.cache_ttl = None
             cache_lock = False
-        if "grok-4-fast" in model:
+        if "grok-4.1-fast" in model:
             options.max_completion_tokens = 30000
 
         if self.mode == "test":
@@ -154,7 +154,7 @@ class PromptBuilder(BaseModel):
             options.reasoning_effort = "medium"
             options.verbosity = None
 
-        if model.startswith("gpt-5"):
+        if model.startswith("gpt-5.1"):
             options.service_tier = "flex"
 
         return options, cache_lock
@@ -224,7 +224,7 @@ class PromptBuilder(BaseModel):
         self, model: ModelName, prompt: str | AIMessages, options: ModelOptions | None = None
     ) -> str:
         options, _ = self._get_options(model, options)
-        if "gpt-5" not in model and "grok-4" not in model and "openrouter/" not in model:
+        if "gpt-5.1" not in model and "grok-4.1-fast" not in model and "openrouter/" not in model:
             options.stop = "</document>"
 
         response = await self.call(model, prompt, options)

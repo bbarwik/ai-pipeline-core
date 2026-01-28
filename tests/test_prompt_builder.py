@@ -2,10 +2,12 @@
 
 # pyright: reportPrivateUsage=false
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from ai_pipeline_core.documents import TemporaryDocument
-from ai_pipeline_core.llm import AIMessages
+from ai_pipeline_core.llm import AIMessages, ModelOptions, ModelResponse
 from ai_pipeline_core.prompt_builder import EnvironmentVariable, PromptBuilder
 
 
@@ -193,11 +195,177 @@ class TestPromptBuilderGetOptions:
     def test_gpt5_model_sets_flex_tier(self):
         """Test gpt-5 model uses flex service tier."""
         builder = PromptBuilder()
-        options, _ = builder._get_options("gpt-5")
+        options, _ = builder._get_options("gpt-5.1")
         assert options.service_tier == "flex"
 
     def test_grok4_fast_limits_tokens(self):
-        """Test grok-4-fast limits max tokens."""
+        """Test grok-4.1-fast limits max tokens."""
         builder = PromptBuilder()
-        options, _ = builder._get_options("grok-4-fast")
+        options, _ = builder._get_options("grok-4.1-fast")
         assert options.max_completion_tokens == 30000
+
+
+def _make_model_response(content: str) -> ModelResponse:
+    """Create a minimal ModelResponse for testing."""
+    from openai.types.chat import ChatCompletion, ChatCompletionMessage
+    from openai.types.chat.chat_completion import Choice
+
+    completion = ChatCompletion(
+        id="test-id",
+        created=1234567890,
+        model="gpt-5.1",
+        object="chat.completion",
+        choices=[
+            Choice(
+                finish_reason="stop",
+                index=0,
+                message=ChatCompletionMessage(role="assistant", content=content),
+            )
+        ],
+    )
+    return ModelResponse(chat_completion=completion, model_options={}, metadata={})
+
+
+class TestPromptBuilderCall:
+    """Test PromptBuilder.call() method."""
+
+    @pytest.mark.asyncio
+    async def test_call_returns_model_response(self):
+        """Test call() returns a ModelResponse."""
+        builder = PromptBuilder()
+        mock_response = _make_model_response("test output")
+
+        with patch(
+            "ai_pipeline_core.prompt_builder.prompt_builder.generate",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await builder.call("gpt-5.1", "Hello")
+
+        assert isinstance(result, ModelResponse)
+        assert result.content == "test output"
+
+    @pytest.mark.asyncio
+    async def test_call_with_custom_options(self):
+        """Test call() with custom ModelOptions."""
+        builder = PromptBuilder()
+        custom_options = ModelOptions(reasoning_effort="low", max_completion_tokens=1000)
+        mock_response = _make_model_response("custom output")
+
+        with patch(
+            "ai_pipeline_core.prompt_builder.prompt_builder.generate",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await builder.call("gpt-5.1", "Hello", options=custom_options)
+
+        assert result.content == "custom output"
+
+
+class TestPromptBuilderCallStructured:
+    """Test PromptBuilder.call_structured() method."""
+
+    @pytest.mark.asyncio
+    async def test_call_structured_returns_response(self):
+        """Test call_structured() invokes generate_structured."""
+        from pydantic import BaseModel
+
+        class SampleOutput(BaseModel):
+            summary: str
+
+        builder = PromptBuilder()
+        mock_response = AsyncMock()
+        mock_response.parsed = SampleOutput(summary="test")
+
+        with patch(
+            "ai_pipeline_core.prompt_builder.prompt_builder.generate_structured",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await builder.call_structured("gpt-5.1", SampleOutput, "Summarize")
+
+        assert result.parsed.summary == "test"
+
+
+class TestPromptBuilderGenerateDocument:
+    """Test PromptBuilder.generate_document() and _add_title_to_document()."""
+
+    @pytest.mark.asyncio
+    async def test_generate_document_extracts_from_tags(self):
+        """Test generate_document() extracts content from <document> tags."""
+        builder = PromptBuilder()
+        mock_response = _make_model_response(
+            "Here is the output:\n<document>\nExtracted content here\n</document>"
+        )
+
+        with patch(
+            "ai_pipeline_core.prompt_builder.prompt_builder.generate",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await builder.generate_document("gpt-5.1", "Generate a doc")
+
+        assert "Extracted content" in result
+
+    @pytest.mark.asyncio
+    async def test_generate_document_with_title(self):
+        """Test generate_document() adds title to extracted content."""
+        builder = PromptBuilder()
+        mock_response = _make_model_response(
+            "<document>\nSome document body content here.</document>"
+        )
+
+        with patch(
+            "ai_pipeline_core.prompt_builder.prompt_builder.generate",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await builder.generate_document("gpt-5.1", "Generate", title="My Title")
+
+        assert result.startswith("# My Title")
+
+    @pytest.mark.asyncio
+    async def test_generate_document_returns_full_response_when_no_tags(self):
+        """Test generate_document() returns full content when no <document> tags found."""
+        builder = PromptBuilder()
+        mock_response = _make_model_response("Just plain text without document tags")
+
+        with patch(
+            "ai_pipeline_core.prompt_builder.prompt_builder.generate",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await builder.generate_document("gpt-5.1", "Generate")
+
+        assert result == "Just plain text without document tags"
+
+    @pytest.mark.asyncio
+    async def test_generate_document_multiple_docs_returns_first(self):
+        """Test generate_document() returns first doc when multiple found."""
+        builder = PromptBuilder()
+        content = (
+            "<document>\nFirst document content here that is long enough.</document>"
+            "\n<document>\nSecond doc content that is also long enough here.</document>"
+        )
+        mock_response = _make_model_response(content)
+
+        with patch(
+            "ai_pipeline_core.prompt_builder.prompt_builder.generate",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await builder.generate_document("gpt-5.1", "Generate")
+
+        assert "First document" in result
+
+    def test_add_title_to_document_without_heading(self):
+        """Test _add_title_to_document adds heading to content without one."""
+        builder = PromptBuilder()
+        result = builder._add_title_to_document("Some content here", "My Title")
+        assert result == "# My Title\n\nSome content here"
+
+    def test_add_title_to_document_replaces_existing_heading(self):
+        """Test _add_title_to_document replaces existing heading."""
+        builder = PromptBuilder()
+        result = builder._add_title_to_document("# Old Title\nBody content", "New Title")
+        assert result == "# New Title\nBody content"

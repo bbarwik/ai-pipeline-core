@@ -150,10 +150,8 @@ def _model_name_to_openrouter_model(model: ModelName) -> str:
     Returns:
         OpenRouter model name.
     """
-    if model == "gpt-4o-search":
-        return "openai/gpt-4o-search-preview"
-    if model == "gemini-2.5-flash-search":
-        return "google/gemini-2.5-flash:online"
+    if model == "gemini-3-flash-search":
+        return "google/gemini-3-flash:online"
     if model == "sonar-pro-search":
         return "perplexity/sonar-pro-search"
     if model.startswith("gemini"):
@@ -184,7 +182,7 @@ async def _generate(
     Handles both regular and structured output generation.
 
     Args:
-        model: Model identifier (e.g., "gpt-5", "gemini-2.5-pro").
+        model: Model identifier (e.g., "gpt-5.1", "gemini-3-pro").
         messages: Formatted messages for the API.
         completion_kwargs: Additional parameters for the completion API.
 
@@ -339,7 +337,7 @@ async def generate(
         4. CONFIGURATION: Configure model behavior via LiteLLM proxy or environment variables
 
     Args:
-        model: Model to use (e.g., "gpt-5", "gemini-2.5-pro", "grok-4").
+        model: Model to use (e.g., "gpt-5.1", "gemini-3-pro", "grok-4.1-fast").
                Accepts predefined models or any string for custom models.
         context: Static context to cache (documents, examples, instructions).
                 Defaults to None (empty context). Cached for 5 minutes by default.
@@ -367,17 +365,17 @@ async def generate(
         Wrap Documents in AIMessages - DO NOT pass directly or convert to .text:
 
         # CORRECT - wrap Document in AIMessages
-        response = await llm.generate("gpt-5", messages=AIMessages([my_document]))
+        response = await llm.generate("gpt-5.1", messages=AIMessages([my_document]))
 
         # WRONG - don't pass Document directly
-        response = await llm.generate("gpt-5", messages=my_document)  # NO!
+        response = await llm.generate("gpt-5.1", messages=my_document)  # NO!
 
         # WRONG - don't convert to string yourself
-        response = await llm.generate("gpt-5", messages=my_document.text)  # NO!
+        response = await llm.generate("gpt-5.1", messages=my_document.text)  # NO!
 
     VISION/PDF MODEL COMPATIBILITY:
         When using Documents containing images or PDFs, ensure your model supports these formats:
-        - Images require vision-capable models (gpt-4o, gemini-pro-vision, claude-3-sonnet)
+        - Images require vision-capable models (gpt-5.1, gemini-3-flash, gemini-3-pro)
         - PDFs require document processing support (varies by provider)
         - Non-compatible models will raise ValueError or fall back to text extraction
         - Check model capabilities before including visual/PDF content
@@ -395,7 +393,7 @@ async def generate(
 
     Example:
         >>> # CORRECT - No options parameter (this is the recommended pattern)
-        >>> response = await llm.generate("gpt-5", messages="Explain quantum computing")
+        >>> response = await llm.generate("gpt-5.1", messages="Explain quantum computing")
         >>> print(response.content)  # In production, use get_pipeline_logger instead of print
 
         >>> # With context caching for efficiency
@@ -403,10 +401,10 @@ async def generate(
         >>> static_doc = AIMessages([large_document, "few-shot example: ..."])
         >>>
         >>> # First call: caches context
-        >>> r1 = await llm.generate("gpt-5", context=static_doc, messages="Summarize")
+        >>> r1 = await llm.generate("gpt-5.1", context=static_doc, messages="Summarize")
         >>>
         >>> # Second call: reuses cache, saves tokens!
-        >>> r2 = await llm.generate("gpt-5", context=static_doc, messages="Key points?")
+        >>> r2 = await llm.generate("gpt-5.1", context=static_doc, messages="Key points?")
 
         >>> # Multi-turn conversation
         >>> messages = AIMessages([
@@ -414,7 +412,7 @@ async def generate(
         ...     previous_response,
         ...     "Can you give an example?"
         ... ])
-        >>> response = await llm.generate("gpt-5", messages=messages)
+        >>> response = await llm.generate("gpt-5.1", messages=messages)
 
     Performance:
         - Context caching saves ~50-90% tokens on repeated calls
@@ -509,7 +507,7 @@ async def generate_structured(
 
         >>> # Step 1: Research/analysis with generate() - no options parameter
         >>> research = await llm.generate(
-        ...     "gpt-5",
+        ...     "gpt-5.1",
         ...     messages="Research and analyze this complex topic..."
         ... )
         >>>
@@ -566,7 +564,7 @@ async def generate_structured(
         >>>
         >>> # CORRECT - No options parameter
         >>> response = await llm.generate_structured(
-        ...     "gpt-5",
+        ...     "gpt-5.1",
         ...     response_format=Analysis,
         ...     messages="Analyze this product review: ..."
         ... )

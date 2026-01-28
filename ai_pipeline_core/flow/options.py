@@ -41,7 +41,7 @@ class FlowOptions(BaseSettings):
 
         >>> # Or create programmatically:
         >>> options = MyFlowOptions(
-        ...     core_model="gemini-2.5-pro",
+        ...     core_model="gemini-3-pro",
         ...     temperature=0.9
         ... )
 
@@ -61,11 +61,11 @@ class FlowOptions(BaseSettings):
     """
 
     core_model: ModelName = Field(
-        default="gemini-2.5-pro",
+        default="gemini-3-pro",
         description="Primary model for complex analysis and generation tasks.",
     )
     small_model: ModelName = Field(
-        default="grok-4-fast",
+        default="grok-4.1-fast",
         description="Fast, cost-effective model for simple tasks and orchestration.",
     )
 

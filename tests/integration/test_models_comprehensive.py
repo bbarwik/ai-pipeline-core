@@ -143,8 +143,8 @@ async def test_llm_model_text_file_attachment(model: ModelName):
 @pytest.mark.parametrize("model", CORE_MODELS)
 async def test_llm_model_image_file_attachment(model: ModelName):
     """Test models with image file attachments."""
-    if model == "grok-4-fast":
-        pytest.skip("grok-4-fast does not support image attachments")
+    if model == "grok-4.1-fast":
+        pytest.skip("grok-4.1-fast does not support image attachments")
 
     # Load the test image
     test_image_path = Path("tests/test_data/test_image.png")
@@ -193,7 +193,7 @@ async def test_llm_model_image_file_attachment(model: ModelName):
 @pytest.mark.parametrize("model", CORE_MODELS)
 async def test_llm_model_pdf_file_attachment(model: ModelName):
     """Test models with PDF file attachments."""
-    if model in ["grok-4-fast", "grok-4"]:
+    if model in ["grok-4.1-fast", "grok-4.1-fast"]:
         pytest.skip(f"{model} does not support PDF attachments")
 
     # Load the test PDF

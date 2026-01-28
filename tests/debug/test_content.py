@@ -3,6 +3,7 @@
 import base64
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -137,7 +138,7 @@ class TestContentWriter:
     def test_circular_reference_handled(self, writer: ContentWriter, tmp_path: Path) -> None:
         """Test circular references don't cause infinite loop."""
         tmp_path.mkdir(parents=True, exist_ok=True)
-        data: dict = {"self": None}
+        data: dict[str, Any] = {"self": None}
         data["self"] = data  # Circular reference
 
         ref = writer.write(data, tmp_path, "test")

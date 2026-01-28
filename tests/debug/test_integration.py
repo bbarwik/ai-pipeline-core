@@ -134,18 +134,18 @@ class TestFullTraceFlow:
             writer.on_span_start("trace001", "flow1", None, "analysis_flow")
 
             # LLM call
-            writer.on_span_start("trace001", "llm1", "flow1", "gpt-4-call")
+            writer.on_span_start("trace001", "llm1", "flow1", "gpt-5.1-call")
             writer.on_span_end(
                 WriteJob(
                     trace_id="trace001",
                     span_id="llm1",
-                    name="gpt-4-call",
+                    name="gpt-5.1-call",
                     parent_id="flow1",
                     attributes={
                         "lmnr.span.type": "LLM",
                         "gen_ai.usage.input_tokens": 5000,
                         "gen_ai.usage.output_tokens": 1000,
-                        "gen_ai.response.model": "gpt-4",
+                        "gen_ai.response.model": "gpt-5.1",
                         "gen_ai.usage.cost": 0.15,
                         "lmnr.span.input": '{"messages": [{"role": "user", "content": "Hello"}]}',
                         "lmnr.span.output": '"Response text"',
@@ -192,12 +192,12 @@ class TestFullTraceFlow:
         llm_path = trace_dir / index["span_paths"]["llm1"].rstrip("/")
         llm_span = yaml.safe_load((llm_path / "_span.yaml").read_text())
         assert llm_span["type"] == "llm"
-        assert llm_span["llm"]["model"] == "gpt-4"
+        assert llm_span["llm"]["model"] == "gpt-5.1"
         assert llm_span["llm"]["input_tokens"] == 5000
 
         # Check summary mentions LLM
         summary = (trace_dir / "_summary.md").read_text()
-        assert "gpt-4" in summary
+        assert "gpt-5.1" in summary
         assert "6,000" in summary or "6000" in summary  # Token count
 
     def test_failed_span_captured(self, tmp_path: Path) -> None:

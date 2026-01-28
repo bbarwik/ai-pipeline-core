@@ -2,6 +2,7 @@
 
 import json
 import time
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ def config(tmp_path: Path) -> TraceDebugConfig:
 
 
 @pytest.fixture
-def writer(config: TraceDebugConfig) -> LocalTraceWriter:
+def writer(config: TraceDebugConfig) -> Generator[LocalTraceWriter, None, None]:
     """Create test LocalTraceWriter."""
     w = LocalTraceWriter(config)
     yield w
@@ -261,7 +262,7 @@ class TestLocalTraceWriter:
                 attributes={
                     "gen_ai.usage.input_tokens": 1000,
                     "gen_ai.usage.output_tokens": 500,
-                    "gen_ai.response.model": "gpt-4",
+                    "gen_ai.response.model": "gpt-5.1",
                     "gen_ai.usage.cost": 0.05,
                     "lmnr.span.type": "LLM",
                 },
@@ -283,7 +284,7 @@ class TestLocalTraceWriter:
 
         assert span_meta["type"] == "llm"
         assert "llm" in span_meta
-        assert span_meta["llm"]["model"] == "gpt-4"
+        assert span_meta["llm"]["model"] == "gpt-5.1"
         assert span_meta["llm"]["input_tokens"] == 1000
         assert span_meta["llm"]["cost"] == 0.05
 

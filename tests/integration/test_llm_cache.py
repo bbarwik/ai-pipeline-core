@@ -15,7 +15,7 @@ HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
 
 # Filter models that support caching, only Gemini 2.5 for now due to explicit caching support
 CACHE_SUPPORTED_MODELS: tuple[ModelName, ...] = tuple(
-    model for model in ALL_MODELS if model in ["gemini-2.5-flash", "gemini-2.5-pro"]
+    model for model in ALL_MODELS if model in ["gemini-3-flash", "gemini-3-pro"]
 )
 
 # Skip all tests if API keys not configured

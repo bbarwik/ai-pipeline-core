@@ -221,12 +221,7 @@ class ContentWriter:
 
     def _structure_llm_messages(self, messages: list[Any]) -> dict[str, Any]:
         """Structure LLM messages preserving ALL parts losslessly."""
-        result = {
-            "format_version": 3,
-            "type": "llm_messages",
-            "message_count": len(messages),
-            "messages": [],
-        }
+        message_entries: list[dict[str, Any]] = []
 
         total_text_bytes = 0
         total_image_bytes = 0
@@ -274,17 +269,20 @@ class ContentWriter:
             if "name" in msg:
                 msg_entry["name"] = msg["name"]
 
-            result["messages"].append(msg_entry)
+            message_entries.append(msg_entry)
 
-        # Add metadata
-        result["metadata"] = {
-            "total_text_bytes": total_text_bytes,
-            "total_image_bytes": total_image_bytes,
-            "total_tool_bytes": total_tool_bytes,
+        return {
+            "format_version": 3,
+            "type": "llm_messages",
+            "message_count": len(messages),
+            "messages": message_entries,
+            "metadata": {
+                "total_text_bytes": total_text_bytes,
+                "total_image_bytes": total_image_bytes,
+                "total_tool_bytes": total_tool_bytes,
+            },
+            "size_bytes": total_text_bytes + total_image_bytes + total_tool_bytes,
         }
-        result["size_bytes"] = total_text_bytes + total_image_bytes + total_tool_bytes
-
-        return result
 
     def _structure_message_part(
         self, part: dict[str, Any], sequence: int
@@ -490,12 +488,7 @@ class ContentWriter:
 
     def _structure_documents(self, docs: list[Any]) -> dict[str, Any]:
         """Structure document list."""
-        result = {
-            "format_version": 3,
-            "type": "document_list",
-            "document_count": len(docs),
-            "documents": [],
-        }
+        doc_entries: list[dict[str, Any]] = []
 
         for i, doc in enumerate(docs):
             doc_name = doc.get("name", f"doc_{i}")
@@ -554,9 +547,14 @@ class ContentWriter:
                 else:
                     doc_entry["content"] = text
 
-            result["documents"].append(doc_entry)
+            doc_entries.append(doc_entry)
 
-        return result
+        return {
+            "format_version": 3,
+            "type": "document_list",
+            "document_count": len(docs),
+            "documents": doc_entries,
+        }
 
     def _structure_generic(self, content: Any) -> dict[str, Any]:
         """Structure generic content."""
@@ -608,7 +606,7 @@ class ContentWriter:
             text = pattern.sub("[REDACTED]", text)
         return text
 
-    def _convert_types(self, value: Any, seen: set | None = None) -> Any:
+    def _convert_types(self, value: Any, seen: set[int] | None = None) -> Any:
         """Convert non-serializable types recursively with cycle detection."""
         # Cycle detection
         if seen is None:
