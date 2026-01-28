@@ -290,6 +290,68 @@ async def main_flow(
     return DocumentList(results)
 ```
 
+### Local Trace Debugging
+
+Save all trace spans to the local filesystem for LLM-assisted debugging:
+
+```bash
+export TRACE_DEBUG_PATH=/path/to/debug/output
+```
+
+This creates a hierarchical directory structure that mirrors the execution flow with automatic deduplication:
+
+```
+20260128_152932_abc12345_my_flow/
+├── _trace.yaml           # Trace metadata
+├── _index.yaml           # Span ID → path mapping
+├── _summary.md           # Unified summary for human inspection and LLM debugging
+├── artifacts/            # Deduplicated content storage
+│   └── sha256/
+│       └── ab/cd/        # Sharded by hash prefix
+│           └── abcdef...1234.txt  # Large content (>10KB)
+└── 0001_my_flow/         # Root span (numbered for execution order)
+    ├── _span.yaml        # Span metadata (timing, status, I/O refs)
+    ├── input.yaml        # Structured inputs (inline or refs)
+    ├── output.yaml       # Structured outputs (inline or refs)
+    ├── 0002_task_1/      # Child spans nested inside parent
+    │   ├── _span.yaml
+    │   ├── input.yaml
+    │   ├── output.yaml
+    │   └── 0003_llm_call/
+    │       ├── _span.yaml
+    │       ├── input.yaml   # LLM messages with inline/external content
+    │       └── output.yaml
+    └── 0004_task_2/
+        └── ...
+```
+
+**Key Features:**
+- **Automatic Deduplication**: Identical content (e.g., system prompts) stored once in `artifacts/`
+- **Smart Externalization**: Large content (>10KB) externalized with 2KB inline previews
+- **AI-Friendly**: Files capped at 50KB for easy LLM processing
+- **Lossless**: Full content reconstruction via `content_ref` pointers
+
+Example `input.yaml` with externalization:
+```yaml
+format_version: 3
+type: llm_messages
+messages:
+  - role: system
+    parts:
+      - type: text
+        size_bytes: 28500
+        content_ref:  # Large content → artifact
+          hash: sha256:a1b2c3d4...
+          path: artifacts/sha256/a1/b2/a1b2c3d4...txt
+        excerpt: "You are a helpful assistant...\n[TRUNCATED]"
+  - role: user
+    parts:
+      - type: text
+        content: "Hello!"  # Small content stays inline
+```
+
+Run `tree` on the output directory to visualize the entire execution hierarchy. Feed `_summary.md` to an LLM for debugging assistance - it combines high-level overview with detailed navigation for comprehensive trace analysis.
+
 ## Configuration
 
 ### Environment Variables
@@ -302,6 +364,9 @@ OPENAI_API_KEY=your-api-key
 # Optional: Observability
 LMNR_PROJECT_API_KEY=your-lmnr-key
 LMNR_DEBUG=true  # Enable debug traces
+
+# Optional: Local Trace Debugging
+TRACE_DEBUG_PATH=/path/to/trace/output  # Save traces locally for LLM-assisted debugging
 
 # Optional: Orchestration
 PREFECT_API_URL=http://localhost:4200/api

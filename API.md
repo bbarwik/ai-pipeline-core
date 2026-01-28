@@ -2371,6 +2371,160 @@ Configuration sources:
   Check for empty values before using service-specific settings.
 
 
+## ai_pipeline_core.images
+
+Image processing utilities for LLM vision models.
+
+Splits large images, compresses to JPEG, and respects model-specific constraints.
+Designed for website screenshots, document pages, and other visual content
+sent to vision-capable LLMs.
+
+Quick Start:
+    >>> from ai_pipeline_core.images import process_image, ImagePreset
+    >>>
+    >>> result = process_image(screenshot_bytes)
+    >>> for part in result:
+    ...     send_to_llm(part.data, context=part.label)
+    >>>
+    >>> result = process_image(screenshot_bytes, preset=ImagePreset.GEMINI)
+
+### ImagePreset
+
+```python
+class ImagePreset(StrEnum)
+```
+
+Presets for LLM vision model constraints.
+
+### ImageProcessingConfig
+
+```python
+class ImageProcessingConfig(BaseModel)
+```
+
+Configuration for image processing.
+
+Use ``for_preset`` for standard configurations or construct directly for
+custom constraints.
+
+**Example**:
+
+  >>> config = ImageProcessingConfig.for_preset(ImagePreset.GEMINI)
+  >>> config = ImageProcessingConfig(max_dimension=2000, jpeg_quality=80)
+
+#### ImageProcessingConfig.for_preset
+
+```python
+@classmethod
+def for_preset(cls, preset: ImagePreset) -> "ImageProcessingConfig"
+```
+
+Create configuration from a model preset.
+
+### ImagePart
+
+```python
+class ImagePart(BaseModel)
+```
+
+A single processed image part.
+
+#### ImagePart.label
+
+```python
+@property
+def label(self) -> str
+```
+
+Human-readable label for LLM context, 1-indexed.
+
+### ProcessedImage
+
+```python
+class ProcessedImage(BaseModel)
+```
+
+Result of image processing.
+
+Iterable: ``for part in result`` iterates over parts.
+
+#### ProcessedImage.compression_ratio
+
+```python
+@property
+def compression_ratio(self) -> float
+```
+
+Output size / input size (lower means more compression).
+
+### ImageProcessingError
+
+```python
+class ImageProcessingError(Exception)
+```
+
+Image processing failed.
+
+### process_image
+
+```python
+def process_image(image: bytes | Document, preset: ImagePreset = ImagePreset.GEMINI, config: ImageProcessingConfig | None = None) -> ProcessedImage
+```
+
+Process an image for LLM vision models.
+
+Splits tall images vertically with overlap, trims width if needed, and
+compresses to JPEG.  The default preset is **GEMINI** (3 000 px, 9 M pixels).
+
+**Arguments**:
+
+- `image` - Raw image bytes or a Document whose content is an image.
+- `preset` - Model preset (ignored when *config* is provided).
+- `config` - Custom configuration that overrides the preset.
+
+**Returns**:
+
+  A ``ProcessedImage`` containing one or more ``ImagePart`` objects.
+
+**Raises**:
+
+- `ImageProcessingError` - If the image cannot be decoded or processed.
+
+**Example**:
+
+  >>> result = process_image(screenshot_bytes)
+  >>> for part in result:
+  ...     print(part.label, len(part.data))
+
+### process_image_to_documents
+
+```python
+def process_image_to_documents(image: bytes | Document, preset: ImagePreset = ImagePreset.GEMINI, config: ImageProcessingConfig | None = None, name_prefix: str = "image", sources: list[str] | None = None) -> list[TemporaryDocument]
+```
+
+Process an image and return parts as ``TemporaryDocument`` list.
+
+Convenience wrapper around ``process_image`` for direct integration
+with ``AIMessages``.
+
+**Arguments**:
+
+- `image` - Raw image bytes or a Document.
+- `preset` - Model preset (ignored when *config* is provided).
+- `config` - Custom configuration.
+- `name_prefix` - Prefix for generated document names.
+- `sources` - Optional provenance references attached to each document.
+
+**Returns**:
+
+  List of ``TemporaryDocument`` instances with JPEG image data.
+
+**Example**:
+
+  >>> docs = process_image_to_documents(screenshot_bytes)
+  >>> messages = AIMessages(docs)
+
+
 ## ai_pipeline_core.progress
 
 @public Intra-flow progress tracking with order-preserving webhook delivery.

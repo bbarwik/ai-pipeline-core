@@ -276,6 +276,9 @@ class TraceInfo(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_debug_processor_initialized = False
+
+
 def _initialise_laminar() -> None:
     """Initialize Laminar SDK with project configuration.
 
@@ -287,16 +290,64 @@ def _initialise_laminar() -> None:
         - Uses settings.lmnr_project_api_key for authentication
         - Disables OPENAI instrument to prevent double-tracing
         - Called automatically by trace decorator on first use
+        - Optionally adds local debug processor if TRACE_DEBUG_PATH is set
 
     Note:
         This is an internal function called once per process.
         Multiple calls are safe (Laminar handles idempotency).
     """
+    global _debug_processor_initialized
+
     if settings.lmnr_project_api_key:
         Laminar.initialize(
             project_api_key=settings.lmnr_project_api_key,
             disabled_instruments=[Instruments.OPENAI] if Instruments.OPENAI else [],
         )
+
+    # Add local debug processor if configured (only once)
+    if not _debug_processor_initialized:
+        _debug_processor_initialized = True
+        debug_path = os.environ.get("TRACE_DEBUG_PATH")
+        if debug_path:
+            _setup_debug_processor(debug_path)
+
+
+def _setup_debug_processor(debug_path: str) -> None:
+    """Set up local debug trace processor."""
+    try:
+        from pathlib import Path  # noqa: PLC0415
+
+        from opentelemetry import trace  # noqa: PLC0415
+
+        from ai_pipeline_core.debug import (  # noqa: PLC0415
+            LocalDebugSpanProcessor,
+            LocalTraceWriter,
+            TraceDebugConfig,
+        )
+
+        config = TraceDebugConfig(
+            path=Path(debug_path),
+            max_inline_bytes=int(os.environ.get("TRACE_DEBUG_MAX_INLINE", 10000)),
+            max_traces=int(os.environ.get("TRACE_DEBUG_MAX_TRACES", 20)) or None,
+        )
+
+        writer = LocalTraceWriter(config)
+        processor = LocalDebugSpanProcessor(writer)
+
+        # Add to tracer provider
+        provider = trace.get_tracer_provider()
+        if hasattr(provider, "add_span_processor"):
+            provider.add_span_processor(processor)
+
+        # Register shutdown
+        import atexit  # noqa: PLC0415
+
+        atexit.register(processor.shutdown)
+
+    except Exception as e:
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(f"Failed to setup debug trace processor: {e}")
 
 
 # Overload for calls like @trace(name="...", level="debug")
