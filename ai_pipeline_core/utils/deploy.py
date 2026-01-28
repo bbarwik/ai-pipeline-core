@@ -18,10 +18,13 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import subprocess
 import sys
+import tempfile
 import tomllib
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -69,6 +72,8 @@ class Deployer:
 
         with open(pyproject_path, "rb") as f:
             data = tomllib.load(f)
+
+        self._pyproject_data = data
 
         project = data.get("project", {})
         name = project.get("name")
@@ -160,6 +165,192 @@ class Deployer:
         self._success(f"Built {tarball_path.name} ({tarball_path.stat().st_size // 1024} KB)")
         return tarball_path
 
+    # -- Agent build/upload support --
+
+    def _load_agent_config(self) -> dict[str, dict[str, Any]]:
+        """Load [tool.deploy.agents] from pyproject.toml.
+
+        Returns:
+            Dict mapping agent name to config (path, extra_vendor).
+            Empty dict if no agents configured.
+        """
+        return self._pyproject_data.get("tool", {}).get("deploy", {}).get("agents", {})
+
+    def _get_cli_agents_source(self) -> str | None:
+        """Get cli_agents_source path from [tool.deploy]."""
+        return self._pyproject_data.get("tool", {}).get("deploy", {}).get("cli_agents_source")
+
+    def _build_wheel_from_source(self, source_dir: Path) -> Path:
+        """Build a wheel from a source directory.
+
+        Args:
+            source_dir: Directory containing pyproject.toml
+
+        Returns:
+            Path to built .whl file in a temp dist directory
+        """
+        if not (source_dir / "pyproject.toml").exists():
+            self._die(f"No pyproject.toml in {source_dir}")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_dist = Path(tmpdir) / "dist"
+            result = subprocess.run(
+                [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_dist)],
+                cwd=source_dir,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                self._die(f"Wheel build failed for {source_dir.name}:\n{result.stderr}")
+
+            wheels = list(tmp_dist.glob("*.whl"))
+            if not wheels:
+                self._die(f"No wheel produced for {source_dir.name}")
+
+            # Copy to persistent dist/ under source_dir
+            dist_dir = source_dir / "dist"
+            dist_dir.mkdir(exist_ok=True)
+            output = dist_dir / wheels[0].name
+            output.write_bytes(wheels[0].read_bytes())
+            return output
+
+    def _build_agents(self) -> dict[str, dict[str, Any]]:
+        """Build agent wheels and manifests for all configured agents.
+
+        Returns:
+            Dict mapping agent name to build info:
+                {name: {"manifest_json": str, "files": {filename: Path}}}
+            Empty dict if no agents configured.
+        """
+        agent_config = self._load_agent_config()
+        if not agent_config:
+            return {}
+
+        cli_agents_source = self._get_cli_agents_source()
+        if not cli_agents_source:
+            self._die(
+                "Agents configured in [tool.deploy.agents] but "
+                "[tool.deploy].cli_agents_source is not set.\n"
+                "Add to pyproject.toml:\n"
+                '  [tool.deploy]\n  cli_agents_source = "vendor/cli-agents"'
+            )
+
+        self._info(f"Building {len(agent_config)} agent(s): {', '.join(agent_config)}")
+
+        # Build cli-agents wheel once (shared across all agents)
+        cli_agents_dir = Path(cli_agents_source).resolve()
+        if not (cli_agents_dir / "pyproject.toml").exists():
+            self._die(f"cli-agents source not found at {cli_agents_dir}")
+
+        cli_agents_wheel = self._build_wheel_from_source(cli_agents_dir)
+        self._success(f"Built cli-agents wheel: {cli_agents_wheel.name}")
+
+        builds: dict[str, dict[str, Any]] = {}
+
+        for agent_name, config in agent_config.items():
+            agent_path = Path(config["path"]).resolve()
+            if not (agent_path / "pyproject.toml").exists():
+                self._die(
+                    f"Agent '{agent_name}' path not found: {agent_path}\n"
+                    f"Check [tool.deploy.agents.{agent_name}].path in pyproject.toml"
+                )
+
+            # Read module_name from agent's pyproject.toml
+            with open(agent_path / "pyproject.toml", "rb") as f:
+                agent_pyproject = tomllib.load(f)
+
+            module_name = agent_pyproject.get("tool", {}).get("agent", {}).get("module")
+            if not module_name:
+                self._die(
+                    f"Agent '{agent_name}' missing [tool.agent].module in "
+                    f"{agent_path / 'pyproject.toml'}\n"
+                    f'Add:\n  [tool.agent]\n  module = "agent_{agent_name}"'
+                )
+
+            # Build agent wheel
+            agent_wheel = self._build_wheel_from_source(agent_path)
+            self._success(f"Built agent wheel: {agent_wheel.name}")
+
+            # Collect all files for this agent bundle
+            files: dict[str, Path] = {
+                agent_wheel.name: agent_wheel,
+                cli_agents_wheel.name: cli_agents_wheel,
+            }
+
+            # Build extra_vendor packages from repo root
+            vendor_packages: list[str] = []
+            extra_built: set[str] = set()
+            for vendor_name in config.get("extra_vendor", []):
+                extra_source_dir = Path(vendor_name).resolve()
+                if not (extra_source_dir / "pyproject.toml").exists():
+                    self._die(
+                        f"Extra vendor '{vendor_name}' for agent '{agent_name}' "
+                        f"not found at {extra_source_dir}\n"
+                        f"Ensure the directory exists at repo root with pyproject.toml"
+                    )
+                vendor_wheel = self._build_wheel_from_source(extra_source_dir)
+                files[vendor_wheel.name] = vendor_wheel
+                vendor_packages.append(vendor_wheel.name)
+                extra_built.add(extra_source_dir.name.replace("-", "_"))
+                self._success(f"Built vendor wheel: {vendor_wheel.name}")
+
+            # Collect existing vendor/*.whl and vendor/*.tar.gz from agent directory,
+            # skipping packages already built from extra_vendor
+            agent_vendor_dir = agent_path / "vendor"
+            if agent_vendor_dir.exists():
+                for pkg in list(agent_vendor_dir.glob("*.whl")) + list(
+                    agent_vendor_dir.glob("*.tar.gz")
+                ):
+                    pkg_base = pkg.name.split("-")[0].replace("-", "_")
+                    if pkg.name not in files and pkg_base not in extra_built:
+                        files[pkg.name] = pkg
+                        vendor_packages.append(pkg.name)
+
+            # Write manifest (plain JSON dict, compatible with AgentManifest schema)
+            manifest = {
+                "module_name": module_name,
+                "agent_wheel": agent_wheel.name,
+                "cli_agents_wheel": cli_agents_wheel.name,
+                "vendor_packages": vendor_packages,
+                "built_at": datetime.now(timezone.utc).isoformat(),
+            }
+            manifest_json = json.dumps(manifest, indent=2)
+
+            builds[agent_name] = {"manifest_json": manifest_json, "files": files}
+            self._success(f"Agent '{agent_name}' bundle ready ({module_name}, {len(files)} files)")
+
+        return builds
+
+    async def _upload_agents(self, agent_builds: dict[str, dict[str, Any]]):
+        """Upload agent bundles to GCS.
+
+        Args:
+            agent_builds: Output from _build_agents()
+        """
+        if not agent_builds:
+            return
+
+        flow_folder = self.config["folder"].split("/", 1)[1] if "/" in self.config["folder"] else ""
+        base_uri = f"gs://{self.config['bucket']}/flows"
+        base_storage = await Storage.from_uri(base_uri)
+        base_storage = base_storage.with_base(flow_folder)
+
+        for agent_name, build_info in agent_builds.items():
+            agent_storage = base_storage.with_base(f"agents/{agent_name}")
+            self._info(f"Uploading agent '{agent_name}' bundle to {agent_storage.url_for('')}")
+
+            # Upload manifest
+            await agent_storage.write_bytes(
+                "manifest.json",
+                build_info["manifest_json"].encode(),
+            )
+
+            # Upload wheels
+            for filename, filepath in build_info["files"].items():
+                await agent_storage.write_bytes(filename, filepath.read_bytes())
+
+            self._success(f"Agent '{agent_name}' uploaded ({len(build_info['files'])} files)")
+
     async def _upload_package(self, tarball: Path):
         """Upload package tarball to Google Cloud Storage using Storage abstraction.
 
@@ -184,13 +375,17 @@ class Deployer:
 
         self._success(f"Package uploaded to {self.config['folder']}/{tarball.name}")
 
-    async def _deploy_via_api(self):
+    async def _deploy_via_api(self, agent_builds: dict[str, dict[str, Any]] | None = None):
         """Create or update Prefect deployment using RunnerDeployment pattern.
 
         This is the official Prefect approach that:
         1. Automatically creates/updates the flow registration
         2. Handles deployment create vs update logic
         3. Properly formats all parameters for the API
+
+        Args:
+            agent_builds: Output from _build_agents(). If non-empty, sets
+                AGENT_BUNDLES_URI env var on the deployment.
         """
         # Define entrypoint (assumes flow function has same name as package)
         entrypoint = f"{self.config['package']}:{self.config['package']}"
@@ -244,6 +439,13 @@ class Deployer:
         # This is the official Prefect pattern that handles all the complexity
         self._info(f"Creating deployment for flow '{flow.name}'")
 
+        # Set AGENT_BUNDLES_URI env var if agents were built
+        job_variables: dict[str, Any] = {}
+        if agent_builds:
+            bundles_uri = f"gs://{self.config['bucket']}/{self.config['folder']}/agents"
+            job_variables["env"] = {"AGENT_BUNDLES_URI": bundles_uri}
+            self._info(f"Setting AGENT_BUNDLES_URI={bundles_uri}")
+
         deployment = RunnerDeployment(
             name=self.config["package"],
             flow_name=flow.name,
@@ -256,7 +458,7 @@ class Deployer:
             or f"Deployment for {self.config['package']} v{self.config['version']}",
             storage=_PullStepStorage(pull_steps),
             parameters={},
-            job_variables={},
+            job_variables=job_variables,
             paused=False,
         )
 
@@ -296,14 +498,20 @@ class Deployer:
         print("=" * 70)
         print()
 
-        # Phase 1: Build
+        # Phase 1: Build flow package
         tarball = self._build_package()
 
-        # Phase 2: Upload
+        # Phase 2: Build agent bundles (if configured)
+        agent_builds = self._build_agents()
+
+        # Phase 3: Upload flow package
         await self._upload_package(tarball)
 
-        # Phase 3: Deploy
-        await self._deploy_via_api()
+        # Phase 4: Upload agent bundles
+        await self._upload_agents(agent_builds)
+
+        # Phase 5: Create/update Prefect deployment
+        await self._deploy_via_api(agent_builds)
 
         print()
         print("=" * 70)

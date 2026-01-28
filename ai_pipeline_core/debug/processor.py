@@ -30,6 +30,8 @@ class LocalDebugSpanProcessor(SpanProcessor):
         Input/output data is not available yet - will be captured in on_end().
         """
         try:
+            if span.context is None:
+                return
             trace_id = format(span.context.trace_id, "032x")
             span_id = format(span.context.span_id, "016x")
             parent_id = self._get_parent_span_id(span)
@@ -46,6 +48,8 @@ class LocalDebugSpanProcessor(SpanProcessor):
         Laminar sets these attributes after span start.
         """
         try:
+            if span.context is None or span.start_time is None or span.end_time is None:
+                return
             job = WriteJob(
                 trace_id=format(span.context.trace_id, "032x"),
                 span_id=format(span.context.span_id, "016x"),

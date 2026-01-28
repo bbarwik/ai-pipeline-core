@@ -95,6 +95,15 @@ from .documents import (
     sanitize_url,
 )
 from .flow import FlowConfig, FlowOptions
+from .images import (
+    ImagePart,
+    ImagePreset,
+    ImageProcessingConfig,
+    ImageProcessingError,
+    ProcessedImage,
+    process_image,
+    process_image_to_documents,
+)
 from .llm import (
     AIMessages,
     AIMessageType,
@@ -121,7 +130,7 @@ from .settings import Settings
 from .tracing import TraceInfo, TraceLevel, set_trace_cost, trace
 from .utils.remote_deployment import remote_deployment
 
-__version__ = "0.3.0"
+__version__ = "0.3.2"
 
 __all__ = [
     # Config/Settings
@@ -175,6 +184,14 @@ __all__ = [
     # Prompt Builder
     "PromptBuilder",
     "EnvironmentVariable",
+    # Images
+    "process_image",
+    "process_image_to_documents",
+    "ImagePreset",
+    "ImageProcessingConfig",
+    "ProcessedImage",
+    "ImagePart",
+    "ImageProcessingError",
     # Utils
     "PromptManager",
 ]

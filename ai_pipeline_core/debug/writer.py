@@ -564,7 +564,7 @@ class LocalTraceWriter:
         if self._config.include_error_index:
             self._write_errors_index(trace, sorted_spans)
 
-    def _write_tree_index(self, trace: TraceState, sorted_spans: list) -> None:
+    def _write_tree_index(self, trace: TraceState, sorted_spans: list[SpanInfo]) -> None:
         """Write _tree.yaml - lightweight tree structure (~5KB)."""
         span_paths: dict[str, str] = {}
         tree_entries = []
@@ -578,7 +578,7 @@ class LocalTraceWriter:
             span_paths[span.span_id] = relative_path
 
             # Minimal entry - just hierarchy and navigation
-            entry = {
+            entry: dict[str, Any] = {
                 "span_id": span.span_id,
                 "name": span.name,
                 "type": span.span_type,
@@ -611,7 +611,7 @@ class LocalTraceWriter:
             encoding="utf-8",
         )
 
-    def _write_llm_index(self, trace: TraceState, sorted_spans: list) -> None:
+    def _write_llm_index(self, trace: TraceState, sorted_spans: list[SpanInfo]) -> None:
         """Write _llm_calls.yaml - LLM-specific details."""
         llm_calls = []
 
@@ -659,7 +659,7 @@ class LocalTraceWriter:
             encoding="utf-8",
         )
 
-    def _write_errors_index(self, trace: TraceState, sorted_spans: list) -> None:
+    def _write_errors_index(self, trace: TraceState, sorted_spans: list[SpanInfo]) -> None:
         """Write _errors.yaml - failed spans only."""
         error_spans = []
 
@@ -667,7 +667,7 @@ class LocalTraceWriter:
             if span.status == "failed":
                 relative_path = span.path.relative_to(trace.path).as_posix() + "/"
 
-                error_entry = {
+                error_entry: dict[str, Any] = {
                     "span_id": span.span_id,
                     "name": span.name,
                     "type": span.span_type,
@@ -746,11 +746,18 @@ class LocalTraceWriter:
                 except Exception:
                     continue
 
-            # Parent must have prefect info, child must not
+            # Parent must have prefect info
             if not span.prefect_info:
                 continue
+
+            # Child may have prefect_info if it inherited context from Prefect wrapper
+            # Only skip merge if child has DIFFERENT run_id (indicates nested task/flow)
             if child.prefect_info:
-                continue
+                child_run_id = child.prefect_info.get("run_id")
+                parent_run_id = span.prefect_info.get("run_id")
+                if child_run_id != parent_run_id:
+                    # Different run IDs = truly nested Prefect task/flow, don't merge
+                    continue
 
             wrappers.add(span_id)
 

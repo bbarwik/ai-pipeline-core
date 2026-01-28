@@ -177,7 +177,7 @@ def _format_span_line(span: SpanInfo) -> str:
 
 def _build_tree(trace: TraceState, span_id: str, prefix: str = "") -> list[str]:
     """Build tree representation of span hierarchy (fully recursive)."""
-    lines = []
+    lines: list[str] = []
     span = trace.spans.get(span_id)
     if not span:
         return lines
@@ -214,7 +214,7 @@ def _build_tree_recursive(
     trace: TraceState, span_id: str, prefix: str, continuation: str
 ) -> list[str]:
     """Recursively build tree for a span and all descendants."""
-    lines = []
+    lines: list[str] = []
     span = trace.spans.get(span_id)
     if not span:
         return lines
