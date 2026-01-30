@@ -150,7 +150,7 @@ from .settings import Settings
 from .tracing import TraceInfo, TraceLevel, set_trace_cost, trace
 from .utils.remote_deployment import remote_deployment
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 __all__ = [
     # Config/Settings
