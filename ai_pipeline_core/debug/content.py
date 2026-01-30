@@ -85,6 +85,7 @@ class ArtifactStore:
             "image/png": ".png",
             "image/jpeg": ".jpg",
             "image/gif": ".gif",
+            "image/webp": ".webp",
             "application/pdf": ".pdf",
         }
         ext = ext_map.get(mime_type, ".bin")

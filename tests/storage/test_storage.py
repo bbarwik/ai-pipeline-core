@@ -19,7 +19,7 @@ class TestStorageFromUri:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = await Storage.from_uri(tmpdir)
             assert isinstance(storage, LocalStorage)
-            assert storage._base == Path(tmpdir).resolve()  # pyright: ignore[reportPrivateUsage]
+            assert storage._base == Path(tmpdir).resolve()
 
     @pytest.mark.asyncio
     async def test_from_uri_file_scheme(self):
@@ -27,7 +27,7 @@ class TestStorageFromUri:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = await Storage.from_uri(f"file://{tmpdir}")
             assert isinstance(storage, LocalStorage)
-            assert storage._base == Path(tmpdir).resolve()  # pyright: ignore[reportPrivateUsage]
+            assert storage._base == Path(tmpdir).resolve()
 
     @pytest.mark.asyncio
     async def test_from_uri_file_scheme_triple_slash(self):
@@ -36,7 +36,7 @@ class TestStorageFromUri:
             storage = await Storage.from_uri(f"file:///{tmpdir}")
             assert isinstance(storage, LocalStorage)
             # Should handle the triple slash correctly
-            assert storage._base == Path(tmpdir).resolve()  # pyright: ignore[reportPrivateUsage]
+            assert storage._base == Path(tmpdir).resolve()
 
     @pytest.mark.asyncio
     async def test_from_uri_gs_scheme(self):
@@ -240,7 +240,7 @@ class TestLocalStorage:
         """Test LocalStorage initialization."""
         base = Path("/tmp/test")
         storage = LocalStorage(base)
-        assert storage._base == base  # pyright: ignore[reportPrivateUsage]
+        assert storage._base == base
 
     def test_with_base(self):
         """Test LocalStorage.with_base() method."""
@@ -248,7 +248,7 @@ class TestLocalStorage:
         storage = LocalStorage(base)
         sub_storage = storage.with_base("sub/path")
         assert isinstance(sub_storage, LocalStorage)
-        assert sub_storage._base == base / "sub/path"  # pyright: ignore[reportPrivateUsage]
+        assert sub_storage._base == base / "sub/path"
 
     def test_url_for(self):
         """Test LocalStorage.url_for() method."""
@@ -442,14 +442,14 @@ class TestLocalStorage:
         storage = LocalStorage(Path("/tmp/base"))
 
         # Normal paths
-        assert storage._abs("file.txt") == Path("/tmp/base/file.txt").resolve()  # pyright: ignore[reportPrivateUsage]
-        assert storage._abs("dir/file.txt") == Path("/tmp/base/dir/file.txt").resolve()  # pyright: ignore[reportPrivateUsage]
+        assert storage._abs("file.txt") == Path("/tmp/base/file.txt").resolve()
+        assert storage._abs("dir/file.txt") == Path("/tmp/base/dir/file.txt").resolve()
 
         # Paths with . and .. are normalized by _posix_rel
         # _posix_rel removes .. components, so ../file.txt becomes file.txt
-        assert storage._abs("./file.txt") == Path("/tmp/base/file.txt").resolve()  # pyright: ignore[reportPrivateUsage]
-        assert storage._abs("../file.txt") == Path("/tmp/base/file.txt").resolve()  # pyright: ignore[reportPrivateUsage]  # .. is removed
-        assert storage._abs("dir/../file.txt") == Path("/tmp/base/file.txt").resolve()  # pyright: ignore[reportPrivateUsage]
+        assert storage._abs("./file.txt") == Path("/tmp/base/file.txt").resolve()
+        assert storage._abs("../file.txt") == Path("/tmp/base/file.txt").resolve()  # .. is removed
+        assert storage._abs("dir/../file.txt") == Path("/tmp/base/file.txt").resolve()
 
 
 class TestHelperFunctions:
@@ -458,7 +458,7 @@ class TestHelperFunctions:
     def test_posix_rel(self):
         """Test _posix_rel path normalization."""
         from ai_pipeline_core.storage.storage import (
-            _posix_rel,  # pyright: ignore[reportPrivateUsage]
+            _posix_rel,
         )
 
         # Basic cases
@@ -491,7 +491,7 @@ class TestHelperFunctions:
     def test_join_posix(self):
         """Test _join_posix path joining."""
         from ai_pipeline_core.storage.storage import (
-            _join_posix,  # pyright: ignore[reportPrivateUsage]
+            _join_posix,
         )
 
         # Basic joining

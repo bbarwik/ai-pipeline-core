@@ -44,7 +44,7 @@ class TestLocalDebugSpanProcessor:
         processor.on_start(mock_span, None)
 
         # Verify span directory was created
-        trace_dirs = list(writer._config.path.iterdir())  # pyright: ignore[reportPrivateUsage]
+        trace_dirs = list(writer._config.path.iterdir())
         assert len(trace_dirs) == 1
 
     def test_on_end_queues_job(
@@ -78,7 +78,7 @@ class TestLocalDebugSpanProcessor:
             processor.on_end(mock_span_end)
 
         # Job should be queued (check queue is not empty)
-        assert not writer._queue.empty()  # pyright: ignore[reportPrivateUsage]
+        assert not writer._queue.empty()
 
     def test_on_start_handles_exception_gracefully(
         self, processor: LocalDebugSpanProcessor
@@ -107,7 +107,7 @@ class TestLocalDebugSpanProcessor:
     ) -> None:
         """Test shutdown propagates to writer."""
         processor.shutdown()
-        assert writer._shutdown is True  # pyright: ignore[reportPrivateUsage]
+        assert writer._shutdown is True
 
     def test_force_flush_returns_true(self, processor: LocalDebugSpanProcessor) -> None:
         """Test force_flush returns True."""
@@ -119,7 +119,7 @@ class TestLocalDebugSpanProcessor:
         mock_span.parent = MagicMock()
         mock_span.parent.span_id = 0xDEADBEEF
 
-        parent_id = processor._get_parent_span_id(mock_span)  # pyright: ignore[reportPrivateUsage]
+        parent_id = processor._get_parent_span_id(mock_span)
         assert parent_id == "00000000deadbeef"
 
     def test_parent_span_id_none_when_no_parent(self, processor: LocalDebugSpanProcessor) -> None:
@@ -127,5 +127,5 @@ class TestLocalDebugSpanProcessor:
         mock_span = MagicMock()
         mock_span.parent = None
 
-        parent_id = processor._get_parent_span_id(mock_span)  # pyright: ignore[reportPrivateUsage]
+        parent_id = processor._get_parent_span_id(mock_span)
         assert parent_id is None

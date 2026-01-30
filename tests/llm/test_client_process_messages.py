@@ -3,7 +3,7 @@
 from typing import Any, cast
 
 from ai_pipeline_core.llm import AIMessages
-from ai_pipeline_core.llm.client import _process_messages  # pyright: ignore[reportPrivateUsage]
+from ai_pipeline_core.llm.client import _process_messages
 from tests.test_helpers import ConcreteFlowDocument, create_test_model_response
 
 

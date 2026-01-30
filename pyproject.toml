@@ -177,6 +177,8 @@ reportIncompatibleMethodOverride = "error"
 reportIncompatibleVariableOverride = "error"
 # Report missing parameter types as warnings
 reportMissingParameterType = "warning"
+# Allow tests to import private internals for unit testing
+reportPrivateUsage = "warning"
 
 [tool.bumpversion]
 current_version = "0.3.2"

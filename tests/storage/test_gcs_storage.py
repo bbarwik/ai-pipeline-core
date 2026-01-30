@@ -582,14 +582,14 @@ class TestGcsStorage:
     def test_abs_name_handling(self, gcs_storage):
         """Test internal path handling methods."""
         # Test _abs_name
-        assert gcs_storage._abs_name("file.txt") == "test-folder/file.txt"  # pyright: ignore[reportPrivateUsage]
-        assert gcs_storage._abs_name("dir/file.txt") == "test-folder/dir/file.txt"  # pyright: ignore[reportPrivateUsage]
-        assert gcs_storage._abs_name("") == "test-folder"  # pyright: ignore[reportPrivateUsage]
+        assert gcs_storage._abs_name("file.txt") == "test-folder/file.txt"
+        assert gcs_storage._abs_name("dir/file.txt") == "test-folder/dir/file.txt"
+        assert gcs_storage._abs_name("") == "test-folder"
 
         # Test _rel_from_abs
-        assert gcs_storage._rel_from_abs("test-folder/file.txt") == "file.txt"  # pyright: ignore[reportPrivateUsage]
-        assert gcs_storage._rel_from_abs("test-folder/dir/file.txt") == "dir/file.txt"  # pyright: ignore[reportPrivateUsage]
-        assert gcs_storage._rel_from_abs("other-folder/file.txt") == "other-folder/file.txt"  # pyright: ignore[reportPrivateUsage]
+        assert gcs_storage._rel_from_abs("test-folder/file.txt") == "file.txt"
+        assert gcs_storage._rel_from_abs("test-folder/dir/file.txt") == "dir/file.txt"
+        assert gcs_storage._rel_from_abs("other-folder/file.txt") == "other-folder/file.txt"
 
     def test_path_normalization(self):
         """Test that paths are properly normalized."""

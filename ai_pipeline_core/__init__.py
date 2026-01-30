@@ -82,6 +82,26 @@ Optional Environment Variables:
     - LMNR_DEBUG: Set to "true" to enable debug-level traces
 """
 
+import os
+import sys
+
+# Disable Prefect's built-in OpenTelemetry spans to prevent duplicates.
+# All tracing is handled by our @trace decorator and Laminar SDK.
+# Must be set before Prefect is imported by submodules below.
+os.environ.setdefault("PREFECT_CLOUD_ENABLE_ORCHESTRATION_TELEMETRY", "false")
+
+# If Prefect was already imported (user imported it before us), refresh its cached settings.
+if "prefect" in sys.modules:
+    try:
+        from prefect.settings import get_current_settings  # noqa: PLC0415
+
+        if get_current_settings().cloud.enable_orchestration_telemetry:
+            from prefect.context import refresh_global_settings_context  # noqa: PLC0415
+
+            refresh_global_settings_context()
+    except (ImportError, AttributeError):
+        pass
+
 from . import llm, progress
 from .deployment import DeploymentContext, DeploymentResult, PipelineDeployment
 from .documents import (

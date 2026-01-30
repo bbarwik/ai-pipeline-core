@@ -3,7 +3,7 @@
 from typing import Any, cast
 
 from ai_pipeline_core import AIMessages, ModelOptions
-from ai_pipeline_core.llm.client import _process_messages  # pyright: ignore[reportPrivateUsage]
+from ai_pipeline_core.llm.client import _process_messages
 
 
 class TestCacheTTL:
@@ -163,7 +163,7 @@ class TestCacheTTL:
         from unittest.mock import MagicMock, patch
 
         from ai_pipeline_core.llm.client import (
-            _generate_with_retry,  # pyright: ignore[reportPrivateUsage]
+            _generate_with_retry,
         )
 
         # Mock the _generate function to avoid actual API calls

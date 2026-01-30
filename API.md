@@ -1983,6 +1983,28 @@ types (e.g., TaskDocument to FlowDocument) while maintaining data integrity.
   ... )
 
 
+## ai_pipeline_core.documents.mime_type
+
+### is_llm_supported_image
+
+```python
+def is_llm_supported_image(mime_type: str) -> bool
+```
+
+Check if MIME type is an image format directly supported by LLMs.
+
+Unsupported image formats (gif, bmp, tiff, svg, etc.) need conversion
+to PNG before sending to the LLM.
+
+**Arguments**:
+
+- `mime_type` - MIME type string to check.
+
+**Returns**:
+
+  True if the image format is natively supported by LLMs.
+
+
 ## ai_pipeline_core.documents
 
 Document abstraction system for AI pipeline flows.

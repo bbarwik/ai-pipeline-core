@@ -1,6 +1,9 @@
 """Tests for AIMessages.document_to_prompt conversion."""
 
 import base64
+import io
+
+from PIL import Image
 
 from ai_pipeline_core.llm import AIMessages
 from tests.test_helpers import ConcreteFlowDocument
@@ -170,3 +173,56 @@ class TestDocumentToPrompt:
         assert len(parts) == 1
         text = parts[0]["text"]  # type: ignore[index]
         assert unicode_content in text
+
+    def test_gif_image_auto_converted_to_png(self):
+        """Test that a GIF document gets auto-converted to PNG in the prompt."""
+        # Create a minimal 1x1 GIF image
+        buf = io.BytesIO()
+        Image.new("RGB", (1, 1), color=(255, 0, 0)).save(buf, format="GIF")
+        gif_content = buf.getvalue()
+
+        doc = ConcreteFlowDocument(name="animation.gif", content=gif_content)
+        assert doc.mime_type == "image/gif"
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        # Should return 3 parts: header, image, closing
+        assert len(parts) == 3
+        assert parts[1]["type"] == "image_url"
+        image_data = parts[1]["image_url"]  # type: ignore[index]
+        # The data URI must use image/png, not image/gif
+        assert image_data["url"].startswith("data:image/png;base64,")
+
+    def test_bmp_image_auto_converted_to_png(self):
+        """Test that a BMP document gets auto-converted to PNG in the prompt."""
+        buf = io.BytesIO()
+        Image.new("RGB", (1, 1), color=(0, 255, 0)).save(buf, format="BMP")
+        bmp_content = buf.getvalue()
+
+        doc = ConcreteFlowDocument(name="image.bmp", content=bmp_content)
+        assert doc.mime_type == "image/bmp"
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        assert len(parts) == 3
+        image_data = parts[1]["image_url"]  # type: ignore[index]
+        assert image_data["url"].startswith("data:image/png;base64,")
+
+    def test_supported_image_not_converted(self):
+        """Test that PNG images are passed through without conversion."""
+        # Create a minimal 1x1 PNG
+        buf = io.BytesIO()
+        Image.new("RGB", (1, 1), color=(0, 0, 255)).save(buf, format="PNG")
+        png_content = buf.getvalue()
+
+        doc = ConcreteFlowDocument(name="image.png", content=png_content)
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        assert len(parts) == 3
+        image_data = parts[1]["image_url"]  # type: ignore[index]
+        # Should still be PNG (passed through, not re-encoded)
+        assert image_data["url"].startswith("data:image/png;base64,")
+        # Verify original bytes are used (not re-encoded)
+        expected_b64 = base64.b64encode(png_content).decode("utf-8")
+        assert expected_b64 in image_data["url"]

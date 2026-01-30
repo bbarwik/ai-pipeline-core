@@ -24,6 +24,8 @@ EXTENSION_MIME_MAP = {
     "gif": "image/gif",
     "bmp": "image/bmp",
     "webp": "image/webp",
+    "heic": "image/heic",
+    "heif": "image/heif",
     "json": "application/json",
     "yaml": "application/yaml",
     "yml": "application/yaml",
@@ -266,3 +268,29 @@ def is_image_mime_type(mime_type: str) -> bool:
         False
     """
     return mime_type.startswith("image/")
+
+
+LLM_SUPPORTED_IMAGE_MIME_TYPES: frozenset[str] = frozenset({
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+})
+
+
+def is_llm_supported_image(mime_type: str) -> bool:
+    """Check if MIME type is an image format directly supported by LLMs.
+
+    Unsupported image formats (gif, bmp, tiff, svg, etc.) need conversion
+    to PNG before sending to the LLM.
+
+    @public
+
+    Args:
+        mime_type: MIME type string to check.
+
+    Returns:
+        True if the image format is natively supported by LLMs.
+    """
+    return mime_type in LLM_SUPPORTED_IMAGE_MIME_TYPES

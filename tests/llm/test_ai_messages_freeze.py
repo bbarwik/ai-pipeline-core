@@ -44,8 +44,8 @@ class TestAIMessagesFreeze:
 
         # Try to unfreeze by setting _frozen directly - should still be frozen
         # This tests that the freeze is intended to be permanent
-        messages._frozen = False  # pyright: ignore[reportPrivateUsage]
-        messages._frozen = True  # Reset it back  # pyright: ignore[reportPrivateUsage]
+        messages._frozen = False
+        messages._frozen = True  # Reset it back
 
         # Should still be frozen
         with pytest.raises(RuntimeError, match="Cannot modify frozen AIMessages"):

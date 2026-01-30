@@ -2,7 +2,7 @@
 
 # pyright: reportGeneralTypeIssues=false, reportIndexIssue=false, reportTypedDictNotRequiredAccess=false, reportArgumentType=false, reportOptionalSubscript=false
 
-from ai_pipeline_core.llm.client import _remove_cache_control  # pyright: ignore[reportPrivateUsage]
+from ai_pipeline_core.llm.client import _remove_cache_control
 
 
 class TestRemoveCacheControl:

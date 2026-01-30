@@ -21,7 +21,7 @@ class TestDocumentTrimming:
     def test_trim_document_content_text_non_flow(self):
         """Test trimming text content for non-flow documents."""
         from ai_pipeline_core.tracing import (
-            _trim_document_content,  # pyright: ignore[reportPrivateUsage]
+            _trim_document_content,
         )
 
         # Long text content for task document
@@ -43,7 +43,7 @@ class TestDocumentTrimming:
     def test_trim_document_content_text_flow(self):
         """Test that flow document text content is NOT trimmed."""
         from ai_pipeline_core.tracing import (
-            _trim_document_content,  # pyright: ignore[reportPrivateUsage]
+            _trim_document_content,
         )
 
         # Long text content for flow document
@@ -62,7 +62,7 @@ class TestDocumentTrimming:
     def test_trim_document_content_short_text(self):
         """Test that short text content is not trimmed."""
         from ai_pipeline_core.tracing import (
-            _trim_document_content,  # pyright: ignore[reportPrivateUsage]
+            _trim_document_content,
         )
 
         # Short text content (< 250 chars)
@@ -81,7 +81,7 @@ class TestDocumentTrimming:
     def test_trim_document_content_binary(self):
         """Test that binary content is removed."""
         from ai_pipeline_core.tracing import (
-            _trim_document_content,  # pyright: ignore[reportPrivateUsage]
+            _trim_document_content,
         )
 
         # Binary content (base64 encoded)
@@ -99,7 +99,7 @@ class TestDocumentTrimming:
     def test_trim_document_content_binary_flow(self):
         """Test that flow document binary content is also removed."""
         from ai_pipeline_core.tracing import (
-            _trim_document_content,  # pyright: ignore[reportPrivateUsage]
+            _trim_document_content,
         )
 
         # Binary content for flow document
@@ -117,7 +117,7 @@ class TestDocumentTrimming:
     def test_trim_documents_in_data_nested(self):
         """Test trimming documents in nested data structures."""
         from ai_pipeline_core.tracing import (
-            _trim_documents_in_data,  # pyright: ignore[reportPrivateUsage]
+            _trim_documents_in_data,
         )
 
         # Create nested structure with documents
@@ -219,7 +219,7 @@ class TestDocumentTrimming:
     def test_trimming_formatter_with_document_list(self):
         """Test that DocumentList is properly handled by trimming formatters."""
         from ai_pipeline_core.tracing import (
-            _trim_documents_in_data,  # pyright: ignore[reportPrivateUsage]
+            _trim_documents_in_data,
         )
 
         # Create documents
@@ -245,7 +245,7 @@ class TestDocumentTrimming:
     def test_trimming_formatter_with_ai_messages(self):
         """Test that AIMessages with documents are properly handled."""
         from ai_pipeline_core.tracing import (
-            _trim_documents_in_data,  # pyright: ignore[reportPrivateUsage]
+            _trim_documents_in_data,
         )
 
         # Create a document with long content
@@ -273,7 +273,7 @@ class TestDocumentTrimming:
     def test_trimming_preserves_document_metadata(self):
         """Test that trimming preserves all document metadata except content."""
         from ai_pipeline_core.tracing import (
-            _trim_document_content,  # pyright: ignore[reportPrivateUsage]
+            _trim_document_content,
         )
 
         doc_dict = {
@@ -305,7 +305,7 @@ class TestDocumentTrimming:
     def test_trimming_with_custom_formatter(self):
         """Test that custom formatters work with trimming."""
         from ai_pipeline_core.tracing import (
-            _trim_documents_in_data,  # pyright: ignore[reportPrivateUsage]
+            _trim_documents_in_data,
         )
 
         # Mock custom formatter that returns document data
@@ -328,7 +328,7 @@ class TestDocumentTrimming:
     def test_temporary_document_trimming(self):
         """Test that TemporaryDocument content is also trimmed."""
         from ai_pipeline_core.tracing import (
-            _trim_document_content,  # pyright: ignore[reportPrivateUsage]
+            _trim_document_content,
         )
 
         # Long text content for temporary document
@@ -349,7 +349,7 @@ class TestDocumentTrimming:
     def test_edge_case_exactly_250_chars(self):
         """Test edge case with exactly 250 characters."""
         from ai_pipeline_core.tracing import (
-            _trim_document_content,  # pyright: ignore[reportPrivateUsage]
+            _trim_document_content,
         )
 
         # Exactly 250 characters
@@ -368,7 +368,7 @@ class TestDocumentTrimming:
     def test_edge_case_251_chars(self):
         """Test edge case with 251 characters (just over threshold)."""
         from ai_pipeline_core.tracing import (
-            _trim_document_content,  # pyright: ignore[reportPrivateUsage]
+            _trim_document_content,
         )
 
         # 251 characters (just over the threshold)

@@ -13,6 +13,7 @@ Key functions:
 
 import asyncio
 import time
+from io import BytesIO
 from typing import Any, TypeVar
 
 from lmnr import Laminar
@@ -21,18 +22,76 @@ from openai.lib.streaming.chat import ChunkEvent, ContentDeltaEvent, ContentDone
 from openai.types.chat import (
     ChatCompletionMessageParam,
 )
+from PIL import Image
 from prefect.logging import get_logger
 from pydantic import BaseModel, ValidationError
 
+from ai_pipeline_core.documents import Document
 from ai_pipeline_core.exceptions import LLMError
+from ai_pipeline_core.images import ImageProcessingConfig, process_image_to_documents
 from ai_pipeline_core.settings import settings
 
-from .ai_messages import AIMessages
+from .ai_messages import AIMessages, AIMessageType
 from .model_options import ModelOptions
 from .model_response import ModelResponse, StructuredModelResponse
 from .model_types import ModelName
 
 logger = get_logger()
+
+# Image splitting configs for automatic large-image handling at the LLM boundary.
+# Gemini supports up to 3000x3000; all other models use a conservative 1000x1000 default.
+_GEMINI_IMAGE_CONFIG = ImageProcessingConfig(
+    max_dimension=3000, max_pixels=9_000_000, jpeg_quality=75
+)
+_DEFAULT_IMAGE_CONFIG = ImageProcessingConfig(
+    max_dimension=1000, max_pixels=1_000_000, jpeg_quality=75
+)
+
+
+def _get_image_config(model: str) -> ImageProcessingConfig:
+    """Return the image splitting config for a model."""
+    if "gemini" in model.lower():
+        return _GEMINI_IMAGE_CONFIG
+    return _DEFAULT_IMAGE_CONFIG
+
+
+def _prepare_images_for_model(messages: AIMessages, model: str) -> AIMessages:
+    """Split image documents that exceed model constraints.
+
+    Returns a new AIMessages with oversized images replaced by tiles.
+    Returns the original instance unchanged if no splitting is needed.
+    """
+    if not any(isinstance(m, Document) and m.is_image for m in messages):
+        return messages
+
+    config = _get_image_config(model)
+    result: list[AIMessageType] = []
+    changed = False
+
+    for msg in messages:
+        if not (isinstance(msg, Document) and msg.is_image):
+            result.append(msg)
+            continue
+
+        try:
+            with Image.open(BytesIO(msg.content)) as img:
+                w, h = img.size
+        except Exception:
+            result.append(msg)
+            continue
+
+        if w <= config.max_dimension and h <= config.max_dimension and w * h <= config.max_pixels:
+            result.append(msg)
+            continue
+
+        name_prefix = msg.name.rsplit(".", 1)[0] if "." in msg.name else msg.name
+        tiles = process_image_to_documents(msg, config=config, name_prefix=name_prefix)
+        result.extend(tiles)
+        changed = True
+
+    if not changed:
+        return messages
+    return AIMessages(result)
 
 
 def _process_messages(
@@ -270,6 +329,10 @@ async def _generate_with_retry(
         raise ValueError("Model must be provided")
     if not context and not messages:
         raise ValueError("Either context or messages must be provided")
+
+    # Auto-split large images based on model-specific constraints
+    context = _prepare_images_for_model(context, model)
+    messages = _prepare_images_for_model(messages, model)
 
     if "gemini" in model.lower() and context.approximate_tokens_count < 10000:
         # Bug fix for minimum explicit context size for Gemini models

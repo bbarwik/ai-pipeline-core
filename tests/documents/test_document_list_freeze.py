@@ -59,8 +59,8 @@ class TestDocumentListFreeze:
 
         # Try to unfreeze by setting _frozen directly - should still be frozen
         # This tests that the freeze is intended to be permanent
-        docs._frozen = False  # pyright: ignore[reportPrivateUsage]
-        docs._frozen = True  # Reset it back  # pyright: ignore[reportPrivateUsage]
+        docs._frozen = False
+        docs._frozen = True  # Reset it back
 
         # Should still be frozen
         with pytest.raises(RuntimeError, match="Cannot modify frozen DocumentList"):
@@ -253,9 +253,9 @@ class TestDocumentListFreeze:
 
         # Copy should preserve validation flags
         copied = docs.copy()
-        assert copied._validate_same_type is True  # pyright: ignore[reportPrivateUsage]
-        assert copied._validate_duplicates is True  # pyright: ignore[reportPrivateUsage]
-        assert hasattr(copied, "_frozen") and not copied._frozen  # pyright: ignore[reportPrivateUsage]
+        assert copied._validate_same_type is True
+        assert copied._validate_duplicates is True
+        assert hasattr(copied, "_frozen") and not copied._frozen
 
     def test_empty_frozen_list(self) -> None:
         """Test empty frozen list."""

@@ -8,6 +8,7 @@ including text, documents, and model responses.
 
 import base64
 import hashlib
+import io
 import json
 from copy import deepcopy
 from typing import Any, Callable, Iterable, SupportsIndex, Union
@@ -17,9 +18,11 @@ from openai.types.chat import (
     ChatCompletionContentPartParam,
     ChatCompletionMessageParam,
 )
+from PIL import Image
 from prefect.logging import get_logger
 
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents.mime_type import is_llm_supported_image
 
 from .model_response import ModelResponse
 
@@ -397,9 +400,19 @@ class AIMessages(list[AIMessageType]):
             "text": f"{header_text}<content>\n",
         })
 
-        # Encode binary content
-        base64_content = base64.b64encode(document.content).decode("utf-8")
-        data_uri = f"data:{document.mime_type};base64,{base64_content}"
+        # Encode binary content, converting unsupported image formats to PNG
+        if document.is_image and not is_llm_supported_image(document.mime_type):
+            img = Image.open(io.BytesIO(document.content))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            content_bytes = buf.getvalue()
+            mime_type = "image/png"
+        else:
+            content_bytes = document.content
+            mime_type = document.mime_type
+
+        base64_content = base64.b64encode(content_bytes).decode("utf-8")
+        data_uri = f"data:{mime_type};base64,{base64_content}"
 
         # Add appropriate content type
         if document.is_pdf:
