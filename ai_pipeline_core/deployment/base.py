@@ -1,40 +1,46 @@
 """Core classes for pipeline deployments.
 
-@public
-
 Provides the PipelineDeployment base class and related types for
 creating unified, type-safe pipeline deployments with:
-- Per-flow caching (skip if outputs exist)
+- Per-flow resume (skip if outputs exist in DocumentStore)
 - Per-flow uploads (immediate, not just at end)
 - Prefect state hooks (on_running, on_completion, etc.)
-- Smart storage provisioning (override provision_storage)
 - Upload on failure (partial results saved)
 """
 
 import asyncio
+import contextlib
+import hashlib
 import os
-import re
 import sys
 from abc import abstractmethod
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from hashlib import sha256
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Generic, Protocol, TypeVar, cast, final
-from uuid import UUID
+from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
+from uuid import UUID, uuid4
 
 import httpx
 from lmnr import Laminar
-from prefect import get_client
+from opentelemetry import trace as otel_trace
+from prefect import flow, get_client, runtime
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import CliPositionalArg, SettingsConfigDict
 
-from ai_pipeline_core.documents import DocumentList
-from ai_pipeline_core.flow.options import FlowOptions
+from ai_pipeline_core.document_store import SummaryGenerator, create_document_store, get_document_store, set_document_store
+from ai_pipeline_core.document_store.local import LocalDocumentStore
+from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents.context import RunContext, reset_run_context, set_run_context
 from ai_pipeline_core.logging import get_pipeline_logger, setup_logging
-from ai_pipeline_core.prefect import disable_run_logger, flow, prefect_test_harness
+from ai_pipeline_core.observability._debug import LocalDebugSpanProcessor, LocalTraceWriter, TraceDebugConfig
+from ai_pipeline_core.observability._initialization import get_tracking_service, initialize_observability
+from ai_pipeline_core.observability._tracking._models import RunStatus
+from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
+from ai_pipeline_core.testing import disable_run_logger, prefect_test_harness
 
 from .contract import CompletedRun, DeploymentResultData, FailedRun, ProgressRun
 from .helpers import (
@@ -49,8 +55,44 @@ from .helpers import (
 logger = get_pipeline_logger(__name__)
 
 
+def _build_summary_generator() -> SummaryGenerator | None:
+    """Build a summary generator callable from settings, or None if disabled/unavailable."""
+    if not settings.doc_summary_enabled:
+        return None
+
+    from ai_pipeline_core.observability._summary import generate_document_summary
+
+    model = settings.doc_summary_model
+
+    async def _generator(name: str, excerpt: str) -> str:
+        return await generate_document_summary(name, excerpt, model=model)
+
+    return _generator
+
+
+# Fields added by run_cli()'s _CliOptions that should not affect the run scope fingerprint
+_CLI_FIELDS: set[str] = {"working_directory", "project_name", "start", "end", "no_trace"}
+
+
+def _compute_run_scope(project_name: str, documents: list[Document], options: FlowOptions) -> str:
+    """Compute a run scope that fingerprints inputs and options.
+
+    Different inputs or options produce a different scope, preventing
+    stale cache hits when re-running with the same project name.
+    Falls back to just project_name when no documents are provided
+    (e.g. --start N resume without initializer).
+    """
+    if not documents:
+        return project_name
+    sha256s = sorted(doc.sha256 for doc in documents)
+    exclude = _CLI_FIELDS & set(type(options).model_fields)
+    options_json = options.model_dump_json(exclude=exclude, exclude_none=True)
+    fingerprint = hashlib.sha256(f"{':'.join(sha256s)}|{options_json}".encode()).hexdigest()[:16]
+    return f"{project_name}:{fingerprint}"
+
+
 class DeploymentContext(BaseModel):
-    """@public Infrastructure configuration for deployments.
+    """Infrastructure configuration for deployments.
 
     Webhooks are optional - provide URLs to enable:
     - progress_webhook_url: Per-flow progress (started/completed/cached)
@@ -58,8 +100,8 @@ class DeploymentContext(BaseModel):
     - completion_webhook_url: Final result when deployment ends
     """
 
-    input_documents_urls: list[str] = Field(default_factory=list)
-    output_documents_urls: dict[str, str] = Field(default_factory=dict)
+    input_documents_urls: tuple[str, ...] = Field(default_factory=tuple)
+    output_documents_urls: dict[str, str] = Field(default_factory=dict)  # nosemgrep: mutable-field-on-frozen-pydantic-model
 
     progress_webhook_url: str = ""
     status_webhook_url: str = ""
@@ -69,7 +111,7 @@ class DeploymentContext(BaseModel):
 
 
 class DeploymentResult(BaseModel):
-    """@public Base class for deployment results."""
+    """Base class for deployment results."""
 
     success: bool
     error: str | None = None
@@ -84,17 +126,26 @@ TResult = TypeVar("TResult", bound=DeploymentResult)
 class FlowCallable(Protocol):
     """Protocol for @pipeline_flow decorated functions."""
 
-    config: Any
     name: str
     __name__: str
+    input_document_types: list[type[Document]]
+    output_document_types: list[type[Document]]
+    estimated_minutes: int
 
-    def __call__(
-        self, project_name: str, documents: DocumentList, flow_options: FlowOptions
-    ) -> Any: ...
+    def __call__(self, project_name: str, documents: list[Document], flow_options: FlowOptions) -> Any:  # type: ignore[type-arg]
+        """Execute the flow with standard pipeline signature."""
+        ...
 
     def with_options(self, **kwargs: Any) -> "FlowCallable":
-        """Return a copy with overridden Prefect flow options."""
+        """Return a copy with overridden Prefect flow options (e.g., hooks)."""
         ...
+
+
+def _reattach_flow_metadata(original: FlowCallable, target: Any) -> None:
+    """Reattach custom flow attributes that Prefect's with_options() may strip."""
+    for attr in ("input_document_types", "output_document_types", "estimated_minutes"):
+        if hasattr(original, attr) and not hasattr(target, attr):
+            setattr(target, attr, getattr(original, attr))
 
 
 @dataclass(slots=True)
@@ -118,7 +169,7 @@ class _StatusWebhookHook:
             "flow_name": self.flow_name,
             "state": state.type.value if hasattr(state.type, "value") else str(state.type),
             "state_name": state.name or "",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -127,11 +178,44 @@ class _StatusWebhookHook:
             logger.warning(f"Status webhook failed: {e}")
 
 
-class PipelineDeployment(Generic[TOptions, TResult]):
-    """@public Base class for pipeline deployments.
+def _validate_flow_chain(deployment_name: str, flows: list[Any]) -> None:
+    """Validate that each flow's input types are satisfiable by preceding flows' outputs.
 
-    Features enabled by default when URLs/storage provided:
-    - Per-flow caching: Skip flows if outputs exist in storage
+    Simulates a type pool: starts with the first flow's input types, adds each flow's
+    output types after processing. For subsequent flows, each required input type must
+    be satisfiable by at least one type in the pool (via issubclass).
+    """
+    type_pool: set[type[Document]] = set()
+
+    for i, flow_fn in enumerate(flows):
+        input_types: list[type[Document]] = getattr(flow_fn, "input_document_types", [])
+        output_types: list[type[Document]] = getattr(flow_fn, "output_document_types", [])
+        flow_name = getattr(flow_fn, "name", getattr(flow_fn, "__name__", f"flow[{i}]"))
+
+        if i == 0:
+            # First flow: its input types seed the pool
+            type_pool.update(input_types)
+        elif input_types:
+            # Subsequent flows: at least one declared input type must be satisfiable
+            # from the pool (union semantics — flow accepts any of the declared types)
+            any_satisfied = any(any(issubclass(available, t) for available in type_pool) for t in input_types)
+            if not any_satisfied:
+                input_names = sorted(t.__name__ for t in input_types)
+                pool_names = sorted(t.__name__ for t in type_pool) if type_pool else ["(empty)"]
+                raise TypeError(
+                    f"{deployment_name}: flow '{flow_name}' (step {i + 1}) requires input types "
+                    f"{input_names} but none are produced by preceding flows. "
+                    f"Available types: {pool_names}"
+                )
+
+        type_pool.update(output_types)
+
+
+class PipelineDeployment(Generic[TOptions, TResult]):
+    """Base class for pipeline deployments.
+
+    Features enabled by default:
+    - Per-flow resume: Skip flows if outputs exist in DocumentStore
     - Per-flow uploads: Upload documents after each flow
     - Prefect hooks: Attach state hooks if status_webhook_url provided
     - Upload on failure: Save partial results if pipeline fails
@@ -153,12 +237,9 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
         cls.name = class_name_to_deployment_name(cls.__name__)
 
-        options_type, result_type = extract_generic_params(cls)
+        options_type, result_type = extract_generic_params(cls, PipelineDeployment)
         if options_type is None or result_type is None:
-            raise TypeError(
-                f"{cls.__name__} must specify Generic parameters: "
-                f"class {cls.__name__}(PipelineDeployment[MyOptions, MyResult])"
-            )
+            raise TypeError(f"{cls.__name__} must specify Generic parameters: class {cls.__name__}(PipelineDeployment[MyOptions, MyResult])")
 
         cls.options_type = options_type
         cls.result_type = result_type
@@ -166,70 +247,38 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         if not cls.flows:
             raise TypeError(f"{cls.__name__}.flows cannot be empty")
 
+        # build_result must be implemented (not still abstract from PipelineDeployment)
+        build_result_fn = getattr(cls, "build_result", None)
+        if build_result_fn is None or getattr(build_result_fn, "__isabstractmethod__", False):
+            raise TypeError(f"{cls.__name__} must implement 'build_result' static method")
+
+        # No duplicate flows (by identity)
+        seen_ids: set[int] = set()
+        for flow_fn in cls.flows:
+            fid = id(flow_fn)
+            if fid in seen_ids:
+                flow_name = getattr(flow_fn, "name", getattr(flow_fn, "__name__", str(flow_fn)))
+                raise TypeError(f"{cls.__name__}.flows contains duplicate flow '{flow_name}'")
+            seen_ids.add(fid)
+
+        # Flow type chain validation: simulate a type pool
+        _validate_flow_chain(cls.__name__, cls.flows)
+
     @staticmethod
     @abstractmethod
-    def build_result(project_name: str, documents: DocumentList, options: TOptions) -> TResult:
-        """Extract typed result from accumulated pipeline documents."""
+    def build_result(project_name: str, documents: list[Document], options: TOptions) -> TResult:
+        """Extract typed result from pipeline documents loaded from DocumentStore."""
         ...
 
-    async def provision_storage(
-        self,
-        project_name: str,
-        documents: DocumentList,
-        options: TOptions,
-        context: DeploymentContext,
-    ) -> str:
-        """Provision GCS storage bucket based on project name and content hash.
-
-        Default: Creates `{project}-{date}-{hash}` bucket on GCS.
-        Returns empty string if GCS is unavailable or creation fails.
-        Override for custom storage provisioning logic.
-        """
-        if not documents:
-            return ""
-
-        try:
-            from ai_pipeline_core.storage.storage import GcsStorage  # noqa: PLC0415
-        except ImportError:
-            return ""
-
-        content_hash = sha256(b"".join(sorted(d.content for d in documents))).hexdigest()[:6]
-        base = re.sub(r"[^a-z0-9-]", "-", project_name.lower()).strip("-") or "project"
-        today = datetime.now(timezone.utc).strftime("%y-%m-%d")
-        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%y-%m-%d")
-
-        today_bucket = f"{base[:30]}-{today}-{content_hash}"
-        yesterday_bucket = f"{base[:30]}-{yesterday}-{content_hash}"
-
-        # Try today's bucket, then yesterday's, then create new
-        for bucket_name in (today_bucket, yesterday_bucket):
-            try:
-                storage = GcsStorage(bucket_name)
-                if await storage.list(recursive=False):
-                    logger.info(f"Using existing bucket: {bucket_name}")
-                    return f"gs://{bucket_name}"
-            except Exception:
-                continue
-
-        try:
-            storage = GcsStorage(today_bucket)
-            await storage.create_bucket()
-            logger.info(f"Created new bucket: {today_bucket}")
-            return f"gs://{today_bucket}"
-        except Exception as e:
-            logger.warning(f"Failed to provision GCS storage: {e}")
-            return ""
-
-    async def _load_cached_output(
-        self, flow_fn: FlowCallable, storage_uri: str
-    ) -> DocumentList | None:
-        """Load cached outputs if they exist. Override for custom cache logic."""
-        try:
-            output_type = flow_fn.config.OUTPUT_DOCUMENT_TYPE
-            docs = await flow_fn.config.load_documents_by_type(storage_uri, [output_type])
-            return docs if docs else None
-        except Exception:
-            return None
+    def _all_document_types(self) -> list[type[Document]]:
+        """Collect all document types from all flows (inputs + outputs), deduplicated."""
+        types: dict[str, type[Document]] = {}
+        for flow_fn in self.flows:
+            for t in getattr(flow_fn, "input_document_types", []):
+                types[t.__name__] = t
+            for t in getattr(flow_fn, "output_document_types", []):
+                types[t.__name__] = t
+        return list(types.values())
 
     def _build_status_hooks(
         self,
@@ -262,7 +311,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         context: DeploymentContext,
         flow_run_id: str,
         project_name: str,
-        storage_uri: str,
         step: int,
         total_steps: int,
         flow_name: str,
@@ -271,15 +319,19 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         message: str = "",
     ) -> None:
         """Send progress webhook and update flow run labels."""
-        progress = round((step - 1 + step_progress) / total_steps, 4)
+        # Use estimated_minutes for weighted progress calculation
+        flow_minutes = [getattr(f, "estimated_minutes", 1) for f in self.flows]
+        total_minutes = sum(flow_minutes) or 1
+        completed_minutes = sum(flow_minutes[: max(step - 1, 0)])
+        current_flow_minutes = flow_minutes[step - 1] if step - 1 < len(flow_minutes) else 1
+        progress = round(max(0.0, min(1.0, (completed_minutes + current_flow_minutes * step_progress) / total_minutes)), 4)
 
         if context.progress_webhook_url:
             payload = ProgressRun(
                 flow_run_id=UUID(flow_run_id) if flow_run_id else UUID(int=0),
                 project_name=project_name,
                 state="RUNNING",
-                timestamp=datetime.now(timezone.utc),
-                storage_uri=storage_uri,
+                timestamp=datetime.now(UTC),
                 step=step,
                 total_steps=total_steps,
                 flow_name=flow_name,
@@ -316,7 +368,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         context: DeploymentContext,
         flow_run_id: str,
         project_name: str,
-        storage_uri: str,
         result: TResult | None,
         error: str | None,
     ) -> None:
@@ -324,7 +375,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         if not context.completion_webhook_url:
             return
         try:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             frid = UUID(flow_run_id) if flow_run_id else UUID(int=0)
             payload: CompletedRun | FailedRun
             if result is not None:
@@ -332,7 +383,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     flow_run_id=frid,
                     project_name=project_name,
                     timestamp=now,
-                    storage_uri=storage_uri,
                     state="COMPLETED",
                     result=DeploymentResultData.model_validate(result.model_dump()),
                 )
@@ -341,7 +391,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     flow_run_id=frid,
                     project_name=project_name,
                     timestamp=now,
-                    storage_uri=storage_uri,
                     state="FAILED",
                     error=error or "Unknown error",
                 )
@@ -353,27 +402,24 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     async def run(
         self,
         project_name: str,
-        documents: str | DocumentList,
+        documents: list[Document],
         options: TOptions,
         context: DeploymentContext,
     ) -> TResult:
-        """Execute flows with caching, uploads, and webhooks enabled by default."""
-        from prefect import runtime  # noqa: PLC0415
+        """Execute all flows with resume, per-flow uploads, and webhooks.
 
+        Args:
+            project_name: Unique identifier for this pipeline run (used as run_scope).
+            documents: Initial input documents for the first flow.
+            options: Flow options passed to each flow.
+            context: Deployment context with webhook URLs and document upload config.
+
+        Returns:
+            Typed deployment result built from all pipeline documents.
+        """
+        store = get_document_store()
         total_steps = len(self.flows)
-        flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else ""  # pyright: ignore[reportAttributeAccessIssue]
-
-        # Resolve storage URI and documents
-        if isinstance(documents, str):
-            storage_uri = documents
-            docs = await self.flows[0].config.load_documents(storage_uri)
-        else:
-            docs = documents
-            storage_uri = await self.provision_storage(project_name, docs, options, context)
-            if storage_uri and docs:
-                await self.flows[0].config.save_documents(
-                    storage_uri, docs, validate_output_type=False
-                )
+        flow_run_id: str = str(runtime.flow_run.get_id()) if runtime.flow_run else ""  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
 
         # Write identity labels for polling endpoint
         if flow_run_id:
@@ -381,62 +427,80 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 async with get_client() as client:
                     await client.update_flow_run_labels(
                         flow_run_id=UUID(flow_run_id),
-                        labels={
-                            "pipeline.project_name": project_name,
-                            "pipeline.storage_uri": storage_uri,
-                        },
+                        labels={"pipeline.project_name": project_name},
                     )
             except Exception as e:
                 logger.warning(f"Identity label update failed: {e}")
 
         # Download additional input documents
+        input_docs = list(documents)
         if context.input_documents_urls:
-            first_input_type = self.flows[0].config.INPUT_DOCUMENT_TYPES[0]
-            downloaded = await download_documents(context.input_documents_urls, first_input_type)
-            docs = DocumentList(list(docs) + list(downloaded))
+            downloaded = await download_documents(list(context.input_documents_urls))
+            input_docs.extend(downloaded)
 
-        accumulated_docs = docs
+        # Compute run scope AFTER downloads so the fingerprint includes all inputs
+        run_scope = _compute_run_scope(project_name, input_docs, options)
+
+        if not store and total_steps > 1:
+            logger.warning("No DocumentStore configured for multi-step pipeline — intermediate outputs will not accumulate between flows")
+
         completion_sent = False
 
+        # Tracking lifecycle
+        tracking_svc = None
+        run_uuid: UUID | None = None
+        run_failed = False
         try:
+            tracking_svc = get_tracking_service()
+            if tracking_svc:
+                run_uuid = UUID(flow_run_id) if flow_run_id else uuid4()
+                tracking_svc.set_run_context(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
+                tracking_svc.track_run_start(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
+        except Exception:
+            tracking_svc = None
+
+        # Set RunContext for the entire pipeline run
+        run_token = set_run_context(RunContext(run_scope=run_scope))
+        try:
+            # Save initial input documents to store
+            if store and input_docs:
+                await store.save_batch(input_docs, run_scope)
+
             for step, flow_fn in enumerate(self.flows, start=1):
                 flow_name = getattr(flow_fn, "name", flow_fn.__name__)
-                flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else ""  # pyright: ignore[reportAttributeAccessIssue]
+                flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else ""  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
 
-                # Per-flow caching: check if outputs exist
-                if storage_uri:
-                    cached = await self._load_cached_output(flow_fn, storage_uri)
-                    if cached is not None:
-                        logger.info(f"[{step}/{total_steps}] Cache hit: {flow_name}")
-                        accumulated_docs = DocumentList(list(accumulated_docs) + list(cached))
+                # Resume check: skip if output documents already exist in store
+                output_types = getattr(flow_fn, "output_document_types", [])
+                if store and output_types:
+                    all_outputs_exist = all([await store.has_documents(run_scope, ot) for ot in output_types])
+                    if all_outputs_exist:
+                        logger.info(f"[{step}/{total_steps}] Resume: skipping {flow_name} (outputs exist)")
                         await self._send_progress(
                             context,
                             flow_run_id,
                             project_name,
-                            storage_uri,
                             step,
                             total_steps,
                             flow_name,
                             "cached",
                             step_progress=1.0,
-                            message=f"Loaded from cache: {flow_name}",
+                            message=f"Resumed from store: {flow_name}",
                         )
                         continue
 
                 # Prefect state hooks
                 active_flow = flow_fn
                 if context.status_webhook_url:
-                    hooks = self._build_status_hooks(
-                        context, flow_run_id, project_name, step, total_steps, flow_name
-                    )
+                    hooks = self._build_status_hooks(context, flow_run_id, project_name, step, total_steps, flow_name)
                     active_flow = flow_fn.with_options(**hooks)
+                    _reattach_flow_metadata(flow_fn, active_flow)
 
                 # Progress: started
                 await self._send_progress(
                     context,
                     flow_run_id,
                     project_name,
-                    storage_uri,
                     step,
                     total_steps,
                     flow_name,
@@ -447,40 +511,34 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
                 logger.info(f"[{step}/{total_steps}] Starting: {flow_name}")
 
-                # Load documents for this flow
-                if storage_uri:
-                    current_docs = await flow_fn.config.load_documents(storage_uri)
+                # Load input documents from store
+                input_types = getattr(flow_fn, "input_document_types", [])
+                if store and input_types:
+                    current_docs = await store.load(run_scope, input_types)
                 else:
-                    current_docs = accumulated_docs
+                    current_docs = input_docs
 
                 try:
-                    new_docs = await active_flow(project_name, current_docs, options)
+                    await active_flow(project_name, current_docs, options)
                 except Exception as e:
                     # Upload partial results on failure
-                    if context.output_documents_urls:
-                        await upload_documents(accumulated_docs, context.output_documents_urls)
-                    await self._send_completion(
-                        context, flow_run_id, project_name, storage_uri, result=None, error=str(e)
-                    )
+                    if context.output_documents_urls and store:
+                        all_docs = await store.load(run_scope, self._all_document_types())
+                        await upload_documents(all_docs, context.output_documents_urls)
+                    await self._send_completion(context, flow_run_id, project_name, result=None, error=str(e))
                     completion_sent = True
                     raise
 
-                # Save to storage
-                if storage_uri:
-                    await flow_fn.config.save_documents(storage_uri, new_docs)
-
-                accumulated_docs = DocumentList(list(accumulated_docs) + list(new_docs))
-
-                # Per-flow upload
-                if context.output_documents_urls:
-                    await upload_documents(new_docs, context.output_documents_urls)
+                # Per-flow upload (load from store since @pipeline_flow saves there)
+                if context.output_documents_urls and store and output_types:
+                    flow_docs = await store.load(run_scope, output_types)
+                    await upload_documents(flow_docs, context.output_documents_urls)
 
                 # Progress: completed
                 await self._send_progress(
                     context,
                     flow_run_id,
                     project_name,
-                    storage_uri,
                     step,
                     total_steps,
                     flow_name,
@@ -491,43 +549,68 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
                 logger.info(f"[{step}/{total_steps}] Completed: {flow_name}")
 
-            result = self.build_result(project_name, accumulated_docs, options)
-            await self._send_completion(
-                context, flow_run_id, project_name, storage_uri, result=result, error=None
-            )
+            # Build result from all documents in store
+            if store:
+                all_docs = await store.load(run_scope, self._all_document_types())
+            else:
+                all_docs = input_docs
+            result = self.build_result(project_name, all_docs, options)
+            await self._send_completion(context, flow_run_id, project_name, result=result, error=None)
             return result
 
         except Exception as e:
+            run_failed = True
             if not completion_sent:
-                await self._send_completion(
-                    context, flow_run_id, project_name, storage_uri, result=None, error=str(e)
-                )
+                await self._send_completion(context, flow_run_id, project_name, result=None, error=str(e))
             raise
+        finally:
+            reset_run_context(run_token)
+            store = get_document_store()
+            if store:
+                with contextlib.suppress(Exception):
+                    store.flush()
+            if (svc := tracking_svc) is not None and run_uuid is not None:
+                with contextlib.suppress(Exception):
+                    svc.track_run_end(run_id=run_uuid, status=RunStatus.FAILED if run_failed else RunStatus.COMPLETED)
+                    svc.flush()
 
     @final
     def run_local(
         self,
         project_name: str,
-        documents: str | DocumentList,
+        documents: list[Document],
         options: TOptions,
         context: DeploymentContext | None = None,
         output_dir: Path | None = None,
     ) -> TResult:
-        """Run locally with Prefect test harness."""
+        """Run locally with Prefect test harness and in-memory document store.
+
+        Args:
+            project_name: Pipeline run identifier.
+            documents: Initial input documents.
+            options: Flow options.
+            context: Optional deployment context (defaults to empty).
+            output_dir: Optional directory for writing result.json.
+
+        Returns:
+            Typed deployment result.
+        """
         if context is None:
             context = DeploymentContext()
 
-        # If output_dir provided and documents is DocumentList, use output_dir as storage
-        if output_dir and isinstance(documents, DocumentList):
-            output_dir.mkdir(parents=True, exist_ok=True)
-            documents = str(output_dir)
-
-        with prefect_test_harness():
-            with disable_run_logger():
-                result = asyncio.run(self.run(project_name, documents, options, context))
-
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
+
+        store = MemoryDocumentStore()
+        set_document_store(store)
+        try:
+            with prefect_test_harness(), disable_run_logger():
+                result = asyncio.run(self.run(project_name, documents, options, context))
+        finally:
+            store.shutdown()
+            set_document_store(None)
+
+        if output_dir:
             (output_dir / "result.json").write_text(result.model_dump_json(indent=2))
 
         return result
@@ -535,19 +618,26 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     @final
     def run_cli(
         self,
-        initializer: Callable[[TOptions], tuple[str, DocumentList]] | None = None,
+        initializer: Callable[[TOptions], tuple[str, list[Document]]] | None = None,
         trace_name: str | None = None,
     ) -> None:
-        """Execute pipeline from CLI arguments with --start/--end step control."""
+        """Execute pipeline from CLI arguments with --start/--end step control.
+
+        Args:
+            initializer: Optional callback returning (project_name, documents) from options.
+            trace_name: Optional Laminar trace span name prefix.
+        """
         if len(sys.argv) == 1:
             sys.argv.append("--help")
 
         setup_logging()
         try:
-            Laminar.initialize()
-            logger.info("LMNR tracing initialized.")
+            initialize_observability()
+            logger.info("Observability initialized.")
         except Exception as e:
-            logger.warning(f"Failed to initialize LMNR: {e}")
+            logger.warning(f"Failed to initialize observability: {e}")
+            with contextlib.suppress(Exception):
+                Laminar.initialize(export_timeout_seconds=15)
 
         deployment = self
 
@@ -563,27 +653,50 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             project_name: str | None = None
             start: int = 1
             end: int | None = None
+            no_trace: bool = False
 
             model_config = SettingsConfigDict(frozen=True, extra="ignore")
 
         opts = cast(TOptions, _CliOptions())  # type: ignore[reportCallIssue]
 
-        wd: Path = getattr(opts, "working_directory")
+        wd = cast(Path, opts.working_directory)  # pyright: ignore[reportAttributeAccessIssue]
         wd.mkdir(parents=True, exist_ok=True)
 
-        project_name = getattr(opts, "project_name") or wd.name
+        project_name = cast(str, opts.project_name or wd.name)  # pyright: ignore[reportAttributeAccessIssue]
         start_step = getattr(opts, "start", 1)
         end_step = getattr(opts, "end", None)
+        no_trace = getattr(opts, "no_trace", False)
 
-        # Initialize documents and save to working directory
-        if initializer and start_step == 1:
-            _, documents = initializer(opts)
-            if documents and self.flows:
-                first_config = getattr(self.flows[0], "config", None)
-                if first_config:
-                    asyncio.run(
-                        first_config.save_documents(str(wd), documents, validate_output_type=False)
-                    )
+        # Set up local debug tracing (writes to <working_dir>/.trace)
+        debug_processor: LocalDebugSpanProcessor | None = None
+        if not no_trace:
+            try:
+                trace_path = wd / ".trace"
+                trace_path.mkdir(parents=True, exist_ok=True)
+                debug_config = TraceDebugConfig(path=trace_path, max_traces=20)
+                debug_writer = LocalTraceWriter(debug_config)
+                debug_processor = LocalDebugSpanProcessor(debug_writer)
+                provider: Any = otel_trace.get_tracer_provider()
+                if hasattr(provider, "add_span_processor"):
+                    provider.add_span_processor(debug_processor)
+                    logger.info(f"Local debug tracing enabled at {trace_path}")
+            except Exception as e:
+                logger.warning(f"Failed to set up local debug tracing: {e}")
+                debug_processor = None
+
+        # Initialize document store — ClickHouse when configured, local filesystem otherwise
+        summary_generator = _build_summary_generator()
+        if settings.clickhouse_host:
+            store = create_document_store(settings, summary_generator=summary_generator)
+        else:
+            store = LocalDocumentStore(base_path=wd, summary_generator=summary_generator)
+        set_document_store(store)
+
+        # Initialize documents (always run initializer for run scope fingerprinting,
+        # even when start_step > 1, so --start N resumes find the correct scope)
+        initial_documents: list[Document] = []
+        if initializer:
+            _, initial_documents = initializer(opts)
 
         context = DeploymentContext()
 
@@ -604,11 +717,11 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             result = asyncio.run(
                 self._run_with_steps(
                     project_name=project_name,
-                    storage_uri=str(wd),
                     options=opts,
                     context=context,
                     start_step=start_step,
                     end_step=end_step,
+                    initial_documents=initial_documents,
                 )
             )
 
@@ -616,48 +729,106 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         result_file.write_text(result.model_dump_json(indent=2))
         logger.info(f"Result saved to {result_file}")
 
+        # Shutdown background workers (debug tracing, document summaries, tracking)
+        if debug_processor is not None:
+            debug_processor.shutdown()
+        store = get_document_store()
+        if store:
+            store.shutdown()
+        tracking_svc = get_tracking_service()
+        if tracking_svc:
+            tracking_svc.shutdown()
+
     async def _run_with_steps(
         self,
         project_name: str,
-        storage_uri: str,
         options: TOptions,
         context: DeploymentContext,
         start_step: int = 1,
         end_step: int | None = None,
+        initial_documents: list[Document] | None = None,
     ) -> TResult:
-        """Run pipeline with start/end step control for CLI resume support."""
+        """Run pipeline with start/end step control and DocumentStore-based resume."""
+        store = get_document_store()
         if end_step is None:
             end_step = len(self.flows)
 
         total_steps = len(self.flows)
-        accumulated_docs = DocumentList([])
+        run_scope = _compute_run_scope(project_name, initial_documents or [], options)
 
-        for i in range(start_step - 1, end_step):
-            step = i + 1
-            flow_fn = self.flows[i]
-            flow_name = getattr(flow_fn, "name", flow_fn.__name__)
-            logger.info(f"--- [Step {step}/{total_steps}] {flow_name} ---")
+        # Tracking lifecycle for CLI path
+        tracking_svc = None
+        run_uuid: UUID | None = None
+        run_failed = False
+        try:
+            tracking_svc = get_tracking_service()
+            if tracking_svc:
+                run_uuid = uuid4()
+                tracking_svc.set_run_context(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
+                tracking_svc.track_run_start(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
+        except Exception:
+            tracking_svc = None
 
-            # Check cache
-            cached = await self._load_cached_output(flow_fn, storage_uri)
-            if cached is not None:
-                logger.info(f"[{step}/{total_steps}] Cache hit: {flow_name}")
-                accumulated_docs = DocumentList(list(accumulated_docs) + list(cached))
-                continue
+        # Set RunContext for the entire pipeline run
+        run_token = set_run_context(RunContext(run_scope=run_scope))
+        try:
+            # Save initial documents to store
+            if store and initial_documents:
+                await store.save_batch(initial_documents, run_scope)
 
-            current_docs = await flow_fn.config.load_documents(storage_uri)
-            new_docs = await flow_fn(project_name, current_docs, options)
-            await flow_fn.config.save_documents(storage_uri, new_docs)
-            accumulated_docs = DocumentList(list(accumulated_docs) + list(new_docs))
+            for i in range(start_step - 1, end_step):
+                step = i + 1
+                flow_fn = self.flows[i]
+                flow_name = getattr(flow_fn, "name", flow_fn.__name__)
+                logger.info(f"--- [Step {step}/{total_steps}] {flow_name} ---")
 
-        return self.build_result(project_name, accumulated_docs, options)
+                # Resume check: skip if output documents already exist
+                output_types = getattr(flow_fn, "output_document_types", [])
+                if store and output_types:
+                    all_outputs_exist = all([await store.has_documents(run_scope, ot) for ot in output_types])
+                    if all_outputs_exist:
+                        logger.info(f"--- [Step {step}/{total_steps}] Skipping {flow_name} (outputs exist) ---")
+                        continue
+
+                # Load inputs from store
+                input_types = getattr(flow_fn, "input_document_types", [])
+                if store and input_types:
+                    current_docs = await store.load(run_scope, input_types)
+                else:
+                    current_docs = initial_documents or []
+
+                await flow_fn(project_name, current_docs, options)
+
+            # Build result from all documents in store
+            if store:
+                all_docs = await store.load(run_scope, self._all_document_types())
+            else:
+                all_docs = initial_documents or []
+            return self.build_result(project_name, all_docs, options)
+        except Exception:
+            run_failed = True
+            raise
+        finally:
+            reset_run_context(run_token)
+            store = get_document_store()
+            if store:
+                with contextlib.suppress(Exception):
+                    store.flush()
+            if (svc := tracking_svc) is not None and run_uuid is not None:
+                with contextlib.suppress(Exception):
+                    svc.track_run_end(run_id=run_uuid, status=RunStatus.FAILED if run_failed else RunStatus.COMPLETED)
+                    svc.flush()
 
     @final
     def as_prefect_flow(self) -> Callable[..., Any]:
-        """Generate Prefect flow for production deployment."""
+        """Generate a Prefect flow for production deployment.
+
+        Returns:
+            Async Prefect flow callable that initializes DocumentStore from settings.
+        """
         deployment = self
 
-        @flow(  # pyright: ignore[reportUntypedFunctionDecorator]
+        @flow(
             name=self.name,
             flow_run_name=f"{self.name}-{{project_name}}",
             persist_result=True,
@@ -665,11 +836,20 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         )
         async def _deployment_flow(
             project_name: str,
-            documents: str | DocumentList,
+            documents: list[Document],
             options: FlowOptions,
             context: DeploymentContext,
         ) -> DeploymentResult:
-            return await deployment.run(project_name, documents, cast(Any, options), context)
+            store = create_document_store(
+                settings,
+                summary_generator=_build_summary_generator(),
+            )
+            set_document_store(store)
+            try:
+                return await deployment.run(project_name, documents, cast(Any, options), context)
+            finally:
+                store.shutdown()
+                set_document_store(None)
 
         return _deployment_flow
 

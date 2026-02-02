@@ -1,7 +1,5 @@
 """Unified pipeline run response contract.
 
-@public
-
 Single source of truth for the response shape used by both
 webhook push (ai-pipeline-core) and polling pull (unified-middleware).
 """
@@ -16,12 +14,10 @@ from pydantic import BaseModel, ConfigDict, Discriminator
 class _RunBase(BaseModel):
     """Common fields on every run response variant."""
 
-    type: str
     flow_run_id: UUID
     project_name: str
     state: str  # PENDING, RUNNING, COMPLETED, FAILED, CRASHED, CANCELLED
     timestamp: datetime
-    storage_uri: str = ""
 
     model_config = ConfigDict(frozen=True)
 
@@ -29,19 +25,19 @@ class _RunBase(BaseModel):
 class PendingRun(_RunBase):
     """Pipeline queued or running but no progress reported yet."""
 
-    type: Literal["pending"] = "pending"  # pyright: ignore[reportIncompatibleVariableOverride]
+    type: Literal["pending"] = "pending"
 
 
 class ProgressRun(_RunBase):
     """Pipeline running with step-level progress data."""
 
-    type: Literal["progress"] = "progress"  # pyright: ignore[reportIncompatibleVariableOverride]
+    type: Literal["progress"] = "progress"
     step: int
     total_steps: int
     flow_name: str
     status: str  # "started", "completed", "cached"
-    progress: float  # overall 0.0–1.0
-    step_progress: float  # within step 0.0–1.0
+    progress: float  # overall 0.0-1.0
+    step_progress: float  # within step 0.0-1.0
     message: str
 
 
@@ -57,14 +53,14 @@ class DeploymentResultData(BaseModel):
 class CompletedRun(_RunBase):
     """Pipeline finished (Prefect COMPLETED). Check result.success for business outcome."""
 
-    type: Literal["completed"] = "completed"  # pyright: ignore[reportIncompatibleVariableOverride]
+    type: Literal["completed"] = "completed"
     result: DeploymentResultData
 
 
 class FailedRun(_RunBase):
     """Pipeline crashed — execution error, not business logic."""
 
-    type: Literal["failed"] = "failed"  # pyright: ignore[reportIncompatibleVariableOverride]
+    type: Literal["failed"] = "failed"
     error: str
     result: DeploymentResultData | None = None
 

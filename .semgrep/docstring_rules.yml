@@ -1,0 +1,24 @@
+rules:
+  - id: no-example-in-docstring
+    pattern-regex: '"""[\s\S]*?\bExample:\s*\n[\s\S]*?"""'
+    message: "Docstrings must not contain Example: blocks (tests serve as examples per .specification/documentation.md)"
+    severity: WARNING
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+
+  - id: no-key-features-in-docstring
+    pattern-regex: '"""[\s\S]*?\bKey features:\s*\n[\s\S]*?"""'
+    message: "Docstrings must not contain 'Key features:' lists"
+    severity: WARNING
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+
+  - id: no-note-in-docstring
+    pattern-regex: '"""[\s\S]*?\bNote:\s*\n[\s\S]*?"""'
+    message: "Docstrings must not contain 'Note:' sections — incorporate into main description"
+    severity: WARNING
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]

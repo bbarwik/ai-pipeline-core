@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.3.4"
+version = "0.4.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -22,16 +22,18 @@ classifiers = [
 dependencies = [
     "httpx>=0.28.1",
     "Jinja2>=3.1.6",
-    "lmnr>=0.7.18",
-    "openai>=1.109.1",
-    "Pillow>=10.0.0",
-    "prefect>=3.4.21",
-    "prefect-gcp[cloud_storage]>=0.6.10",
-    "pydantic-settings>=2.10.1",
-    "pydantic>=2.11.9",
+    "lmnr>=0.7.37",
+    "openai>=2.16.0",
+    "Pillow>=12.1.0",
+    "prefect>=3.6.15",
+    "pydantic-settings>=2.12.0",
+    "pydantic>=2.12.5",
     "python-magic>=0.4.27",
-    "ruamel.yaml>=0.18.14",
+    "ruamel.yaml>=0.19.1",
     "tiktoken>=0.12.0",
+    "clickhouse-connect>=0.10.0",
+    "opentelemetry-sdk>=1.39.1",
+    "prefect-gcp>=0.6.15",
 ]
 
 [project.urls]
@@ -41,27 +43,30 @@ Issues = "https://github.com/bbarwik/ai-pipeline-core/issues"
 
 [project.optional-dependencies]
 dev = [
-    "basedpyright>=1.31.2",
+    "basedpyright==1.37.3",
     "bump2version>=1.0.1",
-    "interrogate>=1.5.0",
-    "pydoc-markdown[jinja]>=4.8.0",
+    "interrogate==1.7.0",
     "pre-commit>=4.3.0",
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.14.0",
     "pytest-xdist>=3.8.0",
     "pytest>=8.4.1",
-    "ruff>=0.14.1",
+    "ruff==0.14.14",
+    "testcontainers[clickhouse]>=4.0.0",
+    "vulture==2.14",
 ]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-q -m 'not integration'"
+addopts = "-q -n 8 -m 'not integration and not clickhouse'"
 testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+    "clickhouse: marks tests requiring a ClickHouse container (deselect with '-m \"not clickhouse\"')",
+    "ai_docs: test included as example in .ai-docs/ guides",
 ]
 
 [tool.coverage.run]
@@ -75,32 +80,83 @@ skip_covered = false
 
 [tool.ruff]
 # Configuration for the Ruff linter and formatter
-line-length = 100
+line-length = 160
 target-version = "py312"
 preview = true  # Required for DOC (pydoclint-derived) rules
 exclude = [".tmp", "build", "dist", ".venv", "venv", "__pycache__", "scripts"]
 
 [tool.ruff.lint]
-# Select the rules you want to enforce. 'E' and 'F' are standard.
-# 'I' is for import sorting. 'TID' is for banned imports. 'T20' is for print detection.
-# 'D' is for docstring enforcement. 'DOC' is for docstring content validation.
-select = ["E", "F", "I", "TID252", "T20", "D", "DOC"]
-extend-select = ["PLC0415"]
-# Ignore verbose docstring requirements - type hints are self-documenting
-ignore = ["DOC201", "DOC501", "DOC502", "D105"]
+select = [
+    "E",       # pycodestyle errors
+    "F",       # pyflakes
+    "I",       # isort
+    "TID",     # flake8-tidy-imports (was TID252 only — now full TID to enable TID251 banned-api)
+    "T20",     # print detection
+    "D",       # pydocstyle
+    "DOC",     # pydoclint
+    "B",       # flake8-bugbear — mutable defaults, loop var capture
+    "SIM",     # flake8-simplify — redundant control flow
+    "ARG",     # flake8-unused-arguments
+    "RUF",     # ruff-specific — RUF012 mutable class attrs, RUF100 unused noqa
+    "UP",      # pyupgrade — Python 3.12+ idioms
+    "PERF",    # perflint — performance anti-patterns
+    "C4",      # flake8-comprehensions
+    "FBT",     # flake8-boolean-trap
+    "S",       # flake8-bandit — security baseline
+    "C90",     # mccabe complexity
+    "PT",      # flake8-pytest-style
+    "PLC",     # pylint conventions (subsumes PLC0415)
+    "PLE",     # pylint errors
+    "PLW",     # pylint warnings
+    "PLR",     # pylint refactoring
+    "PIE",     # flake8-pie
+    "RET",     # flake8-return
+    "A",       # flake8-builtins — shadowing builtins
+    "ASYNC",   # flake8-async — blocking calls in async
+    "TRY",     # tryceratops — exception patterns
+]
+ignore = [
+    "DOC201", "DOC501", "DOC502", "D105",
+    "S101",    # assert used — intentional in non-test code
+    "RET504",  # unnecessary variable before return — readability preference
+    "ARG002",  # unused method argument — Pydantic validators have required signatures
+    "FBT001",  # boolean positional arg — too strict for internal helpers
+    "PLR2004", # magic value in comparison — too noisy for constants
+    "PLR0913", # too many arguments — some constructors legitimately need many params
+    "TRY003",  # long exception messages — project uses detailed errors by design
+    "D107",    # __init__ docstring — interrogate handles with ignore-init-method (3/3)
+    "D417",    # missing arg descriptions — type hints suffice (3/3)
+    "SIM108",  # ternary — reduces readability for multi-line (3/3)
+    "C420",    # dict.fromkeys — mutable default trap with adjacent code (2-1)
+    "TRY301",  # abstract raise — raise IS the validation in try/except (2-1)
+    "TRY300",  # move to else — changes error handling semantics (2-1)
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-# Exclude tests from documentation requirements and allow print statements and imports inside functions
-"tests/**/*.py" = ["T20", "D", "DOC", "PLC0415"]
-# Exclude examples and documentation helpers from documentation requirements
-"examples/**/*.py" = ["D", "DOC", "PLC0415"]
+"tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "TID251"]
+"examples/**/*.py" = ["D", "DOC", "PLC0415", "S", "ARG", "T20", "RUF029"]
 "dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
-# Allow print statements in CLI for user-facing error messages
-"ai_pipeline_core/deployment/base.py" = ["T20"]
-"ai_pipeline_core/utils/deploy.py" = ["T20"]
+".vulture_whitelist.py" = ["B018", "E402", "F401", "D"]
+"ai_pipeline_core/__init__.py" = ["RUF067"]
+"ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046"]
+"ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC2701", "S404", "S602", "S603"]
+"ai_pipeline_core/deployment/remote.py" = ["UP047"]
+"ai_pipeline_core/deployment/progress.py" = ["RUF029"]
+"ai_pipeline_core/documents/document.py" = ["PLR0904"]
+"ai_pipeline_core/document_store/factory.py" = ["F821", "PLC0415"]
+"ai_pipeline_core/document_store/clickhouse.py" = ["S608"]
+"ai_pipeline_core/document_store/protocol.py" = ["PLW0603"]
+"ai_pipeline_core/llm/client.py" = ["PLR0911", "RET505", "TRY203"]
+"ai_pipeline_core/observability/_debug/_content.py" = ["PLR1702", "C901", "PLR0912", "PLR0915", "PLR6301"]
+"ai_pipeline_core/observability/tracing.py" = ["C901", "PLR0912", "PLR0915", "PLR0914"]
+"ai_pipeline_core/pipeline/decorators.py" = ["C901", "PLR0912", "PLR0915", "S110", "SIM105"]
+"ai_pipeline_core/observability/_debug/_writer.py" = ["S112", "S324", "SIM116"]
+"ai_pipeline_core/logging/logging_config.py" = ["TID251"]
+"ai_pipeline_core/prompt_manager.py" = ["S701"]
+"ai_pipeline_core/docs_generator/cli.py" = ["T20"]
 
 [tool.ruff.format]
 # Use double quotes for strings
@@ -112,6 +168,9 @@ ban-relative-imports = "parents"
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "logging".msg = "Use from ai_pipeline_core.logging import get_pipeline_logger instead of import logging"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
 
 [tool.interrogate]
 fail-under = 100
@@ -130,13 +189,9 @@ ignore-semiprivate = true
 ignore-setters = true
 
 [tool.basedpyright]
-# Python version to target
 pythonVersion = "3.12"
-# Enable strict type checking
 typeCheckingMode = "strict"
-# Include paths for type checking
-include = ["ai_pipeline_core", "tests"]
-# Exclude patterns
+include = ["ai_pipeline_core"]
 exclude = [
     "**/__pycache__",
     "**/node_modules",
@@ -147,41 +202,33 @@ exclude = [
     "build",
     "dist",
 ]
-# Report missing imports as errors
 reportMissingImports = true
-# Report missing type stubs as warnings (not errors)
 reportMissingTypeStubs = "warning"
-# Report undefined variables as errors
 reportUndefinedVariable = true
-# Report unknown parameter types as warnings
-reportUnknownParameterType = "warning"
-# Report unknown argument types as warnings
-reportUnknownArgumentType = "warning"
-# Report unknown lambda types as warnings
-reportUnknownLambdaType = "warning"
-# Report unknown variable types as warnings
-reportUnknownVariableType = "warning"
-# Report unknown member access as warnings
-reportUnknownMemberType = "warning"
-# Report use of Any type as informational
-reportAny = "information"
-# Report unused imports as warnings
-reportUnusedImport = "warning"
-# Report unused variables as warnings
-reportUnusedVariable = "warning"
-# Report duplicate imports as warnings
-reportDuplicateImport = "warning"
-# Report incompatible method overrides as errors
 reportIncompatibleMethodOverride = "error"
-# Report incompatible variable overrides as errors
 reportIncompatibleVariableOverride = "error"
-# Report missing parameter types as warnings
-reportMissingParameterType = "warning"
-# Allow tests to import private internals for unit testing
+# Keep at "warning" — reportUnknown* are noisy due to third-party libs
+reportUnknownParameterType = "warning"
+reportUnknownArgumentType = "warning"
+reportUnknownLambdaType = "warning"
+reportUnknownVariableType = "warning"
+reportUnknownMemberType = "warning"
+reportAny = "information"
+# Keep at "warning" — tests import private internals
 reportPrivateUsage = "warning"
+# New rules
+reportUnnecessaryIsInstance = "warning"
+reportUnnecessaryTypeIgnoreComment = "error"
+reportUnnecessaryCast = "warning"
+reportUnnecessaryComparison = "warning"
+reportUnusedExpression = "error"
+reportUnreachable = "error"
+reportDeprecated = "warning"
+reportUnusedCoroutine = "error"
+reportImplicitStringConcatenation = false
 
 [tool.bumpversion]
-current_version = "0.3.4"
+current_version = "0.4.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"

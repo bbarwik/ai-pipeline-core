@@ -1,13 +1,11 @@
 """Integration tests for LLM functionality (requires API keys)."""
 
-import os
-
 import pytest
 from pydantic import BaseModel
 
 from ai_pipeline_core.llm import AIMessages, ModelOptions, generate, generate_structured
 from ai_pipeline_core.settings import settings
-from tests.test_helpers import ConcreteFlowDocument
+from tests.support.helpers import ConcreteDocument
 
 # Skip all tests in this file if API key not available
 pytestmark = pytest.mark.integration
@@ -17,9 +15,7 @@ pytestmark = pytest.mark.integration
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
 
 
-@pytest.mark.skipif(
-    not HAS_API_KEYS, reason="OpenAI API keys not configured in settings or .env file"
-)
+@pytest.mark.skipif(not HAS_API_KEYS, reason="OpenAI API keys not configured in settings or .env file")
 class TestLLMIntegration:
     """Integration tests that make real LLM calls."""
 
@@ -62,7 +58,7 @@ class TestLLMIntegration:
     @pytest.mark.asyncio
     async def test_document_in_context(self):
         """Test using a document as context."""
-        doc = ConcreteFlowDocument(
+        doc = ConcreteDocument(
             name="info.txt",
             content=b"The capital of France is Paris.",
             description="Geographic information",
@@ -131,37 +127,15 @@ class TestLLMIntegration:
         response = await generate(
             model="gemini-3-flash",
             messages=messages,
-            options=ModelOptions(
-                retries=2, retry_delay_seconds=1, timeout=10, max_completion_tokens=1000
-            ),
+            options=ModelOptions(retries=2, retry_delay_seconds=1, timeout=10, max_completion_tokens=1000),
         )
 
         assert response.content
 
     @pytest.mark.asyncio
-    @pytest.mark.skipif(
-        not os.getenv("LMNR_PROJECT_API_KEY"), reason="LMNR_PROJECT_API_KEY not set"
-    )
-    async def test_with_tracing(self):
-        """Test that tracing doesn't break generation."""
-        from ai_pipeline_core.tracing import trace
-
-        @trace(level="debug", tags=["test"])  # Mark as test to avoid polluting prod metrics
-        async def traced_generation():
-            messages = AIMessages(["Say 'traced'"])
-            return await generate(
-                model="gemini-3-flash",
-                messages=messages,
-                options=ModelOptions(max_completion_tokens=1000),
-            )
-
-        response = await traced_generation()
-        assert response.content
-
-    @pytest.mark.asyncio
     async def test_approximate_tokens_count(self):
         """Test approximate tokens count with real conversation."""
-        doc = ConcreteFlowDocument(
+        doc = ConcreteDocument(
             name="context.txt",
             content=b"This is important context information for the AI to use.",
         )

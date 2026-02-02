@@ -73,9 +73,7 @@ class TestCacheTTL:
         context = AIMessages(["context message"])
         messages = AIMessages(["query message"])
 
-        result = _process_messages(
-            context, messages, system_prompt="You are helpful", cache_ttl="180s"
-        )
+        result = _process_messages(context, messages, system_prompt="You are helpful", cache_ttl="180s")
 
         # System prompt should be first with structured content and cache_control
         assert result[0]["role"] == "system"
@@ -170,7 +168,7 @@ class TestCacheTTL:
         with patch("ai_pipeline_core.llm.client._generate") as mock_generate:
             mock_response = MagicMock()
             mock_response.content = "test response"
-            mock_response.get_laminar_metadata = lambda: {}
+            mock_response.get_laminar_metadata = dict
             mock_response.reasoning_content = ""
             mock_response.validate_output = lambda: None
             mock_generate.return_value = mock_response
@@ -184,9 +182,7 @@ class TestCacheTTL:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                loop.run_until_complete(
-                    _generate_with_retry("test-model", context, messages, options)
-                )
+                loop.run_until_complete(_generate_with_retry("test-model", context, messages, options))
             finally:
                 loop.close()
 

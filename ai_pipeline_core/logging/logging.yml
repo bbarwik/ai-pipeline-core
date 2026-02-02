@@ -48,7 +48,7 @@ loggers:
   ai_pipeline_core.llm:
     level: INFO
 
-  ai_pipeline_core.flow:
+  ai_pipeline_core.pipeline:
     level: INFO
 
   ai_pipeline_core.testing:

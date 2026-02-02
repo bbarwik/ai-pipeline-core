@@ -14,9 +14,7 @@ from .model_categories import ALL_MODELS
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
 
 # Filter models that support caching, only Gemini 2.5 for now due to explicit caching support
-CACHE_SUPPORTED_MODELS: tuple[ModelName, ...] = tuple(
-    model for model in ALL_MODELS if model in ["gemini-3-flash", "gemini-3-pro"]
-)
+CACHE_SUPPORTED_MODELS: tuple[ModelName, ...] = tuple(model for model in ALL_MODELS if model in ["gemini-3-flash", "gemini-3-pro"])
 
 # Skip all tests if API keys not configured
 pytestmark = [
@@ -131,10 +129,7 @@ async def test_prompt_caching(model: ModelName):
         assert cached_tokens > 0, f"Model {model} should have cached tokens"
     else:
         # Verify caching worked: second call should be cheaper
-        assert cost_2 < cost_1, (
-            f"Model {model} did not show cost reduction with caching: "
-            f"First call cost: {cost_1}, Second call cost: {cost_2}"
-        )
+        assert cost_2 < cost_1, f"Model {model} did not show cost reduction with caching: First call cost: {cost_1}, Second call cost: {cost_2}"
 
     # Also verify that prompt tokens are reported
     # (cached tokens are still counted but charged differently)

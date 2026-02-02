@@ -1,0 +1,198 @@
+"""Tests for Document serialize_model / from_dict with attachments."""
+
+import base64
+
+from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents.attachment import Attachment
+
+
+class SerFlowDoc(Document):
+    """Concrete Document for serialization tests."""
+
+
+# --- Binary fixtures ---
+
+PNG_HEADER = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+PDF_HEADER = b"%PDF-1.4\n%\xd3\xeb\xe9\xe1\n1 0 obj\n<</Type/Catalog>>\nendobj"
+
+
+class TestSerializeTextAttachment:
+    """Test serialization of text attachments."""
+
+    def test_text_attachment_fields(self):
+        att = Attachment(name="notes.txt", content=b"Hello world")
+        doc = SerFlowDoc(name="report.txt", content=b"body", attachments=(att,))
+        serialized = doc.serialize_model()
+
+        assert len(serialized["attachments"]) == 1
+        att_dict = serialized["attachments"][0]
+        assert att_dict["name"] == "notes.txt"
+        assert att_dict["content"] == "Hello world"
+        assert att_dict["content_encoding"] == "utf-8"
+        assert "text" in att_dict["mime_type"]
+        assert att_dict["size"] == len(b"Hello world")
+
+
+class TestSerializeBinaryAttachment:
+    """Test serialization of binary attachments."""
+
+    def test_binary_attachment_base64_encoding(self):
+        att = Attachment(name="image.png", content=PNG_HEADER)
+        doc = SerFlowDoc(name="report.txt", content=b"body", attachments=(att,))
+        serialized = doc.serialize_model()
+
+        att_dict = serialized["attachments"][0]
+        assert att_dict["content_encoding"] == "base64"
+        assert att_dict["content"] == base64.b64encode(PNG_HEADER).decode("ascii")
+        assert "image" in att_dict["mime_type"]
+        assert att_dict["size"] == len(PNG_HEADER)
+
+
+class TestSerializeAttachmentWithDescription:
+    """Test that description field is present in serialized attachment."""
+
+    def test_description_included(self):
+        att = Attachment(name="screenshot.jpg", content=PNG_HEADER, description="Homepage capture")
+        doc = SerFlowDoc(name="report.txt", content=b"body", attachments=(att,))
+        serialized = doc.serialize_model()
+
+        att_dict = serialized["attachments"][0]
+        assert att_dict["description"] == "Homepage capture"
+
+    def test_description_none_when_absent(self):
+        att = Attachment(name="file.txt", content=b"data")
+        doc = SerFlowDoc(name="report.txt", content=b"body", attachments=(att,))
+        serialized = doc.serialize_model()
+
+        att_dict = serialized["attachments"][0]
+        assert att_dict["description"] is None
+
+
+class TestSerializeWithoutAttachments:
+    """Test serialization when no attachments are present."""
+
+    def test_empty_attachments_list_in_output(self):
+        doc = SerFlowDoc(name="report.txt", content=b"body")
+        serialized = doc.serialize_model()
+        assert "attachments" in serialized
+        assert serialized["attachments"] == []
+
+
+class TestRoundtrip:
+    """Test serialize -> deserialize roundtrip preserves all fields."""
+
+    def test_text_attachment_roundtrip(self):
+        att = Attachment(name="notes.txt", content=b"Hello world", description="My notes")
+        doc = SerFlowDoc(name="report.txt", content=b"body text", attachments=(att,))
+        serialized = doc.serialize_model()
+        restored = SerFlowDoc.from_dict(serialized)
+
+        assert restored.name == doc.name
+        assert restored.content == doc.content
+        assert len(restored.attachments) == 1
+        assert restored.attachments[0].name == att.name
+        assert restored.attachments[0].content == att.content
+        assert restored.attachments[0].description == att.description
+
+    def test_binary_attachment_roundtrip(self):
+        att = Attachment(name="image.png", content=PNG_HEADER)
+        doc = SerFlowDoc(name="report.txt", content=b"body", attachments=(att,))
+        serialized = doc.serialize_model()
+        restored = SerFlowDoc.from_dict(serialized)
+
+        assert len(restored.attachments) == 1
+        assert restored.attachments[0].name == "image.png"
+        assert restored.attachments[0].content == PNG_HEADER
+
+    def test_no_attachments_roundtrip(self):
+        doc = SerFlowDoc(name="report.txt", content=b"body")
+        serialized = doc.serialize_model()
+        restored = SerFlowDoc.from_dict(serialized)
+
+        assert restored.attachments == ()
+        assert restored.content == doc.content
+
+    def test_sha256_preserved_after_roundtrip(self):
+        att = Attachment(name="a.txt", content=b"data")
+        doc = SerFlowDoc(name="test.txt", content=b"content", attachments=(att,))
+        serialized = doc.serialize_model()
+        restored = SerFlowDoc.from_dict(serialized)
+        assert restored.sha256 == doc.sha256
+
+
+class TestMultipleAttachmentsOrdering:
+    """Test that multiple attachments preserve order through serialization."""
+
+    def test_ordering_preserved(self):
+        atts = (
+            Attachment(name="first.txt", content=b"111"),
+            Attachment(name="second.txt", content=b"222"),
+            Attachment(name="third.txt", content=b"333"),
+        )
+        doc = SerFlowDoc(name="report.txt", content=b"body", attachments=atts)
+        serialized = doc.serialize_model()
+
+        assert len(serialized["attachments"]) == 3
+        assert serialized["attachments"][0]["name"] == "first.txt"
+        assert serialized["attachments"][1]["name"] == "second.txt"
+        assert serialized["attachments"][2]["name"] == "third.txt"
+
+    def test_ordering_preserved_through_roundtrip(self):
+        atts = (
+            Attachment(name="a.txt", content=b"aaa"),
+            Attachment(name="b.txt", content=b"bbb"),
+            Attachment(name="c.txt", content=b"ccc"),
+        )
+        doc = SerFlowDoc(name="report.txt", content=b"body", attachments=atts)
+        serialized = doc.serialize_model()
+        restored = SerFlowDoc.from_dict(serialized)
+
+        assert len(restored.attachments) == 3
+        for i, name in enumerate(["a.txt", "b.txt", "c.txt"]):
+            assert restored.attachments[i].name == name
+
+
+class TestMixedAttachments:
+    """Test serialization with mixed text and binary attachments."""
+
+    def test_mixed_text_and_binary_serialized_correctly(self):
+        text_att = Attachment(name="notes.txt", content=b"text content")
+        binary_att = Attachment(name="image.png", content=PNG_HEADER)
+        pdf_att = Attachment(name="doc.pdf", content=PDF_HEADER)
+        doc = SerFlowDoc(
+            name="report.txt",
+            content=b"body",
+            attachments=(text_att, binary_att, pdf_att),
+        )
+        serialized = doc.serialize_model()
+
+        assert len(serialized["attachments"]) == 3
+        # Text attachment
+        assert serialized["attachments"][0]["content_encoding"] == "utf-8"
+        assert serialized["attachments"][0]["content"] == "text content"
+        # Binary (PNG) attachment
+        assert serialized["attachments"][1]["content_encoding"] == "base64"
+        expected_png = base64.b64encode(PNG_HEADER).decode("ascii")
+        assert serialized["attachments"][1]["content"] == expected_png
+        # Binary (PDF) attachment
+        assert serialized["attachments"][2]["content_encoding"] == "base64"
+        expected_pdf = base64.b64encode(PDF_HEADER).decode("ascii")
+        assert serialized["attachments"][2]["content"] == expected_pdf
+
+    def test_mixed_roundtrip(self):
+        text_att = Attachment(name="notes.txt", content=b"text content", description="Notes")
+        binary_att = Attachment(name="image.png", content=PNG_HEADER)
+        doc = SerFlowDoc(
+            name="report.txt",
+            content=b"body",
+            attachments=(text_att, binary_att),
+        )
+        serialized = doc.serialize_model()
+        restored = SerFlowDoc.from_dict(serialized)
+
+        assert len(restored.attachments) == 2
+        assert restored.attachments[0].name == "notes.txt"
+        assert restored.attachments[0].content == b"text content"
+        assert restored.attachments[0].description == "Notes"
+        assert restored.attachments[1].name == "image.png"
+        assert restored.attachments[1].content == PNG_HEADER

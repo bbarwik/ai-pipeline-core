@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v5.0.0
+  rev: v6.0.0
   hooks:
     - id: trailing-whitespace
     - id: end-of-file-fixer
@@ -13,13 +13,13 @@ repos:
     - id: mixed-line-ending
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.12.9
+  rev: v0.14.14
   hooks:
     - id: ruff
       args: [--fix, --exit-non-zero-on-fix]
-      exclude: ^(API\.md|.*\.md|dependencies_docs/|docs/)
+      exclude: ^(.*\.md|dependencies_docs/)
     - id: ruff-format
-      exclude: ^(API\.md|.*\.md|dependencies_docs/|docs/)
+      exclude: ^(.*\.md|dependencies_docs/)
 
 - repo: https://github.com/econchick/interrogate
   rev: 1.7.0
@@ -30,17 +30,38 @@ repos:
 
 - repo: local
   hooks:
+    - id: vulture
+      name: vulture dead code check
+      entry: vulture ai_pipeline_core/ .vulture_whitelist.py --min-confidence 80
+      language: system
+      types: [python]
+      pass_filenames: false
+
+    - id: semgrep
+      name: semgrep custom rules
+      entry: semgrep --config .semgrep/ ai_pipeline_core/ tests/ --error --quiet
+      language: system
+      types: [python]
+      pass_filenames: false
+
     - id: basedpyright
-      name: basedpyright
+      name: basedpyright (source)
       entry: basedpyright
       language: system
       types: [python]
       pass_filenames: false
       fail_fast: true
 
-    - id: build-api-md
-      name: build API.md with Pydoc-Markdown
-      entry: bash -c 'pydoc-markdown && git diff --quiet -- API.md'
+    - id: basedpyright-tests
+      name: basedpyright (tests, errors only)
+      entry: basedpyright --level error -p pyrightconfig.tests.json
+      language: system
+      types: [python]
+      pass_filenames: false
+
+    - id: check-ai-docs
+      name: check .ai-docs/ freshness
+      entry: python -m ai_pipeline_core.docs_generator check
       language: system
       pass_filenames: false
       files: \.py$

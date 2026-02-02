@@ -7,18 +7,18 @@ import pytest
 from pydantic import BaseModel
 from ruamel.yaml import YAML
 
-from ai_pipeline_core.documents import Document, FlowDocument, TemporaryDocument
+from ai_pipeline_core.documents import Document
 from ai_pipeline_core.exceptions import DocumentNameError, DocumentSizeError
 
 
-class ConcreteTestDocument(FlowDocument):
+class ConcreteTestDocument(Document):
     """Concrete document class for testing."""
 
     def get_type(self) -> str:
         return "test"
 
 
-class SmallDocument(FlowDocument):
+class SmallDocument(Document):
     """Document with small size limit for testing."""
 
     MAX_CONTENT_SIZE = 10
@@ -69,9 +69,7 @@ class TestCreateMethod:
     def test_create_with_dict_json(self):
         """Test create with dictionary for JSON file."""
         data = {"key": "value", "number": 42, "list": [1, 2, 3]}
-        doc = ConcreteTestDocument.create(
-            name="test.json", description="JSON from dict", content=data
-        )
+        doc = ConcreteTestDocument.create(name="test.json", description="JSON from dict", content=data)
 
         assert doc.is_text
         assert doc.mime_type == "application/json"
@@ -83,9 +81,7 @@ class TestCreateMethod:
     def test_create_with_dict_yaml(self):
         """Test create with dictionary for YAML file."""
         data = {"database": {"host": "localhost", "port": 5432}, "cache": {"ttl": 300}}
-        doc = ConcreteTestDocument.create(
-            name="config.yaml", description="YAML config", content=data
-        )
+        doc = ConcreteTestDocument.create(name="config.yaml", description="YAML config", content=data)
 
         assert doc.is_text
         assert doc.mime_type == "application/yaml"
@@ -128,9 +124,7 @@ class TestCreateMethod:
             ssl_enabled: bool
 
         config = ServerConfig(name="api-server", workers=4, ssl_enabled=True)
-        doc = ConcreteTestDocument.create(
-            name="server.yaml", description="Server config", content=config
-        )
+        doc = ConcreteTestDocument.create(name="server.yaml", description="Server config", content=config)
 
         assert doc.is_text
         assert doc.mime_type == "application/yaml"
@@ -171,32 +165,17 @@ class TestCreateMethod:
         parsed = yaml.load(BytesIO(doc.content))
         assert parsed == data
 
-    def test_create_with_list_markdown(self):
-        """Test create with list for Markdown file."""
-        items = ["# Section 1", "# Section 2", "# Section 3"]
-        doc = ConcreteTestDocument.create(
-            name="sections.md", description="Markdown sections", content=items
-        )
-
+    def test_create_with_list_json_content(self):
+        """Test create with list for JSON file."""
+        items = ["Section 1", "Section 2", "Section 3"]
+        doc = ConcreteTestDocument.create(name="sections.json", content=items)
         assert doc.is_text
-        # List should be joined with markdown separator
-        assert Document.MARKDOWN_LIST_SEPARATOR.join(items).encode() == doc.content
+        assert doc.parse(list) == items
 
-        # Should parse back correctly
-        parsed_items = doc.as_markdown_list()
-        assert parsed_items == items
-
-    def test_create_with_list_containing_separator_raises_error(self):
-        """Test that creating a markdown list with separator in items raises error."""
-        separator = Document.MARKDOWN_LIST_SEPARATOR
-        items = [
-            "# Section 1",
-            f"# Section with separator {separator} inside",  # This should cause an error
-            "# Section 3",
-        ]
-
-        with pytest.raises(ValueError, match="cannot contain the separator"):
-            ConcreteTestDocument.create(name="sections.md", content=items)
+    def test_create_with_list_unsupported_extension_raises(self):
+        """Test that list content with .md extension raises error (not JSON/YAML)."""
+        with pytest.raises(ValueError, match=r"requires .json or .yaml extension"):
+            ConcreteTestDocument.create(name="sections.md", content=["a", "b"])
 
     def test_create_with_list_of_models_json(self):
         """Test create with list of Pydantic models for JSON file."""
@@ -210,9 +189,7 @@ class TestCreateMethod:
             SampleModel(name="second", value=2),
         ]
 
-        doc = ConcreteTestDocument.create(
-            name="models.json", description="List of models", content=models
-        )
+        doc = ConcreteTestDocument.create(name="models.json", description="List of models", content=models)
 
         assert doc.is_text
         assert doc.mime_type == "application/json"
@@ -239,9 +216,7 @@ class TestCreateMethod:
             SampleModel(name="second", value=2),
         ]
 
-        doc = ConcreteTestDocument.create(
-            name="models.yaml", description="List of models", content=models
-        )
+        doc = ConcreteTestDocument.create(name="models.yaml", description="List of models", content=models)
 
         assert doc.is_text
         assert doc.mime_type == "application/yaml"
@@ -257,27 +232,19 @@ class TestCreateMethod:
         restored = [SampleModel(**item) for item in parsed]
         assert restored == models
 
-    def test_create_temporary_document(self):
-        """Test creating TemporaryDocument with various content types."""
-        # With string
-        doc1 = TemporaryDocument.create(
-            name="temp.txt", content="Temporary content", description="Test temp doc"
-        )
-        assert doc1.is_temporary
+    def test_create_concrete_document(self):
+        """Test creating concrete Document subclass with various content types."""
+        doc1 = ConcreteTestDocument.create(name="temp.txt", content="Temporary content", description="Test temp doc")
         assert doc1.text == "Temporary content"
 
-        # With dict
-        doc2 = TemporaryDocument.create(name="temp.json", content={"temp": "data"})
-        assert doc2.is_temporary
+        doc2 = ConcreteTestDocument.create(name="temp.json", content={"temp": "data"})
         assert doc2.as_json() == {"temp": "data"}
 
-        # With Pydantic model
         class TempModel(BaseModel):
             value: str
 
         model = TempModel(value="test")
-        doc3 = TemporaryDocument.create(name="temp.json", content=model)
-        assert doc3.is_temporary
+        doc3 = ConcreteTestDocument.create(name="temp.json", content=model)
         assert doc3.as_json()["value"] == "test"
 
     # Removed test_create_with_numeric_content and test_create_with_boolean_content
@@ -327,21 +294,15 @@ class TestCreateMethod:
 
     def test_create_with_dict_non_json_yaml(self):
         """Test that dict content for non-JSON/YAML files raises error."""
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match=r"requires .json or .yaml extension"):
             ConcreteTestDocument.create(name="test.txt", content={"key": "value"})
-        assert "Unsupported content type: <class 'dict'> for file test.txt" in str(exc_info.value)
 
-    def test_create_with_list_non_json_yaml_md(self):
-        """Test that list content for non-JSON/YAML/MD files raises error."""
-        with pytest.raises(ValueError) as exc_info:
+    def test_create_with_list_non_json_yaml(self):
+        """Test that list content for non-JSON/YAML files raises error."""
+        with pytest.raises(ValueError, match=r"requires .json or .yaml extension"):
             ConcreteTestDocument.create(name="test.txt", content=["item1", "item2"])
-        assert "Unsupported content type" in str(exc_info.value)
 
-    def test_create_with_mixed_list_markdown(self):
-        """Test that mixed-type lists are rejected for markdown."""
-        from typing import cast
-
-        mixed_list = ["string", 123, "another string"]
-        with pytest.raises(ValueError) as exc_info:
-            ConcreteTestDocument.create(name="test.md", content=cast(list[str], mixed_list))
-        assert "mixed-type list for markdown" in str(exc_info.value)
+    def test_create_with_list_md_raises(self):
+        """Test that list content with .md extension raises error."""
+        with pytest.raises(ValueError, match=r"requires .json or .yaml extension"):
+            ConcreteTestDocument.create(name="test.md", content=["a", "b"])

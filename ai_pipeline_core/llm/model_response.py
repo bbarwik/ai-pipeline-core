@@ -1,13 +1,12 @@
 """Model response structures for LLM interactions.
 
-@public
-
 Provides enhanced response classes that use OpenAI-compatible base types via LiteLLM
 with additional metadata, cost tracking, and structured output support.
 """
 
 import json
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 from openai.types.chat import ChatCompletion
@@ -21,10 +20,16 @@ T = TypeVar(
 """Type parameter for structured response Pydantic models."""
 
 
+@dataclass(frozen=True)
+class Citation:
+    """A URL citation returned by search-enabled models (e.g. sonar-pro-search, gemini-3-flash-search)."""
+
+    title: str
+    url: str
+
+
 class ModelResponse(ChatCompletion):
     """Response wrapper for LLM text generation.
-
-    @public
 
     Primary usage is adding to AIMessages for multi-turn conversations:
 
@@ -39,22 +44,9 @@ class ModelResponse(ChatCompletion):
     Almost all use cases are covered by these two patterns. Advanced features
     like token usage and cost tracking are available but rarely needed.
 
-    Example:
-        >>> from ai_pipeline_core import llm, AIMessages
-        >>>
-        >>> messages = AIMessages(["Explain quantum computing"])
-        >>> response = await llm.generate("gpt-5.1", messages=messages)
-        >>>
-        >>> # Primary usage: add to conversation
-        >>> messages.append(response)
-        >>>
-        >>> # Access generated text
-        >>> print(response.content)
-
-    Note:
-        Inherits from OpenAI's ChatCompletion for compatibility.
-        Other properties (usage, model, id) should only be accessed
-        when absolutely necessary.
+    Inherits from OpenAI's ChatCompletion for compatibility.
+    Other properties (usage, model, id) should only be accessed
+    when absolutely necessary.
     """
 
     def __init__(
@@ -77,13 +69,6 @@ class ModelResponse(ChatCompletion):
                      Includes timing information and custom tags.
             usage: Optional usage information from streaming response.
 
-        Example:
-            >>> # Usually created internally by generate()
-            >>> response = ModelResponse(
-            ...     chat_completion=completion,
-            ...     model_options={"temperature": 0.7, "model": "gpt-5.1"},
-            ...     metadata={"time_taken": 1.5, "first_token_time": 0.3}
-            ... )
         """
         data = chat_completion.model_dump()
 
@@ -95,6 +80,10 @@ class ModelResponse(ChatCompletion):
             current_finish_reason = data["choices"][i].get("finish_reason")
             if current_finish_reason not in valid_finish_reasons:
                 data["choices"][i]["finish_reason"] = "stop"
+            # Strip annotations with unsupported types (e.g. Grok returns type="file" for PDFs,
+            # but OpenAI's ChatCompletion only accepts type="url_citation")
+            if annotations := data["choices"][i]["message"].get("annotations"):
+                data["choices"][i]["message"]["annotations"] = [a for a in annotations if a.get("type") == "url_citation"]
 
         super().__init__(**data)
 
@@ -107,22 +96,12 @@ class ModelResponse(ChatCompletion):
     def content(self) -> str:
         """Get the generated text content.
 
-        @public
-
         Primary property for accessing the LLM's response text.
         This is the main property you'll use with ModelResponse.
 
         Returns:
             Generated text from the model, or empty string if none.
 
-        Example:
-            >>> response = await generate("gpt-5.1", messages="Hello")
-            >>> text = response.content  # The generated response
-            >>>
-            >>> # Common pattern: add to messages then use content
-            >>> messages.append(response)
-            >>> if "error" in response.content.lower():
-            ...     # Handle error case
         """
         content = self.choices[0].message.content or ""
         return content.split("</think>")[-1].strip()
@@ -130,8 +109,6 @@ class ModelResponse(ChatCompletion):
     @property
     def reasoning_content(self) -> str:
         """Get the reasoning content.
-
-        @public
 
         Returns:
             The reasoning content from the model, or empty string if none.
@@ -143,7 +120,19 @@ class ModelResponse(ChatCompletion):
             return ""
         return message.content.split("</think>")[0].strip()
 
-    def get_laminar_metadata(self) -> dict[str, str | int | float]:
+    @property
+    def citations(self) -> list[Citation]:
+        """Get URL citations from search-enabled models.
+
+        Returns:
+            List of Citation objects with title and url. Empty list for non-search models.
+        """
+        annotations = self.choices[0].message.annotations
+        if not annotations:
+            return []
+        return [Citation(title=a.url_citation.title, url=a.url_citation.url) for a in annotations if a.url_citation]
+
+    def get_laminar_metadata(self) -> dict[str, str | int | float]:  # noqa: C901
         """Extract metadata for LMNR (Laminar) observability including cost tracking.
 
         Collects comprehensive metadata about the generation for tracing,
@@ -178,56 +167,26 @@ class ModelResponse(ChatCompletion):
             1. x-litellm-response-cost header (primary)
             2. usage.cost attribute (fallback)
 
-            Cost is stored in three fields for compatibility:
-            - gen_ai.usage.output_cost (standard)
-            - gen_ai.usage.cost (alternative)
-            - gen_ai.cost (simple)
+            Cost is stored in three fields for observability tool consumption:
+            - gen_ai.usage.output_cost (OpenTelemetry GenAI semantic convention)
+            - gen_ai.usage.cost (aggregated cost)
+            - gen_ai.cost (short-form)
 
-        Example:
-            >>> response = await llm.generate(
-            ...     "gpt-5.1",
-            ...     context=large_doc,
-            ...     messages="Summarize this"
-            ... )
-            >>>
-            >>> # Get comprehensive metadata
-            >>> metadata = response.get_laminar_metadata()
-            >>>
-            >>> # Track generation cost
-            >>> cost = metadata.get('gen_ai.usage.output_cost', 0)
-            >>> if cost > 0:
-            ...     print(f"Generation cost: ${cost:.4f}")
-            >>>
-            >>> # Monitor token usage
-            >>> print(f"Input: {metadata.get('gen_ai.usage.prompt_tokens', 0)} tokens")
-            >>> print(f"Output: {metadata.get('gen_ai.usage.completion_tokens', 0)} tokens")
-            >>> print(f"Total: {metadata.get('gen_ai.usage.total_tokens', 0)} tokens")
-            >>>
-            >>> # Check cache effectiveness
-            >>> cached = metadata.get('gen_ai.usage.cached_tokens', 0)
-            >>> if cached > 0:
-            ...     total = metadata.get('gen_ai.usage.total_tokens', 1)
-            ...     savings = (cached / total) * 100
-            ...     print(f"Cache hit: {cached} tokens ({savings:.1f}% savings)")
-            >>>
-            >>> # Calculate cost per token
-            >>> if cost > 0 and metadata.get('gen_ai.usage.total_tokens'):
-            ...     cost_per_1k = (cost / metadata['gen_ai.usage.total_tokens']) * 1000
-            ...     print(f"Cost per 1K tokens: ${cost_per_1k:.4f}")
-
-        Note:
-            - Cost availability depends on LiteLLM proxy configuration
-            - Not all providers return cost information
-            - Cached tokens reduce actual cost but may not be reflected
-            - Used internally by tracing but accessible for cost analysis
+        Cost availability depends on LiteLLM proxy configuration. Not all providers
+        return cost information. Cached tokens reduce actual cost but may not be reflected.
+        Used internally by tracing but accessible for cost analysis.
         """
         metadata: dict[str, str | int | float] = deepcopy(self._metadata)
 
         # Add base metadata
+        # NOTE: gen_ai.response.model is intentionally omitted — Laminar's UI uses it
+        # to override the span display name in the tree view, hiding the actual span name
+        # (set via `purpose` parameter). Tracked upstream: Laminar's getSpanDisplayName()
+        # in frontend/components/traces/trace-view/utils.ts prefers model over span name
+        # for LLM spans. Restore once Laminar shows both or prefers span name.
         metadata.update({
             "gen_ai.response.id": self.id,
-            "gen_ai.response.model": self.model,
-            "get_ai.system": "litellm",
+            "gen_ai.system": "litellm",
         })
 
         # Add usage metadata if available
@@ -245,21 +204,19 @@ class ModelResponse(ChatCompletion):
                 cost = float(self.usage.cost)  # type: ignore[attr-defined]
 
             # Add reasoning tokens if available
-            if completion_details := self.usage.completion_tokens_details:
-                if reasoning_tokens := completion_details.reasoning_tokens:
-                    metadata["gen_ai.usage.reasoning_tokens"] = reasoning_tokens
+            if (completion_details := self.usage.completion_tokens_details) and (reasoning_tokens := completion_details.reasoning_tokens):
+                metadata["gen_ai.usage.reasoning_tokens"] = reasoning_tokens
 
             # Add cached tokens if available
-            if prompt_details := self.usage.prompt_tokens_details:
-                if cached_tokens := prompt_details.cached_tokens:
-                    metadata["gen_ai.usage.cached_tokens"] = cached_tokens
+            if (prompt_details := self.usage.prompt_tokens_details) and (cached_tokens := prompt_details.cached_tokens):
+                metadata["gen_ai.usage.cached_tokens"] = cached_tokens
 
         # Add cost metadata if available
         if cost and cost > 0:
             metadata.update({
                 "gen_ai.usage.output_cost": cost,
                 "gen_ai.usage.cost": cost,
-                "get_ai.cost": cost,
+                "gen_ai.cost": cost,
             })
 
         for key, value in self._model_options.items():
@@ -269,7 +226,7 @@ class ModelResponse(ChatCompletion):
 
         other_fields = self.__dict__
         for key, value in other_fields.items():
-            if key in ["_model_options", "_metadata", "choices"]:
+            if key in {"_model_options", "_metadata", "choices"}:
                 continue
             try:
                 metadata[f"response.raw.{key}"] = json.dumps(value, indent=2, default=str)
@@ -278,7 +235,7 @@ class ModelResponse(ChatCompletion):
 
         message = self.choices[0].message
         for key, value in message.__dict__.items():
-            if key in ["content"]:
+            if key in {"content"}:
                 continue
             metadata[f"response.raw.message.{key}"] = json.dumps(value, indent=2, default=str)
 
@@ -297,15 +254,12 @@ class ModelResponse(ChatCompletion):
         if not self.content:
             raise ValueError("Empty response content")
 
-        if response_format := self._model_options.get("response_format"):
-            if isinstance(response_format, BaseModel):
-                response_format.model_validate_json(self.content)
+        if (response_format := self._model_options.get("response_format")) and isinstance(response_format, BaseModel):
+            response_format.model_validate_json(self.content)
 
 
-class StructuredModelResponse(ModelResponse, Generic[T]):
+class StructuredModelResponse(ModelResponse, Generic[T]):  # noqa: UP046
     """Response wrapper for structured/typed LLM output.
-
-    @public
 
     Primary usage is accessing the .parsed property for the structured data.
     """

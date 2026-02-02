@@ -2,13 +2,13 @@
 
 # pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportPrivateUsage=false, reportUnusedClass=false
 
+from datetime import UTC
+
 import pytest
 
 from ai_pipeline_core import (
     DeploymentResult,
-    DocumentList,
-    FlowConfig,
-    FlowDocument,
+    Document,
     FlowOptions,
     PipelineDeployment,
     pipeline_flow,
@@ -25,27 +25,34 @@ from ai_pipeline_core.deployment.contract import (
 # --- Module-level test infrastructure ---
 
 
-class InputDoc(FlowDocument):
+class InputDoc(Document):
     """Input for testing."""
 
 
-class OutputDoc(FlowDocument):
+class OutputDoc(Document):
     """Output for testing."""
 
 
-class ValidConfig(FlowConfig):
-    """Config for testing."""
-
-    INPUT_DOCUMENT_TYPES = [InputDoc]
-    OUTPUT_DOCUMENT_TYPE = OutputDoc
+class MiddleDoc(Document):
+    """Intermediate document for testing."""
 
 
-@pipeline_flow(config=ValidConfig)
-async def valid_flow(
-    project_name: str, documents: DocumentList, flow_options: FlowOptions
-) -> DocumentList:
+@pipeline_flow()
+async def valid_flow(project_name: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
     """Valid flow."""
-    return ValidConfig.create_and_validate_output([])
+    return [OutputDoc(name="output.txt", content=b"result")]
+
+
+@pipeline_flow()
+async def flow_a(project_name: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[MiddleDoc]:
+    """First flow in multi-step pipeline."""
+    return [MiddleDoc(name="middle.txt", content=b"middle")]
+
+
+@pipeline_flow()
+async def flow_b(project_name: str, documents: list[MiddleDoc], flow_options: FlowOptions) -> list[OutputDoc]:
+    """Second flow in multi-step pipeline."""
+    return [OutputDoc(name="output.txt", content=b"final")]
 
 
 class ValidResult(DeploymentResult):
@@ -66,7 +73,7 @@ class TestDeploymentContext:
         assert ctx.progress_webhook_url == ""
         assert ctx.status_webhook_url == ""
         assert ctx.completion_webhook_url == ""
-        assert ctx.input_documents_urls == []
+        assert ctx.input_documents_urls == ()
         assert ctx.output_documents_urls == {}
 
     def test_creation_with_urls(self):
@@ -82,8 +89,10 @@ class TestDeploymentContext:
 
     def test_frozen(self):
         """Test context is immutable."""
+        from pydantic import ValidationError
+
         ctx = DeploymentContext()
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ctx.progress_webhook_url = "http://new"  # type: ignore[misc]
 
 
@@ -119,27 +128,27 @@ class TestContractModels:
 
     def test_pending_run(self):
         """Test PendingRun creation."""
-        from datetime import datetime, timezone
+        from datetime import datetime
         from uuid import UUID
 
         run = PendingRun(
             flow_run_id=UUID(int=1),
             project_name="test",
             state="PENDING",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
         assert run.type == "pending"
 
     def test_progress_run(self):
         """Test ProgressRun creation with all fields."""
-        from datetime import datetime, timezone
+        from datetime import datetime
         from uuid import UUID
 
         run = ProgressRun(
             flow_run_id=UUID(int=1),
             project_name="test",
             state="RUNNING",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             step=2,
             total_steps=5,
             flow_name="analysis",
@@ -153,14 +162,14 @@ class TestContractModels:
 
     def test_completed_run(self):
         """Test CompletedRun creation."""
-        from datetime import datetime, timezone
+        from datetime import datetime
         from uuid import UUID
 
         run = CompletedRun(
             flow_run_id=UUID(int=1),
             project_name="test",
             state="COMPLETED",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             result=DeploymentResultData(success=True),
         )
         assert run.type == "completed"
@@ -168,14 +177,14 @@ class TestContractModels:
 
     def test_failed_run(self):
         """Test FailedRun creation."""
-        from datetime import datetime, timezone
+        from datetime import datetime
         from uuid import UUID
 
         run = FailedRun(
             flow_run_id=UUID(int=1),
             project_name="test",
             state="FAILED",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             error="Pipeline crashed",
         )
         assert run.type == "failed"
@@ -187,6 +196,19 @@ class TestContractModels:
         assert data.success is True
         dumped = data.model_dump()
         assert "success" in dumped
+
+    def test_no_storage_uri_field(self):
+        """Test that storage_uri has been removed from contract models."""
+        from datetime import datetime
+        from uuid import UUID
+
+        _run = PendingRun(
+            flow_run_id=UUID(int=1),
+            project_name="test",
+            state="PENDING",
+            timestamp=datetime.now(UTC),
+        )
+        assert "storage_uri" not in PendingRun.model_fields
 
 
 # --- PipelineDeployment validation tests ---
@@ -204,9 +226,7 @@ class TestPipelineDeploymentValidation:
             flows = [valid_flow]  # type: ignore[reportAssignmentType]
 
             @staticmethod
-            def build_result(
-                project_name: str, documents: DocumentList, options: FlowOptions
-            ) -> ValidResult:
+            def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> ValidResult:
                 """Build."""
                 return ValidResult(success=True)
 
@@ -218,15 +238,13 @@ class TestPipelineDeploymentValidation:
         """Test that 'Test' prefix raises TypeError."""
         with pytest.raises(TypeError, match="cannot start with 'Test'"):
 
-            class TestDeployment(PipelineDeployment[FlowOptions, ValidResult]):  # noqa: N801
+            class TestDeployment(PipelineDeployment[FlowOptions, ValidResult]):
                 """Invalid name."""
 
                 flows = [valid_flow]  # type: ignore[reportAssignmentType]
 
                 @staticmethod
-                def build_result(
-                    project_name: str, documents: DocumentList, options: FlowOptions
-                ) -> ValidResult:
+                def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> ValidResult:
                     """Build."""
                     return ValidResult(success=True)
 
@@ -240,9 +258,7 @@ class TestPipelineDeploymentValidation:
                 flows = []  # type: ignore[reportAssignmentType]
 
                 @staticmethod
-                def build_result(
-                    project_name: str, documents: DocumentList, options: FlowOptions
-                ) -> ValidResult:
+                def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> ValidResult:
                     """Build."""
                     return ValidResult(success=True)
 
@@ -256,9 +272,7 @@ class TestPipelineDeploymentValidation:
                 flows = [valid_flow]  # type: ignore[reportAssignmentType]
 
                 @staticmethod
-                def build_result(
-                    project_name: str, documents: DocumentList, options: FlowOptions
-                ) -> ValidResult:
+                def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> ValidResult:
                     """Build."""
                     return ValidResult(success=True)
 
@@ -344,9 +358,7 @@ class TestBuildStatusHooks:
         """Test that _build_status_hooks returns expected hook structure."""
         deployment = ValidDeployment()
         ctx = DeploymentContext(status_webhook_url="http://example.com/status")
-        hooks = deployment._build_status_hooks(
-            ctx, "00000000-0000-0000-0000-000000000001", "my-project", 1, 3, "analysis"
-        )
+        hooks = deployment._build_status_hooks(ctx, "00000000-0000-0000-0000-000000000001", "my-project", 1, 3, "analysis")
         assert "on_running" in hooks
         assert "on_completion" in hooks
         assert "on_failure" in hooks
@@ -364,8 +376,6 @@ class TestAbstractSubclass:
         class PartialDeployment(PipelineDeployment[FlowOptions, ValidResult]):
             """Intermediate abstract class without flows."""
 
-            pass
-
         # Should not raise - flows not defined, so validation is skipped
         assert not hasattr(PartialDeployment, "name")
 
@@ -379,9 +389,7 @@ class ValidDeployment(PipelineDeployment[FlowOptions, ValidResult]):
     flows = [valid_flow]  # type: ignore[reportAssignmentType]
 
     @staticmethod
-    def build_result(
-        project_name: str, documents: DocumentList, options: FlowOptions
-    ) -> ValidResult:
+    def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> ValidResult:
         """Build result."""
         return ValidResult(success=True, count=len(documents))
 
@@ -397,7 +405,7 @@ class TestSendCompletion:
         ctx = DeploymentContext()  # No webhook URLs
 
         with patch("ai_pipeline_core.deployment.base.send_webhook", new_callable=AsyncMock) as mock:
-            await deployment._send_completion(ctx, "", "project", "", result=None, error="err")
+            await deployment._send_completion(ctx, "", "project", result=None, error="err")
             mock.assert_not_called()
 
     async def test_sends_completed_run_on_success(self):
@@ -413,7 +421,6 @@ class TestSendCompletion:
                 ctx,
                 "00000000-0000-0000-0000-000000000001",
                 "my-project",
-                "gs://bucket",
                 result=result,
                 error=None,
             )
@@ -430,9 +437,7 @@ class TestSendCompletion:
         ctx = DeploymentContext(completion_webhook_url="http://example.com/done")
 
         with patch("ai_pipeline_core.deployment.base.send_webhook", new_callable=AsyncMock) as mock:
-            await deployment._send_completion(
-                ctx, "", "my-project", "", result=None, error="Pipeline crashed"
-            )
+            await deployment._send_completion(ctx, "", "my-project", result=None, error="Pipeline crashed")
             mock.assert_called_once()
             payload = mock.call_args[0][1]
             assert payload.type == "failed"
@@ -451,7 +456,7 @@ class TestSendCompletion:
             side_effect=Exception("Network error"),
         ):
             # Should not raise
-            await deployment._send_completion(ctx, "", "project", "", result=None, error="err")
+            await deployment._send_completion(ctx, "", "project", result=None, error="err")
 
 
 class TestSendProgress:
@@ -464,31 +469,30 @@ class TestSendProgress:
         deployment = ValidDeployment()
         ctx = DeploymentContext(progress_webhook_url="http://example.com/progress")
 
-        with patch(
-            "ai_pipeline_core.deployment.base.send_webhook", new_callable=AsyncMock
-        ) as mock_wh:
-            with patch("ai_pipeline_core.deployment.base.get_client") as mock_gc:
-                mock_client = AsyncMock()
-                mock_client.__aenter__.return_value = mock_client
-                mock_client.__aexit__.return_value = None
-                mock_gc.return_value = mock_client
+        with (
+            patch("ai_pipeline_core.deployment.base.send_webhook", new_callable=AsyncMock) as mock_wh,
+            patch("ai_pipeline_core.deployment.base.get_client") as mock_gc,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_gc.return_value = mock_client
 
-                await deployment._send_progress(
-                    ctx,
-                    "00000000-0000-0000-0000-000000000002",
-                    "my-project",
-                    "gs://bucket",
-                    step=2,
-                    total_steps=5,
-                    flow_name="analysis",
-                    status="started",
-                    step_progress=0.0,
-                    message="Starting",
-                )
-                mock_wh.assert_called_once()
-                payload = mock_wh.call_args[0][1]
-                assert payload.step == 2
-                assert payload.flow_name == "analysis"
+            await deployment._send_progress(
+                ctx,
+                "00000000-0000-0000-0000-000000000002",
+                "my-project",
+                step=2,
+                total_steps=5,
+                flow_name="analysis",
+                status="started",
+                step_progress=0.0,
+                message="Starting",
+            )
+            mock_wh.assert_called_once()
+            payload = mock_wh.call_args[0][1]
+            assert payload.step == 2
+            assert payload.flow_name == "analysis"
 
     async def test_skips_webhook_when_no_url(self):
         """Test _send_progress skips webhook without URL."""
@@ -497,25 +501,93 @@ class TestSendProgress:
         deployment = ValidDeployment()
         ctx = DeploymentContext()  # No progress_webhook_url
 
-        with patch(
-            "ai_pipeline_core.deployment.base.send_webhook", new_callable=AsyncMock
-        ) as mock_wh:
-            with patch("ai_pipeline_core.deployment.base.get_client") as mock_gc:
-                mock_client = AsyncMock()
-                mock_client.__aenter__.return_value = mock_client
-                mock_client.__aexit__.return_value = None
-                mock_gc.return_value = mock_client
+        with (
+            patch("ai_pipeline_core.deployment.base.send_webhook", new_callable=AsyncMock) as mock_wh,
+            patch("ai_pipeline_core.deployment.base.get_client") as mock_gc,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_gc.return_value = mock_client
 
-                await deployment._send_progress(
-                    ctx,
-                    "",
-                    "project",
-                    "",
-                    step=1,
-                    total_steps=1,
-                    flow_name="flow",
-                    status="started",
-                    step_progress=0.0,
-                    message="msg",
-                )
-                mock_wh.assert_not_called()
+            await deployment._send_progress(
+                ctx,
+                "",
+                "project",
+                step=1,
+                total_steps=1,
+                flow_name="flow",
+                status="started",
+                step_progress=0.0,
+                message="msg",
+            )
+            mock_wh.assert_not_called()
+
+
+# --- DocumentStore integration tests ---
+
+
+class TestAllDocumentTypes:
+    """Test _all_document_types helper."""
+
+    def test_collects_types_from_flows(self):
+        """Test that all input/output types are collected and deduplicated."""
+
+        class MultiFlowDeployment(PipelineDeployment[FlowOptions, ValidResult]):
+            """Multi-flow deployment."""
+
+            flows = [flow_a, flow_b]  # type: ignore[reportAssignmentType]
+
+            @staticmethod
+            def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> ValidResult:
+                return ValidResult(success=True)
+
+        deployment = MultiFlowDeployment()
+        types = deployment._all_document_types()
+        type_names = {t.__name__ for t in types}
+        assert "InputDoc" in type_names
+        assert "MiddleDoc" in type_names
+        assert "OutputDoc" in type_names
+
+
+class TestReattachFlowMetadata:
+    """Test _reattach_flow_metadata helper."""
+
+    def test_reattaches_missing_attributes(self):
+        """Test that missing attributes are copied from original."""
+        from ai_pipeline_core.deployment.base import _reattach_flow_metadata
+
+        class Original:
+            input_document_types = [InputDoc]
+            output_document_types = [OutputDoc]
+            estimated_minutes = 5
+
+        class Target:
+            pass
+
+        original = Original()
+        target = Target()
+        _reattach_flow_metadata(original, target)  # type: ignore[arg-type]
+        assert target.input_document_types == [InputDoc]  # type: ignore[attr-defined]
+        assert target.output_document_types == [OutputDoc]  # type: ignore[attr-defined]
+        assert target.estimated_minutes == 5  # type: ignore[attr-defined]
+
+    def test_does_not_overwrite_existing(self):
+        """Test that existing attributes are not overwritten."""
+        from ai_pipeline_core.deployment.base import _reattach_flow_metadata
+
+        class Original:
+            input_document_types = [InputDoc]
+            output_document_types = [OutputDoc]
+            estimated_minutes = 5
+
+        class Target:
+            input_document_types = [MiddleDoc]
+            output_document_types = [MiddleDoc]
+            estimated_minutes = 10
+
+        original = Original()
+        target = Target()
+        _reattach_flow_metadata(original, target)  # type: ignore[arg-type]
+        assert target.input_document_types == [MiddleDoc]
+        assert target.estimated_minutes == 10

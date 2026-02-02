@@ -1,6 +1,5 @@
 """Tests for LLM client retry and structured generation."""
 
-import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,9 +63,7 @@ class TestRetryLogic:
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
             # All calls fail
-            mock_client.chat.completions.with_raw_response.create.side_effect = (
-                asyncio.TimeoutError("Timeout")
-            )
+            mock_client.chat.completions.with_raw_response.create.side_effect = TimeoutError("Timeout")
 
             with patch("asyncio.sleep"):
                 messages = AIMessages(["Test"])
@@ -110,9 +107,14 @@ class TestStructuredGeneration:
             messages = AIMessages(["Message"])
             options = ModelOptions()
 
-            result = await generate(
-                model="test-model", context=context, messages=messages, options=options
-            )
+            result = await generate(model="test-model", context=context, messages=messages, options=options)
 
             assert result == mock_response
-            mock_retry.assert_called_once_with("test-model", context, messages, options)
+            mock_retry.assert_called_once_with(
+                "test-model",
+                context,
+                messages,
+                options,
+                purpose=None,
+                expected_cost=None,
+            )

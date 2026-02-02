@@ -12,10 +12,7 @@ class TestModelNameToOpenRouterModel:
 
     def test_gemini_flash_search(self):
         """Test gemini-3-flash-search maps to online variant."""
-        assert (
-            _model_name_to_openrouter_model("gemini-3-flash-search")
-            == "google/gemini-3-flash:online"
-        )
+        assert _model_name_to_openrouter_model("gemini-3-flash-search") == "google/gemini-3-flash:online"
 
     def test_sonar_pro_search(self):
         """Test sonar-pro-search maps to perplexity."""

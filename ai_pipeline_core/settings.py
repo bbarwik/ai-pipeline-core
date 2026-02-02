@@ -1,7 +1,5 @@
 """Core configuration settings for pipeline operations.
 
-@public
-
 This module provides the Settings base class for configuration management.
 Applications should inherit from Settings to create their own ProjectSettings
 class with additional configuration fields.
@@ -12,27 +10,12 @@ Environment variables:
     PREFECT_API_URL: Prefect server endpoint for flow orchestration
     PREFECT_API_KEY: Prefect API authentication key
     LMNR_PROJECT_API_KEY: Laminar project key for observability
-    GCS_SERVICE_ACCOUNT_FILE: Path to GCS service account JSON file
+    GCS_SERVICE_ACCOUNT_FILE: Path to GCS service account JSON file (for Prefect deployment bundles)
 
 Configuration precedence:
     1. Environment variables (highest priority)
     2. .env file in current directory
     3. Default values (empty strings)
-
-Example:
-    >>> from ai_pipeline_core import Settings
-    >>>
-    >>> # Create your project's settings class
-    >>> class ProjectSettings(Settings):
-    ...     app_name: str = "my-app"
-    ...     debug_mode: bool = False
-    >>>
-    >>> # Create singleton instance
-    >>> settings = ProjectSettings()
-    >>>
-    >>> # Access configuration
-    >>> print(settings.openai_base_url)
-    >>> print(settings.app_name)
 
 .env file format:
     OPENAI_BASE_URL=http://localhost:4000
@@ -40,15 +23,14 @@ Example:
     PREFECT_API_URL=http://localhost:4200/api
     PREFECT_API_KEY=pnu_abc123
     LMNR_PROJECT_API_KEY=lmnr_proj_xyz
-    GCS_SERVICE_ACCOUNT_FILE=/path/to/service-account.json
+    GCS_SERVICE_ACCOUNT_FILE=/path/to/service-account.json  # For Prefect deployment
     APP_NAME=production-app
     DEBUG_MODE=false
 
-Note:
-    Settings are loaded once at initialization and frozen. There is no
-    built-in reload mechanism - the process must be restarted to pick up
-    changes to environment variables or .env file. This is by design to
-    ensure consistency during execution.
+Settings are loaded once at initialization and frozen. There is no
+built-in reload mechanism - the process must be restarted to pick up
+changes to environment variables or .env file. This is by design to
+ensure consistency during execution.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -56,8 +38,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     """Base configuration class for AI Pipeline applications.
-
-    @public
 
     Settings is designed to be inherited by your application's configuration
     class. It provides core AI Pipeline settings and type-safe configuration
@@ -99,7 +79,7 @@ class Settings(BaseSettings):
                    enable debug-level logging. Empty string by default.
 
         gcs_service_account_file: Path to GCS service account JSON file.
-                                  Used for authenticating with Google Cloud Storage.
+                                  Used for Prefect deployment bundles to GCS.
                                   Optional - if not set, default credentials will be used.
 
     Configuration sources:
@@ -107,9 +87,8 @@ class Settings(BaseSettings):
         - .env file in current directory
         - Default values in class definition
 
-    Note:
-        Empty strings are used as defaults to allow optional services.
-        Check for empty values before using service-specific settings.
+    Empty strings are used as defaults to allow optional services.
+    Check for empty values before using service-specific settings.
     """
 
     model_config = SettingsConfigDict(
@@ -135,8 +114,24 @@ class Settings(BaseSettings):
     lmnr_project_api_key: str = ""
     lmnr_debug: str = ""
 
-    # Storage Configuration
+    # GCS (for Prefect deployment bundles)
     gcs_service_account_file: str = ""  # Path to GCS service account JSON file
+
+    # ClickHouse tracking
+    clickhouse_host: str = ""
+    clickhouse_port: int = 8443
+    clickhouse_database: str = "default"
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    clickhouse_secure: bool = True
+
+    # Tracking behavior
+    tracking_enabled: bool = True
+    tracking_summary_model: str = "gemini-3-flash"
+
+    # Document summary generation (store-level)
+    doc_summary_enabled: bool = True
+    doc_summary_model: str = "gemini-3-flash"
 
 
 settings = Settings()

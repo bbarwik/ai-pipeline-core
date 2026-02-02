@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from ai_pipeline_core.llm import ModelResponse, StructuredModelResponse
-from tests.test_helpers import create_test_model_response
+from tests.support.helpers import create_test_model_response
 
 
 class TestModelResponseMetadata:
@@ -589,8 +589,7 @@ class TestModelResponseLaminarMetadata:
 
         # Basic fields
         assert "gen_ai.response.id" in metadata
-        assert "gen_ai.response.model" in metadata
-        assert "get_ai.system" in metadata
+        assert "gen_ai.system" in metadata
 
         # Usage fields
         assert "gen_ai.usage.prompt_tokens" in metadata

@@ -1,38 +1,32 @@
 """Image processing utilities for LLM vision models.
 
-@public
-
 Splits large images, compresses to JPEG, and respects model-specific constraints.
 Designed for website screenshots, document pages, and other visual content
 sent to vision-capable LLMs.
-
-Quick Start:
-    >>> from ai_pipeline_core.images import process_image, ImagePreset
-    >>>
-    >>> result = process_image(screenshot_bytes)
-    >>> for part in result:
-    ...     send_to_llm(part.data, context=part.label)
-    >>>
-    >>> result = process_image(screenshot_bytes, preset=ImagePreset.GEMINI)
 """
 
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from ai_pipeline_core.documents import Document, TemporaryDocument
+from ai_pipeline_core.documents import Document
 
 from ._processing import execute_split, load_and_normalize, plan_split
 
 __all__ = [
+    "ImageDocument",
+    "ImagePart",
     "ImagePreset",
     "ImageProcessingConfig",
-    "ImagePart",
-    "ProcessedImage",
     "ImageProcessingError",
+    "ProcessedImage",
     "process_image",
     "process_image_to_documents",
 ]
+
+
+class ImageDocument(Document):  # noqa: RUF067
+    """Concrete document for processed image parts."""
 
 
 # ---------------------------------------------------------------------------
@@ -40,28 +34,20 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-class ImagePreset(StrEnum):
-    """Presets for LLM vision model constraints.
-
-    @public
-    """
+class ImagePreset(StrEnum):  # noqa: RUF067
+    """Presets for LLM vision model constraints."""
 
     GEMINI = "gemini"
     CLAUDE = "claude"
     GPT4V = "gpt4v"
 
 
-class ImageProcessingConfig(BaseModel):
+class ImageProcessingConfig(BaseModel):  # noqa: RUF067
     """Configuration for image processing.
-
-    @public
 
     Use ``for_preset`` for standard configurations or construct directly for
     custom constraints.
 
-    Example:
-        >>> config = ImageProcessingConfig.for_preset(ImagePreset.GEMINI)
-        >>> config = ImageProcessingConfig(max_dimension=2000, jpeg_quality=80)
     """
 
     model_config = {"frozen": True}
@@ -98,14 +84,11 @@ class ImageProcessingConfig(BaseModel):
 
     @classmethod
     def for_preset(cls, preset: ImagePreset) -> "ImageProcessingConfig":
-        """Create configuration from a model preset.
-
-        @public
-        """
+        """Create configuration from a model preset."""
         return _PRESETS[preset]
 
 
-_PRESETS: dict[ImagePreset, ImageProcessingConfig] = {
+_PRESETS: dict[ImagePreset, ImageProcessingConfig] = {  # noqa: RUF067
     ImagePreset.GEMINI: ImageProcessingConfig(
         max_dimension=3000,
         max_pixels=9_000_000,
@@ -129,11 +112,8 @@ _PRESETS: dict[ImagePreset, ImageProcessingConfig] = {
 # ---------------------------------------------------------------------------
 
 
-class ImagePart(BaseModel):
-    """A single processed image part.
-
-    @public
-    """
+class ImagePart(BaseModel):  # noqa: RUF067
+    """A single processed image part."""
 
     model_config = {"frozen": True}
 
@@ -147,19 +127,14 @@ class ImagePart(BaseModel):
 
     @property
     def label(self) -> str:
-        """Human-readable label for LLM context, 1-indexed.
-
-        @public
-        """
+        """Human-readable label for LLM context, 1-indexed."""
         if self.total == 1:
             return "Full image"
         return f"Part {self.index + 1}/{self.total}"
 
 
-class ProcessedImage(BaseModel):
+class ProcessedImage(BaseModel):  # noqa: RUF067
     """Result of image processing.
-
-    @public
 
     Iterable: ``for part in result`` iterates over parts.
     """
@@ -176,10 +151,7 @@ class ProcessedImage(BaseModel):
 
     @property
     def compression_ratio(self) -> float:
-        """Output size / input size (lower means more compression).
-
-        @public
-        """
+        """Output size / input size (lower means more compression)."""
         if self.original_bytes <= 0:
             return 1.0
         return self.output_bytes / self.original_bytes
@@ -199,11 +171,8 @@ class ProcessedImage(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ImageProcessingError(Exception):
-    """Image processing failed.
-
-    @public
-    """
+class ImageProcessingError(Exception):  # noqa: RUF067
+    """Image processing failed."""
 
 
 # ---------------------------------------------------------------------------
@@ -211,14 +180,12 @@ class ImageProcessingError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def process_image(
+def process_image(  # noqa: RUF067
     image: bytes | Document,
     preset: ImagePreset = ImagePreset.GEMINI,
     config: ImageProcessingConfig | None = None,
 ) -> ProcessedImage:
     """Process an image for LLM vision models.
-
-    @public
 
     Splits tall images vertically with overlap, trims width if needed, and
     compresses to JPEG.  The default preset is **GEMINI** (3 000 px, 9 M pixels).
@@ -234,10 +201,6 @@ def process_image(
     Raises:
         ImageProcessingError: If the image cannot be decoded or processed.
 
-    Example:
-        >>> result = process_image(screenshot_bytes)
-        >>> for part in result:
-        ...     print(part.label, len(part.data))
     """
     effective = config if config is not None else ImageProcessingConfig.for_preset(preset)
 
@@ -248,7 +211,7 @@ def process_image(
     elif isinstance(image, bytes):  # type: ignore[reportUnnecessaryIsInstance]
         raw = image
     else:
-        raise ImageProcessingError(f"Unsupported image input type: {type(image)}")
+        raise ImageProcessingError(f"Unsupported image input type: {type(image)}")  # pyright: ignore[reportUnreachable]
 
     if not raw:
         raise ImageProcessingError("Empty image data")
@@ -306,42 +269,26 @@ def process_image(
     )
 
 
-def process_image_to_documents(
+def process_image_to_documents(  # noqa: RUF067
     image: bytes | Document,
     preset: ImagePreset = ImagePreset.GEMINI,
     config: ImageProcessingConfig | None = None,
     name_prefix: str = "image",
-    sources: list[str] | None = None,
-) -> list[TemporaryDocument]:
-    """Process an image and return parts as ``TemporaryDocument`` list.
-
-    @public
+    sources: tuple[str, ...] | None = None,
+) -> list[ImageDocument]:
+    """Process an image and return parts as ImageDocument list.
 
     Convenience wrapper around ``process_image`` for direct integration
     with ``AIMessages``.
-
-    Args:
-        image: Raw image bytes or a Document.
-        preset: Model preset (ignored when *config* is provided).
-        config: Custom configuration.
-        name_prefix: Prefix for generated document names.
-        sources: Optional provenance references attached to each document.
-
-    Returns:
-        List of ``TemporaryDocument`` instances with JPEG image data.
-
-    Example:
-        >>> docs = process_image_to_documents(screenshot_bytes)
-        >>> messages = AIMessages(docs)
     """
     result = process_image(image, preset=preset, config=config)
 
-    # Resolve sources
-    doc_sources: list[str] = list(sources or [])
+    source_list: list[str] = list(sources or ())
     if isinstance(image, Document):
-        doc_sources.append(image.sha256)
+        source_list.append(image.sha256)
+    doc_sources = tuple(source_list) if source_list else None
 
-    documents: list[TemporaryDocument] = []
+    documents: list[ImageDocument] = []
     for part in result.parts:
         if len(result.parts) == 1:
             name = f"{name_prefix}.jpg"
@@ -351,11 +298,11 @@ def process_image_to_documents(
             desc = part.label
 
         documents.append(
-            TemporaryDocument.create(
+            ImageDocument.create(
                 name=name,
                 content=part.data,
                 description=desc,
-                sources=doc_sources or None,
+                sources=doc_sources,
             )
         )
 

@@ -31,7 +31,7 @@ jobs:
       - name: Install tooling
         run: |
           python -m pip install --upgrade pip
-          pip install ruff
+          pip install ruff==0.14.14
 
       - name: Ruff check
         run: ruff check .
@@ -39,7 +39,7 @@ jobs:
       - name: Ruff format (check only)
         run: ruff format --check .
 
-  type-check:
+  static-analysis:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,8 +62,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: BasedPyright
+      - name: BasedPyright (source)
         run: basedpyright --level warning
+
+      - name: BasedPyright (tests, errors only)
+        run: basedpyright --level error -p pyrightconfig.tests.json
+
+      - name: Vulture dead code
+        run: vulture ai_pipeline_core/ .vulture_whitelist.py --min-confidence 80
+
+      - name: Install Semgrep
+        run: pipx install semgrep
+
+      - name: Semgrep custom rules
+        run: semgrep --config .semgrep/ ai_pipeline_core/ tests/ --error --quiet
+
+      - name: Docstring coverage (Interrogate)
+        run: interrogate -v --fail-under 100 ai_pipeline_core
 
   test:
     runs-on: ubuntu-latest
@@ -92,11 +107,36 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests with coverage (unit only)
-        run: pytest -v --tb=short -m "not integration" --maxfail=1 --durations=10 --cov=ai_pipeline_core --cov-report=term-missing --cov-fail-under=80 -n 4
+        run: pytest -v --tb=short -m "not integration and not clickhouse" --maxfail=1 --durations=10 --cov=ai_pipeline_core --cov-report=term-missing --cov-fail-under=80 -n 4
+
+  clickhouse-test:
+    if: github.event_name == 'push' || github.event_name == 'workflow_call'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-3.12-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-3.12-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run ClickHouse integration tests
+        run: pytest -v --tb=short -m "clickhouse" --maxfail=1 --durations=30
 
   integration-test:
-    # Always run integration tests for releases (when called from release workflow)
-    # Also run on main branch pushes
     if: github.event_name == 'push' || github.event_name == 'workflow_call'
     runs-on: ubuntu-latest
     steps:
@@ -130,89 +170,10 @@ jobs:
             echo "Running integration tests with configured API keys..."
             pytest -v --tb=short -m "integration" --maxfail=1 --durations=30 -n 4
           else
-            # For release workflows, integration tests are required
             if [ "${{ github.event_name }}" == "workflow_call" ]; then
               echo "ERROR: Integration tests are required for releases but OPENAI_API_KEY is not set!"
-              echo "Please configure the following secrets in GitHub:"
-              echo "  - OPENAI_API_KEY"
-              echo "  - OPENAI_BASE_URL"
-              echo "  - LMNR_PROJECT_API_KEY (optional)"
               exit 1
             else
               echo "WARNING: Skipping integration tests - OPENAI_API_KEY not set"
-              echo "Integration tests will be required for releases."
             fi
-          fi
-
-      - name: Test showcase.py CLI example
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
-        run: |
-          if [ -n "$OPENAI_API_KEY" ]; then
-            echo "Running showcase.py CLI test with configured API keys..."
-
-            # Create a temporary directory for test output
-            TEST_DIR=$(mktemp -d)
-            echo "Testing showcase.py with output directory: $TEST_DIR"
-
-            # Run the actual showcase CLI with real API calls
-            python examples/showcase.py "$TEST_DIR" --temperature 0.5 --batch-size 2
-
-            # Verify the expected directory structure was created
-            echo "Verifying directory structure..."
-
-            # Check that main directories exist
-            if [ ! -d "$TEST_DIR/input" ]; then
-                echo "ERROR: input directory not created"
-                exit 1
-            fi
-
-            if [ ! -d "$TEST_DIR/analysis" ]; then
-                echo "ERROR: analysis directory not created"
-                exit 1
-            fi
-
-            if [ ! -d "$TEST_DIR/enhanced" ]; then
-                echo "ERROR: enhanced directory not created"
-                exit 1
-            fi
-
-            # Check that files were created in each directory
-            INPUT_FILES=$(find "$TEST_DIR/input" -type f | wc -l)
-            if [ "$INPUT_FILES" -eq 0 ]; then
-                echo "ERROR: No files created in input directory"
-                exit 1
-            fi
-
-            ANALYSIS_FILES=$(find "$TEST_DIR/analysis" -type f | wc -l)
-            if [ "$ANALYSIS_FILES" -eq 0 ]; then
-                echo "ERROR: No files created in analysis directory"
-                exit 1
-            fi
-
-            ENHANCED_FILES=$(find "$TEST_DIR/enhanced" -type f | wc -l)
-            if [ "$ENHANCED_FILES" -eq 0 ]; then
-                echo "ERROR: No files created in enhanced directory"
-                exit 1
-            fi
-
-            # Check that files are not empty
-            for file in $(find "$TEST_DIR" -type f -name "*.json" -o -name "*.txt" -o -name "*.yaml"); do
-                if [ ! -s "$file" ]; then
-                    echo "ERROR: File $file is empty"
-                    exit 1
-                fi
-            done
-
-            echo "SUCCESS: showcase.py created expected directory structure"
-            echo "Directory contents:"
-            find "$TEST_DIR" -type f | sort
-
-            # Cleanup
-            rm -rf "$TEST_DIR"
-          else
-            echo "WARNING: Skipping showcase.py CLI test - OPENAI_API_KEY not set"
-            echo "Showcase.py CLI test will be required for releases."
           fi

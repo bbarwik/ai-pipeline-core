@@ -5,7 +5,7 @@ from typing import ClassVar, cast
 
 import pytest
 
-from ai_pipeline_core.documents import FlowDocument
+from ai_pipeline_core.documents import Document
 from ai_pipeline_core.exceptions import DocumentNameError
 
 
@@ -18,7 +18,7 @@ class AllowedInputFiles(StrEnum):
 
 
 # Solution 1: Use the enum directly (simplest and type-safe)
-class InputDocumentSimple(FlowDocument):
+class InputDocumentSimple(Document):
     """Flow document using enum directly."""
 
     FILES: ClassVar[type[AllowedInputFiles]] = AllowedInputFiles
@@ -43,7 +43,7 @@ def test_simple_approach():
 
 
 # Solution 2: Use cast for type narrowing when needed
-class InputDocumentCast(FlowDocument):
+class InputDocumentCast(Document):
     """Flow document with type casting for FILES access."""
 
     FILES: ClassVar[type[StrEnum] | None] = AllowedInputFiles
@@ -76,7 +76,7 @@ def test_cast_approach():
 
 
 # Solution 3: Document pattern - just use the enum directly
-class InputDocumentPattern(FlowDocument):
+class InputDocumentPattern(Document):
     """Best practice: use enum directly, document the pattern."""
 
     # For validation, set FILES to the enum class

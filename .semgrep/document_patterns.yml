@@ -1,0 +1,36 @@
+rules:
+  - id: duck-typing-model-dump
+    pattern: |
+      hasattr($VAR, "model_dump")
+    message: "Duck-typing for Pydantic models — use isinstance($VAR, BaseModel) instead"
+    severity: WARNING
+    languages: [python]
+
+  - id: tiktoken-not-cached
+    patterns:
+      - pattern: |
+          tiktoken.encoding_for_model(...)
+      - pattern-not-inside: |
+          def get_tiktoken_encoding(...):
+              ...
+    message: "Use get_tiktoken_encoding() cached wrapper instead of direct call"
+    severity: ERROR
+    languages: [python]
+    paths:
+      exclude:
+        - "**/test_*"
+
+  - id: json-yaml-fallback
+    patterns:
+      - pattern: |
+          try:
+              ...
+              $OBJ.as_json(...)
+              ...
+          except $E:
+              ...
+              $OBJ.as_yaml(...)
+              ...
+    message: "JSON->YAML fallback is a bug — YAML is a JSON superset. Use extension-based dispatch."
+    severity: ERROR
+    languages: [python]

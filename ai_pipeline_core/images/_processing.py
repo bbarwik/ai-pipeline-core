@@ -21,7 +21,7 @@ class SplitPlan:
     warnings: list[str]
 
 
-def plan_split(
+def plan_split(  # noqa: PLR0917
     width: int,
     height: int,
     max_dimension: int,
@@ -71,10 +71,7 @@ def plan_split(
 
     # Auto-reduce if exceeds max_parts
     if num_parts > max_parts:
-        warnings.append(
-            f"Image requires {num_parts} parts but max is {max_parts}. "
-            f"Reducing to {max_parts} parts with larger step."
-        )
+        warnings.append(f"Image requires {num_parts} parts but max is {max_parts}. Reducing to {max_parts} parts with larger step.")
         num_parts = max_parts
         if num_parts > 1:
             step = (height - tile_h) // (num_parts - 1)
@@ -97,10 +94,7 @@ def load_and_normalize(data: bytes) -> Image.Image:
     img.load()
 
     if img.width * img.height > PIL_MAX_PIXELS:
-        raise ValueError(
-            f"Image too large: {img.width}x{img.height} = {img.width * img.height:,} pixels "
-            f"(limit: {PIL_MAX_PIXELS:,})"
-        )
+        raise ValueError(f"Image too large: {img.width}x{img.height} = {img.width * img.height:,} pixels (limit: {PIL_MAX_PIXELS:,})")
 
     # Fix EXIF orientation (important for mobile photos)
     img = ImageOps.exif_transpose(img)
@@ -110,7 +104,7 @@ def load_and_normalize(data: bytes) -> Image.Image:
 def encode_jpeg(img: Image.Image, quality: int) -> bytes:
     """Encode PIL Image as JPEG bytes."""
     # Convert to RGB if needed (JPEG doesn't support alpha)
-    if img.mode not in ("RGB", "L"):
+    if img.mode not in {"RGB", "L"}:
         img = img.convert("RGB")
 
     buf = BytesIO()
@@ -135,7 +129,7 @@ def execute_split(
         width = plan.trim_width
 
     # Convert to RGB once for JPEG
-    if img.mode not in ("RGB", "L"):
+    if img.mode not in {"RGB", "L"}:
         img = img.convert("RGB")
 
     parts: list[tuple[bytes, int, int, int, int]] = []

@@ -3,7 +3,7 @@
 import pytest
 
 from ai_pipeline_core.llm import AIMessages
-from tests.test_helpers import ConcreteFlowDocument, create_test_model_response
+from tests.support.helpers import ConcreteDocument, create_test_model_response
 
 
 class TestAIMessagesBasic:
@@ -78,7 +78,7 @@ class TestAIMessagesBasic:
         assert single.get_last_message_as_str() == "only"
 
         # Document as last should raise
-        doc = ConcreteFlowDocument(name="test.txt", content=b"content")
+        doc = ConcreteDocument(name="test.txt", content=b"content")
         messages_with_doc = AIMessages(["first", doc])
         with pytest.raises(ValueError) as exc_info:
             messages_with_doc.get_last_message_as_str()
@@ -110,7 +110,7 @@ class TestAIMessagesBasic:
         assert messages.get_last_message() == "last"
 
         # Document
-        doc = ConcreteFlowDocument(name="test.txt", content=b"content")
+        doc = ConcreteDocument(name="test.txt", content=b"content")
         messages_doc = AIMessages(["first", doc])
         assert messages_doc.get_last_message() == doc
 
@@ -183,7 +183,7 @@ class TestAIMessagesBasic:
 
     def test_to_prompt_mixed_types(self):
         """Test converting mixed message types."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"Document content")
+        doc = ConcreteDocument(name="test.txt", content=b"Document content")
         response = create_test_model_response(
             id="test",
             object="chat.completion",
@@ -228,7 +228,7 @@ class TestAIMessagesBasic:
     def test_unsupported_message_type(self):
         """Test that unsupported message types raise an error."""
         messages = AIMessages([123])  # type: ignore
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(TypeError) as exc_info:
             messages.to_prompt()
         assert "Unsupported message type" in str(exc_info.value)
 
@@ -271,7 +271,7 @@ class TestAIMessagesBasic:
 
     def test_get_prompt_cache_key_with_complex_messages(self):
         """Test cache key with complex message types."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"content")
+        doc = ConcreteDocument(name="test.txt", content=b"content")
         response = create_test_model_response(
             id="test",
             object="chat.completion",
@@ -295,7 +295,7 @@ class TestAIMessagesBasic:
         assert key1 == key2
 
         # Different document content should produce different key
-        doc2 = ConcreteFlowDocument(name="test.txt", content=b"different")
+        doc2 = ConcreteDocument(name="test.txt", content=b"different")
         messages3 = AIMessages(["Hello", doc2, response])
         key3 = messages3.get_prompt_cache_key()
         assert key1 != key3
@@ -309,7 +309,7 @@ class TestAIMessagesBasic:
 
     def test_approximate_tokens_count_with_document(self):
         """Test approximate tokens count with document messages."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"Document content")
+        doc = ConcreteDocument(name="test.txt", content=b"Document content")
         messages = AIMessages(["Hello", doc])
         count = messages.approximate_tokens_count
         assert count > 0
@@ -337,7 +337,7 @@ class TestAIMessagesBasic:
 
     def test_approximate_tokens_count_mixed(self):
         """Test approximate tokens count with mixed message types."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"Document content")
+        doc = ConcreteDocument(name="test.txt", content=b"Document content")
         response = create_test_model_response(
             id="test",
             object="chat.completion",
@@ -423,7 +423,7 @@ class TestAIMessagesMutationMethods:
 
     def test_to_tracing_log(self):
         """Test to_tracing_log with mixed message types."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"doc content")
+        doc = ConcreteDocument(name="test.txt", content=b"doc content")
         response = create_test_model_response(
             id="test",
             object="chat.completion",

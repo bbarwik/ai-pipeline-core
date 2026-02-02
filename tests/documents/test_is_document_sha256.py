@@ -3,7 +3,7 @@
 import hashlib
 from base64 import b32encode
 
-from ai_pipeline_core.documents import FlowDocument, is_document_sha256
+from ai_pipeline_core.documents import Document, is_document_sha256
 
 
 class TestIsDocumentSha256:
@@ -13,7 +13,7 @@ class TestIsDocumentSha256:
         """Test with a real document SHA256 hash."""
 
         # Create a real document and get its hash
-        class SampleDoc(FlowDocument):
+        class SampleDoc(Document):
             pass
 
         doc = SampleDoc.create(name="test.txt", content="test content")
@@ -31,9 +31,7 @@ class TestIsDocumentSha256:
         ]
 
         for content in test_contents:
-            sha256_hash = (
-                b32encode(hashlib.sha256(content).digest()).decode("ascii").upper().rstrip("=")
-            )
+            sha256_hash = b32encode(hashlib.sha256(content).digest()).decode("ascii").upper().rstrip("=")
             assert is_document_sha256(sha256_hash), f"Failed for content: {content!r}"
 
     def test_insufficient_entropy(self):
@@ -142,7 +140,7 @@ class TestIsDocumentSha256:
         """Test that it works correctly with document sources field."""
 
         # Create a document and use its hash
-        class SampleDoc(FlowDocument):
+        class SampleDoc(Document):
             pass
 
         doc = SampleDoc.create(name="test.txt", content="integration test")
@@ -154,29 +152,24 @@ class TestIsDocumentSha256:
         doc2 = SampleDoc.create(
             name="derived.txt",
             content="derived from first",
-            sources=[doc.sha256, "manual reference"],
+            sources=(doc.sha256, "https://example.com/manual-reference"),
         )
 
         # Check that the source is properly categorized
-        doc_sources = doc2.get_source_documents()
-        ref_sources = doc2.get_source_references()
+        doc_sources = doc2.source_documents
+        ref_sources = doc2.source_references
 
         assert len(doc_sources) == 1
         assert doc_sources[0] == doc.sha256
         assert len(ref_sources) == 1
-        assert ref_sources[0] == "manual reference"
+        assert ref_sources[0] == "https://example.com/manual-reference"
 
     def test_performance_characteristics(self):
         """Test that the function is efficient for typical use."""
         import time
 
         # Generate a real hash
-        real_hash = (
-            b32encode(hashlib.sha256(b"performance test").digest())
-            .decode("ascii")
-            .upper()
-            .rstrip("=")
-        )
+        real_hash = b32encode(hashlib.sha256(b"performance test").digest()).decode("ascii").upper().rstrip("=")
 
         # Test should be very fast (sub-millisecond)
         start = time.perf_counter()

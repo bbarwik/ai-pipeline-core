@@ -1,0 +1,83 @@
+rules:
+  - id: pipeline-task-must-be-async
+    pattern: |
+      @pipeline_task
+      def $F(...):
+          ...
+    message: "@pipeline_task functions must be async — use 'async def' instead of 'def'"
+    severity: ERROR
+    languages: [python]
+
+  - id: pipeline-task-retries-must-be-async
+    pattern: |
+      @pipeline_task(...)
+      def $F(...):
+          ...
+    message: "@pipeline_task functions must be async — use 'async def' instead of 'def'"
+    severity: ERROR
+    languages: [python]
+
+  - id: no-mutable-module-globals
+    patterns:
+      - pattern-either:
+          - pattern: $VAR = []
+          - pattern: $VAR = {}
+          - pattern: $VAR = set()
+          - pattern: $VAR = list()
+          - pattern: $VAR = dict()
+          - pattern: $VAR = deque()
+          - pattern: $VAR = defaultdict(...)
+      - pattern-not-inside: |
+          class $C(...):
+              ...
+      - pattern-not-inside: |
+          def $F(...):
+              ...
+      - pattern-not: __all__ = ...
+    message: "Module-level mutable variable — use immutable types (tuple/frozenset) or ContextVar"
+    severity: WARNING
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+
+  - id: no-conditional-imports
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try:
+                  import $MOD
+                  ...
+              except ImportError:
+                  ...
+          - pattern: |
+              try:
+                  from $MOD import $NAME
+                  ...
+              except ImportError:
+                  ...
+      - pattern-not-inside: |
+          def $F(...):
+              ...
+    message: "Conditional imports are forbidden — all dependencies must be declared in pyproject.toml"
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+
+  - id: no-runtime-test-skip
+    pattern-either:
+      - pattern: pytest.skip(...)
+      - pattern: pytest.importorskip(...)
+    message: "Runtime pytest.skip() is forbidden — use @pytest.mark.skip or @pytest.mark.skipif decorators instead"
+    severity: ERROR
+    languages: [python]
+
+  - id: no-deprecation-warnings
+    pattern-either:
+      - pattern: warnings.warn(..., DeprecationWarning, ...)
+      - pattern: warnings.warn(..., PendingDeprecationWarning, ...)
+    message: "Deprecation warnings are forbidden — remove the deprecated code path entirely"
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]

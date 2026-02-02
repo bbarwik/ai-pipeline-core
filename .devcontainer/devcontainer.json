@@ -1,4 +1,8 @@
 {
   "name": "ai-pipeline-core",
-  "image": "ghcr.io/researchtech-inc/devcontainers/python-ai"
+  "image": "ghcr.io/researchtech-inc/devcontainers/python-ai",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "postCreateCommand": "pipx install semgrep"
 }

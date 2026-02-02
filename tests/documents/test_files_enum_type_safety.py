@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import ClassVar
 
-from ai_pipeline_core.documents import FlowDocument
+from ai_pipeline_core.documents import Document
 
 
 class AllowedInputFiles(StrEnum):
@@ -14,7 +14,7 @@ class AllowedInputFiles(StrEnum):
     TEXT = "input.txt"
 
 
-class InputDocument(FlowDocument):
+class InputDocument(Document):
     """Flow document with filename restrictions."""
 
     # Proper type annotation for type safety

@@ -1,565 +1,540 @@
 #!/usr/bin/env python3
-"""Complete showcase of ai_pipeline_core features (v0.3.0)
+"""Showcase of ai_pipeline_core features (v0.4.0)
 
-This example demonstrates ALL exports from ai_pipeline_core.__init__, including:
-  • Settings configuration with environment variables and .env files
-  • Logging system (LoggerMixin, StructuredLoggerMixin) with Prefect integration
-  • Document system with immutable, type-safe documents:
-    - Document: Abstract base with MIME detection and content validation
-    - FlowDocument: Persisted across flow runs
-    - TaskDocument: Temporary within task execution
-    - TemporaryDocument: Never persisted
-    - DocumentList: Type-safe container with validation
-  • Pipeline decorators (pipeline_flow, pipeline_task) with LMNR tracing
-    - Cost tracking via trace_cost parameter
-  • Prefect utilities (flow, task, prefect_test_harness, disable_run_logger)
-  • LLM module with smart caching and structured outputs:
-    - generate/generate_structured with context caching
-    - AIMessages supporting mixed content types
-    - ModelOptions with retry and timeout configuration
-    - ModelResponse with cost tracking metadata
-  • Tracing (trace, TraceLevel, TraceInfo) for observability with cost tracking
-  • PromptManager for Jinja2 templates with smart path resolution
-  • PipelineDeployment for unified local/CLI/production execution
+Full-featured 3-stage pipeline with real LLM interactions demonstrating
+every framework capability:
+  - Documents: immutable, content-addressed, typed, with attachments and provenance
+  - LLM: generate(), generate_structured(), AIMessages, context caching, multi-turn
+  - Pipeline: @pipeline_flow, @pipeline_task with auto-save, retries, user_summary
+  - Deployment: PipelineDeployment with CLI, resume/skip, progress tracking
+  - Observability: @trace, set_trace_cost, Laminar integration
+  - PromptManager: Jinja2 templates with smart path resolution
+  - Logging: setup_logging, get_pipeline_logger, StructuredLoggerMixin
+  - Settings: FlowOptions with env-based configuration
+  - Images: process_image, process_image_to_documents, ImagePreset
+  - Document Store: auto-configured (Local for CLI, ClickHouse if configured)
 
 Prerequisites:
-  - OPENAI_API_KEY and OPENAI_BASE_URL configured (can be set in .env)
-  - Optional: LMNR_PROJECT_API_KEY for tracing
-  - Optional: PREFECT_API_URL for remote orchestration
+  OPENAI_BASE_URL and OPENAI_API_KEY must be set (LiteLLM proxy).
+  Optional: LMNR_PROJECT_API_KEY (tracing), CLICKHOUSE_HOST (production store).
 
 Usage:
-  # Basic usage with defaults
   python examples/showcase.py ./output
-
-  # With custom options
-  python examples/showcase.py ./output --temperature 0.7 --batch-size 5
-
-  # Skip first stage
+  python examples/showcase.py ./output --reasoning-effort high --core-model gpt-5.2
   python examples/showcase.py ./output --start 2
-
-Tip: Set PREFECT_LOGGING_LEVEL=INFO for richer logs and LMNR_DEBUG=true for more detailed tracing
 """
 
+import time
 from enum import StrEnum
-from typing import Any, ClassVar, Literal
+from io import BytesIO
+from typing import ClassVar, Literal
 
+from PIL import Image
 from pydantic import BaseModel, Field
 
-# Import ALL exports from ai_pipeline_core.__init__
 from ai_pipeline_core import (
     AIMessages,
+    Attachment,
     DeploymentResult,
-    DocumentList,
-    FlowConfig,
-    FlowDocument,
+    Document,
     FlowOptions,
-    LoggingConfig,
-    ModelName,
+    ImagePreset,
+    ModelOptions,
     ModelResponse,
     PipelineDeployment,
     PromptManager,
     StructuredLoggerMixin,
-    TaskDocument,
     canonical_name_key,
-    get_logger,
     get_pipeline_logger,
+    is_document_sha256,
     llm,
     pipeline_flow,
     pipeline_task,
+    process_image,
+    process_image_to_documents,
     sanitize_url,
     set_trace_cost,
     setup_logging,
     trace,
 )
-from ai_pipeline_core.prefect import flow, task
 
-setup_logging(level="INFO")  # Can also pass config_path for YAML config
 logger = get_pipeline_logger(__name__)
 
-alt_logger = get_logger("showcase.alternative")
+
+# ---------------------------------------------------------------------------
+# StructuredLoggerMixin: structured logging on a utility class
+# ---------------------------------------------------------------------------
 
 
-class DataProcessor(StructuredLoggerMixin):
-    """Example class using StructuredLoggerMixin for advanced logging."""
+class AnalysisTracker(StructuredLoggerMixin):
+    """Tracks analysis operations with structured events, metrics, and spans."""
 
-    def process(self, data: str) -> dict[str, Any]:
-        # Use inherited logging methods
-        self.log_info(f"Processing data of length {len(data)}")
+    def on_start(self, doc_name: str, size: int) -> None:
+        self.log_event("analysis_started", document=doc_name, size_bytes=size)
+        self.log_metric("input_size", size, "bytes", source="showcase")
 
-        # Log structured event
-        self.log_event("data_processing_started", data_length=len(data), processor="showcase")
+    def on_complete(self, doc_name: str, duration_ms: float) -> None:
+        self.log_span("document_analysis", duration_ms, document=doc_name, status="success")
 
-        # Log metrics
-        self.log_metric("input_size", len(data), "characters", source="showcase")
 
-        # Use context manager for timed operations
-        with self.log_operation("text_analysis", data_size=len(data)):
-            # Simulate processing
-            result = {"length": len(data), "words": len(data.split())}
+tracker = AnalysisTracker()
 
-        # Log span
-        self.log_span("processing_complete", 100.5, status="success")
 
-        return result
+# ---------------------------------------------------------------------------
+# @trace on standalone function
+# ---------------------------------------------------------------------------
+
+
+@trace(name="validate_provenance")
+def validate_provenance(doc: Document) -> None:
+    """Validate and log document source references."""
+    for src in doc.sources:
+        if is_document_sha256(src):
+            logger.debug(f"Document source: {src[:12]}...")
+        else:
+            logger.debug(f"Reference source: {sanitize_url(src)}")
+
+
+# ---------------------------------------------------------------------------
+# Document types
+# ---------------------------------------------------------------------------
 
 
 class AllowedInputFiles(StrEnum):
-    """Demonstrate FILES enum for document validation."""
+    """Restrict InputDocument filenames via FILES enum."""
 
     CONFIG = "config.yaml"
     DATA = "data.json"
-    TEXT = "input.txt"
+    NOTES = "notes.txt"
 
 
-class InputDocument(FlowDocument):
-    """Flow document with filename restrictions."""
+class InputDocument(Document):
+    """Pipeline input with FILES enum validation."""
 
     FILES: ClassVar[type[AllowedInputFiles]] = AllowedInputFiles
 
 
-class AnalysisDocument(FlowDocument):
-    """Output document demonstrating create methods."""
-
-    pass
+class AnalysisDocument(Document):
+    """Stage 1 output: LLM-generated multi-turn analysis (markdown)."""
 
 
-class EnhancedDocument(FlowDocument):
-    """Enhanced document for stage 2 output."""
-
-    pass
+class InsightDocument(Document):
+    """Stage 2 output: structured extraction (JSON via BaseModel)."""
 
 
-class TempProcessingDocument(TaskDocument):
-    """Temporary task document (not persisted)."""
-
-    pass
+class ReportDocument(Document):
+    """Stage 3 output: compiled report with attachments."""
 
 
-class ResearchTaskDocument(TaskDocument):
-    """Task document for research data (temporary, can be trimmed in traces)."""
+# ---------------------------------------------------------------------------
+# Structured output model (decomposition fields before decision fields)
+# ---------------------------------------------------------------------------
 
-    pass
+
+class DocumentInsight(BaseModel):
+    """Structured extraction from analysis."""
+
+    topics: list[str] = Field(description="Main topics identified in the document")
+    technical_concepts: list[str] = Field(description="Technical terms and concepts found")
+    key_findings: list[str] = Field(description="3-5 key findings from the analysis")
+    complexity: Literal["low", "medium", "high"] = Field(description="Content complexity level")
+    actionable_items: list[str] = Field(description="Concrete next steps or recommendations")
 
 
-class ResearchFlowDocument(FlowDocument):
-    """Flow document for research results (persistent, not trimmed in traces)."""
-
-    pass
+# ---------------------------------------------------------------------------
+# Flow options (env-configurable via BaseSettings)
+# ---------------------------------------------------------------------------
 
 
 class ShowcaseFlowOptions(FlowOptions):
-    """Extended flow options with custom fields."""
+    """Pipeline configuration — all fields overridable via CLI flags or env vars."""
 
-    temperature: float = Field(default=0.7, ge=0, le=2, description="LLM temperature")
-    batch_size: int = Field(default=10, ge=1, description="Processing batch size")
-    enable_structured: bool = Field(default=True, description="Use structured output")
-    reasoning_effort: Literal["low", "medium", "high"] = Field(
-        default="medium", description="Reasoning level"
+    core_model: str = Field(default="gemini-3-pro", description="Model for multi-turn analysis")
+    fast_model: str = Field(default="gemini-3-flash", description="Model for structured extraction")
+    reasoning_effort: Literal["low", "medium", "high"] = Field(default="medium", description="Reasoning intensity")
+    max_analysis_turns: int = Field(default=2, ge=1, le=5, description="Multi-turn analysis depth")
+
+
+# ---------------------------------------------------------------------------
+# Pipeline tasks
+# ---------------------------------------------------------------------------
+
+
+@pipeline_task(user_summary=True, estimated_minutes=2)
+async def analyze_document(
+    document: InputDocument,
+    *,
+    core_model: str,
+    max_turns: int,
+) -> AnalysisDocument:
+    """Multi-turn LLM analysis of a single document."""
+    prompts = PromptManager(__file__, prompts_dir="templates")
+
+    # log_operation: context manager with automatic timing and exception logging
+    with tracker.log_operation("full_analysis", document=document.name, size=document.size):
+        t0 = time.perf_counter()
+        tracker.on_start(document.name, document.size)
+
+        # Context: static, cacheable prefix — the document itself
+        context = AIMessages([document])
+        context.freeze()
+        logger.info(f"Context: ~{context.approximate_tokens_count} tokens, cache key: {context.get_prompt_cache_key()[:16]}...")
+
+        # Messages: dynamic conversation history
+        messages = AIMessages()
+
+        # Turn 1: initial analysis via Jinja2 template (current_date auto-available)
+        prompt = prompts.get("analyze", document_name=document.name)
+        messages.append(prompt)
+
+        response = await llm.generate(
+            core_model,
+            context=context,
+            messages=messages,
+            purpose="document_analysis",
+        )
+        response.validate_output()
+        messages.append(response)
+
+        # Log model reasoning and usage if available
+        if response.reasoning_content:
+            logger.debug(f"Model reasoning: {response.reasoning_content[:100]}...")
+        if response.usage:
+            logger.info(f"Tokens: {response.usage.prompt_tokens} in / {response.usage.completion_tokens} out")
+
+        # Follow-up turns for deeper analysis
+        for turn in range(1, max_turns):
+            messages.append(f"What are the most important implications and connections you see? (Turn {turn + 1}/{max_turns})")
+            response = await llm.generate(
+                core_model,
+                context=context,
+                messages=messages,
+                purpose="analysis_followup",
+            )
+            messages.append(response)
+
+        # Deep copy messages before extracting content
+        messages_snapshot = messages.copy()
+
+        # Combine all assistant responses
+        combined = "\n\n---\n\n".join(msg.content for msg in messages_snapshot if isinstance(msg, ModelResponse))
+
+        set_trace_cost(0.01)
+        validate_provenance(document)
+
+        tracker.on_complete(document.name, (time.perf_counter() - t0) * 1000)
+
+    return AnalysisDocument.create(
+        name=f"analysis_{document.sha256[:12]}.md",
+        content=combined,
+        sources=(document.sha256, *document.source_references),
     )
 
 
-class Stage1Config(FlowConfig):
-    """First stage: process input documents."""
+@pipeline_task(user_summary="Insight extraction", estimated_minutes=1)
+async def extract_insights(
+    analysis: AnalysisDocument,
+    *,
+    fast_model: str,
+    reasoning_effort: Literal["low", "medium", "high"],
+    original_input_sha256: str,
+) -> InsightDocument:
+    """Structured extraction from analysis text."""
+    prompts = PromptManager(__file__, prompts_dir="templates")
+    prompt = prompts.get("extract", document_name=analysis.name)
+    options = ModelOptions(reasoning_effort=reasoning_effort)
 
-    INPUT_DOCUMENT_TYPES = [InputDocument]
-    OUTPUT_DOCUMENT_TYPE = AnalysisDocument
+    structured = await llm.generate_structured(
+        fast_model,
+        DocumentInsight,
+        context=AIMessages([analysis]),
+        messages=prompt,
+        options=options,
+        purpose="insight_extraction",
+    )
+
+    insight: DocumentInsight = structured.parsed
+    logger.info(f"Extracted {len(insight.key_findings)} findings, complexity: {insight.complexity}")
+
+    return InsightDocument.create(
+        name=f"insight_{analysis.sha256[:12]}.json",
+        content=insight,
+        sources=(analysis.sha256,),
+        origins=(original_input_sha256,) if original_input_sha256 else (),
+    )
 
 
-class Stage2Config(FlowConfig):
-    """Second stage: enhance analysis documents."""
+@pipeline_task(estimated_minutes=1, trace_trim_documents=False)
+async def compile_report(
+    project_name: str,
+    insights: list[InsightDocument],
+    analyses: list[AnalysisDocument],
+) -> ReportDocument:
+    """Compile final report from structured insights with raw analysis attachments."""
+    lines = [
+        f"# {project_name} — Analysis Report",
+        "",
+        f"Documents analyzed: {len(insights)}",
+        f"Insight type: `{canonical_name_key(InsightDocument)}`",
+        "",
+        "## Insights",
+        "",
+    ]
 
-    INPUT_DOCUMENT_TYPES = [AnalysisDocument]
-    OUTPUT_DOCUMENT_TYPE = EnhancedDocument
+    all_sources: list[str] = []
 
+    for i, insight_doc in enumerate(insights, start=1):
+        insight = insight_doc.parse(DocumentInsight)
+        safe_name = sanitize_url(f"https://example.com/insight/{insight_doc.id}")
 
-class TextAnalysis(BaseModel):
-    """Structured output for text analysis."""
+        lines.append(f"### {i}. {safe_name}")
+        lines.append(f"**Topics:** {', '.join(insight.topics[:5])}")
+        lines.append(f"**Complexity:** {insight.complexity}")
+        lines.append("")
+        lines.extend(f"- {finding}" for finding in insight.key_findings)
+        lines.append("")
 
-    summary: str
-    key_points: list[str] = Field(default_factory=list)
-    sentiment: str
-    confidence: float = Field(ge=0, le=1)
+        if insight.actionable_items:
+            lines.append("**Action items:**")
+            lines.extend(f"- [ ] {item}" for item in insight.actionable_items)
+            lines.append("")
 
+        all_sources.append(insight_doc.sha256)
 
-class InputForTask(BaseModel):
-    """Pydantic model containing both task and flow documents for batch processing."""
+        # Source filtering via is_document_sha256
+        for src in insight_doc.sources:
+            if is_document_sha256(src):
+                logger.debug(f"Tracked document source: {src[:12]}...")
 
-    task_doc: ResearchTaskDocument = Field(description="Temporary research data")
-    flow_doc: ResearchFlowDocument = Field(description="Persistent research results")
-    processing_params: dict[str, Any] = Field(default_factory=dict)
+        # has_source check
+        if analyses and insight_doc.has_source(analyses[min(i - 1, len(analyses) - 1)]):
+            logger.debug(f"Insight {i} correctly references its analysis")
 
+        # Origins access
+        if insight_doc.origins:
+            lines.append(f"*Origin: `{insight_doc.origins[0][:12]}...`*")
+            lines.append("")
 
-@pipeline_task
-async def analyze_with_advanced_tracing(
-    doc: FlowDocument,
-    model: ModelName,
-) -> TextAnalysis:
-    messages = AIMessages([
-        doc,
-        "Analyze this document thoroughly",
+    # Raw analyses as Attachment objects
+    attachments = [Attachment(name=f"raw_{a.name}", content=a.content, description=f"Full analysis text for {a.name}") for a in analyses[:2]]
+
+    # Log attachment properties
+    for att in attachments:
+        logger.debug(f"Attachment: {att.name}, {att.mime_type}, {att.size} bytes, is_text={att.is_text}")
+
+    lines.extend([
+        "## Provenance",
+        "",
+        f"Total document sources: {len(all_sources)}",
     ])
+    lines.extend(f"- `{src[:16]}...`" for src in all_sources)
 
-    response = await llm.generate_structured(
-        model=model, response_format=TextAnalysis, messages=messages
+    return ReportDocument.create(
+        name="report.md",
+        content="\n".join(lines),
+        sources=tuple(all_sources),
+        attachments=tuple(attachments),
     )
 
-    return response.parsed
+
+# ---------------------------------------------------------------------------
+# Pipeline flows — annotation-driven input/output types
+# ---------------------------------------------------------------------------
 
 
-@pipeline_task(trace_trim_documents=True)  # Trim documents in traces for this task
-async def process_research_batch(
-    research_inputs: list[InputForTask],
-    model: ModelName = "gpt-5-mini",
-) -> DocumentList:
-    """Process batch of research inputs containing both task and flow documents.
+@pipeline_flow(estimated_minutes=5, retries=1, timeout_seconds=600)
+async def analysis_flow(
+    project_name: str,
+    documents: list[InputDocument],
+    flow_options: ShowcaseFlowOptions,
+) -> list[AnalysisDocument]:
+    """Stage 1: multi-turn LLM analysis of each input document."""
+    results: list[AnalysisDocument] = []
+    for doc in documents:
+        logger.info(f"Analyzing {doc.canonical_name()}: {doc.name} ({doc.mime_type}, is_text={doc.is_text})")
+        analysis = await analyze_document(
+            doc,
+            core_model=flow_options.core_model,
+            max_turns=flow_options.max_analysis_turns,
+        )
+        results.append(analysis)
+    logger.info(f"Stage 1 complete: {len(results)} analyses")
+    return results
 
-    This task demonstrates:
-    - Processing list[Pydantic models] with embedded Documents
-    - LLM interactions for document analysis
-    - Returning DocumentList with mixed document types
-    - Document trimming in traces (task docs trimmed, flow docs preserved)
+
+@pipeline_flow(estimated_minutes=3)
+async def extraction_flow(
+    project_name: str,
+    documents: list[AnalysisDocument],
+    flow_options: ShowcaseFlowOptions,
+) -> list[InsightDocument]:
+    """Stage 2: structured extraction from each analysis."""
+    results: list[InsightDocument] = []
+    for analysis in documents:
+        original_sha = analysis.source_documents[0] if analysis.source_documents else ""
+        insight = await extract_insights(
+            analysis,
+            fast_model=flow_options.fast_model,
+            reasoning_effort=flow_options.reasoning_effort,
+            original_input_sha256=original_sha,
+        )
+        results.append(insight)
+    logger.info(f"Stage 2 complete: {len(results)} insights")
+    return results
+
+
+@pipeline_flow(estimated_minutes=1)
+async def report_flow(
+    project_name: str,
+    documents: list[InsightDocument | AnalysisDocument],
+    flow_options: ShowcaseFlowOptions,
+) -> list[ReportDocument]:
+    """Stage 3: compile report from insights + analysis attachments.
+
+    Accepts both InsightDocument and AnalysisDocument — the deployment loads
+    all matching types from the store. Demonstrates multi-type flow input.
     """
-    logger.info(f"Processing batch of {len(research_inputs)} research items")
-
-    outputs = DocumentList(validate_same_type=False)
-
-    for i, input_item in enumerate(research_inputs):
-        task_doc = input_item.task_doc
-        flow_doc = input_item.flow_doc
-        params = input_item.processing_params
-
-        logger.debug(f"Task doc size: {task_doc.size} bytes, Flow doc size: {flow_doc.size} bytes")
-        messages = AIMessages([
-            "Analyze this temporary research data:",
-            task_doc,
-            "Compare with this permanent research result:",
-            flow_doc,
-            f"Using parameters: {params}",
-        ])
-
-        response = await llm.generate(model=model, messages=messages)
-
-        total_kb = (task_doc.size + flow_doc.size) / 1024
-        set_trace_cost(total_kb * 0.001)
-        task_preview = task_doc.text[:200]
-        enhanced_task_content = (
-            f"BATCH {i + 1} ANALYSIS:\n{response.content}\n\nOriginal: {task_preview}..."
-        )
-        enhanced_task_doc = ResearchTaskDocument.create(
-            name=f"enhanced_task_{i}.txt",
-            content=enhanced_task_content,
-            sources=[task_doc.sha256],
-        )
-        flow_preview = flow_doc.text[:200]
-        enhanced_flow_content = (
-            f"PERMANENT RESULT {i + 1}:\n{response.content}\n\nBased on: {flow_preview}..."
-        )
-        enhanced_flow_doc = ResearchFlowDocument.create(
-            name=f"enhanced_flow_{i}.txt",
-            content=enhanced_flow_content,
-            sources=[flow_doc.sha256, task_doc.sha256],
-        )
-
-        outputs.append(enhanced_task_doc)
-        outputs.append(enhanced_flow_doc)
-
-        logger.info(f"Processed item {i + 1}: created 2 documents (1 task, 1 flow)")
-
-    logger.info(f"Batch processing complete: {len(outputs)} total documents")
-    return outputs
+    insights = [d for d in documents if isinstance(d, InsightDocument)]
+    analyses = [d for d in documents if isinstance(d, AnalysisDocument)]
+    report = await compile_report(project_name, insights, analyses)
+    logger.info(f"Report: {len(report.source_documents)} sources, {len(report.attachments)} attachments, {report.size} bytes")
+    return [report]
 
 
-@task
-async def simple_transform(text: str) -> str:
-    """Clean Prefect task without tracing."""
-    return text.upper()
-
-
-@trace(
-    level="always",
-    name="custom_operation",
-    span_type="PROCESSING",
-    metadata={"version": "1.0"},
-)
-async def traced_operation(data: str) -> dict[str, Any]:
-    """Function with only tracing, no Prefect."""
-    processor = DataProcessor()
-    set_trace_cost(0.0005)
-    return processor.process(data)
-
-
-@pipeline_flow(
-    config=Stage1Config,
-    name="stage1_analysis",
-    trace_level="always",
-    trace_cost=0.01,  # Track total cost for this flow (e.g., $0.01 per run)
-    trace_trim_documents=False,  # Keep full documents in flow traces
-    retries=2,
-    timeout_seconds=1200,
-)
-async def stage1_flow(
-    project_name: str, documents: DocumentList, flow_options: ShowcaseFlowOptions
-) -> DocumentList:
-    """First stage: analyze input documents and demonstrate batch processing."""
-    config = Stage1Config()
-    input_docs = config.get_input_documents(documents)
-    research_batch = []
-    large_task_content = (
-        "This is temporary research data that will be trimmed in traces. " * 15
-        + "It contains detailed analysis, experiments, and intermediate results. " * 10
-        + "The data includes metrics, observations, and hypotheses. " * 10
-    )
-
-    large_flow_content = (
-        "This is permanent research that must be preserved in full. " * 15
-        + "It represents validated conclusions and final results. " * 10
-        + "These findings are critical for long-term reference. " * 10
-        + "The document contains verified data and approved outcomes. " * 8
-    )
-
-    for i in range(3):
-        task_doc = ResearchTaskDocument.create(
-            name=f"research_task_{i}.txt",
-            content=large_task_content + f"\n\nBatch ID: {i}\nProject: {project_name}",
-        )
-
-        flow_doc = ResearchFlowDocument.create(
-            name=f"research_flow_{i}.txt",
-            content=large_flow_content + f"\n\nResult ID: {i}\nValidated: True",
-        )
-
-        research_batch.append(
-            InputForTask(
-                task_doc=task_doc,
-                flow_doc=flow_doc,
-                processing_params={
-                    "temperature": flow_options.temperature,
-                    "batch_id": i,
-                    "reasoning_effort": flow_options.reasoning_effort,
-                },
-            )
-        )
-
-    logger.info("Processing research batch with large documents")
-    batch_results = await process_research_batch(
-        research_batch,
-        model=flow_options.core_model,
-    )
-    logger.info(f"Batch processing produced {len(batch_results)} documents")
-
-    prompts = PromptManager(__file__)
-
-    outputs = DocumentList(validate_same_type=True)
-
-    for doc in input_docs:
-        # Demonstrate canonical_name_key utility
-        canonical = canonical_name_key(doc.__class__)
-        logger.info(f"Processing {canonical}: {doc.name}")
-
-        # Using current_date variable from PromptManager
-        prompt = prompts.get("showcase.jinja2", text=doc.text, temperature=flow_options.temperature)
-
-        if flow_options.enable_structured:
-            analysis = await analyze_with_advanced_tracing(doc, flow_options.core_model)
-
-            doc_size_kb = doc.size / 1024
-            dynamic_cost = doc_size_kb * 0.0001
-            set_trace_cost(dynamic_cost)
-
-            output = AnalysisDocument.create(
-                name=f"analysis_{doc.id}.json",
-                content=analysis,
-                sources=[doc.sha256],
-            )
-        else:
-            messages = AIMessages([doc, prompt])
-            response: ModelResponse = await llm.generate(
-                flow_options.small_model, messages=messages
-            )
-
-            logger.info(f"Model used: {response.model}")
-            logger.info(f"Tokens: {response.usage.total_tokens if response.usage else 'N/A'}")
-
-            output = AnalysisDocument.create(
-                name=f"analysis_{doc.id}.txt",
-                content=response.content,
-                sources=[doc.sha256],
-            )
-
-        outputs.append(output)
-
-    for doc in batch_results:
-        if isinstance(doc, (ResearchTaskDocument, ResearchFlowDocument)):
-            analysis_doc = AnalysisDocument.create(
-                name=f"batch_{doc.name}",
-                content=doc.content,
-                sources=doc.sources,
-            )
-            outputs.append(analysis_doc)
-
-    return Stage1Config.create_and_validate_output(outputs)
-
-
-@pipeline_flow(config=Stage2Config, name="stage2_enhancement")
-async def stage2_flow(
-    project_name: str, documents: DocumentList, flow_options: ShowcaseFlowOptions
-) -> DocumentList:
-    """Second stage: enhance analysis documents."""
-    config = Stage2Config()
-    input_docs = config.get_input_documents(documents)
-
-    outputs = DocumentList()
-
-    for doc in input_docs:
-        temp_task_doc = TempProcessingDocument.create(
-            name="temp.txt",
-            content="This document exists only during task execution",
-        )
-        logger.debug(f"Created temporary task document: {temp_task_doc.id}")
-
-        if doc.is_text:
-            content = doc.text
-        elif doc.mime_type.startswith("application/json"):
-            content = str(doc.as_json())
-        else:
-            content = f"Binary document: {doc.size} bytes"
-
-        enhanced = await simple_transform(content)
-
-        safe_name = sanitize_url(f"https://example.com/doc/{doc.id}")
-
-        if doc.name.endswith(".json"):
-            try:
-                data = doc.as_json()
-                data["enhanced"] = True
-                data["safe_name"] = safe_name
-
-                output = EnhancedDocument.create(
-                    name=doc.name.replace(".", "_enhanced."),
-                    content=data,
-                    sources=[
-                        doc.sha256,
-                        f"stage2_flow:{project_name}",
-                    ],
-                )
-            except Exception:
-                output = EnhancedDocument.create(
-                    name=doc.name.replace(".", "_enhanced."),
-                    content=enhanced,
-                    sources=[doc.sha256],
-                )
-        else:
-            output = EnhancedDocument.create(
-                name=doc.name.replace(".", "_enhanced."),
-                content=enhanced,
-                sources=[
-                    doc.sha256,
-                    "enhancement_process",
-                ],
-            )
-
-        logger.info(f"Document {output.name} has {len(output.sources)} sources")
-        if output.sources:
-            doc_sources = output.get_source_documents()
-            ref_sources = output.get_source_references()
-            if doc_sources:
-                logger.debug(f"  Document sources: {len(doc_sources)} documents")
-            if ref_sources:
-                logger.debug(f"  Reference sources: {ref_sources}")
-
-        outputs.append(output)
-
-    return Stage2Config.create_and_validate_output(outputs)
-
-
-@flow(name="cleanup_flow")
-async def cleanup_flow(project_name: str) -> None:
-    """Demonstrate clean Prefect flow without tracing."""
-    logger.info(f"Cleaning up project: {project_name}")
-    # Could perform cleanup tasks here
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
 
 
 class ShowcaseResult(DeploymentResult):
-    """Result from showcase pipeline."""
+    """Typed result from the showcase pipeline."""
 
-    documents_count: int = 0
-    output_files: list[str] = Field(default_factory=list)
+    analysis_count: int = 0
+    insight_count: int = 0
+    report_files: list[str] = Field(default_factory=list)
 
 
 class ShowcasePipeline(PipelineDeployment[ShowcaseFlowOptions, ShowcaseResult]):
-    """Showcase pipeline demonstrating PipelineDeployment usage."""
+    """3-stage pipeline: analyze → extract → report.
 
-    flows = [stage1_flow, stage2_flow]
+    Flow chain validated at class definition time:
+    InputDocument → AnalysisDocument → InsightDocument → ReportDocument
+    """
+
+    flows: ClassVar = [analysis_flow, extraction_flow, report_flow]
 
     @staticmethod
     def build_result(
         project_name: str,
-        documents: DocumentList,
+        documents: list[Document],
         options: ShowcaseFlowOptions,
     ) -> ShowcaseResult:
-        output_docs = [doc for doc in documents if isinstance(doc, EnhancedDocument)]
+        analyses = [d for d in documents if isinstance(d, AnalysisDocument)]
+        insights = [d for d in documents if isinstance(d, InsightDocument)]
+        reports = [d for d in documents if isinstance(d, ReportDocument)]
         return ShowcaseResult(
             success=True,
-            documents_count=len(output_docs),
-            output_files=[doc.name for doc in output_docs],
+            analysis_count=len(analyses),
+            insight_count=len(insights),
+            report_files=[d.name for d in reports],
         )
 
 
 showcase_pipeline = ShowcasePipeline()
 
 
-def initialize_showcase(options: ShowcaseFlowOptions) -> tuple[str, DocumentList]:
-    """Initialize with sample documents for CLI mode."""
+# ---------------------------------------------------------------------------
+# CLI initializer
+# ---------------------------------------------------------------------------
+
+
+def initialize_showcase(options: ShowcaseFlowOptions) -> tuple[str, list[Document]]:
+    """Create sample input documents and demonstrate standalone features."""
     logger.info("Initializing showcase with sample data")
 
-    external_source = "https://example.com/data-source"
-
-    sample_models = [
-        TextAnalysis(
-            summary="First sample",
-            key_points=["point 1", "point 2"],
-            sentiment="positive",
-            confidence=0.9,
-        ),
-        TextAnalysis(
-            summary="Second sample",
-            key_points=["point A", "point B"],
-            sentiment="neutral",
-            confidence=0.85,
-        ),
-    ]
-
-    docs = DocumentList([
+    docs: list[Document] = [
         InputDocument.create(
-            name="input.txt",
-            content="""AI Pipeline Core is a powerful async library for building
-            production-grade AI pipelines with strong typing, observability,
-            and Prefect integration.""",
-            sources=[external_source],
+            name="notes.txt",
+            content=(
+                "AI Pipeline Core is a production-ready framework for building "
+                "AI pipelines with strong typing, observability, and Prefect integration. "
+                "Documents are immutable, content-addressed, and auto-saved by pipeline tasks. "
+                "The framework provides LLM routing via LiteLLM, structured output with Pydantic, "
+                "multi-turn conversations, context caching, and distributed tracing via Laminar.\n\n"
+                "Pipeline deployments support resume/skip logic based on content fingerprinting, "
+                "progress webhooks for real-time monitoring, and CLI execution with step control. "
+                "The document store supports MemoryDocumentStore for testing, LocalDocumentStore "
+                "for CLI/debug workflows, and ClickHouseDocumentStore for production with "
+                "content-addressed deduplication and automatic LLM-generated document summaries."
+            ),
+            sources=("https://github.com/example/ai-pipeline-core",),
         ),
         InputDocument.create(
             name="data.json",
             content={
                 "project": "ai-pipeline-core",
-                "version": "0.3.0",
-                "features": ["async", "typed", "observable"],
-                "models": [m.model_dump() for m in sample_models],
+                "version": "0.4.0",
+                "modules": ["documents", "llm", "pipeline", "deployment", "observability"],
+                "backends": {"store": ["memory", "local", "clickhouse"], "tracing": ["laminar", "otel"]},
             },
         ),
         InputDocument.create(
             name="config.yaml",
-            content={"model": "gpt-5-mini", "temperature": 0.7},
+            content={
+                "pipeline": {"stages": 3, "retry_policy": "exponential"},
+                "models": {"analysis": options.core_model, "extraction": options.fast_model},
+                "features": {"caching": True, "summaries": True, "attachments": True},
+            },
         ),
-    ])
+    ]
 
-    return "showcase-project", docs
+    # Document.serialize_model() / from_dict() roundtrip
+    serialized = docs[0].serialize_model()
+    roundtripped = InputDocument.from_dict(serialized)
+    assert roundtripped.sha256 == docs[0].sha256
+    logger.info(f"Roundtrip verified: {roundtripped.name} (sha256 match)")
+
+    # Image processing demonstration (standalone)
+    _demo_image_processing()
+
+    return "showcase-full", docs
 
 
-def main():
-    """Main entry point - CLI mode with PipelineDeployment."""
-    logging_config = LoggingConfig()
-    logging_config.apply()
+def _demo_image_processing() -> None:
+    """Demonstrate process_image() and process_image_to_documents() with ImagePreset."""
+    img = Image.new("RGB", (400, 800), color=(70, 130, 180))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    image_bytes = buf.getvalue()
 
+    # Default GEMINI preset
+    result_gemini = process_image(image_bytes)
+    logger.info(
+        f"process_image (GEMINI): {result_gemini.original_width}x{result_gemini.original_height} "
+        f"→ {len(result_gemini.parts)} part(s), "
+        f"compression: {result_gemini.compression_ratio:.2f}, "
+        f"trimmed: {result_gemini.was_trimmed}"
+    )
+    for part in result_gemini:
+        logger.debug(f"  {part.label}: {part.width}x{part.height}, {len(part.data)} bytes")
+
+    # Explicit CLAUDE preset (different constraints)
+    result_claude = process_image(image_bytes, preset=ImagePreset.CLAUDE)
+    logger.info(f"process_image (CLAUDE): → {len(result_claude.parts)} part(s), compression: {result_claude.compression_ratio:.2f}")
+
+    # Convert to ImageDocument list
+    docs = process_image_to_documents(image_bytes, name_prefix="demo_image")
+    logger.info(f"process_image_to_documents: {len(docs)} doc(s), first: {docs[0].name} ({docs[0].mime_type})")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    """CLI entry point — setup logging first, then delegate to run_cli()."""
+    setup_logging(level="INFO")
     showcase_pipeline.run_cli(
         initializer=initialize_showcase,
         trace_name="showcase",

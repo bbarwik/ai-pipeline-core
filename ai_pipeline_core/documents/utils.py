@@ -5,14 +5,13 @@ canonical key generation, and hash validation used throughout the document syste
 """
 
 import re
-from typing import Any, Iterable, Type
+from collections.abc import Iterable
+from typing import Any
 from urllib.parse import urlparse
 
 
 def sanitize_url(url: str) -> str:
     """Sanitize URL or query string for use in filenames.
-
-    @public
 
     Removes or replaces characters that are invalid in filenames.
 
@@ -63,14 +62,12 @@ def camel_to_snake(name: str) -> str:
 
 
 def canonical_name_key(
-    obj_or_name: Type[Any] | str,
+    obj_or_name: type[Any] | str,
     *,
     max_parent_suffixes: int = 3,
     extra_suffixes: Iterable[str] = (),
 ) -> str:
     """Produce a canonical snake_case key from a class or name.
-
-    @public
 
     Process:
       1) Starting with the class name (or given string),
@@ -119,8 +116,6 @@ def canonical_name_key(
 
 def is_document_sha256(value: str) -> bool:
     """Check if a string is a valid base32-encoded SHA256 hash with proper entropy.
-
-    @public
 
     This function validates that a string is not just formatted like a SHA256 hash,
     but actually has the entropy characteristics of a real hash. It checks:
@@ -174,7 +169,4 @@ def is_document_sha256(value: str) -> bool:
     # Require at least 8 unique characters (out of 32 possible in base32)
     # This prevents patterns like "AAAAAAA..." from being identified as real hashes
     unique_chars = len(set(value))
-    if unique_chars < 8:
-        return False
-
-    return True
+    return unique_chars >= 8

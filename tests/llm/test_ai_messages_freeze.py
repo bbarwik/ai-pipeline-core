@@ -3,7 +3,7 @@
 import pytest
 
 from ai_pipeline_core.llm import AIMessages, ModelResponse
-from tests.test_helpers import ConcreteFlowDocument, create_test_model_response
+from tests.support.helpers import ConcreteDocument, create_test_model_response
 
 
 class TestAIMessagesFreeze:
@@ -53,7 +53,7 @@ class TestAIMessagesFreeze:
 
     def test_copy_creates_unfrozen(self) -> None:
         """Test that copy creates unfrozen deep copy."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"content")
+        doc = ConcreteDocument(name="test.txt", content=b"content")
         response = create_test_model_response(
             id="test",
             object="chat.completion",
@@ -91,7 +91,7 @@ class TestAIMessagesFreeze:
 
     def test_copy_is_deep(self) -> None:
         """Test that copy performs deep copy of messages."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"content")
+        doc = ConcreteDocument(name="test.txt", content=b"content")
         original = AIMessages(["Hello", doc])
 
         # Make a copy
@@ -194,7 +194,7 @@ class TestAIMessagesFreeze:
 
     def test_frozen_allows_read_operations(self) -> None:
         """Test that frozen list allows read operations."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"content")
+        doc = ConcreteDocument(name="test.txt", content=b"content")
         response = create_test_model_response(
             id="test",
             object="chat.completion",
@@ -294,8 +294,8 @@ class TestAIMessagesFreeze:
 
     def test_frozen_copy_with_documents(self) -> None:
         """Test that copying frozen AIMessages with documents works correctly."""
-        doc1 = ConcreteFlowDocument(name="doc1.txt", content=b"content1")
-        doc2 = ConcreteFlowDocument(name="doc2.txt", content=b"content2")
+        doc1 = ConcreteDocument(name="doc1.txt", content=b"content1")
+        doc2 = ConcreteDocument(name="doc2.txt", content=b"content2")
 
         frozen = AIMessages([doc1, "message", doc2], frozen=True)
         copied = frozen.copy()
@@ -336,7 +336,7 @@ class TestAIMessagesFreeze:
 
     def test_copy_preserves_message_types(self) -> None:
         """Test that copy preserves exact message types and content."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"doc content", description="Test")
+        doc = ConcreteDocument(name="test.txt", content=b"doc content", description="Test")
         response = create_test_model_response(
             id="test-id",
             object="chat.completion",
@@ -358,7 +358,7 @@ class TestAIMessagesFreeze:
         assert isinstance(copied[0], str)
         assert copied[0] == "User message"
 
-        assert isinstance(copied[1], ConcreteFlowDocument)
+        assert isinstance(copied[1], ConcreteDocument)
         assert copied[1].name == doc.name  # type: ignore
         assert copied[1].content == doc.content  # type: ignore
         assert copied[1].description == doc.description  # type: ignore

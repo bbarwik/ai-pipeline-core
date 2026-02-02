@@ -68,15 +68,10 @@ class TestCoreModelsIntegration:
     @pytest.mark.asyncio
     async def test_model_structured_generation(self, model: ModelName):
         """Test structured generation for models that support it."""
-        messages = AIMessages([
-            "Answer this math question with a simple response. What is 5 times 3? "
-            "Provide your answer and confidence level from 0 to 1."
-        ])
+        messages = AIMessages(["Answer this math question with a simple response. What is 5 times 3? Provide your answer and confidence level from 0 to 1."])
         options = ModelOptions(max_completion_tokens=4000)
 
-        response = await generate_structured(
-            model=model, response_format=SimpleResponse, messages=messages, options=options
-        )
+        response = await generate_structured(model=model, response_format=SimpleResponse, messages=messages, options=options)
 
         assert response is not None
         assert response.parsed is not None
@@ -120,9 +115,7 @@ class TestCoreModelsIntegration:
         messages = AIMessages(["Hi"])
 
         # Configure aggressive retry settings
-        options = ModelOptions(
-            retries=3, retry_delay_seconds=1, timeout=30, max_completion_tokens=1000
-        )
+        options = ModelOptions(retries=3, retry_delay_seconds=1, timeout=30, max_completion_tokens=1000)
 
         response = await generate(model=model, messages=messages, options=options)
 

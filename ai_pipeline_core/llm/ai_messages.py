@@ -1,7 +1,5 @@
 """AI message handling for LLM interactions.
 
-@public
-
 Provides AIMessages container for managing conversations with mixed content types
 including text, documents, and model responses.
 """
@@ -10,26 +8,38 @@ import base64
 import hashlib
 import io
 import json
+from collections.abc import Callable, Iterable
 from copy import deepcopy
-from typing import Any, Callable, Iterable, SupportsIndex, Union
+from typing import Any, SupportsIndex
 
-import tiktoken
 from openai.types.chat import (
     ChatCompletionContentPartParam,
     ChatCompletionMessageParam,
 )
 from PIL import Image
-from prefect.logging import get_logger
 
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents.document import get_tiktoken_encoding
 from ai_pipeline_core.documents.mime_type import is_llm_supported_image
+from ai_pipeline_core.logging import get_pipeline_logger
 
 from .model_response import ModelResponse
 
+logger = get_pipeline_logger(__name__)
+
+
+def _ensure_llm_compatible_image(content: bytes, mime_type: str) -> tuple[bytes, str]:
+    """Convert unsupported image formats to PNG for LLM consumption."""
+    if is_llm_supported_image(mime_type):
+        return content, mime_type
+    img = Image.open(io.BytesIO(content))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue(), "image/png"
+
+
 AIMessageType = str | Document | ModelResponse
 """Type for messages in AIMessages container.
-
-@public
 
 Represents the allowed types for conversation messages:
 - str: Plain text messages
@@ -38,10 +48,8 @@ Represents the allowed types for conversation messages:
 """
 
 
-class AIMessages(list[AIMessageType]):
+class AIMessages(list[AIMessageType]):  # noqa: PLR0904
     """Container for AI conversation messages supporting mixed types.
-
-    @public
 
     This class extends list to manage conversation messages between user
     and AI, supporting text, Document objects, and ModelResponse instances.
@@ -50,7 +58,8 @@ class AIMessages(list[AIMessageType]):
     Conversion Rules:
         - str: Becomes {"role": "user", "content": text}
         - Document: Becomes {"role": "user", "content": document_content}
-          (automatically handles text, images, PDFs based on MIME type)
+          (automatically handles text, images, PDFs based on MIME type; attachments
+          are rendered as <attachment> XML blocks)
         - ModelResponse: Becomes {"role": "assistant", "content": response.content}
 
     Note: Document conversion is automatic. Text content becomes user text messages.
@@ -73,12 +82,6 @@ class AIMessages(list[AIMessageType]):
     constructor (`AIMessages("text")`) as this will raise a TypeError to prevent
     accidental character iteration.
 
-    Example:
-        >>> from ai_pipeline_core import llm
-        >>> messages = AIMessages()
-        >>> messages.append("What is the capital of France?")
-        >>> response = await llm.generate("gpt-5.1", messages=messages)
-        >>> messages.append(response)  # Add the actual response
     """
 
     def __init__(self, iterable: Iterable[AIMessageType] | None = None, *, frozen: bool = False):
@@ -147,8 +150,8 @@ class AIMessages(list[AIMessageType]):
 
     def __setitem__(
         self,
-        index: Union[SupportsIndex, slice],
-        value: Union[AIMessageType, Iterable[AIMessageType]],
+        index: SupportsIndex | slice,
+        value: AIMessageType | Iterable[AIMessageType],
     ) -> None:
         """Set item or slice."""
         self._check_frozen()
@@ -163,7 +166,7 @@ class AIMessages(list[AIMessageType]):
         self._check_frozen()
         return super().__iadd__(other)
 
-    def __delitem__(self, index: Union[SupportsIndex, slice]) -> None:
+    def __delitem__(self, index: SupportsIndex | slice) -> None:
         """Delete item or slice from list."""
         self._check_frozen()
         super().__delitem__(index)
@@ -192,9 +195,7 @@ class AIMessages(list[AIMessageType]):
         self._check_frozen()
         super().reverse()
 
-    def sort(
-        self, *, key: Callable[[AIMessageType], Any] | None = None, reverse: bool = False
-    ) -> None:
+    def sort(self, *, key: Callable[[AIMessageType], Any] | None = None, reverse: bool = False) -> None:
         """Sort list in place."""
         self._check_frozen()
         if key is None:
@@ -241,6 +242,8 @@ class AIMessages(list[AIMessageType]):
 
         Transforms the message list into the format expected by OpenAI API.
         Each message type is converted according to its role and content.
+        Documents are rendered as XML with any attachments included as nested
+        <attachment> blocks.
 
         Returns:
             List of ChatCompletionMessageParam dicts (from openai.types.chat)
@@ -250,14 +253,6 @@ class AIMessages(list[AIMessageType]):
         Raises:
             ValueError: If message type is not supported.
 
-        Example:
-            >>> messages = AIMessages(["Hello", response, "Follow up"])
-            >>> prompt = messages.to_prompt()
-            >>> # Result: [
-            >>> #   {"role": "user", "content": "Hello"},
-            >>> #   {"role": "assistant", "content": "..."},
-            >>> #   {"role": "user", "content": "Follow up"}
-            >>> # ]
         """
         messages: list[ChatCompletionMessageParam] = []
 
@@ -285,15 +280,13 @@ class AIMessages(list[AIMessageType]):
 
                 # Preserve provider_specific_fields (thought_signatures for Gemini multi-turn)
                 if hasattr(message.choices[0].message, "provider_specific_fields"):
-                    provider_fields = getattr(
-                        message.choices[0].message, "provider_specific_fields", None
-                    )
+                    provider_fields = getattr(message.choices[0].message, "provider_specific_fields", None)
                     if provider_fields:
                         assistant_message["provider_specific_fields"] = provider_fields  # type: ignore[typeddict-item]
 
                 messages.append(assistant_message)
             else:
-                raise ValueError(f"Unsupported message type: {type(message)}")
+                raise TypeError(f"Unsupported message type: {type(message)}")
 
         return messages
 
@@ -333,8 +326,6 @@ class AIMessages(list[AIMessageType]):
     def approximate_tokens_count(self) -> int:
         """Approximate tokens count for the messages.
 
-        @public
-
         Uses tiktoken with gpt-4 encoding to estimate total token count
         across all messages in the conversation.
 
@@ -344,25 +335,26 @@ class AIMessages(list[AIMessageType]):
         Raises:
             ValueError: If message contains unsupported type.
 
-        Example:
-            >>> messages = AIMessages(["Hello", "World"])
-            >>> messages.approximate_tokens_count  # ~2-3 tokens
         """
         count = 0
+        enc = get_tiktoken_encoding()
         for message in self:
             if isinstance(message, str):
-                count += len(tiktoken.encoding_for_model("gpt-4").encode(message))
+                count += len(enc.encode(message))
             elif isinstance(message, Document):
                 count += message.approximate_tokens_count
             elif isinstance(message, ModelResponse):  # type: ignore
-                count += len(tiktoken.encoding_for_model("gpt-4").encode(message.content))
+                count += len(enc.encode(message.content))
             else:
-                raise ValueError(f"Unsupported message type: {type(message)}")
+                raise TypeError(f"Unsupported message type: {type(message)}")
         return count
 
     @staticmethod
-    def document_to_prompt(document: Document) -> list[ChatCompletionContentPartParam]:
+    def document_to_prompt(document: Document) -> list[ChatCompletionContentPartParam]:  # noqa: PLR0912, PLR0914
         """Convert a document to prompt format for LLM consumption.
+
+        Renders the document as XML with text/image/PDF content, followed by any
+        attachments as separate <attachment> XML blocks with name and description attributes.
 
         Args:
             document: The document to convert.
@@ -373,60 +365,80 @@ class AIMessages(list[AIMessageType]):
         prompt: list[ChatCompletionContentPartParam] = []
 
         # Build the text header
-        description = (
-            f"<description>{document.description}</description>\n" if document.description else ""
-        )
-        header_text = (
-            f"<document>\n<id>{document.id}</id>\n<name>{document.name}</name>\n{description}"
-        )
+        description = f"<description>{document.description}</description>\n" if document.description else ""
+        header_text = f"<document>\n<id>{document.id}</id>\n<name>{document.name}</name>\n{description}"
 
         # Handle text documents
         if document.is_text:
             text_content = document.content.decode("utf-8")
-            content_text = f"{header_text}<content>\n{text_content}\n</content>\n</document>\n"
+            content_text = f"{header_text}<content>\n{text_content}\n</content>\n"
             prompt.append({"type": "text", "text": content_text})
-            return prompt
 
-        # Handle non-text documents
-        if not document.is_image and not document.is_pdf:
-            get_logger(__name__).error(
-                f"Document is not a text, image or PDF: {document.name} - {document.mime_type}"
-            )
+        # Handle binary documents (image/PDF)
+        elif document.is_image or document.is_pdf:
+            prompt.append({"type": "text", "text": f"{header_text}<content>\n"})
+
+            if document.is_image:
+                content_bytes, mime_type = _ensure_llm_compatible_image(document.content, document.mime_type)
+            else:
+                content_bytes, mime_type = document.content, document.mime_type
+            base64_content = base64.b64encode(content_bytes).decode("utf-8")
+            data_uri = f"data:{mime_type};base64,{base64_content}"
+
+            if document.is_pdf:
+                prompt.append({
+                    "type": "file",
+                    "file": {"file_data": data_uri},
+                })
+            else:
+                prompt.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_uri, "detail": "high"},
+                })
+
+            prompt.append({"type": "text", "text": "</content>\n"})
+
+        else:
+            logger.error(f"Document is not a text, image or PDF: {document.name} - {document.mime_type}")
             return []
 
-        # Add header for binary content
-        prompt.append({
-            "type": "text",
-            "text": f"{header_text}<content>\n",
-        })
+        # Render attachments
+        for att in document.attachments:
+            desc_attr = f' description="{att.description}"' if att.description else ""
+            att_open = f'<attachment name="{att.name}"{desc_attr}>\n'
 
-        # Encode binary content, converting unsupported image formats to PNG
-        if document.is_image and not is_llm_supported_image(document.mime_type):
-            img = Image.open(io.BytesIO(document.content))
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            content_bytes = buf.getvalue()
-            mime_type = "image/png"
+            if att.is_text:
+                prompt.append({"type": "text", "text": f"{att_open}{att.text}\n</attachment>\n"})
+            elif att.is_image or att.is_pdf:
+                prompt.append({"type": "text", "text": att_open})
+
+                if att.is_image:
+                    att_bytes, att_mime = _ensure_llm_compatible_image(att.content, att.mime_type)
+                else:
+                    att_bytes, att_mime = att.content, att.mime_type
+                att_b64 = base64.b64encode(att_bytes).decode("utf-8")
+                att_uri = f"data:{att_mime};base64,{att_b64}"
+
+                if att.is_pdf:
+                    prompt.append({
+                        "type": "file",
+                        "file": {"file_data": att_uri},
+                    })
+                else:
+                    prompt.append({
+                        "type": "image_url",
+                        "image_url": {"url": att_uri, "detail": "high"},
+                    })
+
+                prompt.append({"type": "text", "text": "</attachment>\n"})
+            else:
+                logger.warning(f"Skipping unsupported attachment type: {att.name} - {att.mime_type}")
+
+        # Close document — merge into last text part to preserve JSON structure (and cache key)
+        last = prompt[-1]
+        if last["type"] == "text":
+            prompt[-1] = {"type": "text", "text": last["text"] + "</document>\n"}
         else:
-            content_bytes = document.content
-            mime_type = document.mime_type
-
-        base64_content = base64.b64encode(content_bytes).decode("utf-8")
-        data_uri = f"data:{mime_type};base64,{base64_content}"
-
-        # Add appropriate content type
-        if document.is_pdf:
-            prompt.append({
-                "type": "file",
-                "file": {"file_data": data_uri},
-            })
-        else:  # is_image
-            prompt.append({
-                "type": "image_url",
-                "image_url": {"url": data_uri, "detail": "high"},
-            })
-
-        # Close the document tag
-        prompt.append({"type": "text", "text": "</content>\n</document>\n"})
+            prompt.append({"type": "text", "text": "</document>\n"})
 
         return prompt

@@ -46,9 +46,7 @@ class TestSearchModelsIntegration:
     async def test_search_model_with_search_query(self, model: ModelName):
         """Test search models with queries that might trigger search."""
         messages = AIMessages([
-            "What is the current weather in San Francisco? "
-            "If you can search the internet, please do so. "
-            "Otherwise, just tell me you cannot search."
+            "What is the current weather in San Francisco? If you can search the internet, please do so. Otherwise, just tell me you cannot search."
         ])
         options = ModelOptions(max_completion_tokens=2000, search_context_size="high")
 
@@ -64,9 +62,7 @@ class TestSearchModelsIntegration:
 
         has_weather = any(word in content_lower for word in weather_keywords)
 
-        assert has_weather, (
-            f"Search model {model} didn't mention weather.\nResponse: {response.content}"
-        )
+        assert has_weather, f"Search model {model} didn't mention weather.\nResponse: {response.content}"
 
     @pytest.mark.parametrize("model", SEARCH_MODELS)
     @pytest.mark.asyncio
@@ -91,9 +87,7 @@ class TestSearchModelsIntegration:
 
         has_answer = any(word in content_lower for word in answer_keywords)
 
-        assert has_answer, (
-            f"Search model {model} didn't provide an answer.\nResponse: {response.content}"
-        )
+        assert has_answer, f"Search model {model} didn't provide an answer.\nResponse: {response.content}"
 
     @pytest.mark.asyncio
     async def test_search_models_list(self):

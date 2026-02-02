@@ -67,19 +67,8 @@ def detect_mime_type(content: bytes, name: str) -> str:
         Only the first 1024 bytes are analyzed for content detection.
         Extension-based detection is O(1) lookup.
 
-    Note:
-        Extension-based detection is preferred for text formats as
-        content analysis can sometimes misidentify structured text.
-
-    Example:
-        >>> detect_mime_type(b'{"key": "value"}', "data.json")
-        'application/json'
-        >>> detect_mime_type(b'Hello World', "text.txt")
-        'text/plain'
-        >>> detect_mime_type(b'', "empty.txt")
-        'text/plain'
-        >>> detect_mime_type(b'\\x89PNG', "image.xyz")
-        'image/png'  # Magic detects PNG despite wrong extension
+    Extension-based detection is preferred for text formats as
+    content analysis can sometimes misidentify structured text.
     """
     # Check for empty content
     if len(content) == 0:
@@ -99,37 +88,10 @@ def detect_mime_type(content: bytes, name: str) -> str:
             return mime
     except (AttributeError, OSError, magic.MagicException) as e:
         logger.warning(f"MIME detection failed for {name}: {e}")
-    except Exception as e:
-        logger.error(f"Unexpected error in MIME detection for {name}: {e}")
+    except Exception:
+        logger.exception(f"Unexpected error in MIME detection for {name}")
 
     # Final fallback based on extension or default
-    return EXTENSION_MIME_MAP.get(ext, "application/octet-stream")
-
-
-def mime_type_from_extension(name: str) -> str:
-    """Get MIME type based solely on file extension.
-
-    Simple extension-based MIME type detection without content analysis.
-    This is a legacy function maintained for backward compatibility.
-
-    Args:
-        name: Filename with extension.
-
-    Returns:
-        MIME type based on extension, or 'application/octet-stream'
-        if extension is unknown.
-
-    Note:
-        Prefer detect_mime_type() for more accurate detection.
-        This function only checks the file extension.
-
-    Example:
-        >>> mime_type_from_extension("document.pdf")
-        'application/pdf'
-        >>> mime_type_from_extension("unknown.xyz")
-        'application/octet-stream'
-    """
-    ext = name.lower().split(".")[-1] if "." in name else ""
     return EXTENSION_MIME_MAP.get(ext, "application/octet-stream")
 
 
@@ -153,13 +115,6 @@ def is_text_mime_type(mime_type: str) -> bool:
         - application/yaml
         - application/x-yaml
 
-    Example:
-        >>> is_text_mime_type('text/plain')
-        True
-        >>> is_text_mime_type('application/json')
-        True
-        >>> is_text_mime_type('image/png')
-        False
     """
     text_types = [
         "text/",
@@ -181,15 +136,8 @@ def is_json_mime_type(mime_type: str) -> bool:
     Returns:
         True if MIME type is 'application/json', False otherwise.
 
-    Note:
-        Only matches exact 'application/json', not variants like
-        'application/ld+json' or 'application/vnd.api+json'.
-
-    Example:
-        >>> is_json_mime_type('application/json')
-        True
-        >>> is_json_mime_type('text/json')  # Not standard JSON MIME
-        False
+    Only matches exact 'application/json', not variants like
+    'application/ld+json' or 'application/vnd.api+json'.
     """
     return mime_type == "application/json"
 
@@ -209,13 +157,8 @@ def is_yaml_mime_type(mime_type: str) -> bool:
         - application/yaml (standard)
         - application/x-yaml (legacy)
 
-    Example:
-        >>> is_yaml_mime_type('application/yaml')
-        True
-        >>> is_yaml_mime_type('application/x-yaml')
-        True
     """
-    return mime_type == "application/yaml" or mime_type == "application/x-yaml"
+    return mime_type in {"application/yaml", "application/x-yaml"}
 
 
 def is_pdf_mime_type(mime_type: str) -> bool:
@@ -227,15 +170,8 @@ def is_pdf_mime_type(mime_type: str) -> bool:
     Returns:
         True if MIME type is 'application/pdf', False otherwise.
 
-    Note:
-        PDF documents require special handling in the LLM module
-        and are supported by certain vision-capable models.
-
-    Example:
-        >>> is_pdf_mime_type('application/pdf')
-        True
-        >>> is_pdf_mime_type('text/plain')
-        False
+    PDF documents require special handling in the LLM module
+    and are supported by certain vision-capable models.
     """
     return mime_type == "application/pdf"
 
@@ -257,15 +193,8 @@ def is_image_mime_type(mime_type: str) -> bool:
         - image/webp
         - image/svg+xml
 
-    Note:
-        Image documents are automatically encoded for vision-capable
-        LLM models in the AIMessages.document_to_prompt() method.
-
-    Example:
-        >>> is_image_mime_type('image/png')
-        True
-        >>> is_image_mime_type('application/pdf')
-        False
+    Image documents are automatically encoded for vision-capable
+    LLM models in the AIMessages.document_to_prompt() method.
     """
     return mime_type.startswith("image/")
 
@@ -284,8 +213,6 @@ def is_llm_supported_image(mime_type: str) -> bool:
 
     Unsupported image formats (gif, bmp, tiff, svg, etc.) need conversion
     to PNG before sending to the LLM.
-
-    @public
 
     Args:
         mime_type: MIME type string to check.

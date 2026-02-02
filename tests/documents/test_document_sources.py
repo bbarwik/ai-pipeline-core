@@ -2,10 +2,11 @@
 
 import pytest
 
-from ai_pipeline_core.documents import FlowDocument, TemporaryDocument
+from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents.attachment import Attachment
 
 
-class SampleFlowDoc(FlowDocument):
+class SampleFlowDoc(Document):
     """Sample flow document for testing."""
 
 
@@ -28,25 +29,21 @@ class TestDocumentSources:
     def test_default_empty_sources(self):
         """Test that sources defaults to empty list."""
         doc = SampleFlowDoc.create(name="test.txt", content="test")
-        assert doc.sources == []
+        assert doc.sources == ()
 
     def test_with_source_document(self):
         """Test adding a document as source."""
         doc1 = SampleFlowDoc.create(name="source.txt", content="source data")
 
         # Create doc2 with doc1 as source
-        doc2 = SampleFlowDoc.create(
-            name="derived.txt", content="derived data", sources=[doc1.sha256]
-        )
+        doc2 = SampleFlowDoc.create(name="derived.txt", content="derived data", sources=(doc1.sha256,))
 
         assert len(doc2.sources) == 1
         assert doc2.sources[0] == doc1.sha256
 
     def test_create_with_string_source(self):
         """Test creating document with a string reference as source."""
-        doc = SampleFlowDoc.create(
-            name="test.txt", content="test", sources=["https://data.source.com/file.csv"]
-        )
+        doc = SampleFlowDoc.create(name="test.txt", content="test", sources=("https://data.source.com/file.csv",))
 
         assert len(doc.sources) == 1
         assert doc.sources[0] == "https://data.source.com/file.csv"
@@ -56,19 +53,19 @@ class TestDocumentSources:
         doc = SampleFlowDoc.create(
             name="test.txt",
             content="test",
-            sources=[
-                "manual input",
+            sources=(
+                "https://example.com/manual-input",
                 "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
-            ],
+            ),
         )
 
         assert len(doc.sources) == 2
-        assert doc.sources[0] == "manual input"
+        assert doc.sources[0] == "https://example.com/manual-input"
         assert doc.sources[1] == "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ"
 
     def test_create_with_duplicate_sources(self):
         """Test creating document with duplicate sources."""
-        doc = SampleFlowDoc.create(name="test.txt", content="test", sources=["ref1", "ref1"])
+        doc = SampleFlowDoc.create(name="test.txt", content="test", sources=("https://example.com/ref1", "https://example.com/ref1"))
 
         # Both sources are kept (no deduplication at creation)
         assert len(doc.sources) == 2
@@ -83,7 +80,7 @@ class TestDocumentSources:
 
         doc = SampleFlowDoc.create(name="test.txt", content="test", sources=sources)
 
-        hashes = doc.get_source_documents()
+        hashes = doc.source_documents
         assert len(hashes) == 2
         assert "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ" in hashes
         assert "DSITTXMIGUJ5CHKJEVTW3IOQFYJ3LHOXZFWZBN7FH7AR3DGWTAXA" in hashes
@@ -92,16 +89,16 @@ class TestDocumentSources:
         """Test getting reference sources."""
         sources = [
             "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
-            "ref1",
-            "ref2",
+            "https://example.com/ref1",
+            "https://example.com/ref2",
         ]
 
         doc = SampleFlowDoc.create(name="test.txt", content="test", sources=sources)
 
-        refs = doc.get_source_references()
+        refs = doc.source_references
         assert len(refs) == 2
-        assert "ref1" in refs
-        assert "ref2" in refs
+        assert "https://example.com/ref1" in refs
+        assert "https://example.com/ref2" in refs
 
     def test_has_source(self):
         """Test checking for specific sources."""
@@ -111,10 +108,10 @@ class TestDocumentSources:
         doc = SampleFlowDoc.create(
             name="test.txt",
             content="test",
-            sources=[
+            sources=(
                 doc1.sha256,
-                "ref1",
-            ],
+                "https://example.com/ref1",
+            ),
         )
 
         # Check by document
@@ -122,8 +119,8 @@ class TestDocumentSources:
         assert not doc.has_source(doc2)
 
         # Check by string reference
-        assert doc.has_source("ref1")
-        assert not doc.has_source("ref2")
+        assert doc.has_source("https://example.com/ref1")
+        assert not doc.has_source("https://example.com/ref2")
 
         # Check by SHA256 string
         assert doc.has_source(doc1.sha256)
@@ -132,7 +129,7 @@ class TestDocumentSources:
     def test_serialize_with_sources(self):
         """Test serialization includes sources."""
         sources = [
-            "ref1",
+            "https://example.com/ref1",
             "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
         ]
 
@@ -141,7 +138,7 @@ class TestDocumentSources:
         data = doc.serialize_model()
         assert "sources" in data
         assert len(data["sources"]) == 2
-        assert data["sources"][0] == "ref1"
+        assert data["sources"][0] == "https://example.com/ref1"
         assert data["sources"][1] == "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ"
 
     def test_from_dict_with_sources(self):
@@ -150,38 +147,38 @@ class TestDocumentSources:
             "name": "test.txt",
             "content": "test content",
             "sources": [
-                "ref1",
+                "https://example.com/ref1",
                 "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
             ],
         }
 
         doc = SampleFlowDoc.from_dict(data)
         assert len(doc.sources) == 2
-        assert doc.sources[0] == "ref1"
+        assert doc.sources[0] == "https://example.com/ref1"
         assert doc.sources[1] == "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ"
 
     def test_sources_immutable(self):
         """Test that sources list itself is immutable."""
         from pydantic import ValidationError
 
-        doc = SampleFlowDoc.create(name="test.txt", content="test", sources=["ref1"])
+        doc = SampleFlowDoc.create(name="test.txt", content="test", sources=("https://example.com/ref1",))
 
         # Document is frozen, so we can't modify sources directly
         with pytest.raises(ValidationError, match="frozen"):
             doc.sources = []
 
-    def test_temporary_document_with_sources(self):
-        """Test that TemporaryDocument also supports sources."""
-        sources = ["temp source"]
-        doc = TemporaryDocument.create(name="temp.txt", content="temporary", sources=sources)
+    def test_concrete_document_with_sources(self):
+        """Test that concrete Document subclass supports sources."""
+        sources = ["https://example.com/temp-source"]
+        doc = SampleFlowDoc.create(name="temp.txt", content="temporary", sources=sources)
 
         assert len(doc.sources) == 1
-        assert doc.sources[0] == "temp source"
+        assert doc.sources[0] == "https://example.com/temp-source"
 
     def test_low_entropy_hash_not_counted_as_document(self):
         """Test that low-entropy strings are not counted as document hashes."""
         sources = [
-            "A" * 52,  # Low entropy - not a real hash
+            "https://example.com/low-entropy-test",  # URL, not a document hash
             "https://example.com",
             "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",  # Real hash
         ]
@@ -189,19 +186,19 @@ class TestDocumentSources:
         doc = SampleFlowDoc.create(name="test.txt", content="test", sources=sources)
 
         # get_source_documents should only return the real hash
-        hashes = doc.get_source_documents()
+        hashes = doc.source_documents
         assert len(hashes) == 1
         assert hashes[0] == "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ"
 
         # get_source_references should return the low-entropy string and URL
-        refs = doc.get_source_references()
+        refs = doc.source_references
         assert len(refs) == 2
-        assert "A" * 52 in refs
+        assert "https://example.com/low-entropy-test" in refs
         assert "https://example.com" in refs
 
     def test_has_source_invalid_type(self):
         """Test that has_source raises TypeError for invalid types."""
-        doc = SampleFlowDoc.create(name="test.txt", content="test", sources=["ref1"])
+        doc = SampleFlowDoc.create(name="test.txt", content="test", sources=("https://example.com/ref1",))
 
         # Invalid type should raise TypeError
         from typing import Any, cast
@@ -224,32 +221,30 @@ class TestDocumentSources:
         )
 
         # All methods should work with empty sources
-        assert doc.sources == []
-        assert doc.get_source_documents() == []
-        assert doc.get_source_references() == []
+        assert doc.sources == ()
+        assert doc.source_documents == ()
+        assert doc.source_references == ()
         assert not doc.has_source("anything")
         assert not doc.has_source(doc)  # Even checking self returns False
 
     def test_sources_in_direct_constructor(self):
         """Test sources parameter in direct __init__ constructor."""
-        sources = ["ref1", "ref2"]
+        sources = ("https://example.com/ref1", "https://example.com/ref2")
         doc = SampleFlowDoc(name="test.txt", content=b"test bytes", sources=sources)
 
         assert doc.sources == sources
-        assert len(doc.get_source_references()) == 2
+        assert len(doc.source_references) == 2
 
     def test_multiple_identical_hashes(self):
         """Test handling of multiple identical document hashes."""
         doc1 = SampleFlowDoc.create(name="source.txt", content="source")
 
         # Create doc with duplicate hash sources
-        doc2 = SampleFlowDoc.create(
-            name="derived.txt", content="derived", sources=[doc1.sha256, doc1.sha256, "other"]
-        )
+        doc2 = SampleFlowDoc.create(name="derived.txt", content="derived", sources=(doc1.sha256, doc1.sha256, "https://example.com/other"))
 
         # All duplicates are kept
         assert len(doc2.sources) == 3
-        hashes = doc2.get_source_documents()
+        hashes = doc2.source_documents
         assert len(hashes) == 2  # Both copies of the hash
         assert all(h == doc1.sha256 for h in hashes)
 
@@ -265,28 +260,24 @@ class TestDocumentSources:
         doc2 = SampleFlowDoc.create(
             name="self.txt",
             content="self-ref",
-            sources=[doc.sha256],  # Reference to first doc
+            sources=(doc.sha256,),  # Reference to first doc
         )
 
         # Add its own hash (would be unusual but should work)
-        doc3 = SampleFlowDoc.create(
-            name="self2.txt", content="self-ref2", sources=[doc2.sha256, "self-reference-note"]
-        )
+        doc3 = SampleFlowDoc.create(name="self2.txt", content="self-ref2", sources=(doc2.sha256, "https://example.com/self-reference-note"))
 
         assert doc3.has_source(doc2)
-        assert len(doc3.get_source_documents()) == 1
+        assert len(doc3.source_documents) == 1
 
     def test_serialize_deserialize_preserves_sources(self):
         """Test full roundtrip serialization preserves sources."""
         sources = [
             "https://example.com/data",
             "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
-            "local-file.csv",
+            "https://example.com/local-file.csv",
         ]
 
-        original = SampleFlowDoc.create(
-            name="test.json", content={"key": "value"}, description="Test doc", sources=sources
-        )
+        original = SampleFlowDoc.create(name="test.json", content={"key": "value"}, description="Test doc", sources=sources)
 
         # Serialize and deserialize
         serialized = original.serialize_model()
@@ -301,20 +292,74 @@ class TestDocumentSources:
 
     def test_sources_with_special_characters(self):
         """Test sources containing special characters."""
-        sources = [
-            "file with spaces.txt",
-            "path/to/file.csv",
+        sources = (
+            "https://example.com/file with spaces.txt",
+            "https://example.com/path/to/file.csv",
             "https://example.com/data?param=value&other=123",
-            "unicode-źćąęł.txt",
-            "tab\tseparated",
-            "newline\nincluded",
-        ]
+            "https://example.com/unicode-źćąęł.txt",
+            "https://example.com/tab\tseparated",
+            "https://example.com/newline\nincluded",
+        )
 
         doc = SampleFlowDoc.create(name="test.txt", content="test", sources=sources)
 
         # All sources should be preserved exactly
         assert doc.sources == sources
-        refs = doc.get_source_references()
+        refs = doc.source_references
         assert len(refs) == len(sources)
         for src in sources:
             assert src in refs
+
+
+class TestDocumentSHA256WithAttachments:
+    """Test SHA256 hashing accounts for attachments."""
+
+    def test_sha256_deterministic_without_attachments(self):
+        """SHA256 is deterministic for same name + content."""
+        content = b"test content"
+        doc1 = SampleFlowDoc(name="test.txt", content=content)
+        doc2 = SampleFlowDoc(name="test.txt", content=content)
+        assert doc1.sha256 == doc2.sha256
+        assert len(doc1.sha256) == 52  # base32 SHA256 length without padding
+
+    def test_sha256_differs_with_attachment(self):
+        """SHA256 changes when attachments are added."""
+        content = b"test content"
+        doc_without = SampleFlowDoc(name="test.txt", content=content)
+        doc_with = SampleFlowDoc(
+            name="test.txt",
+            content=content,
+            attachments=(Attachment(name="screenshot.png", content=b"\x89PNG"),),
+        )
+        assert doc_without.sha256 != doc_with.sha256
+
+    def test_sha256_includes_attachment_name(self):
+        """Changing attachment name changes the hash."""
+        content = b"test content"
+        att_content = b"\x89PNG"
+        doc_a = SampleFlowDoc(
+            name="test.txt",
+            content=content,
+            attachments=(Attachment(name="screenshot.png", content=att_content),),
+        )
+        doc_b = SampleFlowDoc(
+            name="test.txt",
+            content=content,
+            attachments=(Attachment(name="error_page.png", content=att_content),),
+        )
+        assert doc_a.sha256 != doc_b.sha256
+
+    def test_sha256_includes_attachment_content(self):
+        """Changing attachment content changes the hash."""
+        content = b"test content"
+        doc_a = SampleFlowDoc(
+            name="test.txt",
+            content=content,
+            attachments=(Attachment(name="file.bin", content=b"\x00\x01"),),
+        )
+        doc_b = SampleFlowDoc(
+            name="test.txt",
+            content=content,
+            attachments=(Attachment(name="file.bin", content=b"\x02\x03"),),
+        )
+        assert doc_a.sha256 != doc_b.sha256

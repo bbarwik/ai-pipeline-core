@@ -6,7 +6,7 @@ Provides logging configuration management that integrates with Prefect's logging
 import logging.config
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import yaml
 from prefect.logging import get_logger
@@ -16,7 +16,7 @@ DEFAULT_LOG_LEVELS = {
     "ai_pipeline_core": "INFO",
     "ai_pipeline_core.documents": "INFO",
     "ai_pipeline_core.llm": "INFO",
-    "ai_pipeline_core.flow": "INFO",
+    "ai_pipeline_core.pipeline": "INFO",
     "ai_pipeline_core.testing": "DEBUG",
 }
 
@@ -32,22 +32,19 @@ class LoggingConfig:
         3. PREFECT_LOGGING_SETTINGS_PATH environment variable
         4. Default configuration
 
-    Example:
-        >>> config = LoggingConfig()
-        >>> config.apply()
     """
 
-    def __init__(self, config_path: Optional[Path] = None):
+    def __init__(self, config_path: Path | None = None):
         """Initialize logging configuration.
 
         Args:
             config_path: Optional path to YAML configuration file.
         """
         self.config_path = config_path or self._get_default_config_path()
-        self._config: Optional[Dict[str, Any]] = None
+        self._config: dict[str, Any] | None = None
 
     @staticmethod
-    def _get_default_config_path() -> Optional[Path]:
+    def _get_default_config_path() -> Path | None:
         """Get default config path from environment variables.
 
         Returns:
@@ -63,7 +60,7 @@ class LoggingConfig:
 
         return None
 
-    def load_config(self) -> Dict[str, Any]:
+    def load_config(self) -> dict[str, Any]:
         """Load logging configuration from file or defaults.
 
         Returns:
@@ -71,7 +68,7 @@ class LoggingConfig:
         """
         if self._config is None:
             if self.config_path and self.config_path.exists():
-                with open(self.config_path, "r") as f:
+                with open(self.config_path, encoding="utf-8") as f:
                     self._config = yaml.safe_load(f)
             else:
                 self._config = self._get_default_config()
@@ -80,7 +77,7 @@ class LoggingConfig:
         return self._config
 
     @staticmethod
-    def _get_default_config() -> Dict[str, Any]:
+    def _get_default_config() -> dict[str, Any]:
         """Get default logging configuration.
 
         Returns:
@@ -95,10 +92,7 @@ class LoggingConfig:
                     "datefmt": "%H:%M:%S",
                 },
                 "detailed": {
-                    "format": (
-                        "%(asctime)s | %(levelname)-7s | %(name)s | "
-                        "%(funcName)s:%(lineno)d - %(message)s"
-                    ),
+                    "format": ("%(asctime)s | %(levelname)-7s | %(name)s | %(funcName)s:%(lineno)d - %(message)s"),
                     "datefmt": "%Y-%m-%d %H:%M:%S",
                 },
             },
@@ -134,10 +128,10 @@ class LoggingConfig:
 
 
 # Global configuration instance
-_logging_config: Optional[LoggingConfig] = None
+_logging_config: LoggingConfig | None = None
 
 
-def setup_logging(config_path: Optional[Path] = None, level: Optional[str] = None):
+def setup_logging(config_path: Path | None = None, level: str | None = None):
     """Setup logging for the AI Pipeline Core library.
 
     Initializes logging configuration for the pipeline system.
@@ -149,18 +143,8 @@ def setup_logging(config_path: Optional[Path] = None, level: Optional[str] = Non
         config_path: Optional path to YAML logging configuration file.
         level: Optional log level override (INFO, DEBUG, WARNING, etc.).
 
-    Example:
-        >>> # In your main.py or application entry point:
-        >>> def main():
-        ...     setup_logging()  # Call once at startup
-        ...     # Your application code here
-        ...
-        >>> # Or with custom level:
-        >>> if __name__ == "__main__":
-        ...     setup_logging(level="DEBUG")
-        ...     run_application()
     """
-    global _logging_config
+    global _logging_config  # noqa: PLW0603
 
     _logging_config = LoggingConfig(config_path)
     _logging_config.apply()
@@ -179,22 +163,28 @@ def setup_logging(config_path: Optional[Path] = None, level: Optional[str] = Non
 def get_pipeline_logger(name: str):
     """Get a logger for pipeline components.
 
-    @public
-
-    Returns a Prefect-integrated logger with proper configuration.
+    Returns a Prefect-integrated logger with the OTel span-event bridge
+    attached.  Any log record at INFO+ emitted while an OTel span is
+    recording will be captured as a span event in the trace.
 
     Args:
         name: Logger name, typically __name__.
 
     Returns:
-        Prefect logger instance.
+        Prefect logger instance with bridge handler.
 
-    Example:
-        >>> logger = get_pipeline_logger(__name__)
-        >>> logger.info("Module initialized")
     """
-    # Ensure logging is setup
     if _logging_config is None:
         setup_logging()
 
-    return get_logger(name)
+    logger = get_logger(name)
+
+    # Attach the singleton bridge handler so log records become OTel span events.
+    # The handler is a no-op when no span is recording, so early attachment is safe.
+    from ai_pipeline_core.observability._logging_bridge import get_bridge_handler  # noqa: PLC0415
+
+    handler = get_bridge_handler()
+    if handler not in logger.handlers:
+        logger.addHandler(handler)
+
+    return logger

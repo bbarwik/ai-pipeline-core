@@ -10,9 +10,9 @@ Model categories:
 - Search models: Models with web search capabilities
 """
 
-from typing import Literal, TypeAlias
+from typing import Literal
 
-ModelName: TypeAlias = (
+type ModelName = (
     Literal[
         # Core models
         "gemini-3-pro",
@@ -23,20 +23,20 @@ ModelName: TypeAlias = (
         "grok-4.1-fast",
         # Search models
         "gemini-3-flash-search",
+        "gpt-5-mini-search",
+        "grok-4.1-fast-search",
         "sonar-pro-search",
     ]
     | str
 )
 """Type-safe model name identifiers with support for custom models.
 
-@public
-
 Provides IDE autocompletion for common model names while allowing any
 string for custom models. The type is a union of predefined literals
 and str, giving you the best of both worlds: suggestions for known
 models and flexibility for custom ones.
 
-Note: These are example common model names as of Q1 2026. Actual availability
+These are example common model names as of Q1 2026. Actual availability
 depends on your LiteLLM proxy configuration and provider access.
 
 Model categories:
@@ -58,22 +58,7 @@ Using custom models:
     - Custom models work seamlessly as strings
     - No need for Union types or additional type aliases
 
-Example:
-    >>> from ai_pipeline_core import llm, ModelName
-    >>>
-    >>> # Predefined model with IDE autocomplete
-    >>> model: ModelName = "gpt-5.1"  # IDE suggests common models
-    >>> response = await llm.generate(model, messages="Hello")
-    >>>
-    >>> # Custom model works directly
-    >>> model: ModelName = "custom-model-v2"  # Any string is valid
-    >>> response = await llm.generate(model, messages="Hello")
-    >>>
-    >>> # Both types work seamlessly
-    >>> models: list[ModelName] = ["gpt-5.1", "custom-llm", "gemini-3-pro"]
-
-Note:
-    The ModelName type includes both predefined literals and str,
-    allowing full flexibility while maintaining IDE support for
-    common models.
+The ModelName type includes both predefined literals and str,
+allowing full flexibility while maintaining IDE support for
+common models.
 """

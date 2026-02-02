@@ -124,9 +124,7 @@ class TestGetPipelineLogger:
 
     @patch("ai_pipeline_core.logging.logging_config.setup_logging")
     @patch("ai_pipeline_core.logging.logging_config.get_logger")
-    def test_get_pipeline_logger_ensures_setup(
-        self, mock_get_logger: Mock, mock_setup: Mock
-    ) -> None:
+    def test_get_pipeline_logger_ensures_setup(self, mock_get_logger: Mock, mock_setup: Mock) -> None:
         """Test that get_pipeline_logger ensures logging is setup."""
         mock_logger = MagicMock()
         mock_get_logger.return_value = mock_logger

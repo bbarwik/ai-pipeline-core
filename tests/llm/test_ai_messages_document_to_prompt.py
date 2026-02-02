@@ -6,7 +6,7 @@ import io
 from PIL import Image
 
 from ai_pipeline_core.llm import AIMessages
-from tests.test_helpers import ConcreteFlowDocument
+from tests.support.helpers import ConcreteDocument
 
 
 class TestDocumentToPrompt:
@@ -14,9 +14,7 @@ class TestDocumentToPrompt:
 
     def test_text_document_conversion(self):
         """Test converting text document to prompt format."""
-        doc = ConcreteFlowDocument(
-            name="test.txt", content=b"This is the document content.", description="A test document"
-        )
+        doc = ConcreteDocument(name="test.txt", content=b"This is the document content.", description="A test document")
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -37,7 +35,7 @@ class TestDocumentToPrompt:
 
     def test_text_document_without_description(self):
         """Test text document without description."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"Content only")
+        doc = ConcreteDocument(name="test.txt", content=b"Content only")
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -50,11 +48,8 @@ class TestDocumentToPrompt:
     def test_image_document_conversion(self):
         """Test converting image document to prompt format."""
         # Minimal PNG header
-        png_content = (
-            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
-            b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
-        )
-        doc = ConcreteFlowDocument(name="image.png", content=png_content, description="Test image")
+        png_content = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+        doc = ConcreteDocument(name="image.png", content=png_content, description="Test image")
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -89,7 +84,7 @@ class TestDocumentToPrompt:
     def test_pdf_document_conversion(self):
         """Test converting PDF document to prompt format."""
         pdf_content = b"%PDF-1.4\n%\xd3\xeb\xe9\xe1\n1 0 obj\n<</Type/Catalog>>\nendobj"
-        doc = ConcreteFlowDocument(name="document.pdf", content=pdf_content)
+        doc = ConcreteDocument(name="document.pdf", content=pdf_content)
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -118,15 +113,12 @@ class TestDocumentToPrompt:
 
     def test_unsupported_mime_type(self):
         """Test handling of unsupported MIME types - skip since we can't mock frozen models."""
-        # Skip this test as ConcreteFlowDocument is frozen and we can't patch its properties
+        # Skip this test as Document is frozen and we can't patch its properties
         # The actual behavior is tested in integration tests
-        pass
 
     def test_markdown_document(self):
         """Test markdown document conversion."""
-        doc = ConcreteFlowDocument(
-            name="readme.md", content=b"# Header\n\nThis is **markdown** content."
-        )
+        doc = ConcreteDocument(name="readme.md", content=b"# Header\n\nThis is **markdown** content.")
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -142,7 +134,7 @@ class TestDocumentToPrompt:
         import json
 
         json_data = {"key": "value", "number": 42}
-        doc = ConcreteFlowDocument(name="data.json", content=json.dumps(json_data).encode())
+        doc = ConcreteDocument(name="data.json", content=json.dumps(json_data).encode())
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -155,7 +147,7 @@ class TestDocumentToPrompt:
         """Test handling of large text documents."""
         # Create a large text document
         large_content = "x" * 10000
-        doc = ConcreteFlowDocument(name="large.txt", content=large_content.encode())
+        doc = ConcreteDocument(name="large.txt", content=large_content.encode())
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -166,7 +158,7 @@ class TestDocumentToPrompt:
     def test_unicode_text_document(self):
         """Test handling of Unicode text."""
         unicode_content = "Hello 世界! 🌍 Здравствуй мир!"
-        doc = ConcreteFlowDocument(name="unicode.txt", content=unicode_content.encode("utf-8"))
+        doc = ConcreteDocument(name="unicode.txt", content=unicode_content.encode("utf-8"))
 
         parts = AIMessages.document_to_prompt(doc)
 
@@ -181,7 +173,7 @@ class TestDocumentToPrompt:
         Image.new("RGB", (1, 1), color=(255, 0, 0)).save(buf, format="GIF")
         gif_content = buf.getvalue()
 
-        doc = ConcreteFlowDocument(name="animation.gif", content=gif_content)
+        doc = ConcreteDocument(name="animation.gif", content=gif_content)
         assert doc.mime_type == "image/gif"
 
         parts = AIMessages.document_to_prompt(doc)
@@ -199,7 +191,7 @@ class TestDocumentToPrompt:
         Image.new("RGB", (1, 1), color=(0, 255, 0)).save(buf, format="BMP")
         bmp_content = buf.getvalue()
 
-        doc = ConcreteFlowDocument(name="image.bmp", content=bmp_content)
+        doc = ConcreteDocument(name="image.bmp", content=bmp_content)
         assert doc.mime_type == "image/bmp"
 
         parts = AIMessages.document_to_prompt(doc)
@@ -215,7 +207,7 @@ class TestDocumentToPrompt:
         Image.new("RGB", (1, 1), color=(0, 0, 255)).save(buf, format="PNG")
         png_content = buf.getvalue()
 
-        doc = ConcreteFlowDocument(name="image.png", content=png_content)
+        doc = ConcreteDocument(name="image.png", content=png_content)
 
         parts = AIMessages.document_to_prompt(doc)
 

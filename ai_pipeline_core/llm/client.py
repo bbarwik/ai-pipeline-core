@@ -1,17 +1,17 @@
 """LLM client implementation for AI model interactions.
 
-@public
-
 This module provides the core functionality for interacting with language models
 through a unified interface. It handles retries, caching, structured outputs,
 and integration with various LLM providers via LiteLLM.
 
-Key functions:
-- generate(): Text generation with optional context caching
-- generate_structured(): Type-safe structured output generation
+Automatic image auto-tiling splits oversized images in attachments to meet
+model-specific constraints (e.g., 3000x3000 for Gemini, 1000x1000 default).
+Context caching separates static content from dynamic messages for 50-90% token savings.
+Optional purpose and expected_cost parameters enable tracing and cost-tracking.
 """
 
 import asyncio
+import contextlib
 import time
 from io import BytesIO
 from typing import Any, TypeVar
@@ -20,15 +20,18 @@ from lmnr import Laminar
 from openai import AsyncOpenAI
 from openai.lib.streaming.chat import ChunkEvent, ContentDeltaEvent, ContentDoneEvent
 from openai.types.chat import (
+    ChatCompletion,
     ChatCompletionMessageParam,
 )
 from PIL import Image
-from prefect.logging import get_logger
 from pydantic import BaseModel, ValidationError
 
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents.attachment import Attachment
 from ai_pipeline_core.exceptions import LLMError
-from ai_pipeline_core.images import ImageProcessingConfig, process_image_to_documents
+from ai_pipeline_core.images import ImageProcessingConfig, process_image, process_image_to_documents
+from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.observability._document_tracking import track_llm_documents
 from ai_pipeline_core.settings import settings
 
 from .ai_messages import AIMessages, AIMessageType
@@ -36,16 +39,12 @@ from .model_options import ModelOptions
 from .model_response import ModelResponse, StructuredModelResponse
 from .model_types import ModelName
 
-logger = get_logger()
+logger = get_pipeline_logger(__name__)
 
 # Image splitting configs for automatic large-image handling at the LLM boundary.
 # Gemini supports up to 3000x3000; all other models use a conservative 1000x1000 default.
-_GEMINI_IMAGE_CONFIG = ImageProcessingConfig(
-    max_dimension=3000, max_pixels=9_000_000, jpeg_quality=75
-)
-_DEFAULT_IMAGE_CONFIG = ImageProcessingConfig(
-    max_dimension=1000, max_pixels=1_000_000, jpeg_quality=75
-)
+_GEMINI_IMAGE_CONFIG = ImageProcessingConfig(max_dimension=3000, max_pixels=9_000_000, jpeg_quality=75)
+_DEFAULT_IMAGE_CONFIG = ImageProcessingConfig(max_dimension=1000, max_pixels=1_000_000, jpeg_quality=75)
 
 
 def _get_image_config(model: str) -> ImageProcessingConfig:
@@ -55,13 +54,13 @@ def _get_image_config(model: str) -> ImageProcessingConfig:
     return _DEFAULT_IMAGE_CONFIG
 
 
-def _prepare_images_for_model(messages: AIMessages, model: str) -> AIMessages:
-    """Split image documents that exceed model constraints.
+def _prepare_images_for_model(messages: AIMessages, model: str) -> AIMessages:  # noqa: C901, PLR0912, PLR0915, PLR0914
+    """Split image documents and image attachments that exceed model constraints.
 
     Returns a new AIMessages with oversized images replaced by tiles.
     Returns the original instance unchanged if no splitting is needed.
     """
-    if not any(isinstance(m, Document) and m.is_image for m in messages):
+    if not any(isinstance(m, Document) and (m.is_image or any(att.is_image for att in m.attachments)) for m in messages):
         return messages
 
     config = _get_image_config(model)
@@ -69,25 +68,79 @@ def _prepare_images_for_model(messages: AIMessages, model: str) -> AIMessages:
     changed = False
 
     for msg in messages:
-        if not (isinstance(msg, Document) and msg.is_image):
+        if not isinstance(msg, Document):
             result.append(msg)
             continue
 
-        try:
-            with Image.open(BytesIO(msg.content)) as img:
-                w, h = img.size
-        except Exception:
-            result.append(msg)
-            continue
+        # 1. Handle top-level image Documents (existing logic)
+        if msg.is_image:
+            try:
+                with Image.open(BytesIO(msg.content)) as img:
+                    w, h = img.size
+            except Exception:
+                result.append(msg)
+                continue
 
-        if w <= config.max_dimension and h <= config.max_dimension and w * h <= config.max_pixels:
-            result.append(msg)
-            continue
+            within_limits = w <= config.max_dimension and h <= config.max_dimension and w * h <= config.max_pixels
+            if within_limits:
+                pass  # Falls through to attachment handling
+            else:
+                name_prefix = msg.name.rsplit(".", 1)[0] if "." in msg.name else msg.name
+                tiles = process_image_to_documents(msg, config=config, name_prefix=name_prefix)
+                if msg.attachments and tiles:
+                    tiles[0] = tiles[0].model_copy(update={"attachments": msg.attachments})
+                result.extend(tiles)
+                changed = True
+                continue
 
-        name_prefix = msg.name.rsplit(".", 1)[0] if "." in msg.name else msg.name
-        tiles = process_image_to_documents(msg, config=config, name_prefix=name_prefix)
-        result.extend(tiles)
-        changed = True
+        # 2. Handle image attachments
+        if msg.attachments:
+            new_attachments: list[Attachment] = []
+            attachments_changed = False
+
+            for att in msg.attachments:
+                if not att.is_image:
+                    new_attachments.append(att)
+                    continue
+
+                try:
+                    with Image.open(BytesIO(att.content)) as img:
+                        w, h = img.size
+                except Exception:
+                    new_attachments.append(att)
+                    continue
+
+                att_within_limits = w <= config.max_dimension and h <= config.max_dimension and w * h <= config.max_pixels
+                if att_within_limits:
+                    new_attachments.append(att)
+                    continue
+
+                # Tile the oversized attachment image
+                processed = process_image(att.content, config=config)
+                att_prefix = att.name.rsplit(".", 1)[0] if "." in att.name else att.name
+
+                for part in processed.parts:
+                    if part.total == 1:
+                        tile_name = f"{att_prefix}.jpg"
+                        tile_desc = att.description
+                    else:
+                        tile_name = f"{att_prefix}_{part.index + 1:02d}_of_{part.total:02d}.jpg"
+                        tile_desc = f"{att.description} ({part.label})" if att.description else part.label
+
+                    new_attachments.append(
+                        Attachment(
+                            name=tile_name,
+                            content=part.data,
+                            description=tile_desc,
+                        )
+                    )
+                attachments_changed = True
+
+            if attachments_changed:
+                msg = msg.model_copy(update={"attachments": tuple(new_attachments)})  # noqa: PLW2901
+                changed = True
+
+        result.append(msg)
 
     if not changed:
         return messages
@@ -129,9 +182,8 @@ def _process_messages(
         If cache_ttl is None or empty string (falsy), no caching is applied.
         All system and context messages receive cache_control to maximize cache efficiency.
 
-    Note:
-        This is an internal function used by _generate_with_retry().
-        The context/messages split enables efficient token usage.
+    This is an internal function used by _generate_with_retry().
+    The context/messages split enables efficient token usage.
     """
     processed_messages: list[ChatCompletionMessageParam] = []
 
@@ -184,20 +236,17 @@ def _remove_cache_control(
         The same message list (modified in-place) with all cache_control
         fields removed from both messages and their content items.
 
-    Note:
-        This function modifies the input list in-place but also returns it
-        for convenience. Handles both list-based content (multipart) and
-        string content (simple messages).
+    Modifies the input list in-place but also returns it for convenience.
+    Handles both list-based content (multipart) and string content (simple messages).
     """
     for message in messages:
-        if content := message.get("content"):
-            if isinstance(content, list):
-                for item in content:
-                    if "cache_control" in item:
-                        del item["cache_control"]
+        if (content := message.get("content")) and isinstance(content, list):
+            for item in content:
+                if "cache_control" in item:
+                    del item["cache_control"]
         if "cache_control" in message:
             del message["cache_control"]
-    return messages  # type: ignore
+    return messages
 
 
 def _model_name_to_openrouter_model(model: ModelName) -> str:
@@ -232,30 +281,76 @@ def _model_name_to_openrouter_model(model: ModelName) -> str:
     return model
 
 
-async def _generate(
-    model: str, messages: list[ChatCompletionMessageParam], completion_kwargs: dict[str, Any]
-) -> ModelResponse:
-    """Execute a single LLM API call.
+async def _generate_streaming(client: AsyncOpenAI, model: str, messages: list[ChatCompletionMessageParam], completion_kwargs: dict[str, Any]) -> ModelResponse:
+    """Execute a streaming LLM API call."""
+    start_time = time.time()
+    first_token_time = None
+    usage = None
+    async with client.chat.completions.stream(
+        model=model,
+        messages=messages,
+        **completion_kwargs,
+    ) as s:
+        async for event in s:
+            if isinstance(event, ContentDeltaEvent):
+                if not first_token_time:
+                    first_token_time = time.time()
+            elif isinstance(event, ContentDoneEvent):
+                pass
+            elif isinstance(event, ChunkEvent) and event.chunk.usage:
+                usage = event.chunk.usage
+        if not first_token_time:
+            first_token_time = time.time()
+        raw_response = await s.get_final_completion()
 
-    Internal function that makes the actual API request to the LLM provider.
-    Handles both regular and structured output generation.
+    metadata = {
+        "time_taken": round(time.time() - start_time, 2),
+        "first_token_time": round(first_token_time - start_time, 2),
+    }
+    return ModelResponse(raw_response, model_options=completion_kwargs, metadata=metadata, usage=usage)
+
+
+async def _generate_non_streaming(
+    client: AsyncOpenAI, model: str, messages: list[ChatCompletionMessageParam], completion_kwargs: dict[str, Any]
+) -> ModelResponse:
+    """Execute a non-streaming LLM API call.
+
+    Avoids OpenAI SDK delta accumulation — some providers (e.g. Grok) send
+    streaming annotation deltas that crash the SDK's accumulate_delta().
+    """
+    start_time = time.time()
+    kwargs = {k: v for k, v in completion_kwargs.items() if k != "stream_options"}
+    response_format = kwargs.get("response_format")
+    if isinstance(response_format, type) and issubclass(response_format, BaseModel):
+        raw_response: ChatCompletion = await client.chat.completions.parse(
+            model=model,
+            messages=messages,
+            **kwargs,
+        )
+    else:
+        raw_response = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=False,
+            **kwargs,
+        )
+    elapsed = round(time.time() - start_time, 2)
+    metadata = {"time_taken": elapsed, "first_token_time": elapsed}
+    return ModelResponse(raw_response, model_options=completion_kwargs, metadata=metadata)
+
+
+async def _generate(model: str, messages: list[ChatCompletionMessageParam], completion_kwargs: dict[str, Any], *, stream: bool = True) -> ModelResponse:
+    """Execute a single LLM API call.
 
     Args:
         model: Model identifier (e.g., "gpt-5.1", "gemini-3-pro").
         messages: Formatted messages for the API.
         completion_kwargs: Additional parameters for the completion API.
+        stream: Whether to use streaming mode (default True). Non-streaming
+                avoids OpenAI SDK delta accumulation issues with some providers.
 
     Returns:
         ModelResponse with generated content and metadata.
-
-    API selection:
-        - Uses client.chat.completions.parse() for structured output
-        - Uses client.chat.completions.create() for regular text
-
-    Note:
-        - Uses AsyncOpenAI client configured via settings
-        - Captures response headers for cost tracking
-        - Response includes model options for debugging
     """
     if "openrouter" in settings.openai_base_url.lower():
         model = _model_name_to_openrouter_model(model)
@@ -264,45 +359,18 @@ async def _generate(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
     ) as client:
-        start_time = time.time()
-        first_token_time = None
-        usage = None
-        async with client.chat.completions.stream(
-            model=model,
-            messages=messages,
-            **completion_kwargs,
-        ) as stream:
-            async for event in stream:
-                if isinstance(event, ContentDeltaEvent):
-                    if not first_token_time:
-                        first_token_time = time.time()
-                elif isinstance(event, ContentDoneEvent):
-                    pass
-                elif isinstance(event, ChunkEvent):
-                    if event.chunk.usage:  # used to fix a bug with missing usage data
-                        usage = event.chunk.usage
-            if not first_token_time:
-                first_token_time = time.time()
-            raw_response = await stream.get_final_completion()
-
-        metadata = {
-            "time_taken": round(time.time() - start_time, 2),
-            "first_token_time": round(first_token_time - start_time, 2),
-        }
-        response = ModelResponse(
-            raw_response,
-            model_options=completion_kwargs,
-            metadata=metadata,
-            usage=usage,
-        )
-        return response
+        if stream:
+            return await _generate_streaming(client, model, messages, completion_kwargs)
+        return await _generate_non_streaming(client, model, messages, completion_kwargs)
 
 
-async def _generate_with_retry(
+async def _generate_with_retry(  # noqa: PLR0917
     model: str,
     context: AIMessages,
     messages: AIMessages,
     options: ModelOptions,
+    purpose: str | None = None,
+    expected_cost: float | None = None,
 ) -> ModelResponse:
     """Core LLM generation with automatic retry logic.
 
@@ -314,6 +382,8 @@ async def _generate_with_retry(
         context: Cached context messages (can be empty).
         messages: Dynamic query messages.
         options: Configuration including retries, timeout, temperature.
+        purpose: Optional semantic label for the LLM span name.
+        expected_cost: Optional expected cost for cost-tracking attributes.
 
     Returns:
         ModelResponse with generated content.
@@ -322,8 +392,7 @@ async def _generate_with_retry(
         ValueError: If model is not provided or both context and messages are empty.
         LLMError: If all retry attempts are exhausted.
 
-    Note:
-        Empty responses trigger a retry as they indicate API issues.
+    Empty responses trigger a retry as they indicate API issues.
     """
     if not model:
         raise ValueError("Model must be provided")
@@ -338,9 +407,7 @@ async def _generate_with_retry(
         # Bug fix for minimum explicit context size for Gemini models
         options.cache_ttl = None
 
-    processed_messages = _process_messages(
-        context, messages, options.system_prompt, options.cache_ttl
-    )
+    processed_messages = _process_messages(context, messages, options.system_prompt, options.cache_ttl)
     completion_kwargs: dict[str, Any] = {
         **options.to_openai_completion_kwargs(),
     }
@@ -350,17 +417,18 @@ async def _generate_with_retry(
 
     for attempt in range(options.retries):
         try:
-            with Laminar.start_as_current_span(
-                model, span_type="LLM", input=processed_messages
-            ) as span:
-                response = await _generate(model, processed_messages, completion_kwargs)
-                span.set_attributes(response.get_laminar_metadata())  # pyright: ignore[reportArgumentType]
-                Laminar.set_span_output([
-                    r for r in (response.reasoning_content, response.content) if r
-                ])
+            with Laminar.start_as_current_span(purpose or model, span_type="LLM", input=processed_messages) as span:
+                response = await _generate(model, processed_messages, completion_kwargs, stream=options.stream)
+                laminar_metadata = response.get_laminar_metadata()
+                if purpose:
+                    laminar_metadata["purpose"] = purpose
+                if expected_cost is not None:
+                    laminar_metadata["expected_cost"] = expected_cost
+                span.set_attributes(laminar_metadata)  # pyright: ignore[reportArgumentType]
+                Laminar.set_span_output([r for r in (response.reasoning_content, response.content) if r])
                 response.validate_output()
                 return response
-        except (asyncio.TimeoutError, ValueError, ValidationError, Exception) as e:
+        except (TimeoutError, ValueError, ValidationError, Exception) as e:
             if not isinstance(e, asyncio.TimeoutError):
                 # disable cache if it's not a timeout because it may cause an error
                 completion_kwargs["extra_body"]["cache"] = {"no-cache": True}
@@ -384,10 +452,10 @@ async def generate(
     context: AIMessages | None = None,
     messages: AIMessages | str,
     options: ModelOptions | None = None,
+    purpose: str | None = None,
+    expected_cost: float | None = None,
 ) -> ModelResponse:
     """Generate text response from a language model.
-
-    @public
 
     Main entry point for LLM text generation with smart context caching.
     The context/messages split enables efficient token usage by caching
@@ -405,13 +473,16 @@ async def generate(
         context: Static context to cache (documents, examples, instructions).
                 Defaults to None (empty context). Cached for 5 minutes by default.
         messages: Dynamic messages/queries. AIMessages or str ONLY.
-                 Do not pass Document or DocumentList directly.
+                 Do not pass Document or list[Document] directly.
                  If string, converted to AIMessages internally.
-        options: DEPRECATED - DO NOT USE. Reserved for internal framework usage only.
-                Framework defaults are production-optimized (3 retries, 10s delay, 300s timeout).
-                Configure model behavior centrally via LiteLLM proxy settings or environment
-                variables, not per API call. Provider-specific settings should be configured
-                at the proxy level.
+        options: Internal framework parameter. Framework defaults are production-optimized
+                (3 retries, 20s delay, 600s timeout). Configure model behavior centrally via
+                LiteLLM proxy settings or environment variables, not per API call.
+                Provider-specific settings should be configured at the proxy level.
+        purpose: Optional semantic label used as the tracing span name
+                instead of model name. Stored as a span attribute.
+        expected_cost: Optional expected cost stored as a span attribute
+                      for cost-tracking and comparison with actual cost.
 
     Returns:
         ModelResponse containing:
@@ -454,35 +525,12 @@ async def generate(
             - Changes with each API call
             - Never cached, always processed fresh
 
-    Example:
-        >>> # CORRECT - No options parameter (this is the recommended pattern)
-        >>> response = await llm.generate("gpt-5.1", messages="Explain quantum computing")
-        >>> print(response.content)  # In production, use get_pipeline_logger instead of print
-
-        >>> # With context caching for efficiency
-        >>> # Context and messages are both AIMessages or str; wrap any Documents
-        >>> static_doc = AIMessages([large_document, "few-shot example: ..."])
-        >>>
-        >>> # First call: caches context
-        >>> r1 = await llm.generate("gpt-5.1", context=static_doc, messages="Summarize")
-        >>>
-        >>> # Second call: reuses cache, saves tokens!
-        >>> r2 = await llm.generate("gpt-5.1", context=static_doc, messages="Key points?")
-
-        >>> # Multi-turn conversation
-        >>> messages = AIMessages([
-        ...     "What is Python?",
-        ...     previous_response,
-        ...     "Can you give an example?"
-        ... ])
-        >>> response = await llm.generate("gpt-5.1", messages=messages)
-
     Performance:
         - Context caching saves ~50-90% tokens on repeated calls
         - First call: full token cost
         - Subsequent calls (within cache TTL): only messages tokens
         - Default cache TTL is 300s/5 minutes (production-optimized)
-        - Default retry logic: 3 attempts with 10s delay (production-optimized)
+        - Default retry logic: 3 attempts with 20s delay (production-optimized)
 
     Caching:
         When enabled in your LiteLLM proxy and supported by the upstream provider,
@@ -500,10 +548,8 @@ async def generate(
 
         This centralizes configuration and ensures consistency across all API calls.
 
-    Note:
-        - All models are accessed via LiteLLM proxy
-        - Automatic retry with configurable delay between attempts
-        - Cost tracking via response headers
+    All models are accessed via LiteLLM proxy with automatic retry and
+    cost tracking via response headers.
     """
     if isinstance(messages, str):
         messages = AIMessages([messages])
@@ -512,9 +558,22 @@ async def generate(
         context = AIMessages()
     if options is None:
         options = ModelOptions()
+    else:
+        # Create a copy to avoid mutating the caller's options object
+        options = options.model_copy()
+
+    with contextlib.suppress(Exception):
+        track_llm_documents(context, messages)
 
     try:
-        return await _generate_with_retry(model, context, messages, options)
+        return await _generate_with_retry(
+            model,
+            context,
+            messages,
+            options,
+            purpose=purpose,
+            expected_cost=expected_cost,
+        )
     except (ValueError, LLMError):
         raise  # Explicitly re-raise to satisfy DOC502
 
@@ -523,17 +582,17 @@ T = TypeVar("T", bound=BaseModel)
 """Type variable for Pydantic model types in structured generation."""
 
 
-async def generate_structured(
+async def generate_structured(  # noqa: UP047
     model: ModelName,
     response_format: type[T],
     *,
     context: AIMessages | None = None,
     messages: AIMessages | str,
     options: ModelOptions | None = None,
+    purpose: str | None = None,
+    expected_cost: float | None = None,
 ) -> StructuredModelResponse[T]:
     """Generate structured output conforming to a Pydantic model.
-
-    @public
 
     Type-safe generation that returns validated Pydantic model instances.
     Uses OpenAI's structured output feature for guaranteed schema compliance.
@@ -589,21 +648,21 @@ async def generate_structured(
         context: Static context to cache (documents, schemas, examples).
                 Defaults to None (empty AIMessages).
         messages: Dynamic prompts/queries. AIMessages or str ONLY.
-                 Do not pass Document or DocumentList directly.
+                 Do not pass Document or list[Document] directly.
         options: Optional ModelOptions for configuring temperature, retries, etc.
                 If provided, it will NOT be mutated (a copy is created internally).
                 The response_format field is set automatically from the response_format parameter.
                 In most cases, leave as None to use framework defaults.
                 Configure model behavior centrally via LiteLLM proxy settings when possible.
+        purpose: Optional semantic label used as the tracing span name
+                instead of model name. Stored as a span attribute.
+        expected_cost: Optional expected cost stored as a span attribute
+                      for cost-tracking and comparison with actual cost.
 
-    Note:
-        Vision/PDF model compatibility considerations:
-        - Images require vision-capable models that also support structured output
-        - PDFs require models with both document processing AND structured output support
-        - Many models support either vision OR structured output, but not both
-        - Test your specific model+document combination before production use
-        - Consider two-step approach: generate() for analysis, then generate_structured()
-          for formatting
+    Vision/PDF model compatibility: Images require vision-capable models that also support
+    structured output. PDFs require models with both document processing AND structured output
+    support. Consider two-step approach: generate() for analysis, then generate_structured()
+    for formatting.
 
     Returns:
         StructuredModelResponse[T] containing:
@@ -616,26 +675,6 @@ async def generate_structured(
                    Structured output support varies by provider and model.
         LLMError: If generation fails after retries.
         ValidationError: If response cannot be parsed into response_format.
-
-    Example:
-        >>> from pydantic import BaseModel, Field
-        >>>
-        >>> class Analysis(BaseModel):
-        ...     summary: str = Field(description="Brief summary")
-        ...     sentiment: float = Field(ge=-1, le=1)
-        ...     key_points: list[str] = Field(max_length=5)
-        >>>
-        >>> # CORRECT - No options parameter
-        >>> response = await llm.generate_structured(
-        ...     "gpt-5.1",
-        ...     response_format=Analysis,
-        ...     messages="Analyze this product review: ..."
-        ... )
-        >>>
-        >>> analysis = response.parsed  # Type: Analysis
-        >>> print(f"Sentiment: {analysis.sentiment}")
-        >>> for point in analysis.key_points:
-        ...     print(f"- {point}")
 
     Supported models:
         Structured output support varies by provider and model. Generally includes:
@@ -651,12 +690,9 @@ async def generate_structured(
         - Complex schemas increase generation time
         - Validation overhead is minimal (Pydantic is fast)
 
-    Note:
-        - Pydantic model is converted to JSON Schema for the API
-        - The model generates JSON matching the schema
-        - Validation happens automatically via Pydantic
-        - Use Field() descriptions to guide generation
-        - Search models (models with '-search' suffix) do not support structured output
+    Pydantic model is converted to JSON Schema for the API. Validation happens
+    automatically via Pydantic. Search models (models with '-search' suffix) do
+    not support structured output.
     """
     if context is None:
         context = AIMessages()
@@ -673,9 +709,19 @@ async def generate_structured(
 
     assert isinstance(messages, AIMessages)
 
+    with contextlib.suppress(Exception):
+        track_llm_documents(context, messages)
+
     # Call the internal generate function with structured output enabled
     try:
-        response = await _generate_with_retry(model, context, messages, options)
+        response = await _generate_with_retry(
+            model,
+            context,
+            messages,
+            options,
+            purpose=purpose,
+            expected_cost=expected_cost,
+        )
     except (ValueError, LLMError):
         raise  # Explicitly re-raise to satisfy DOC502
 

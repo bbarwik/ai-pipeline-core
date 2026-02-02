@@ -39,9 +39,7 @@ async def test_usage_tracking_for_all_models(model: ModelName):
     # Use UUID to make message unique and avoid caching
     unique_id = str(uuid.uuid4())
     messages = AIMessages([
-        f"Solve this problem step by step (ID: {unique_id}): "
-        f"If a train travels at 60 mph for 2.5 hours, how far does it travel? "
-        f"Explain your reasoning."
+        f"Solve this problem step by step (ID: {unique_id}): If a train travels at 60 mph for 2.5 hours, how far does it travel? Explain your reasoning."
     ])
 
     response = await generate(
@@ -58,22 +56,14 @@ async def test_usage_tracking_for_all_models(model: ModelName):
     assert response.usage is not None, f"Model {model} did not return usage information"
 
     # Verify token counts are present and valid
-    assert response.usage.prompt_tokens > 0, (
-        f"Model {model} returned invalid prompt_tokens: {response.usage.prompt_tokens}"
-    )
-    assert response.usage.completion_tokens > 0, (
-        f"Model {model} returned invalid completion_tokens: {response.usage.completion_tokens}"
-    )
-    assert response.usage.total_tokens > 0, (
-        f"Model {model} returned invalid total_tokens: {response.usage.total_tokens}"
-    )
+    assert response.usage.prompt_tokens > 0, f"Model {model} returned invalid prompt_tokens: {response.usage.prompt_tokens}"
+    assert response.usage.completion_tokens > 0, f"Model {model} returned invalid completion_tokens: {response.usage.completion_tokens}"
+    assert response.usage.total_tokens > 0, f"Model {model} returned invalid total_tokens: {response.usage.total_tokens}"
 
     # Verify total equals sum of prompt and completion
     expected_total = response.usage.prompt_tokens + response.usage.completion_tokens
     assert response.usage.total_tokens == expected_total, (
-        f"Model {model} token counts don't add up: "
-        f"{response.usage.prompt_tokens} + {response.usage.completion_tokens} "
-        f"!= {response.usage.total_tokens}"
+        f"Model {model} token counts don't add up: {response.usage.prompt_tokens} + {response.usage.completion_tokens} != {response.usage.total_tokens}"
     )
 
     # Verify cost attribute if present (added by LiteLLM, not all providers return it)

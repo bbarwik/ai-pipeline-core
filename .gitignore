@@ -69,6 +69,7 @@ instance/
 # claude and cursor
 .claude
 .cursor
+CLAUDE.md
 
 # Sphinx documentation
 docs/_build/
@@ -161,3 +162,8 @@ ehthumbs.db
 # Test artifacts
 tests/test_data/
 test_output/
+
+# temporary specification
+.specification/
+
+# NOTE: .ai-docs/ is intentionally NOT ignored (git-tracked auto-generated AI documentation)

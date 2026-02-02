@@ -1,6 +1,6 @@
 """Tests for document utilities."""
 
-from ai_pipeline_core.documents.flow_document import FlowDocument
+from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents.utils import camel_to_snake, canonical_name_key, sanitize_url
 
 
@@ -46,14 +46,9 @@ class TestSanitizeUrl:
     def test_complex_urls(self):
         """Test complex URL patterns."""
         # URLs with query strings - query part is ignored when parsing
-        assert (
-            sanitize_url("https://api.example.com/v1/resource?id=123&type=pdf")
-            == "api.example.com_v1_resource"
-        )
+        assert sanitize_url("https://api.example.com/v1/resource?id=123&type=pdf") == "api.example.com_v1_resource"
         # FTP URLs aren't handled by the http/https check, @ is preserved
-        assert (
-            sanitize_url("ftp://user:pass@host.com/file.txt") == "ftp_user_pass@host.com_file.txt"
-        )
+        assert sanitize_url("ftp://user:pass@host.com/file.txt") == "ftp_user_pass@host.com_file.txt"
 
     def test_query_strings(self):
         """Test handling of query strings without protocol."""
@@ -108,47 +103,43 @@ class TestCanonicalNameKey:
     def test_class_with_document_suffix(self):
         """Test classes ending with Document."""
 
-        class SampleDocument(FlowDocument):
+        class SampleDocument(Document):
             def get_type(self) -> str:
                 return "sample"
 
         assert canonical_name_key(SampleDocument) == "sample"
 
-        class FinalReportDocument(FlowDocument):
+        class FinalReportDocument(Document):
             def get_type(self) -> str:
                 return "final_report"
 
         assert canonical_name_key(FinalReportDocument) == "final_report"
 
-    def test_class_with_flow_document_suffix(self):
-        """Test classes ending with FlowDocument."""
+    def test_class_with_document_suffix_simple(self):
+        """Test simple class ending with Document."""
 
-        class MyFlowDocument(FlowDocument):
+        class MyDocument(Document):
             def get_type(self) -> str:
                 return "my"
 
-        assert canonical_name_key(MyFlowDocument) == "my"
+        assert canonical_name_key(MyDocument) == "my"
 
     def test_string_input(self):
         """Test with string input instead of class."""
-        # String inputs don't have MRO, so suffixes are only removed if explicitly specified
         assert canonical_name_key("TestDocument", extra_suffixes=["Document"]) == "test"
-        assert (
-            canonical_name_key("FinalReportDocument", extra_suffixes=["Document"]) == "final_report"
-        )
-        assert canonical_name_key("MyFlowDocument", extra_suffixes=["FlowDocument"]) == "my"
+        assert canonical_name_key("FinalReportDocument", extra_suffixes=["Document"]) == "final_report"
+        assert canonical_name_key("MyDocument", extra_suffixes=["Document"]) == "my"
         assert canonical_name_key("SimpleClass") == "simple_class"
 
     def test_extra_suffixes(self):
         """Test with extra suffixes to strip."""
         assert canonical_name_key("TestConfig", extra_suffixes=["Config"]) == "test"
-        assert canonical_name_key("MyFlowConfig", extra_suffixes=["Config", "Flow"]) == "my"
         assert canonical_name_key("FooBarBaz", extra_suffixes=["Baz", "Bar"]) == "foo"
 
     def test_max_parent_suffixes(self):
         """Test limiting parent suffix removal."""
 
-        class DeepDocument(FlowDocument):
+        class DeepDocument(Document):
             def get_type(self) -> str:
                 return "deep"
 
@@ -160,15 +151,9 @@ class TestCanonicalNameKey:
 
     def test_complex_names(self):
         """Test complex naming patterns."""
-        assert (
-            canonical_name_key("HTTPSConnectionDocument", extra_suffixes=["Document"])
-            == "https_connection"
-        )
+        assert canonical_name_key("HTTPSConnectionDocument", extra_suffixes=["Document"]) == "https_connection"
         assert canonical_name_key("PDFReaderDocument", extra_suffixes=["Document"]) == "pdf_reader"
-        assert (
-            canonical_name_key("XMLParserFlowDocument", extra_suffixes=["FlowDocument"])
-            == "xml_parser"
-        )
+        assert canonical_name_key("XMLParserDocument", extra_suffixes=["Document"]) == "xml_parser"
 
     def test_no_suffix_match(self):
         """Test when no suffix matches."""

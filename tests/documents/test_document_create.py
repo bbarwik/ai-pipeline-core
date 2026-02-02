@@ -5,10 +5,10 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from ai_pipeline_core.documents import FlowDocument
+from ai_pipeline_core.documents import Document
 
 
-class ConcreteTestDocument(FlowDocument):
+class ConcreteTestDocument(Document):
     """Concrete test document for testing."""
 
     def get_type(self) -> str:
@@ -101,64 +101,19 @@ Line 3"""
         assert doc.text == content
 
 
-class TestConstructorWithListForMarkdown:
-    """Test constructor method with list[str] for markdown files."""
+class TestConstructorWithListForJSON:
+    """Test constructor with list content for JSON files."""
 
-    def test_constructor_markdown_with_string_list(self):
-        """Test constructing markdown document with list of strings."""
-        items = [
-            "# Section 1\nContent for section 1",
-            "# Section 2\nContent for section 2",
-            "# Section 3\nContent for section 3",
-        ]
-        doc = ConcreteTestDocument.create(
-            name="sections.md",
-            description="Markdown sections",
-            content=items,
-        )
-        assert doc.name == "sections.md"
-        assert doc.is_text
-        assert "markdown" in doc.mime_type
+    def test_constructor_json_with_string_list(self):
+        """Test constructing JSON document with list of strings."""
+        items = ["Section 1", "Section 2", "Section 3"]
+        doc = ConcreteTestDocument.create(name="sections.json", content=items)
+        assert doc.parse(list) == items
 
-        # Should use markdown list separator
-        parsed_items = doc.as_markdown_list()
-        assert len(parsed_items) == 3
-        assert parsed_items[0] == items[0]
-        assert parsed_items[1] == items[1]
-        assert parsed_items[2] == items[2]
-
-    def test_constructor_markdown_with_empty_list(self):
-        """Test constructing markdown document with empty list."""
-        doc = ConcreteTestDocument.create(
-            name="empty.md",
-            description="Empty markdown",
-            content=[],
-        )
-        assert doc.content == b""
-        # Empty content has mime type text/plain
-        assert doc.mime_type == "text/plain"
-
-    def test_constructor_markdown_with_single_item_list(self):
-        """Test constructing markdown document with single item list."""
-        items = ["Single item content"]
-        doc = ConcreteTestDocument.create(
-            name="single.md",
-            description=None,
-            content=items,
-        )
-        assert doc.as_markdown_list() == items
-
-    def test_non_markdown_file_with_list_raises_error(self):
-        """Test that non-markdown files with list content raise an error."""
-        items = ["item1", "item2"]
-        with pytest.raises(ValueError) as exc_info:
-            ConcreteTestDocument.create(
-                name="test.txt",  # Not .md extension
-                description=None,
-                content=items,
-            )
-        assert "Unsupported content type" in str(exc_info.value)
-        assert "list" in str(exc_info.value)
+    def test_constructor_list_for_unsupported_extension_raises(self):
+        """Test that list content with unsupported extension raises error."""
+        with pytest.raises(ValueError, match=r"requires .json or .yaml extension"):
+            ConcreteTestDocument.create(name="test.txt", content=["item1", "item2"])
 
 
 class TestConstructorWithDictForJSON:
@@ -403,7 +358,7 @@ class TestConstructorWithListOfPydanticModels:
                 description=None,
                 content=models,
             )
-        assert "list[BaseModel] requires .json or .yaml extension" in str(exc_info.value)
+        assert "requires .json or .yaml extension" in str(exc_info.value)
 
     def test_as_pydantic_model_with_wrong_list_type_fails(self):
         """Test that as_pydantic_model fails with mismatched list data."""
@@ -450,7 +405,7 @@ class TestConstructorErrorCases:
                 description=None,
                 content={"key": "value"},
             )
-        assert "Unsupported content type" in str(exc_info.value)
+        assert "requires .json or .yaml extension" in str(exc_info.value)
         assert "dict" in str(exc_info.value)
 
     def test_unsupported_object_type(self):
@@ -484,16 +439,10 @@ class TestConstructorErrorCases:
         assert "Unsupported content type" in str(exc_info.value)
         assert "NoneType" in str(exc_info.value)
 
-    def test_mixed_type_list_for_markdown(self):
-        """Test that mixed-type lists are rejected for markdown."""
-        mixed_list = ["string", 123, "another string"]
-        with pytest.raises(ValueError) as exc_info:
-            ConcreteTestDocument.create(
-                name="test.md",
-                description=None,
-                content=mixed_list,
-            )
-        assert "Unsupported content type" in str(exc_info.value)
+    def test_list_for_markdown_raises(self):
+        """Test that list content with .md extension raises error."""
+        with pytest.raises(ValueError, match=r"requires .json or .yaml extension"):
+            ConcreteTestDocument.create(name="test.md", content=["string", "another"])
 
     # Removed test_numeric_content_for_json and test_boolean_content_for_json
     # as int/float/bool are not supported content types for create method
@@ -524,16 +473,11 @@ class TestConstructorPriorityOrder:
         )
         assert doc.content == content.encode("utf-8")
 
-    def test_list_markdown_before_yaml_json(self):
-        """Test that list[str] with .md extension uses markdown list."""
+    def test_list_json_serialization(self):
+        """Test that list[str] with .json extension uses JSON serialization."""
         items = ["item1", "item2"]
-        doc = ConcreteTestDocument.create(
-            name="test.md",
-            description=None,
-            content=items,
-        )
-        # Should construct markdown list, not try to serialize as YAML/JSON
-        assert doc.as_markdown_list() == items
+        doc = ConcreteTestDocument.create(name="test.json", content=items)
+        assert doc.parse(list) == items
 
     def test_yaml_extension_with_dict(self):
         """Test that .yaml extension with dict uses YAML serialization."""
@@ -625,21 +569,8 @@ class TestConstructorIntegration:
         parsed = doc.as_yaml()
         assert parsed == original_data
 
-    def test_roundtrip_markdown_list(self):
-        """Test constructing and reading back a markdown list document."""
-        original_items = [
-            "# Chapter 1\n\nIntroduction to the topic.",
-            "# Chapter 2\n\nDeep dive into details.",
-            "# Chapter 3\n\nConclusion and summary.",
-        ]
-
-        # Create document
-        doc = ConcreteTestDocument.create(
-            name="chapters.md",
-            description="Book chapters",
-            content=original_items,
-        )
-
-        # Read back
-        parsed_items = doc.as_markdown_list()
-        assert parsed_items == original_items
+    def test_roundtrip_json_list(self):
+        """Test constructing and reading back a JSON list document."""
+        original_items = ["Chapter 1", "Chapter 2", "Chapter 3"]
+        doc = ConcreteTestDocument.create(name="chapters.json", content=original_items)
+        assert doc.parse(list) == original_items

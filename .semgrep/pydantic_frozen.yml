@@ -1,0 +1,16 @@
+rules:
+  - id: mutable-field-on-frozen-pydantic-model
+    patterns:
+      - pattern-inside: |
+          class $CLASS(...):
+              ...
+              model_config = ConfigDict(..., frozen=True, ...)
+              ...
+      - pattern-either:
+          - pattern: "$FIELD: list[$T] = ..."
+          - pattern: "$FIELD: list[$T]"
+          - pattern: "$FIELD: dict[$K, $V] = ..."
+          - pattern: "$FIELD: set[$T] = ..."
+    message: "Mutable collection type on frozen Pydantic model — use tuple/frozenset"
+    severity: ERROR
+    languages: [python]

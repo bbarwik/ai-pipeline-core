@@ -2,16 +2,14 @@
 
 from enum import StrEnum
 
-from ai_pipeline_core.documents import FlowDocument, TemporaryDocument
+from ai_pipeline_core.documents import Document
 
 
-class SampleFlowDoc(FlowDocument):
+class SampleFlowDoc(Document):
     """Sample flow document for testing."""
 
-    pass
 
-
-class RestrictedFlowDoc(FlowDocument):
+class RestrictedFlowDoc(Document):
     """Flow document with file name restrictions."""
 
     class FILES(StrEnum):
@@ -24,9 +22,7 @@ class TestModelCopy:
 
     def test_basic_copy(self):
         """Test basic document copying."""
-        doc = SampleFlowDoc.create(
-            name="test.json", content={"data": "value"}, description="Original"
-        )
+        doc = SampleFlowDoc.create(name="test.json", content={"data": "value"}, description="Original")
 
         copied = doc.model_copy()
 
@@ -39,9 +35,7 @@ class TestModelCopy:
 
     def test_copy_with_update(self):
         """Test copying with attribute updates."""
-        doc = SampleFlowDoc.create(
-            name="test.json", content={"data": "value"}, description="Original"
-        )
+        doc = SampleFlowDoc.create(name="test.json", content={"data": "value"}, description="Original")
 
         copied = doc.model_copy(update={"description": "Updated"})
 
@@ -63,68 +57,52 @@ class TestModelCopy:
         """Test updating content during copy."""
         doc = SampleFlowDoc.create(name="test.json", content={"old": "data"})
 
-        # model_copy doesn't validate - content must be bytes already
         new_content = b'{"new": "data"}'
         copied = doc.model_copy(update={"content": new_content})
 
-        # Content is raw bytes
         assert copied.content == new_content
-        assert copied.sha256 != doc.sha256  # Different content = different hash
+        assert copied.sha256 != doc.sha256
 
     def test_copy_with_sources_update(self):
         """Test updating sources during copy."""
-        doc = SampleFlowDoc.create(name="test.json", content="data", sources=["source1"])
+        doc = SampleFlowDoc.create(name="test.json", content="data", sources=("https://example.com/source1",))
 
-        copied = doc.model_copy(update={"sources": ["source2", "source3"]})
+        copied = doc.model_copy(update={"sources": ("https://example.com/source2", "https://example.com/source3")})
 
-        assert copied.sources == ["source2", "source3"]
+        assert copied.sources == ("https://example.com/source2", "https://example.com/source3")
         assert copied.sources != doc.sources
 
     def test_copy_preserves_type(self):
         """Test that model_copy preserves the document type."""
-        # Test with FlowDocument
         flow_doc = SampleFlowDoc.create(name="flow.json", content={})
         flow_copy = flow_doc.model_copy()
         assert isinstance(flow_copy, SampleFlowDoc)
-        assert flow_copy.is_flow
-
-        # Test with TemporaryDocument
-        temp_doc = TemporaryDocument.create(name="temp.json", content={})
-        temp_copy = temp_doc.model_copy()
-        assert isinstance(temp_copy, TemporaryDocument)
-        assert temp_copy.is_temporary
 
     def test_copy_with_invalid_name_for_restricted(self):
         """Test that model_copy doesn't validate name for restricted documents."""
         doc = RestrictedFlowDoc.create(name="config.json", content={})
 
-        # Valid name update should work
         copied = doc.model_copy(update={"name": "data.yaml"})
         assert copied.name == "data.yaml"
 
-        # Invalid name is allowed - model_copy doesn't validate
-        # (validation only happens on create/init)
+        # Invalid name is allowed — model_copy doesn't validate
         copied2 = doc.model_copy(update={"name": "invalid.txt"})
         assert copied2.name == "invalid.txt"
 
     def test_deep_copy(self):
         """Test deep copy of document."""
-        sources = ["source1", "source2"]
+        sources = ("https://example.com/source1", "https://example.com/source2")
         doc = SampleFlowDoc.create(name="test.json", content={"data": "value"}, sources=sources)
 
-        # Shallow copy (default)
         shallow = doc.model_copy(deep=False)
-        # Deep copy
         deep = doc.model_copy(deep=True)
 
-        # Both should have same values
         assert shallow.sources == sources
         assert deep.sources == sources
 
-        # Shallow copy shares the same sources list
-        assert shallow.sources is doc.sources
-        # Deep copy creates a new list
-        assert deep.sources is not doc.sources
+        # Both should be equal tuples (tuples are immutable so identity doesn't matter)
+        assert shallow.sources == doc.sources
+        assert deep.sources == doc.sources
 
     def test_copy_with_null_description(self):
         """Test copying with None description."""
@@ -140,7 +118,6 @@ class TestModelCopy:
 
         copied = doc.model_copy(update={"description": "New description"})
 
-        # Same content = same SHA256
         assert copied.sha256 == doc.sha256
         assert copied.id == doc.id
 
@@ -148,11 +125,9 @@ class TestModelCopy:
         """Test that SHA256 changes when content is changed."""
         doc = SampleFlowDoc.create(name="test.json", content={"data": "value"})
 
-        # model_copy requires bytes for content
         new_content = b'{"other": "value"}'
         copied = doc.model_copy(update={"content": new_content})
 
-        # Different content = different SHA256
         assert copied.sha256 != doc.sha256
         assert copied.id != doc.id
 
@@ -172,43 +147,42 @@ class TestModelCopy:
             name="original.json",
             content={"original": "data"},
             description="Original description",
-            sources=["source1"],
+            sources=("https://example.com/source1",),
         )
 
-        # model_copy requires bytes for content
         copied = doc.model_copy(
             update={
                 "name": "updated.json",
                 "content": b'{"updated": "data"}',
                 "description": "Updated description",
-                "sources": ["source2", "source3"],
+                "sources": ("https://example.com/source2", "https://example.com/source3"),
             }
         )
 
         assert copied.name == "updated.json"
         assert copied.content == b'{"updated": "data"}'
         assert copied.description == "Updated description"
-        assert copied.sources == ["source2", "source3"]
+        assert copied.sources == ("https://example.com/source2", "https://example.com/source3")
 
     def test_copy_immutability(self):
         """Test that original document remains unchanged after copy."""
         original_content = {"original": "data"}
-        original_sources = ["source1"]
+        original_sources = ("https://example.com/source1",)
 
         doc = SampleFlowDoc.create(
             name="test.json",
             content=original_content.copy(),
             description="Original",
-            sources=original_sources.copy(),
+            sources=original_sources,
         )
 
-        # Make copy with updates
+        # Make copy with updates — model_copy doesn't validate
         copied = doc.model_copy(
             update={
                 "name": "copied.json",
-                "content": {"new": "data"},
+                "content": b'{"new": "data"}',
                 "description": "Copied",
-                "sources": ["source2"],
+                "sources": ("https://example.com/source2",),
             }
         )
 
@@ -220,6 +194,6 @@ class TestModelCopy:
 
         # Copy should have new values
         assert copied.name == "copied.json"
-        assert copied.content == {"new": "data"}  # model_copy doesn't validate
+        assert copied.content == b'{"new": "data"}'
         assert copied.description == "Copied"
-        assert copied.sources == ["source2"]
+        assert copied.sources == ("https://example.com/source2",)

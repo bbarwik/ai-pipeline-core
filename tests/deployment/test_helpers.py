@@ -2,7 +2,7 @@
 
 # pyright: reportPrivateUsage=false
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
@@ -10,9 +10,7 @@ import httpx
 import pytest
 
 from ai_pipeline_core import (
-    DocumentList,
-    FlowConfig,
-    FlowDocument,
+    Document,
     FlowOptions,
     PipelineDeployment,
     pipeline_flow,
@@ -53,7 +51,7 @@ class TestExtractGenericParams:
 
     def test_extracts_options_and_result(self):
         """Test correct extraction from concrete subclass."""
-        options_type, result_type = extract_generic_params(SampleDeployment)
+        options_type, result_type = extract_generic_params(SampleDeployment, PipelineDeployment)
         assert options_type is FlowOptions
         assert result_type is SampleResult
 
@@ -63,7 +61,7 @@ class TestExtractGenericParams:
         class Plain:
             """Plain class."""
 
-        options_type, result_type = extract_generic_params(Plain)
+        options_type, result_type = extract_generic_params(Plain, PipelineDeployment)
         assert options_type is None
         assert result_type is None
 
@@ -77,7 +75,7 @@ class TestSendWebhook:
             flow_run_id=UUID(int=0),
             project_name="test",
             state="RUNNING",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             step=1,
             total_steps=3,
             flow_name="flow1",
@@ -106,7 +104,7 @@ class TestSendWebhook:
             flow_run_id=UUID(int=0),
             project_name="test",
             state="RUNNING",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             step=1,
             total_steps=1,
             flow_name="flow",
@@ -123,11 +121,8 @@ class TestSendWebhook:
             mock_client.post.side_effect = httpx.HTTPError("timeout")
             mock_client_cls.return_value = mock_client
 
-            with patch("ai_pipeline_core.deployment.helpers.asyncio.sleep"):
-                with pytest.raises(httpx.HTTPError):
-                    await send_webhook(
-                        "http://example.com/hook", payload, max_retries=2, retry_delay=0
-                    )
+            with patch("ai_pipeline_core.deployment.helpers.asyncio.sleep"), pytest.raises(httpx.HTTPError):
+                await send_webhook("http://example.com/hook", payload, max_retries=2, retry_delay=0)
 
             assert mock_client.post.call_count == 2
 
@@ -137,10 +132,6 @@ class TestDownloadDocuments:
 
     async def test_downloads_and_creates_documents(self):
         """Test successful document download."""
-
-        class SampleDoc(FlowDocument):
-            """Downloaded document."""
-
         mock_response = AsyncMock()
         mock_response.content = b"test content"
         mock_response.raise_for_status = lambda: None
@@ -152,7 +143,7 @@ class TestDownloadDocuments:
             mock_client.get.return_value = mock_response
             mock_client_cls.return_value = mock_client
 
-            docs = await download_documents(["http://example.com/file.txt"], SampleDoc)
+            docs = await download_documents(["http://example.com/file.txt"])
             assert len(docs) == 1
             assert docs[0].name == "file.txt"
 
@@ -163,11 +154,11 @@ class TestUploadDocuments:
     async def test_uploads_matching_documents(self):
         """Test upload with URL mapping."""
 
-        class UploadDoc(FlowDocument):
+        class UploadDoc(Document):
             """Document to upload."""
 
         doc = UploadDoc(name="output.txt", content=b"result data")
-        docs = DocumentList([doc])
+        docs = [doc]
         url_mapping = {"output.txt": "http://example.com/upload/output.txt"}
 
         mock_response = AsyncMock()
@@ -193,27 +184,18 @@ class SampleResult(DeploymentResult):
     report: str = ""
 
 
-class SampleInputDoc(FlowDocument):
+class SampleInputDoc(Document):
     """Input for testing."""
 
 
-class SampleOutputDoc(FlowDocument):
+class SampleOutputDoc(Document):
     """Output for testing."""
 
 
-class SampleConfig(FlowConfig):
-    """Flow config for testing."""
-
-    INPUT_DOCUMENT_TYPES = [SampleInputDoc]
-    OUTPUT_DOCUMENT_TYPE = SampleOutputDoc
-
-
-@pipeline_flow(config=SampleConfig)
-async def sample_flow(
-    project_name: str, documents: DocumentList, flow_options: FlowOptions
-) -> DocumentList:
+@pipeline_flow()
+async def sample_flow(project_name: str, documents: list[SampleInputDoc], flow_options: FlowOptions) -> list[SampleOutputDoc]:
     """Sample flow."""
-    return SampleConfig.create_and_validate_output([])
+    return []
 
 
 class SampleDeployment(PipelineDeployment[FlowOptions, SampleResult]):
@@ -222,8 +204,6 @@ class SampleDeployment(PipelineDeployment[FlowOptions, SampleResult]):
     flows = [sample_flow]  # type: ignore[reportAssignmentType]
 
     @staticmethod
-    def build_result(
-        project_name: str, documents: DocumentList, options: FlowOptions
-    ) -> SampleResult:
+    def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
         """Build result."""
         return SampleResult(success=True)

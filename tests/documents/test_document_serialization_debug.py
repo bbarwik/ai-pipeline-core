@@ -2,19 +2,15 @@
 
 import pytest
 
-from ai_pipeline_core.documents import FlowDocument, TaskDocument, TemporaryDocument
+from ai_pipeline_core.documents import Attachment, Document
 
 
-class DebugSampleDocument(FlowDocument):
+class DebugSampleDocument(Document):
     """Sample document for debug field testing."""
 
-    pass
 
-
-class VeryLongNamedDebugSampleFlowDocument(FlowDocument):
+class VeryLongNamedDebugSampleDocument(Document):
     """Sample document with long name for canonical key testing."""
-
-    pass
 
 
 @pytest.mark.asyncio
@@ -35,12 +31,11 @@ async def test_serialize_includes_debug_fields():
 @pytest.mark.asyncio
 async def test_canonical_name_strips_suffixes():
     """Test that canonical_name properly strips parent class suffixes."""
-    doc = VeryLongNamedDebugSampleFlowDocument(name="test.txt", content=b"test")
+    doc = VeryLongNamedDebugSampleDocument(name="test.txt", content=b"test")
     serialized = doc.serialize_model()
 
-    # Should strip FlowDocument and Document suffixes
     assert serialized["canonical_name"] == "very_long_named_debug_sample"
-    assert serialized["class_name"] == "VeryLongNamedDebugSampleFlowDocument"
+    assert serialized["class_name"] == "VeryLongNamedDebugSampleDocument"
 
 
 @pytest.mark.asyncio
@@ -71,22 +66,13 @@ async def test_from_dict_ignores_debug_fields():
 async def test_different_document_types_have_correct_debug_fields():
     """Test debug fields for different document types."""
 
-    class MyTaskDoc(TaskDocument):
+    class MyTaskDoc(Document):
         pass
 
-    # Test TaskDocument
     task_doc = MyTaskDoc(name="task.txt", content=b"task")
     task_serialized = task_doc.serialize_model()
-    assert (
-        task_serialized["canonical_name"] == "my_task_doc"
-    )  # Doesn't strip since it doesn't end with parent names
+    assert task_serialized["canonical_name"] == "my_task_doc"
     assert task_serialized["class_name"] == "MyTaskDoc"
-
-    # Test TemporaryDocument (cannot be subclassed, so use directly)
-    temp_doc = TemporaryDocument(name="temp.txt", content=b"temp")
-    temp_serialized = temp_doc.serialize_model()
-    assert temp_serialized["canonical_name"] == "temporary"  # No suffixes to strip
-    assert temp_serialized["class_name"] == "TemporaryDocument"
 
 
 @pytest.mark.asyncio
@@ -96,7 +82,7 @@ async def test_roundtrip_preserves_content_ignores_debug():
         name="test.txt",
         content=b"test content",
         description="Test description",
-        sources=["source1", "source2"],
+        sources=("https://example.com/source1", "https://example.com/source2"),
     )
 
     # Serialize
@@ -119,3 +105,79 @@ async def test_roundtrip_preserves_content_ignores_debug():
     re_serialized = restored.serialize_model()
     assert re_serialized["canonical_name"] == "debug_sample"
     assert re_serialized["class_name"] == "DebugSampleDocument"
+
+
+# --- Attachment serialization metadata tests (Part 4) ---
+
+
+JPEG_HEADER = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+PDF_HEADER = b"%PDF-1.4 " + b"\x00" * 100
+
+
+@pytest.mark.asyncio
+async def test_serialize_attachment_includes_mime_type_and_size():
+    """Test that serialized attachments include mime_type and size keys."""
+    att = Attachment(name="screenshot.jpg", content=JPEG_HEADER)
+    doc = DebugSampleDocument(name="report.txt", content=b"text", attachments=(att,))
+    serialized = doc.serialize_model()
+
+    assert len(serialized["attachments"]) == 1
+    att_dict = serialized["attachments"][0]
+    assert "mime_type" in att_dict
+    assert "size" in att_dict
+    assert att_dict["mime_type"] == att.mime_type
+    assert att_dict["size"] == att.size
+
+
+@pytest.mark.asyncio
+async def test_serialize_text_attachment_metadata():
+    """Test mime_type and size for a text attachment."""
+    content = b"hello world"
+    att = Attachment(name="notes.txt", content=content)
+    doc = DebugSampleDocument(name="report.txt", content=b"body", attachments=(att,))
+    serialized = doc.serialize_model()
+
+    att_dict = serialized["attachments"][0]
+    assert att_dict["content_encoding"] == "utf-8"
+    assert att_dict["mime_type"] == "text/plain"
+    assert att_dict["size"] == len(content)
+
+
+@pytest.mark.asyncio
+async def test_serialize_pdf_attachment_metadata():
+    """Test mime_type and size for a PDF attachment."""
+    att = Attachment(name="doc.pdf", content=PDF_HEADER)
+    doc = DebugSampleDocument(name="report.txt", content=b"body", attachments=(att,))
+    serialized = doc.serialize_model()
+
+    att_dict = serialized["attachments"][0]
+    assert att_dict["content_encoding"] == "base64"
+    assert att_dict["mime_type"] == "application/pdf"
+    assert att_dict["size"] == len(PDF_HEADER)
+
+
+@pytest.mark.asyncio
+async def test_serialize_empty_attachments():
+    """Test that empty attachments serialize to an empty list."""
+    doc = DebugSampleDocument(name="report.txt", content=b"body")
+    serialized = doc.serialize_model()
+    assert serialized["attachments"] == []
+
+
+@pytest.mark.asyncio
+async def test_roundtrip_with_attachments_ignores_extra_fields():
+    """Test that from_dict ignores mime_type and size in attachment dicts."""
+    att = Attachment(name="screenshot.jpg", content=JPEG_HEADER)
+    doc = DebugSampleDocument(name="report.txt", content=b"body", attachments=(att,))
+
+    serialized = doc.serialize_model()
+    # Verify mime_type and size are present before roundtrip
+    assert "mime_type" in serialized["attachments"][0]
+    assert "size" in serialized["attachments"][0]
+
+    restored = DebugSampleDocument.from_dict(serialized)
+    assert restored.name == doc.name
+    assert restored.content == doc.content
+    assert len(restored.attachments) == 1
+    assert restored.attachments[0].name == att.name
+    assert restored.attachments[0].content == att.content

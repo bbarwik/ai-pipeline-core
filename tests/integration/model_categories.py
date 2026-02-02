@@ -7,7 +7,7 @@ from ai_pipeline_core.llm.model_types import ModelName
 # Get all models from the Literal type
 # ModelName is now Literal[...] | str, so we need to extract the Literal part
 ModelNameTuple = tuple[str, ...]
-model_name_args = get_args(ModelName)  # Returns (Literal[...], str)
+model_name_args = get_args(ModelName.__value__)  # Returns (Literal[...], str)
 
 if model_name_args and hasattr(model_name_args[0], "__args__"):
     # First element is the Literal, get its args

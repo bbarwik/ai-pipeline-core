@@ -4,8 +4,12 @@ import json
 
 from pydantic import BaseModel
 
-from ai_pipeline_core.documents import TemporaryDocument
+from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm import AIMessages, ModelOptions
+
+
+class _TestDoc(Document):
+    pass
 
 
 class SampleResponse(BaseModel):
@@ -36,8 +40,7 @@ class TestModelOptionsMutation:
         # This test will FAIL after we fix the bug, which is what we want
         # Current buggy behavior: options IS mutated
         assert options.response_format == SampleResponse, (
-            "TEST SETUP ISSUE: This test expects the bug to exist. "
-            "If this fails, the code might already be fixed!"
+            "TEST SETUP ISSUE: This test expects the bug to exist. If this fails, the code might already be fixed!"
         )
 
         # Reset for next test
@@ -55,8 +58,7 @@ class TestModelOptionsMutation:
 
         # Original should NOT be mutated
         assert original_options.response_format is None, (
-            "Original ModelOptions was mutated even after model_copy()! "
-            "This indicates Pydantic model_copy() is not working correctly."
+            "Original ModelOptions was mutated even after model_copy()! This indicates Pydantic model_copy() is not working correctly."
         )
 
         # Copy should have the new value
@@ -74,9 +76,7 @@ class TestModelOptionsMutation:
         options2.response_format = AnotherResponse  # type: ignore
 
         # options1 is also modified because they're the same object
-        assert options1.response_format == AnotherResponse, (
-            "TEST SETUP ISSUE: Assignment should create reference, not copy"
-        )
+        assert options1.response_format == AnotherResponse, "TEST SETUP ISSUE: Assignment should create reference, not copy"
         assert options1 is options2, "options1 and options2 should be the same object"
 
 
@@ -85,7 +85,7 @@ class TestAIMessagesToTracingLogMutation:
 
     def test_serialize_model_returns_new_dict_each_time(self):
         """Verify that Document.serialize_model() returns a fresh dict, not a shared reference."""
-        doc = TemporaryDocument(name="test.txt", content=b"test content")
+        doc = _TestDoc(name="test.txt", content=b"test content")
 
         # Get two serializations
         serialized1 = doc.serialize_model()
@@ -93,14 +93,11 @@ class TestAIMessagesToTracingLogMutation:
 
         # They should be equal but not the same object
         assert serialized1 == serialized2
-        assert serialized1 is not serialized2, (
-            "serialize_model() is returning the same dict instance! "
-            "It should return a new dict each time."
-        )
+        assert serialized1 is not serialized2, "serialize_model() is returning the same dict instance! It should return a new dict each time."
 
     def test_to_tracing_log_does_not_mutate_document(self):
         """Verify that AIMessages.to_tracing_log() doesn't mutate the underlying documents."""
-        doc = TemporaryDocument(name="test.txt", content=b"test content")
+        doc = _TestDoc(name="test.txt", content=b"test content")
 
         # Get original serialization
         original_serialized = doc.serialize_model()
@@ -115,14 +112,11 @@ class TestAIMessagesToTracingLogMutation:
 
         # Verify the document's serialize_model() still includes 'content'
         new_serialized = doc.serialize_model()
-        assert "content" in new_serialized, (
-            "Document.serialize_model() no longer includes 'content'! "
-            "to_tracing_log() may have mutated shared state."
-        )
+        assert "content" in new_serialized, "Document.serialize_model() no longer includes 'content'! to_tracing_log() may have mutated shared state."
 
     def test_to_tracing_log_content_field_removed_from_output(self):
         """Verify that to_tracing_log properly removes 'content' from the output."""
-        doc = TemporaryDocument(name="test.txt", content=b"test content")
+        doc = _TestDoc(name="test.txt", content=b"test content")
         messages = AIMessages([doc])
 
         tracing_logs = messages.to_tracing_log()
@@ -140,7 +134,7 @@ class TestAIMessagesToTracingLogMutation:
 
     def test_multiple_to_tracing_log_calls_are_independent(self):
         """Verify multiple calls to to_tracing_log don't interfere with each other."""
-        doc = TemporaryDocument(name="test.txt", content=b"test content")
+        doc = _TestDoc(name="test.txt", content=b"test content")
         messages = AIMessages([doc])
 
         # Call to_tracing_log multiple times

@@ -1,0 +1,16 @@
+{
+    "extends": "./pyproject.toml",
+    "include": ["tests"],
+    "exclude": ["ai_pipeline_core"],
+    "reportMissingParameterType": false,
+    "reportMissingImports": false,
+    "reportMissingModuleSource": false,
+    "reportMissingTypeStubs": false,
+    "reportArgumentType": "warning",
+    "reportAttributeAccessIssue": "warning",
+    "reportCallIssue": false,
+    "reportPrivateUsage": false,
+    "reportUnusedFunction": false,
+    "reportUnusedVariable": false,
+    "reportUnnecessaryTypeIgnoreComment": false
+}

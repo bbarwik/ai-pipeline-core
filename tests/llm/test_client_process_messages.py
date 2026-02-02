@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from ai_pipeline_core.llm import AIMessages
 from ai_pipeline_core.llm.client import _process_messages
-from tests.test_helpers import ConcreteFlowDocument, create_test_model_response
+from tests.support.helpers import ConcreteDocument, create_test_model_response
 
 
 class TestProcessMessages:
@@ -17,9 +17,7 @@ class TestProcessMessages:
 
     def test_system_prompt_only(self):
         """Test processing with only system prompt."""
-        result = _process_messages(
-            context=AIMessages(), messages=AIMessages(), system_prompt="You are a helpful assistant"
-        )
+        result = _process_messages(context=AIMessages(), messages=AIMessages(), system_prompt="You are a helpful assistant")
 
         assert len(result) == 1
         assert result[0]["role"] == "system"
@@ -90,7 +88,7 @@ class TestProcessMessages:
     def test_full_message_ordering(self):
         """Test complete message ordering with all components."""
         # Create mixed context
-        doc = ConcreteFlowDocument(name="context.txt", content=b"Document content")
+        doc = ConcreteDocument(name="context.txt", content=b"Document content")
         context_response = create_test_model_response(
             id="ctx-resp",
             object="chat.completion",
@@ -109,9 +107,7 @@ class TestProcessMessages:
         # Regular messages
         messages = AIMessages(["User question", "Follow-up"])
 
-        result = _process_messages(
-            context=context, messages=messages, system_prompt="System instructions"
-        )
+        result = _process_messages(context=context, messages=messages, system_prompt="System instructions")
 
         # Check ordering: system -> context (all cached) -> messages (no cache)
         assert result[0]["role"] == "system"

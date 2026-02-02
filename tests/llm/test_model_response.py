@@ -4,8 +4,8 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from openai.types.chat.chat_completion import Choice
 from pydantic import BaseModel
 
-from ai_pipeline_core.llm import ModelResponse
-from tests.test_helpers import create_test_model_response, create_test_structured_model_response
+from ai_pipeline_core.llm import Citation, ModelResponse
+from tests.support.helpers import create_test_model_response, create_test_structured_model_response
 
 
 class TestModelResponse:
@@ -136,8 +136,7 @@ class TestModelResponse:
         metadata = response.get_laminar_metadata()
 
         assert metadata["gen_ai.response.id"] == "resp-id"
-        assert metadata["gen_ai.response.model"] == "gpt-5.1"
-        assert metadata["get_ai.system"] == "litellm"
+        assert metadata["gen_ai.system"] == "litellm"
 
     def test_get_laminar_metadata_with_usage(self):
         """Test Laminar metadata with usage information."""
@@ -251,6 +250,102 @@ class TestModelResponse:
         assert response.content == "Visible content"
 
 
+class TestCitations:
+    """Test citations property."""
+
+    def test_citations_empty_when_no_annotations(self):
+        """Test citations returns empty list when no annotations present."""
+        response = create_test_model_response(
+            id="test",
+            object="chat.completion",
+            created=1234567890,
+            model="gpt-5.1",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "No citations here"},
+                    "finish_reason": "stop",
+                }
+            ],
+        )
+        assert response.citations == []
+
+    def test_citations_from_annotations(self):
+        """Test citations are extracted from url_citation annotations."""
+        response = create_test_model_response(
+            id="test",
+            object="chat.completion",
+            created=1234567890,
+            model="sonar-pro-search",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Some search result",
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "url_citation": {
+                                    "end_index": 0,
+                                    "start_index": 0,
+                                    "title": "Example Page",
+                                    "url": "https://example.com",
+                                },
+                            },
+                            {
+                                "type": "url_citation",
+                                "url_citation": {
+                                    "end_index": 0,
+                                    "start_index": 0,
+                                    "title": "Another Page",
+                                    "url": "https://another.com",
+                                },
+                            },
+                        ],
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        )
+        citations = response.citations
+        assert len(citations) == 2
+        assert citations[0] == Citation(title="Example Page", url="https://example.com")
+        assert citations[1] == Citation(title="Another Page", url="https://another.com")
+
+    def test_citations_filters_unsupported_annotation_types(self):
+        """Test that non-url_citation annotations are filtered out in __init__."""
+        response = create_test_model_response(
+            id="test",
+            object="chat.completion",
+            created=1234567890,
+            model="grok-4.1-fast-search",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Result",
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "url_citation": {
+                                    "end_index": 0,
+                                    "start_index": 0,
+                                    "title": "Valid",
+                                    "url": "https://valid.com",
+                                },
+                            },
+                        ],
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        )
+        assert len(response.citations) == 1
+        assert response.citations[0].url == "https://valid.com"
+
+
 class TestStructuredModelResponse:
     """Test StructuredModelResponse class."""
 
@@ -320,4 +415,4 @@ class TestStructuredModelResponse:
 
         # Should support metadata extraction
         metadata = response.get_laminar_metadata()
-        assert metadata["gen_ai.response.model"] == "gpt-5.1"
+        assert metadata["gen_ai.response.id"] == "test"

@@ -8,7 +8,7 @@ from prefect.logging import get_logger
 from ai_pipeline_core.llm import AIMessages, ModelOptions, generate
 from ai_pipeline_core.llm.model_types import ModelName
 from ai_pipeline_core.settings import settings
-from tests.test_helpers import ConcreteFlowDocument
+from tests.support.helpers import ConcreteDocument
 
 from .model_categories import CORE_MODELS, SEARCH_MODELS
 
@@ -40,10 +40,7 @@ async def test_llm_model_basic_math(model: ModelName):
     logger.info(f"Model {model} response (math):\n{response.content}")
 
     assert response.content is not None
-    assert "109" in response.content, (
-        f"Model {model} did not return correct answer for math question.\n"
-        f"Response: {response.content}"
-    )
+    assert "109" in response.content, f"Model {model} did not return correct answer for math question.\nResponse: {response.content}"
 
 
 @pytest.mark.asyncio
@@ -107,8 +104,7 @@ async def test_llm_model_no_search_feature(model: ModelName):
     # If they don't express inability, they shouldn't have the specific names
     if not has_inability:
         assert not any(name in content_lower for name in specific_names), (
-            f"Model {model} mentioned specific 2025 names without search capability.\n"
-            f"Response: {response.content}"
+            f"Model {model} mentioned specific 2025 names without search capability.\nResponse: {response.content}"
         )
 
 
@@ -117,10 +113,8 @@ async def test_llm_model_no_search_feature(model: ModelName):
 async def test_llm_model_text_file_attachment(model: ModelName):
     """Test models with text file attachments."""
     # Create documents with text content
-    doc1 = ConcreteFlowDocument(name="file1.md", content=b"This file contains number 121")
-    doc2 = ConcreteFlowDocument(
-        name="file2.md", content=b"This file contains number eight hundred twenty two"
-    )
+    doc1 = ConcreteDocument(name="file1.md", content=b"This file contains number 121")
+    doc2 = ConcreteDocument(name="file2.md", content=b"This file contains number eight hundred twenty two")
 
     messages = AIMessages([
         "There will be 2 files included and then a task in the last message",
@@ -133,25 +127,15 @@ async def test_llm_model_text_file_attachment(model: ModelName):
     logger.info(f"Model {model} response (file attachment):\n{response.content}")
 
     assert response.content is not None
-    assert "943" in response.content, (
-        f"Model {model} did not return correct sum for file attachment test.\n"
-        f"Response: {response.content}"
-    )
+    assert "943" in response.content, f"Model {model} did not return correct sum for file attachment test.\nResponse: {response.content}"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", CORE_MODELS)
 async def test_llm_model_image_file_attachment(model: ModelName):
     """Test models with image file attachments."""
-    if model == "grok-4.1-fast":
-        pytest.skip("grok-4.1-fast does not support image attachments")
-
-    # Load the test image
     test_image_path = Path("tests/test_data/test_image.png")
-    if not test_image_path.exists():
-        pytest.skip(f"Test image not found at {test_image_path}")
-
-    image_doc = ConcreteFlowDocument(name="test_image.png", content=test_image_path.read_bytes())
+    image_doc = ConcreteDocument(name="test_image.png", content=test_image_path.read_bytes())
 
     messages = AIMessages([
         "There will be an image included and then a task in the last message",
@@ -183,25 +167,15 @@ async def test_llm_model_image_file_attachment(model: ModelName):
         "text",
     ]
 
-    assert any(word in content_lower for word in keywords), (
-        f"Model {model} did not provide a reasonable image description.\n"
-        f"Response: {response.content}"
-    )
+    assert any(word in content_lower for word in keywords), f"Model {model} did not provide a reasonable image description.\nResponse: {response.content}"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", CORE_MODELS)
 async def test_llm_model_pdf_file_attachment(model: ModelName):
     """Test models with PDF file attachments."""
-    if model in ["grok-4.1-fast", "grok-4.1-fast"]:
-        pytest.skip(f"{model} does not support PDF attachments")
-
-    # Load the test PDF
     test_pdf_path = Path("tests/test_data/test_pdf.pdf")
-    if not test_pdf_path.exists():
-        pytest.skip(f"Test PDF not found at {test_pdf_path}")
-
-    pdf_doc = ConcreteFlowDocument(name="test_pdf.pdf", content=test_pdf_path.read_bytes())
+    pdf_doc = ConcreteDocument(name="test_pdf.pdf", content=test_pdf_path.read_bytes())
 
     messages = AIMessages([
         "There will be a PDF file included and then a task in the last message",
@@ -218,10 +192,7 @@ async def test_llm_model_pdf_file_attachment(model: ModelName):
     # Expected keywords from the PDF content
     keywords = ["yukon", "education", "canada", "territory", "school", "learning"]
 
-    assert any(word in content_lower for word in keywords), (
-        f"Model {model} did not mention expected PDF content keywords.\n"
-        f"Response: {response.content}"
-    )
+    assert any(word in content_lower for word in keywords), f"Model {model} did not mention expected PDF content keywords.\nResponse: {response.content}"
 
 
 @pytest.mark.asyncio
@@ -231,9 +202,7 @@ async def test_llm_model_conversation_context(model: ModelName):
     # First message
     messages1 = AIMessages(["My name is Alice. Remember this name."])
 
-    response1 = await generate(
-        model=model, messages=messages1, options=ModelOptions(max_completion_tokens=1000)
-    )
+    response1 = await generate(model=model, messages=messages1, options=ModelOptions(max_completion_tokens=1000))
 
     # Follow-up with context
     messages2 = AIMessages([
@@ -242,16 +211,12 @@ async def test_llm_model_conversation_context(model: ModelName):
         "What is my name?",
     ])
 
-    response2 = await generate(
-        model=model, messages=messages2, options=ModelOptions(max_completion_tokens=1000)
-    )
+    response2 = await generate(model=model, messages=messages2, options=ModelOptions(max_completion_tokens=1000))
 
     logger.info(f"Model {model} response (context):\n{response2.content}")
 
     assert response2.content is not None
-    assert "alice" in response2.content.lower(), (
-        f"Model {model} did not remember the name from context.\nResponse: {response2.content}"
-    )
+    assert "alice" in response2.content.lower(), f"Model {model} did not remember the name from context.\nResponse: {response2.content}"
 
 
 @pytest.mark.asyncio
@@ -268,6 +233,4 @@ async def test_llm_model_with_options(model: ModelName):
     assert response.content is not None
     # Check that response is reasonably short (respecting max_tokens)
     word_count = len(response.content.split())
-    assert word_count <= 10, (
-        f"Model {model} response too long despite max_tokens limit.\nResponse: {response.content}"
-    )
+    assert word_count <= 10, f"Model {model} response too long despite max_tokens limit.\nResponse: {response.content}"

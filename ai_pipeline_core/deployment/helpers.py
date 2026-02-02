@@ -7,10 +7,14 @@ from typing import Any, Literal, TypedDict
 import httpx
 
 from ai_pipeline_core.deployment.contract import CompletedRun, FailedRun, ProgressRun
-from ai_pipeline_core.documents import Document, DocumentList, FlowDocument
+from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
+
+
+class DownloadedDocument(Document):
+    """Concrete document for downloaded content."""
 
 
 class StatusPayload(TypedDict):
@@ -22,24 +26,22 @@ class StatusPayload(TypedDict):
     step: int
     total_steps: int
     flow_name: str
-    state: str  # RUNNING, COMPLETED, FAILED, CRASHED, CANCELLED
+    state: str
     state_name: str
     timestamp: str
 
 
 def class_name_to_deployment_name(class_name: str) -> str:
-    """Convert PascalCase to kebab-case: ResearchPipeline → research-pipeline."""
+    """Convert PascalCase to kebab-case: ResearchPipeline -> research-pipeline."""
     name = re.sub(r"(?<!^)(?=[A-Z])", "-", class_name)
     return name.lower()
 
 
-def extract_generic_params(cls: type) -> tuple[type | None, type | None]:
-    """Extract TOptions and TResult from PipelineDeployment generic args."""
-    from ai_pipeline_core.deployment.base import PipelineDeployment  # noqa: PLC0415
-
+def extract_generic_params(cls: type, base_class: type) -> tuple[type | None, type | None]:
+    """Extract TOptions and TResult from a generic base class's args."""
     for base in getattr(cls, "__orig_bases__", []):
         origin = getattr(base, "__origin__", None)
-        if origin is PipelineDeployment:
+        if origin is base_class:
             args = getattr(base, "__args__", ())
             if len(args) == 2:
                 return args[0], args[1]
@@ -47,22 +49,19 @@ def extract_generic_params(cls: type) -> tuple[type | None, type | None]:
     return None, None
 
 
-async def download_documents(
-    urls: list[str],
-    document_type: type[FlowDocument],
-) -> DocumentList:
-    """Download documents from URLs and return as DocumentList."""
+async def download_documents(urls: list[str]) -> list[Document]:
+    """Download documents from URLs."""
     documents: list[Document] = []
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         for url in urls:
             response = await client.get(url)
             response.raise_for_status()
             filename = url.split("/")[-1].split("?")[0] or "document"
-            documents.append(document_type(name=filename, content=response.content))
-    return DocumentList(documents)
+            documents.append(DownloadedDocument(name=filename, content=response.content))
+    return documents
 
 
-async def upload_documents(documents: DocumentList, url_mapping: dict[str, str]) -> None:
+async def upload_documents(documents: list[Document], url_mapping: dict[str, str]) -> None:
     """Upload documents to their mapped URLs."""
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         for doc in documents:
@@ -94,5 +93,5 @@ async def send_webhook(
                 logger.warning(f"Webhook retry {attempt + 1}/{max_retries}: {e}")
                 await asyncio.sleep(retry_delay)
             else:
-                logger.error(f"Webhook failed after {max_retries} attempts: {e}")
+                logger.exception(f"Webhook failed after {max_retries} attempts")
                 raise

@@ -6,12 +6,12 @@ import pytest
 from PIL import Image
 
 from ai_pipeline_core import (
+    Document,
     ImagePart,
     ImagePreset,
     ImageProcessingConfig,
     ImageProcessingError,
     ProcessedImage,
-    TemporaryDocument,
     process_image,
     process_image_to_documents,
 )
@@ -21,16 +21,16 @@ from ai_pipeline_core import (
 # ---------------------------------------------------------------------------
 
 
-def make_image_bytes(
-    width: int, height: int, fmt: str = "PNG", color: tuple[int, int, int] = (128, 128, 128)
-) -> bytes:
+def make_image_bytes(width: int, height: int, fmt: str = "PNG", color: tuple[int, int, int] = (128, 128, 128)) -> bytes:
     buf = BytesIO()
     Image.new("RGB", (width, height), color).save(buf, format=fmt)
     return buf.getvalue()
 
 
-def make_document(width: int, height: int) -> TemporaryDocument:
-    return TemporaryDocument.create(name="screenshot.png", content=make_image_bytes(width, height))
+def make_document(width: int, height: int) -> Document:
+    from ai_pipeline_core.images import ImageDocument
+
+    return ImageDocument(name="screenshot.png", content=make_image_bytes(width, height))
 
 
 # ---------------------------------------------------------------------------
@@ -115,10 +115,7 @@ class TestProcessImageSmall:
 
         random.seed(42)
         img = Image.new("RGB", (1200, 900))
-        img.putdata([
-            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-            for _ in range(1200 * 900)
-        ])
+        img.putdata([(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for _ in range(1200 * 900)])
         buf = BytesIO()
         img.save(buf, format="PNG")
         raw = buf.getvalue()
@@ -272,7 +269,7 @@ class TestProcessImageErrors:
 
 
 class TestProcessImageToDocuments:
-    """Tests for the TemporaryDocument convenience wrapper."""
+    """Tests for the Document convenience wrapper."""
 
     def test_single_part_naming(self):
         docs = process_image_to_documents(make_image_bytes(800, 600))
@@ -292,16 +289,16 @@ class TestProcessImageToDocuments:
         docs = process_image_to_documents(make_image_bytes(800, 600), name_prefix="screenshot")
         assert docs[0].name == "screenshot.jpg"
 
-    def test_returns_temporary_documents(self):
+    def test_returns_image_documents(self):
         docs = process_image_to_documents(make_image_bytes(800, 600))
-        assert all(isinstance(d, TemporaryDocument) for d in docs)
+        assert all(isinstance(d, Document) for d in docs)
 
     def test_sources_propagated(self):
-        docs = process_image_to_documents(make_image_bytes(800, 600), sources=["ref1", "ref2"])
+        docs = process_image_to_documents(make_image_bytes(800, 600), sources=("https://example.com/ref1", "https://example.com/ref2"))
         for doc in docs:
             assert doc.sources is not None
-            assert "ref1" in doc.sources
-            assert "ref2" in doc.sources
+            assert "https://example.com/ref1" in doc.sources
+            assert "https://example.com/ref2" in doc.sources
 
     def test_document_input_adds_sha256(self):
         doc = make_document(800, 600)
@@ -311,12 +308,8 @@ class TestProcessImageToDocuments:
             assert doc.sha256 in d.sources
 
     def test_preset_forwarded(self):
-        docs_gemini = process_image_to_documents(
-            make_image_bytes(1920, 1080), preset=ImagePreset.GEMINI
-        )
-        docs_claude = process_image_to_documents(
-            make_image_bytes(1920, 1080), preset=ImagePreset.CLAUDE
-        )
+        docs_gemini = process_image_to_documents(make_image_bytes(1920, 1080), preset=ImagePreset.GEMINI)
+        docs_claude = process_image_to_documents(make_image_bytes(1920, 1080), preset=ImagePreset.CLAUDE)
         # Claude trims 1920px to 1568px, Gemini doesn't
         gemini_img = Image.open(BytesIO(docs_gemini[0].content))
         claude_img = Image.open(BytesIO(docs_claude[0].content))

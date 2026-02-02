@@ -18,9 +18,7 @@ from ai_pipeline_core.images._processing import (
 # ---------------------------------------------------------------------------
 
 
-def make_rgb_image(
-    width: int, height: int, color: tuple[int, int, int] = (128, 128, 128)
-) -> Image.Image:
+def make_rgb_image(width: int, height: int, color: tuple[int, int, int] = (128, 128, 128)) -> Image.Image:
     return Image.new("RGB", (width, height), color)
 
 
@@ -39,9 +37,7 @@ class TestPlanSplit:
     """Tests for the pure plan_split function."""
 
     def test_small_image_no_split(self):
-        plan = plan_split(
-            800, 600, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20
-        )
+        plan = plan_split(800, 600, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20)
         assert plan.num_parts == 1
         assert plan.step_y == 0
         assert plan.trim_width is None
@@ -50,32 +46,24 @@ class TestPlanSplit:
         assert plan.warnings == []
 
     def test_tall_image_splits(self):
-        plan = plan_split(
-            1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20
-        )
+        plan = plan_split(1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20)
         assert plan.num_parts > 1
         assert plan.step_y > 0
         assert plan.trim_width is None
 
     def test_wide_image_trimmed(self):
-        plan = plan_split(
-            5000, 600, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20
-        )
+        plan = plan_split(5000, 600, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20)
         assert plan.num_parts == 1
         assert plan.trim_width is not None
         assert plan.trim_width <= 3000
 
     def test_wide_and_tall(self):
-        plan = plan_split(
-            5000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20
-        )
+        plan = plan_split(5000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20)
         assert plan.num_parts > 1
         assert plan.trim_width is not None
 
     def test_exact_max_dimension(self):
-        plan = plan_split(
-            3000, 3000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20
-        )
+        plan = plan_split(3000, 3000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20)
         assert plan.num_parts == 1
         assert plan.trim_width is None
 
@@ -94,33 +82,25 @@ class TestPlanSplit:
         assert "Reducing to 5 parts" in plan.warnings[0]
 
     def test_max_parts_1_handles_edge_case(self):
-        plan = plan_split(
-            1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=1
-        )
+        plan = plan_split(1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=1)
         assert plan.num_parts == 1
         assert plan.step_y == 0
 
     def test_zero_overlap(self):
-        plan = plan_split(
-            1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.0, max_parts=20
-        )
+        plan = plan_split(1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.0, max_parts=20)
         assert plan.num_parts > 1
         # With 0 overlap, step equals tile height
         assert plan.step_y == plan.tile_height
 
     def test_max_overlap(self):
-        plan = plan_split(
-            1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.5, max_parts=20
-        )
+        plan = plan_split(1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.5, max_parts=20)
         assert plan.num_parts > 1
         # With 50% overlap, step is half of tile height
         assert plan.step_y == plan.tile_height // 2
 
     def test_max_pixels_constrains_tile_size(self):
         # With very low max_pixels, tile must shrink
-        plan = plan_split(
-            1000, 1000, max_dimension=3000, max_pixels=500_000, overlap_fraction=0.2, max_parts=20
-        )
+        plan = plan_split(1000, 1000, max_dimension=3000, max_pixels=500_000, overlap_fraction=0.2, max_parts=20)
         assert plan.tile_width <= 1000
         assert plan.tile_height <= 1000
         # tile_width * tile_height should respect max_pixels
@@ -128,9 +108,7 @@ class TestPlanSplit:
 
     def test_claude_preset_constraints(self):
         # Claude: 1568px, 1.15M pixels
-        plan = plan_split(
-            1920, 1080, max_dimension=1568, max_pixels=1_150_000, overlap_fraction=0.2, max_parts=20
-        )
+        plan = plan_split(1920, 1080, max_dimension=1568, max_pixels=1_150_000, overlap_fraction=0.2, max_parts=20)
         assert plan.tile_width <= 1568
         assert plan.trim_width is not None  # 1920 > 1568
 
@@ -223,9 +201,7 @@ class TestExecuteSplit:
 
     def test_single_part_no_split(self):
         img = make_rgb_image(800, 600)
-        plan = SplitPlan(
-            tile_width=800, tile_height=600, step_y=0, num_parts=1, trim_width=None, warnings=[]
-        )
+        plan = SplitPlan(tile_width=800, tile_height=600, step_y=0, num_parts=1, trim_width=None, warnings=[])
         parts = execute_split(img, plan, jpeg_quality=60)
         assert len(parts) == 1
         data, w, h, sy, sh = parts[0]
@@ -237,15 +213,13 @@ class TestExecuteSplit:
 
     def test_multi_part_split(self):
         img = make_rgb_image(1000, 6000)
-        plan = plan_split(
-            1000, 6000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20
-        )
+        plan = plan_split(1000, 6000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20)
         parts = execute_split(img, plan, jpeg_quality=60)
         assert len(parts) == plan.num_parts
         assert len(parts) > 1
 
         # All parts should have valid JPEG data
-        for data, w, h, sy, sh in parts:
+        for data, w, h, _sy, _sh in parts:
             assert len(data) > 0
             assert w == 1000
             assert h > 0
@@ -260,9 +234,7 @@ class TestExecuteSplit:
 
     def test_trim_width(self):
         img = make_rgb_image(5000, 600)
-        plan = SplitPlan(
-            tile_width=3000, tile_height=600, step_y=0, num_parts=1, trim_width=3000, warnings=[]
-        )
+        plan = SplitPlan(tile_width=3000, tile_height=600, step_y=0, num_parts=1, trim_width=3000, warnings=[])
         parts = execute_split(img, plan, jpeg_quality=60)
         assert len(parts) == 1
         _, w, h, _, _ = parts[0]
@@ -271,9 +243,7 @@ class TestExecuteSplit:
 
     def test_rgba_converted(self):
         img = Image.new("RGBA", (800, 600), (128, 128, 128, 200))
-        plan = SplitPlan(
-            tile_width=800, tile_height=600, step_y=0, num_parts=1, trim_width=None, warnings=[]
-        )
+        plan = SplitPlan(tile_width=800, tile_height=600, step_y=0, num_parts=1, trim_width=None, warnings=[])
         parts = execute_split(img, plan, jpeg_quality=60)
         assert len(parts) == 1
         # Should produce valid JPEG despite RGBA input
@@ -283,9 +253,7 @@ class TestExecuteSplit:
     def test_overlap_coverage(self):
         """Verify that with overlap, the entire image is covered."""
         img = make_rgb_image(1000, 7000)
-        plan = plan_split(
-            1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20
-        )
+        plan = plan_split(1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20)
         parts = execute_split(img, plan, jpeg_quality=60)
 
         # First part starts at 0

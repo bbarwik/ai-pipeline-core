@@ -3,7 +3,7 @@
 import pytest
 
 from ai_pipeline_core.llm import AIMessages
-from tests.test_helpers import ConcreteFlowDocument, create_test_model_response
+from tests.support.helpers import ConcreteDocument, create_test_model_response
 
 
 class TestAIMessagesApproximateTokensCount:
@@ -61,7 +61,7 @@ class TestAIMessagesApproximateTokensCount:
 
     def test_text_document(self):
         """Test token count for text document."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"This is document content")
+        doc = ConcreteDocument(name="test.txt", content=b"This is document content")
         messages = AIMessages([doc])
         count = messages.approximate_tokens_count
         assert count > 0
@@ -69,10 +69,10 @@ class TestAIMessagesApproximateTokensCount:
     def test_non_text_document(self):
         """Test token count for non-text document (uses fixed estimate)."""
         # Create a document with binary content (will be detected as non-text)
-        doc = ConcreteFlowDocument(name="test.bin", content=b"\x89PNG\r\n\x1a\n")
+        doc = ConcreteDocument(name="test.png", content=b"\x89PNG\r\n\x1a\n")
         messages = AIMessages([doc])
         count = messages.approximate_tokens_count
-        assert count == 1024  # Fixed estimate for non-text
+        assert count == 1080  # Fixed estimate for image documents
 
     def test_model_response_content(self):
         """Test token count for model response."""
@@ -125,7 +125,7 @@ class TestAIMessagesApproximateTokensCount:
 
     def test_mixed_message_types(self):
         """Test token count with all message types mixed."""
-        doc = ConcreteFlowDocument(name="test.txt", content=b"Document content here")
+        doc = ConcreteDocument(name="test.txt", content=b"Document content here")
         response = create_test_model_response(
             id="test",
             object="chat.completion",
@@ -168,14 +168,14 @@ class TestAIMessagesApproximateTokensCount:
     def test_very_long_document(self):
         """Test token count for very long document."""
         long_content = b"This is a very long document. " * 1000
-        doc = ConcreteFlowDocument(name="long.txt", content=long_content)
+        doc = ConcreteDocument(name="long.txt", content=long_content)
         messages = AIMessages([doc])
         count = messages.approximate_tokens_count
         assert count > 1000  # Should have many tokens
 
     def test_document_with_description(self):
         """Test token count includes document description in the encoding."""
-        doc = ConcreteFlowDocument(
+        doc = ConcreteDocument(
             name="test.txt",
             content=b"Content",
             description="This is a description",
@@ -262,12 +262,12 @@ class TestAIMessagesApproximateTokensCount:
     def test_unsupported_message_type_error(self):
         """Test that unsupported message types raise ValueError."""
         messages = AIMessages([123])  # type: ignore
-        with pytest.raises(ValueError, match="Unsupported message type"):
+        with pytest.raises(TypeError, match="Unsupported message type"):
             messages.approximate_tokens_count
 
     def test_realistic_conversation(self):
         """Test token count for realistic conversation."""
-        doc = ConcreteFlowDocument(
+        doc = ConcreteDocument(
             name="context.txt",
             content=b"This is important context information for the conversation.",
         )
