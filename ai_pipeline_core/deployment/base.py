@@ -132,7 +132,7 @@ class FlowCallable(Protocol):
     output_document_types: list[type[Document]]
     estimated_minutes: int
 
-    def __call__(self, project_name: str, documents: list[Document], flow_options: FlowOptions) -> Any:  # type: ignore[type-arg]
+    def __call__(self, project_name: str, documents: list[Document], flow_options: FlowOptions | dict[str, Any]) -> Any:  # type: ignore[type-arg]
         """Execute the flow with standard pipeline signature."""
         ...
 
@@ -519,7 +519,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     current_docs = input_docs
 
                 try:
-                    await active_flow(project_name, current_docs, options)
+                    await active_flow(project_name, current_docs, options.model_dump())
                 except Exception as e:
                     # Upload partial results on failure
                     if context.output_documents_urls and store:
