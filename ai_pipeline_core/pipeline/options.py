@@ -10,7 +10,7 @@ class FlowOptions(BaseSettings):
     for environment variable overrides. Immutable after creation.
     """
 
-    model_config = SettingsConfigDict(frozen=True, extra="ignore")
+    model_config = SettingsConfigDict(frozen=True, extra="allow")
 
 
 __all__ = ["FlowOptions"]

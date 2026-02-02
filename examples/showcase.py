@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Showcase of ai_pipeline_core features (v0.4.0)
+"""Showcase of ai_pipeline_core features (v0.4.1)
 
 Full-featured 3-stage pipeline with real LLM interactions demonstrating
 every framework capability:
@@ -473,7 +473,7 @@ def initialize_showcase(options: ShowcaseFlowOptions) -> tuple[str, list[Documen
             name="data.json",
             content={
                 "project": "ai-pipeline-core",
-                "version": "0.4.0",
+                "version": "0.4.1",
                 "modules": ["documents", "llm", "pipeline", "deployment", "observability"],
                 "backends": {"store": ["memory", "local", "clickhouse"], "tracing": ["laminar", "otel"]},
             },

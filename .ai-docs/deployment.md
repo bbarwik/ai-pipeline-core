@@ -1,7 +1,7 @@
 # MODULE: deployment
 # CLASSES: DeploymentContext, DeploymentResult, FlowCallable, PipelineDeployment, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, DownloadedDocument, StatusPayload, ProgressContext
 # DEPENDS: BaseModel, Generic, Protocol, TypedDict
-# SIZE: ~35KB
+# SIZE: ~36KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -556,8 +556,16 @@ deployment creation/updates, and all edge cases automatically."""
         # Phase 2: Build agent bundles (if configured)
         agent_builds = self._build_agents()
 
-        # Phase 3: Upload flow package
-        await self._upload_package(tarball)
+        # Phase 3: Upload flow package (include private dependency wheels from agent builds)
+        vendor_wheels: list[Path] = []
+        if agent_builds:
+            seen: set[str] = set()
+            for build_info in agent_builds.values():
+                for filename, filepath in build_info["files"].items():
+                    if filename.endswith(".whl") and filename not in seen and "cli_agents" in filename:
+                        vendor_wheels.append(filepath)
+                        seen.add(filename)
+        await self._upload_package(tarball, vendor_wheels)
 
         # Phase 4: Upload agent bundles
         await self._upload_agents(agent_builds)

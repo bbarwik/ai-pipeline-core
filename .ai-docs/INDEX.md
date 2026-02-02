@@ -36,7 +36,7 @@ Auto-generated guide index. Do not edit manually.
 
 | Module | Size |
 | ------ | ---- |
-| deployment | 36,385 bytes |
+| deployment | 36,879 bytes |
 | document_store | 16,490 bytes |
 | documents | 40,984 bytes |
 | exceptions | 1,461 bytes |
@@ -44,7 +44,7 @@ Auto-generated guide index. Do not edit manually.
 | llm | 53,890 bytes |
 | logging | 14,785 bytes |
 | observability | 22,593 bytes |
-| pipeline | 28,190 bytes |
+| pipeline | 28,189 bytes |
 | prompt_manager | 12,924 bytes |
 | settings | 7,582 bytes |
-| **Total** | **245,339 bytes** |
+| **Total** | **245,832 bytes** |

@@ -48,7 +48,7 @@ class FlowOptions(BaseSettings):
 
 Subclass to add flow-specific parameters. Uses pydantic-settings
 for environment variable overrides. Immutable after creation."""
-    model_config = SettingsConfigDict(frozen=True, extra='ignore')
+    model_config = SettingsConfigDict(frozen=True, extra='allow')
 
 
 # === FUNCTIONS ===

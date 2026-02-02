@@ -348,11 +348,12 @@ class Deployer:
 
             self._success(f"Agent '{agent_name}' uploaded ({len(build_info['files'])} files)")
 
-    async def _upload_package(self, tarball: Path):
-        """Upload package tarball to Google Cloud Storage.
+    async def _upload_package(self, tarball: Path, vendor_wheels: list[Path] | None = None):
+        """Upload package tarball and vendor wheels to Google Cloud Storage.
 
         Args:
             tarball: Path to the tarball to upload
+            vendor_wheels: Optional private dependency wheels to upload alongside
         """
         flow_folder = self.config["folder"]
         bucket = self._create_gcs_bucket(flow_folder)
@@ -364,6 +365,10 @@ class Deployer:
         await bucket.write_path(tarball.name, tarball_bytes)
 
         self._success(f"Package uploaded to {flow_folder}/{tarball.name}")
+
+        for wheel in vendor_wheels or []:
+            await bucket.write_path(wheel.name, wheel.read_bytes())
+            self._success(f"Vendor wheel uploaded: {wheel.name}")
 
     async def _deploy_via_api(self, agent_builds: dict[str, dict[str, Any]] | None = None):
         """Create or update Prefect deployment using RunnerDeployment pattern.
@@ -420,7 +425,8 @@ class Deployer:
                     "stream_output": True,
                     "directory": "{{ pull_code.directory }}",
                     # Use uv for fast installation (worker has it installed)
-                    "script": f"uv pip install --system ./{self.config['tarball']}",
+                    # --find-links . resolves private dependencies from co-uploaded wheels
+                    "script": f"uv pip install --system --find-links . ./{self.config['tarball']}",
                 }
             },
         ]
@@ -488,8 +494,16 @@ class Deployer:
         # Phase 2: Build agent bundles (if configured)
         agent_builds = self._build_agents()
 
-        # Phase 3: Upload flow package
-        await self._upload_package(tarball)
+        # Phase 3: Upload flow package (include private dependency wheels from agent builds)
+        vendor_wheels: list[Path] = []
+        if agent_builds:
+            seen: set[str] = set()
+            for build_info in agent_builds.values():
+                for filename, filepath in build_info["files"].items():
+                    if filename.endswith(".whl") and filename not in seen and "cli_agents" in filename:
+                        vendor_wheels.append(filepath)
+                        seen.add(filename)
+        await self._upload_package(tarball, vendor_wheels)
 
         # Phase 4: Upload agent bundles
         await self._upload_agents(agent_builds)
