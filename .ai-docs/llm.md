@@ -1,7 +1,7 @@
 # MODULE: llm
 # CLASSES: AIMessages, ModelOptions, Citation, ModelResponse, StructuredModelResponse
 # DEPENDS: BaseModel, ChatCompletion, Generic, list
-# SIZE: ~52KB
+# SIZE: ~54KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -150,7 +150,7 @@ accidental character iteration."""
         return AIMessages(copied_messages, frozen=False)
 
     @staticmethod
-    def document_to_prompt(document: Document) -> list[ChatCompletionContentPartParam]:  # noqa: PLR0912, PLR0914
+    def document_to_prompt(document: Document) -> list[ChatCompletionContentPartParam]:  # noqa: C901, PLR0912, PLR0914, PLR0915
         """Convert a document to prompt format for LLM consumption.
 
         Renders the document as XML with text/image/PDF content, followed by any
@@ -168,8 +168,15 @@ accidental character iteration."""
         description = f"<description>{document.description}</description>\n" if document.description else ""
         header_text = f"<document>\n<id>{document.id}</id>\n<name>{document.name}</name>\n{description}"
 
+        # Check if "PDF" is actually text (misnamed file from URL ending in .pdf)
+        # Real PDFs start with %PDF- magic bytes; if missing and content is UTF-8, it's text
+        is_text = document.is_text
+        if not is_text and document.is_pdf and _looks_like_text(document.content) and not _has_pdf_signature(document.content):
+            is_text = True
+            logger.debug(f"Document '{document.name}' has PDF extension but contains text content - sending as text")
+
         # Handle text documents
-        if document.is_text:
+        if is_text:
             text_content = document.content.decode("utf-8")
             content_text = f"{header_text}<content>\n{text_content}\n</content>\n"
             prompt.append({"type": "text", "text": content_text})
@@ -207,8 +214,16 @@ accidental character iteration."""
             desc_attr = f' description="{att.description}"' if att.description else ""
             att_open = f'<attachment name="{att.name}"{desc_attr}>\n'
 
-            if att.is_text:
-                prompt.append({"type": "text", "text": f"{att_open}{att.text}\n</attachment>\n"})
+            # Check if "PDF" attachment is actually text (same logic as document)
+            att_is_text = att.is_text
+            if not att_is_text and att.is_pdf and _looks_like_text(att.content) and not _has_pdf_signature(att.content):
+                att_is_text = True
+                logger.debug(f"Attachment '{att.name}' has PDF extension but contains text content - sending as text")
+
+            if att_is_text:
+                # Use content.decode() directly - att.text property raises ValueError if is_text is False
+                att_text = att.content.decode("utf-8")
+                prompt.append({"type": "text", "text": f"{att_open}{att_text}\n</attachment>\n"})
             elif att.is_image or att.is_pdf:
                 prompt.append({"type": "text", "text": att_open})
 

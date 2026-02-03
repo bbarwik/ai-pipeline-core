@@ -218,3 +218,211 @@ class TestDocumentToPrompt:
         # Verify original bytes are used (not re-encoded)
         expected_b64 = base64.b64encode(png_content).decode("utf-8")
         assert expected_b64 in image_data["url"]
+
+
+class TestPdfExtensionWithTextContent:
+    """Test handling of documents with .pdf extension but text content.
+
+    This fixes the issue where URLs ending in .pdf (e.g., fetched web pages
+    that redirect to HTML) would be incorrectly sent as binary PDF files.
+    """
+
+    def test_pdf_extension_with_markdown_content_sent_as_text(self):
+        """Document named .pdf but containing markdown should be sent as text."""
+        markdown_content = b"# Research Report\n\nThis is a **markdown** document.\n\n## Section 1\n\nSome content here."
+        doc = ConcreteDocument(name="fetched_example.com_report.pdf", content=markdown_content)
+
+        # Verify MIME type is PDF based on extension
+        assert doc.mime_type == "application/pdf"
+        assert doc.is_pdf is True
+        assert doc.is_text is False
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        # Should be sent as text (1 part), not as PDF file (3 parts)
+        assert len(parts) == 1
+        assert parts[0]["type"] == "text"
+
+        text = parts[0]["text"]  # type: ignore[index]
+        assert "<document>" in text
+        assert "</document>" in text
+        assert "# Research Report" in text
+        assert "**markdown**" in text
+        # Should NOT contain base64 encoding
+        assert "base64" not in text
+
+    def test_pdf_extension_with_html_content_sent_as_text(self):
+        """Document named .pdf but containing HTML should be sent as text."""
+        html_content = b"<!DOCTYPE html>\n<html>\n<head><title>Report</title></head>\n<body>\n<h1>Report</h1>\n</body>\n</html>"
+        doc = ConcreteDocument(name="report.pdf", content=html_content)
+
+        assert doc.is_pdf is True
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        # Should be sent as text
+        assert len(parts) == 1
+        assert parts[0]["type"] == "text"
+        assert "<!DOCTYPE html>" in parts[0]["text"]
+
+    def test_real_pdf_sent_as_binary(self):
+        """Document with actual PDF content should be sent as binary file."""
+        pdf_content = b"%PDF-1.4\n%\xd3\xeb\xe9\xe1\n1 0 obj\n<</Type/Catalog>>\nendobj"
+        doc = ConcreteDocument(name="document.pdf", content=pdf_content)
+
+        assert doc.is_pdf is True
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        # Should be sent as file (3 parts: header, file, closing)
+        assert len(parts) == 3
+        assert parts[1]["type"] == "file"
+        assert "file" in parts[1]
+        assert parts[1]["file"]["file_data"].startswith("data:application/pdf;base64,")  # type: ignore[index]
+
+    def test_pdf_with_leading_whitespace_sent_as_binary(self):
+        """PDF content with leading whitespace should still be detected as real PDF."""
+        # Some PDFs have whitespace before the magic bytes
+        pdf_content = b"   \n\n%PDF-1.4\n%\xd3\xeb\xe9\xe1\n1 0 obj\n<</Type/Catalog>>\nendobj"
+        doc = ConcreteDocument(name="document.pdf", content=pdf_content)
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        # Should still be sent as binary file
+        assert len(parts) == 3
+        assert parts[1]["type"] == "file"
+
+    def test_pdf_extension_with_json_content_sent_as_text(self):
+        """Document named .pdf but containing JSON should be sent as text."""
+        json_content = b'{"error": "Not found", "status": 404}'
+        doc = ConcreteDocument(name="api_response.pdf", content=json_content)
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        assert len(parts) == 1
+        assert parts[0]["type"] == "text"
+        assert '"error"' in parts[0]["text"]
+
+    def test_pdf_extension_with_plain_text_sent_as_text(self):
+        """Document named .pdf but containing plain text should be sent as text."""
+        text_content = b"This PDF could not be downloaded.\nPlease try again later."
+        doc = ConcreteDocument(name="broken.pdf", content=text_content)
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        assert len(parts) == 1
+        assert parts[0]["type"] == "text"
+        assert "could not be downloaded" in parts[0]["text"]
+
+    def test_binary_content_with_pdf_extension_sent_as_binary(self):
+        """Binary content (with null bytes) should be sent as binary even without PDF signature."""
+        # Binary content that doesn't start with %PDF but has null bytes
+        binary_content = b"\x00\x01\x02\x03\x04\x05"
+        doc = ConcreteDocument(name="data.pdf", content=binary_content)
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        # Should be sent as file since it contains null bytes (binary)
+        assert len(parts) == 3
+        assert parts[1]["type"] == "file"
+
+    def test_unicode_text_with_pdf_extension_sent_as_text(self):
+        """Unicode text with .pdf extension should be sent as text."""
+        unicode_content = "# 研究报告\n\nこれは日本語のテキストです。\n\n🎉 Emoji support!".encode()
+        doc = ConcreteDocument(name="research_报告.pdf", content=unicode_content)
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        assert len(parts) == 1
+        assert parts[0]["type"] == "text"
+        assert "研究报告" in parts[0]["text"]
+        assert "日本語" in parts[0]["text"]
+
+    def test_empty_pdf_sent_as_text(self):
+        """Empty document with .pdf extension should be sent as text."""
+        doc = ConcreteDocument(name="empty.pdf", content=b"")
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        # Empty content is text
+        assert len(parts) == 1
+        assert parts[0]["type"] == "text"
+
+
+class TestPdfAttachmentWithTextContent:
+    """Test handling of attachments with .pdf extension but text content."""
+
+    def test_pdf_attachment_with_markdown_content_sent_as_text(self):
+        """Attachment named .pdf but containing markdown should be sent as text."""
+        from ai_pipeline_core.documents.attachment import Attachment
+
+        markdown_content = b"# Attachment Report\n\nThis is markdown in an attachment."
+        att = Attachment(name="attachment.pdf", content=markdown_content)
+        doc = ConcreteDocument(
+            name="main.txt",
+            content=b"Main content",
+            attachments=(att,),
+        )
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        # Collect all text parts
+        texts = [p["text"] for p in parts if p["type"] == "text"]  # type: ignore[index]
+        combined = "".join(texts)
+
+        # Attachment should be rendered as text, not as file
+        assert '<attachment name="attachment.pdf">' in combined
+        assert "# Attachment Report" in combined
+        assert "</attachment>" in combined
+
+        # Should NOT have a file part for the attachment
+        file_parts = [p for p in parts if p["type"] == "file"]
+        assert len(file_parts) == 0
+
+    def test_real_pdf_attachment_sent_as_binary(self):
+        """Attachment with actual PDF content should be sent as binary."""
+        from ai_pipeline_core.documents.attachment import Attachment
+
+        pdf_content = b"%PDF-1.4\n%\xd3\xeb\xe9\xe1\n1 0 obj\n<</Type/Catalog>>\nendobj"
+        att = Attachment(name="real.pdf", content=pdf_content)
+        doc = ConcreteDocument(
+            name="main.txt",
+            content=b"Main content",
+            attachments=(att,),
+        )
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        # Should have a file part for the PDF attachment
+        file_parts = [p for p in parts if p["type"] == "file"]
+        assert len(file_parts) == 1
+        assert file_parts[0]["file"]["file_data"].startswith("data:application/pdf;base64,")  # type: ignore[index]
+
+    def test_mixed_pdf_attachments(self):
+        """Mix of real PDF and fake PDF attachments handled correctly."""
+        from ai_pipeline_core.documents.attachment import Attachment
+
+        real_pdf = Attachment(
+            name="real.pdf",
+            content=b"%PDF-1.4\n%\xd3\xeb\xe9\xe1\n1 0 obj\n<</Type/Catalog>>\nendobj",
+        )
+        fake_pdf = Attachment(
+            name="fake.pdf",
+            content=b"This is just text pretending to be a PDF",
+        )
+        doc = ConcreteDocument(
+            name="main.txt",
+            content=b"Main",
+            attachments=(real_pdf, fake_pdf),
+        )
+
+        parts = AIMessages.document_to_prompt(doc)
+
+        # One file part for real PDF
+        file_parts = [p for p in parts if p["type"] == "file"]
+        assert len(file_parts) == 1
+
+        # Fake PDF should be in text
+        texts = [p["text"] for p in parts if p["type"] == "text"]  # type: ignore[index]
+        combined = "".join(texts)
+        assert "pretending to be a PDF" in combined

@@ -38,6 +38,34 @@ def _ensure_llm_compatible_image(content: bytes, mime_type: str) -> tuple[bytes,
     return buf.getvalue(), "image/png"
 
 
+def _looks_like_text(content: bytes) -> bool:
+    """Check if content is valid UTF-8 text (not binary).
+
+    Uses heuristics: must decode as UTF-8 and have no null bytes.
+    Null bytes are common in binary files but rare in text.
+    """
+    if not content:
+        return True
+    # Null bytes indicate binary content
+    if b"\x00" in content:
+        return False
+    try:
+        content.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def _has_pdf_signature(content: bytes) -> bool:
+    """Check if content starts with PDF magic bytes (%PDF-).
+
+    Real PDFs start with %PDF- (possibly after whitespace).
+    This prevents false positives when a real PDF happens to be
+    partly UTF-8 decodable (e.g., ASCII-heavy PDF metadata).
+    """
+    return content.lstrip().startswith(b"%PDF-")
+
+
 AIMessageType = str | Document | ModelResponse
 """Type for messages in AIMessages container.
 
@@ -350,7 +378,7 @@ class AIMessages(list[AIMessageType]):  # noqa: PLR0904
         return count
 
     @staticmethod
-    def document_to_prompt(document: Document) -> list[ChatCompletionContentPartParam]:  # noqa: PLR0912, PLR0914
+    def document_to_prompt(document: Document) -> list[ChatCompletionContentPartParam]:  # noqa: C901, PLR0912, PLR0914, PLR0915
         """Convert a document to prompt format for LLM consumption.
 
         Renders the document as XML with text/image/PDF content, followed by any
@@ -368,8 +396,15 @@ class AIMessages(list[AIMessageType]):  # noqa: PLR0904
         description = f"<description>{document.description}</description>\n" if document.description else ""
         header_text = f"<document>\n<id>{document.id}</id>\n<name>{document.name}</name>\n{description}"
 
+        # Check if "PDF" is actually text (misnamed file from URL ending in .pdf)
+        # Real PDFs start with %PDF- magic bytes; if missing and content is UTF-8, it's text
+        is_text = document.is_text
+        if not is_text and document.is_pdf and _looks_like_text(document.content) and not _has_pdf_signature(document.content):
+            is_text = True
+            logger.debug(f"Document '{document.name}' has PDF extension but contains text content - sending as text")
+
         # Handle text documents
-        if document.is_text:
+        if is_text:
             text_content = document.content.decode("utf-8")
             content_text = f"{header_text}<content>\n{text_content}\n</content>\n"
             prompt.append({"type": "text", "text": content_text})
@@ -407,8 +442,16 @@ class AIMessages(list[AIMessageType]):  # noqa: PLR0904
             desc_attr = f' description="{att.description}"' if att.description else ""
             att_open = f'<attachment name="{att.name}"{desc_attr}>\n'
 
-            if att.is_text:
-                prompt.append({"type": "text", "text": f"{att_open}{att.text}\n</attachment>\n"})
+            # Check if "PDF" attachment is actually text (same logic as document)
+            att_is_text = att.is_text
+            if not att_is_text and att.is_pdf and _looks_like_text(att.content) and not _has_pdf_signature(att.content):
+                att_is_text = True
+                logger.debug(f"Attachment '{att.name}' has PDF extension but contains text content - sending as text")
+
+            if att_is_text:
+                # Use content.decode() directly - att.text property raises ValueError if is_text is False
+                att_text = att.content.decode("utf-8")
+                prompt.append({"type": "text", "text": f"{att_open}{att_text}\n</attachment>\n"})
             elif att.is_image or att.is_pdf:
                 prompt.append({"type": "text", "text": att_open})
 
