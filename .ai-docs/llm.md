@@ -1,7 +1,7 @@
 # MODULE: llm
 # CLASSES: AIMessages, ModelOptions, Citation, ModelResponse, StructuredModelResponse
 # DEPENDS: BaseModel, ChatCompletion, Generic, list
-# SIZE: ~54KB
+# SIZE: ~53KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -1171,100 +1171,99 @@ async def generate_structured(  # noqa: UP047
 
     return StructuredModelResponse[T].from_model_response(response)
 
+def validate_messages(messages: AIMessages) -> tuple[AIMessages, list[str]]:
+    """Validate all documents in messages and filter out invalid content.
+
+    Validates documents and their attachments. Invalid documents are removed
+    entirely, invalid attachments are filtered from their parent documents.
+    All validation errors are logged as warnings.
+
+    Args:
+        messages: AIMessages to validate.
+
+    Returns:
+        Tuple of (validated_messages, list_of_warning_messages).
+        The validated_messages has invalid documents removed and invalid
+        attachments filtered from remaining documents.
+    """
+    if not messages:
+        return messages, []
+
+    # Quick check: if no documents, nothing to validate
+    has_documents = any(isinstance(m, Document) for m in messages)
+    if not has_documents:
+        return messages, []
+
+    valid_msgs: list[AIMessageType] = []
+    warnings: list[str] = []
+
+    for msg in messages:
+        if isinstance(msg, Document):
+            valid_doc, doc_errors = _validate_document(msg)
+
+            for err in doc_errors:
+                warning_msg = f"LLM input validation: filtering {err}"
+                warnings.append(warning_msg)
+                logger.warning(warning_msg)
+
+            if valid_doc is not None:
+                valid_msgs.append(valid_doc)
+        else:
+            valid_msgs.append(msg)
+
+    # Return original if nothing changed (preserve identity for caching)
+    if len(valid_msgs) == len(messages) and not warnings:
+        return messages, []
+
+    return AIMessages(valid_msgs), warnings
+
 # === EXAMPLES (from tests/) ===
 
-# Example: Citation model returns citations
-# Source: tests/llm/test_search_citations.py:23
-@pytest.mark.asyncio
-@pytest.mark.parametrize("model", CITATION_MODELS)
-async def test_citation_model_returns_citations(self, model: str):
-    """Models with structured citations should return non-empty Citation list."""
-    # Unique query to avoid proxy cache returning responses without annotations
-    query = f"Who is the current pope? (ref:{uuid.uuid4().hex[:8]})"
-    response = await generate(model, messages=query, purpose=f"{model}-citation-test")
+# Example: Aimessages all invalid documents
+# Source: tests/llm/test_validation.py:525
+def test_aimessages_all_invalid_documents(self):
+    """All invalid documents results in empty AIMessages."""
+    doc1 = ConcreteDocument(name="bad1.png", content=b"garbage1")
+    doc2 = ConcreteDocument(name="bad2.pdf", content=b"not pdf")
+    messages = AIMessages([doc1, doc2])
 
-    assert response.content, f"{model} returned empty content"
+    result, warnings = validate_messages(messages)
+    assert len(result) == 0
+    assert len(warnings) == 2
 
-    # Verify search was actually performed — Pope Leo XIV was elected in 2025
-    content_lower = response.content.lower()
-    assert "leo" in content_lower or "xiv" in content_lower, f"{model} did not return current search results about the pope"
+# Example: Aimessages returns new instance when changed
+# Source: tests/llm/test_validation.py:561
+def test_aimessages_returns_new_instance_when_changed(self):
+    """When filtering occurs, a new AIMessages instance is returned."""
+    valid = ConcreteDocument(name="good.md", content=b"good")
+    invalid = ConcreteDocument(name="bad.png", content=b"garbage")
+    messages = AIMessages([valid, invalid])
 
-    assert len(response.citations) > 0, f"{model} returned no citations"
-    for citation in response.citations:
-        assert isinstance(citation, Citation)
-        assert citation.url.startswith("http"), f"{model} citation URL invalid: {citation.url}"
-        assert citation.title, f"{model} citation has empty title"
+    result, warnings = validate_messages(messages)
+    assert result is not messages
+    assert isinstance(result, AIMessages)
 
-# Example: Citations from annotations
-# Source: tests/llm/test_model_response.py:273
-def test_citations_from_annotations(self):
-    """Test citations are extracted from url_citation annotations."""
-    response = create_test_model_response(
-        id="test",
-        object="chat.completion",
-        created=1234567890,
-        model="sonar-pro-search",
-        choices=[
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Some search result",
-                    "annotations": [
-                        {
-                            "type": "url_citation",
-                            "url_citation": {
-                                "end_index": 0,
-                                "start_index": 0,
-                                "title": "Example Page",
-                                "url": "https://example.com",
-                            },
-                        },
-                        {
-                            "type": "url_citation",
-                            "url_citation": {
-                                "end_index": 0,
-                                "start_index": 0,
-                                "title": "Another Page",
-                                "url": "https://another.com",
-                            },
-                        },
-                    ],
-                },
-                "finish_reason": "stop",
-            }
-        ],
-    )
-    citations = response.citations
-    assert len(citations) == 2
-    assert citations[0] == Citation(title="Example Page", url="https://example.com")
-    assert citations[1] == Citation(title="Another Page", url="https://another.com")
+# Example: Aimessages returns same instance when unchanged
+# Source: tests/llm/test_validation.py:571
+def test_aimessages_returns_same_instance_when_unchanged(self):
+    """When no filtering needed, same AIMessages instance returned."""
+    doc = ConcreteDocument(name="good.md", content=b"content")
+    messages = AIMessages(["Hello", doc])
 
-# Example: Citations empty when no annotations
-# Source: tests/llm/test_model_response.py:256
-def test_citations_empty_when_no_annotations(self):
-    """Test citations returns empty list when no annotations present."""
-    response = create_test_model_response(
-        id="test",
-        object="chat.completion",
-        created=1234567890,
-        model="gpt-5.1",
-        choices=[
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": "No citations here"},
-                "finish_reason": "stop",
-            }
-        ],
-    )
-    assert response.citations == []
+    result, warnings = validate_messages(messages)
+    assert result is messages
 
-# Example: Empty messages
-# Source: tests/llm/test_client_process_messages.py:13
-def test_empty_messages(self):
-    """Test processing empty messages."""
-    result = _process_messages(context=AIMessages(), messages=AIMessages(), system_prompt=None)
-    assert result == []
+# Example: Aimessages with invalid document filtered
+# Source: tests/llm/test_validation.py:491
+def test_aimessages_with_invalid_document_filtered(self):
+    """Invalid document is filtered from AIMessages."""
+    invalid_doc = ConcreteDocument(name="broken.png", content=b"not image")
+    messages = AIMessages([invalid_doc])
+
+    result, warnings = validate_messages(messages)
+    assert len(result) == 0
+    assert len(warnings) == 1
+    assert "LLM input validation: filtering" in warnings[0]
 
 # === ERROR EXAMPLES (What NOT to Do) ===
 

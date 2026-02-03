@@ -38,6 +38,7 @@ from .ai_messages import AIMessages, AIMessageType
 from .model_options import ModelOptions
 from .model_response import ModelResponse, StructuredModelResponse
 from .model_types import ModelName
+from .validation import validate_messages
 
 logger = get_pipeline_logger(__name__)
 
@@ -399,6 +400,11 @@ async def _generate_with_retry(  # noqa: PLR0917
     if not context and not messages:
         raise ValueError("Either context or messages must be provided")
 
+    # Validate inputs - filter out empty/corrupted documents and attachments
+    context, ctx_warnings = validate_messages(context)
+    messages, msg_warnings = validate_messages(messages)
+    validation_warnings = ctx_warnings + msg_warnings
+
     # Auto-split large images based on model-specific constraints
     context = _prepare_images_for_model(context, model)
     messages = _prepare_images_for_model(messages, model)
@@ -424,6 +430,8 @@ async def _generate_with_retry(  # noqa: PLR0917
                     laminar_metadata["purpose"] = purpose
                 if expected_cost is not None:
                     laminar_metadata["expected_cost"] = expected_cost
+                if validation_warnings:
+                    response._metadata["validation_warnings"] = validation_warnings
                 span.set_attributes(laminar_metadata)  # pyright: ignore[reportArgumentType]
                 Laminar.set_span_output([r for r in (response.reasoning_content, response.content) if r])
                 response.validate_output()

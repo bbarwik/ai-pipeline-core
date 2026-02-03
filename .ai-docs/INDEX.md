@@ -41,10 +41,10 @@ Auto-generated guide index. Do not edit manually.
 | documents | 40,984 bytes |
 | exceptions | 1,461 bytes |
 | images | 10,055 bytes |
-| llm | 54,937 bytes |
+| llm | 54,646 bytes |
 | logging | 14,785 bytes |
 | observability | 23,209 bytes |
 | pipeline | 28,189 bytes |
 | prompt_manager | 12,924 bytes |
 | settings | 7,582 bytes |
-| **Total** | **253,384 bytes** |
+| **Total** | **253,093 bytes** |
