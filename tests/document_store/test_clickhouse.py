@@ -377,6 +377,244 @@ class TestSummaries:
 # --- Content Deduplication ---
 
 
+class TestBinaryContentRoundtrip:
+    """Test that binary content (PDFs, images) survives save/load round-trip."""
+
+    async def test_pdf_content_roundtrip(self, store: ClickHouseDocumentStore):
+        """PDF binary content must be identical after load."""
+        # Minimal valid PDF (binary content with non-UTF8 bytes)
+        pdf_content = (
+            b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
+            b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+            b"2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\n"
+            b"xref\n0 3\n0000000000 65535 f \n"
+            b"trailer<</Size 3/Root 1 0 R>>\nstartxref\n101\n%%EOF"
+        )
+        doc = CHDocA(name="test.pdf", content=pdf_content)
+
+        await store.save(doc, "test-pdf-binary")
+        loaded = await store.load("test-pdf-binary", [CHDocA])
+
+        assert len(loaded) == 1
+        assert loaded[0].content == pdf_content, f"PDF content mismatch: expected {len(pdf_content)} bytes, got {len(loaded[0].content)} bytes"
+
+    async def test_png_content_roundtrip(self, store: ClickHouseDocumentStore):
+        """PNG binary content must be identical after load."""
+        # Minimal valid 1x1 transparent PNG
+        png_content = bytes([
+            0x89,
+            0x50,
+            0x4E,
+            0x47,
+            0x0D,
+            0x0A,
+            0x1A,
+            0x0A,  # PNG signature
+            0x00,
+            0x00,
+            0x00,
+            0x0D,
+            0x49,
+            0x48,
+            0x44,
+            0x52,  # IHDR chunk
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x01,  # 1x1
+            0x08,
+            0x06,
+            0x00,
+            0x00,
+            0x00,
+            0x1F,
+            0x15,
+            0xC4,  # 8-bit RGBA
+            0x89,
+            0x00,
+            0x00,
+            0x00,
+            0x0A,
+            0x49,
+            0x44,
+            0x41,  # IDAT chunk
+            0x54,
+            0x78,
+            0x9C,
+            0x63,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x05,
+            0x00,
+            0x01,
+            0x0D,
+            0x0A,
+            0x2D,
+            0xB4,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x49,
+            0x45,
+            0x4E,
+            0x44,
+            0xAE,  # IEND chunk
+            0x42,
+            0x60,
+            0x82,
+        ])
+        doc = CHDocA(name="test.png", content=png_content)
+
+        await store.save(doc, "test-png-binary")
+        loaded = await store.load("test-png-binary", [CHDocA])
+
+        assert len(loaded) == 1
+        assert loaded[0].content == png_content, f"PNG content mismatch: expected {len(png_content)} bytes, got {len(loaded[0].content)} bytes"
+
+    async def test_arbitrary_binary_content_roundtrip(self, store: ClickHouseDocumentStore):
+        """Arbitrary binary bytes (all 256 values) must survive round-trip."""
+        # Content with all possible byte values
+        binary_content = bytes(range(256)) * 10
+        doc = CHDocA(name="binary.bin", content=binary_content)
+
+        await store.save(doc, "test-arbitrary-binary")
+        loaded = await store.load("test-arbitrary-binary", [CHDocA])
+
+        assert len(loaded) == 1
+        assert loaded[0].content == binary_content, f"Binary content mismatch: expected {len(binary_content)} bytes, got {len(loaded[0].content)} bytes"
+
+    async def test_binary_attachment_roundtrip(self, store: ClickHouseDocumentStore):
+        """Binary attachment content must be identical after load."""
+        png_attachment = bytes([
+            0x89,
+            0x50,
+            0x4E,
+            0x47,
+            0x0D,
+            0x0A,
+            0x1A,
+            0x0A,
+            0x00,
+            0x00,
+            0x00,
+            0x0D,
+            0x49,
+            0x48,
+            0x44,
+            0x52,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x08,
+            0x06,
+            0x00,
+            0x00,
+            0x00,
+            0x1F,
+            0x15,
+            0xC4,
+            0x89,
+            0x00,
+            0x00,
+            0x00,
+            0x0A,
+            0x49,
+            0x44,
+            0x41,
+            0x54,
+            0x78,
+            0x9C,
+            0x63,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x05,
+            0x00,
+            0x01,
+            0x0D,
+            0x0A,
+            0x2D,
+            0xB4,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x49,
+            0x45,
+            0x4E,
+            0x44,
+            0xAE,
+            0x42,
+            0x60,
+            0x82,
+        ])
+        doc = CHDocA(
+            name="doc-with-binary-att.txt",
+            content=b"text content",
+            attachments=(Attachment(name="screenshot.png", content=png_attachment),),
+        )
+
+        await store.save(doc, "test-binary-attachment")
+        loaded = await store.load("test-binary-attachment", [CHDocA])
+
+        assert len(loaded) == 1
+        assert len(loaded[0].attachments) == 1
+        assert loaded[0].attachments[0].content == png_attachment, "PNG attachment content mismatch"
+
+    async def test_mixed_text_and_binary_attachments(self, store: ClickHouseDocumentStore):
+        """Document with both text and binary attachments."""
+        binary_att = bytes(range(256))
+        text_att = b"plain text attachment"
+
+        doc = CHDocA(
+            name="mixed.txt",
+            content=b"main content",
+            attachments=(
+                Attachment(name="data.bin", content=binary_att),
+                Attachment(name="notes.txt", content=text_att),
+            ),
+        )
+
+        await store.save(doc, "test-mixed-attachments")
+        loaded = await store.load("test-mixed-attachments", [CHDocA])
+
+        assert len(loaded) == 1
+        atts = {a.name: a for a in loaded[0].attachments}
+        assert atts["data.bin"].content == binary_att, "Binary attachment content mismatch"
+        assert atts["notes.txt"].content == text_att, "Text attachment content mismatch"
+
+    async def test_binary_document_with_binary_attachment(self, store: ClickHouseDocumentStore):
+        """Both document content and attachment are binary."""
+        pdf_content = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\ntest binary content with non-utf8 bytes: \x80\x81\x82\xff"
+        png_attachment = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, *range(200)])
+
+        doc = CHDocA(
+            name="report.pdf",
+            content=pdf_content,
+            attachments=(Attachment(name="figure.png", content=png_attachment),),
+        )
+
+        await store.save(doc, "test-all-binary")
+        loaded = await store.load("test-all-binary", [CHDocA])
+
+        assert len(loaded) == 1
+        assert loaded[0].content == pdf_content, f"PDF content mismatch: {loaded[0].content[:50]}..."
+        assert loaded[0].attachments[0].content == png_attachment, "PNG attachment mismatch"
+
+
 class TestContentDeduplication:
     async def test_same_content_different_names_single_content_row(self, store: ClickHouseDocumentStore):
         """Two documents with identical content should produce only one row in document_content."""

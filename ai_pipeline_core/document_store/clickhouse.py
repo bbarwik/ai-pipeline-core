@@ -357,7 +357,7 @@ class ClickHouseDocumentStore:
         rows = self._client.query(
             f"SELECT di.class_name, di.name, di.description, di.sources, di.origins, "
             f"di.attachment_names, di.attachment_descriptions, di.attachment_sha256s, "
-            f"dc.content "
+            f"dc.content, length(dc.content) "
             f"FROM {TABLE_DOCUMENT_INDEX} AS di FINAL "
             f"JOIN {TABLE_DOCUMENT_CONTENT} AS dc FINAL ON di.content_sha256 = dc.content_sha256 "
             f"WHERE di.run_scope = {{run_scope:String}} "
@@ -377,7 +377,7 @@ class ClickHouseDocumentStore:
 
             att_sha256s = [_decode(s) for s in row[7]]
             all_att_sha256s.update(att_sha256s)
-            content = row[8] if isinstance(row[8], bytes) else row[8].encode("utf-8")
+            content = _decode_content(row[8], row[9])
 
             parsed_rows.append((
                 doc_type,
@@ -395,13 +395,12 @@ class ClickHouseDocumentStore:
         att_content_by_sha: dict[str, bytes] = {}
         if all_att_sha256s:
             att_rows = self._client.query(
-                f"SELECT content_sha256, content FROM {TABLE_DOCUMENT_CONTENT} FINAL WHERE content_sha256 IN {{sha256s:Array(String)}}",
+                f"SELECT content_sha256, content, length(content) FROM {TABLE_DOCUMENT_CONTENT} FINAL WHERE content_sha256 IN {{sha256s:Array(String)}}",
                 parameters={"sha256s": list(all_att_sha256s)},
             )
             for att_row in att_rows.result_rows:
                 sha = _decode(att_row[0])
-                raw = att_row[1] if isinstance(att_row[1], bytes) else att_row[1].encode("utf-8")
-                att_content_by_sha[sha] = raw
+                att_content_by_sha[sha] = _decode_content(att_row[1], att_row[2])
 
         # Reconstruct documents (suppress registration to avoid polluting TaskDocumentContext)
         documents: list[Document] = []
@@ -490,3 +489,30 @@ def _decode(value: bytes | str) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8")
     return value
+
+
+_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+
+
+def _decode_content(raw: bytes | str, expected_length: int) -> bytes:
+    """Decode content from ClickHouse using length comparison to detect hex encoding.
+
+    ClickHouse stores binary content in String columns. The clickhouse_connect driver
+    returns binary content as hex-encoded strings (e.g., "89504e47" for PNG header).
+    Hex encoding always produces exactly 2x the original byte count.
+
+    Args:
+        raw: Content from ClickHouse (bytes or string)
+        expected_length: Actual byte length from length(content) in query
+
+    Returns:
+        Decoded binary content as bytes
+    """
+    if isinstance(raw, bytes):
+        return raw
+
+    # Hex-encoded binary: string length is exactly 2x the stored byte length
+    if len(raw) == 2 * expected_length and expected_length > 0 and all(c in _HEX_CHARS for c in raw):
+        return bytes.fromhex(raw)
+
+    return raw.encode("utf-8")

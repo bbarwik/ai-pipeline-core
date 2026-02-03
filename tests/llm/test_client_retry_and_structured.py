@@ -160,6 +160,46 @@ class TestCacheRemovalOnRetry:
                     assert "prompt_cache_key" in second_call_kwargs
 
 
+class TestCacheControlRemovalOnRetry:
+    """Test that cache_control is properly removed from messages on retry."""
+
+    @pytest.mark.asyncio
+    async def test_cache_control_removed_from_messages_on_non_timeout_error(self):
+        """Test that cache_control is removed from processed_messages on non-timeout error."""
+        with patch("ai_pipeline_core.llm.client._generate") as mock_generate:
+            # First call fails with ValueError (non-timeout), second succeeds
+            mock_response = MagicMock()
+            mock_response.content = "Success"
+            mock_response.reasoning_content = None
+            mock_response.get_laminar_metadata.return_value = {}
+            mock_response.validate_output.return_value = None
+            mock_generate.side_effect = [ValueError("Test error"), mock_response]
+
+            with patch("asyncio.sleep"):
+                with patch("ai_pipeline_core.llm.client.Laminar") as mock_laminar:
+                    mock_span = MagicMock()
+                    mock_laminar.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
+                    mock_laminar.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+
+                    messages = AIMessages(["Test message"])
+                    context = AIMessages(["Large context " * 1000])  # Large enough to trigger caching
+                    options = ModelOptions(retries=2, retry_delay_seconds=0, cache_ttl="300s")
+
+                    await _generate_with_retry("gpt-5.1", context, messages, options)
+
+                    # Check that the second call had cache_control removed from messages
+                    assert mock_generate.call_count == 2
+                    second_call_messages = mock_generate.call_args_list[1][0][1]  # processed_messages
+
+                    # Verify no cache_control at message level or content level
+                    for msg in second_call_messages:
+                        assert "cache_control" not in msg, f"Message still has cache_control: {msg.keys()}"
+                        content = msg.get("content")
+                        if isinstance(content, list):
+                            for item in content:
+                                assert "cache_control" not in item, f"Content item still has cache_control: {item.keys()}"
+
+
 class TestStructuredGeneration:
     """Test structured generation with Pydantic models."""
 

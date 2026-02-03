@@ -552,6 +552,82 @@ class TestAllDocumentTypes:
         assert "OutputDoc" in type_names
 
 
+class TestComputeRunScope:
+    """Test _compute_run_scope function."""
+
+    def test_different_options_produce_different_scope_with_documents(self):
+        """Test that different options produce different run_scope when documents are provided."""
+        from ai_pipeline_core.deployment.base import _compute_run_scope
+
+        doc = InputDoc(name="input.txt", content=b"test")
+
+        class CustomOptions(FlowOptions):
+            flag: bool = False
+
+        scope1 = _compute_run_scope("project", [doc], CustomOptions(flag=True))
+        scope2 = _compute_run_scope("project", [doc], CustomOptions(flag=False))
+
+        assert scope1 != scope2
+        assert scope1.startswith("project:")
+        assert scope2.startswith("project:")
+
+    def test_different_options_produce_different_scope_without_documents(self):
+        """Test that different options produce different run_scope even with empty documents."""
+        from ai_pipeline_core.deployment.base import _compute_run_scope
+
+        class CustomOptions(FlowOptions):
+            flag: bool = False
+
+        scope1 = _compute_run_scope("project", [], CustomOptions(flag=True))
+        scope2 = _compute_run_scope("project", [], CustomOptions(flag=False))
+
+        assert scope1 != scope2
+        assert scope1.startswith("project:")
+        assert scope2.startswith("project:")
+
+    def test_same_inputs_produce_same_scope(self):
+        """Test that identical inputs produce identical run_scope."""
+        from ai_pipeline_core.deployment.base import _compute_run_scope
+
+        doc = InputDoc(name="input.txt", content=b"test")
+
+        scope1 = _compute_run_scope("project", [doc], FlowOptions())
+        scope2 = _compute_run_scope("project", [doc], FlowOptions())
+
+        assert scope1 == scope2
+
+    def test_cli_fields_are_excluded(self):
+        """Test that CLI-only fields do not affect run_scope."""
+        from ai_pipeline_core.deployment.base import _CLI_FIELDS, _compute_run_scope
+
+        class CliOptions(FlowOptions):
+            working_directory: str = ""
+            project_name: str | None = None
+            start: int = 1
+            end: int | None = None
+            no_trace: bool = False
+            actual_option: str = "value"
+
+        # Verify the CLI fields are in _CLI_FIELDS
+        assert "working_directory" in _CLI_FIELDS
+        assert "start" in _CLI_FIELDS
+
+        # Different CLI field values should produce the same scope
+        opts1 = CliOptions(working_directory="/path1", start=1, actual_option="same")
+        opts2 = CliOptions(working_directory="/path2", start=5, actual_option="same")
+
+        scope1 = _compute_run_scope("project", [], opts1)
+        scope2 = _compute_run_scope("project", [], opts2)
+
+        assert scope1 == scope2
+
+        # But different actual_option values should produce different scope
+        opts3 = CliOptions(actual_option="different")
+        scope3 = _compute_run_scope("project", [], opts3)
+
+        assert scope1 != scope3
+
+
 class TestReattachFlowMetadata:
     """Test _reattach_flow_metadata helper."""
 

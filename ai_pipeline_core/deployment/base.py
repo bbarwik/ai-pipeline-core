@@ -80,14 +80,15 @@ def _compute_run_scope(project_name: str, documents: list[Document], options: Fl
 
     Different inputs or options produce a different scope, preventing
     stale cache hits when re-running with the same project name.
-    Falls back to just project_name when no documents are provided
-    (e.g. --start N resume without initializer).
     """
-    if not documents:
-        return project_name
-    sha256s = sorted(doc.sha256 for doc in documents)
     exclude = _CLI_FIELDS & set(type(options).model_fields)
     options_json = options.model_dump_json(exclude=exclude, exclude_none=True)
+
+    if not documents:
+        fingerprint = hashlib.sha256(options_json.encode()).hexdigest()[:16]
+        return f"{project_name}:{fingerprint}"
+
+    sha256s = sorted(doc.sha256 for doc in documents)
     fingerprint = hashlib.sha256(f"{':'.join(sha256s)}|{options_json}".encode()).hexdigest()[:16]
     return f"{project_name}:{fingerprint}"
 

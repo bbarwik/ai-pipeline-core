@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.5.0"
+version = "0.5.1"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -233,7 +233,7 @@ reportUnusedCoroutine = "error"
 reportImplicitStringConcatenation = false
 
 [tool.bumpversion]
-current_version = "0.4.1"
+current_version = "0.5.1"
 commit = true
 tag = true
 tag_name = "v{new_version}"
