@@ -1,7 +1,7 @@
 # MODULE: deployment
 # CLASSES: DeploymentContext, DeploymentResult, FlowCallable, PipelineDeployment, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, DownloadedDocument, StatusPayload, ProgressContext
 # DEPENDS: BaseModel, Generic, Protocol, TypedDict
-# SIZE: ~39KB
+# SIZE: ~40KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -585,15 +585,16 @@ deployment creation/updates, and all edge cases automatically."""
         # Phase 3: Build vendor packages from [tool.deploy].vendor_packages
         vendor_wheels = self._build_vendor_packages()
 
-        # Also include cli_agents wheels from agent builds
-        if agent_builds:
-            seen_agent: set[str] = set()
-            for build_info in agent_builds.values():
-                for filename, filepath in build_info["files"].items():
-                    if filename.endswith(".whl") and filename not in seen_agent and "cli_agents" in filename:
-                        if filename not in {w.name for w in vendor_wheels}:
-                            vendor_wheels.append(filepath)
-                        seen_agent.add(filename)
+        # Build cli-agents wheel if source is configured — it's a private package
+        # not on PyPI, so the worker needs the wheel even when no agents are deployed
+        cli_agents_source = self._get_cli_agents_source()
+        if cli_agents_source:
+            cli_dir = Path(cli_agents_source).resolve()
+            if (cli_dir / "pyproject.toml").exists():
+                cli_wheel = self._build_wheel_from_source(cli_dir)
+                if cli_wheel.name not in {w.name for w in vendor_wheels}:
+                    vendor_wheels.append(cli_wheel)
+                    self._success(f"Built cli-agents vendor wheel: {cli_wheel.name}")
 
         # Phase 4: Upload flow package + vendor wheels
         await self._upload_package(tarball, vendor_wheels)
@@ -817,17 +818,31 @@ def flow_context(  # noqa: PLR0917
     finally:
         _context.reset(token)
 
-async def run_remote_deployment(deployment_name: str, parameters: dict[str, Any]) -> Any:
-    """Run a remote Prefect deployment, trying local client first then remote."""
+async def run_remote_deployment(
+    deployment_name: str,
+    parameters: dict[str, Any],
+    on_progress: ProgressCallback | None = None,
+) -> Any:
+    """Run a remote Prefect deployment with optional progress callback.
 
-    async def _run(client: PrefectClient, as_subflow: bool) -> Any:
-        fr: FlowRun = await run_deployment(client=client, name=deployment_name, parameters=parameters, as_subflow=as_subflow)  # type: ignore
-        return await fr.state.result()  # type: ignore
+    Creates the remote flow run immediately (timeout=0) then polls its state,
+    invoking on_progress(fraction, message) on each poll cycle if provided.
+    """
+
+    async def _create_and_poll(client: PrefectClient, as_subflow: bool) -> Any:
+        fr: FlowRun = await run_deployment(
+            client=client,
+            name=deployment_name,
+            parameters=parameters,
+            as_subflow=as_subflow,
+            timeout=0,
+        )  # type: ignore
+        return await _poll_remote_flow_run(client, fr.id, deployment_name, on_progress=on_progress)
 
     async with get_client() as client:
         try:
             await client.read_deployment_by_name(name=deployment_name)
-            return await _run(client, True)  # noqa: FBT003
+            return await _create_and_poll(client, True)  # noqa: FBT003
         except ObjectNotFound:
             pass
 
@@ -843,7 +858,7 @@ async def run_remote_deployment(deployment_name: str, parameters: dict[str, Any]
             await client.read_deployment_by_name(name=deployment_name)
             ctx = AsyncClientContext.model_construct(client=client, _httpx_settings=None, _context_stack=0)
             with ctx:
-                return await _run(client, False)  # noqa: FBT003
+                return await _create_and_poll(client, False)  # noqa: FBT003
         except ObjectNotFound:
             pass
 
@@ -856,32 +871,38 @@ def remote_deployment(
     name: str | None = None,
     trace_level: TraceLevel = "always",
     trace_cost: float | None = None,
-) -> Callable[[Callable[P, TResult]], Callable[P, TResult]]:
-    """Decorator to call PipelineDeployment flows remotely with automatic serialization."""
+) -> Callable[[Callable[..., Any]], Callable[..., Coroutine[Any, Any, TResult]]]:
+    """Decorator to call PipelineDeployment flows remotely with automatic serialization.
 
-    def decorator(func: Callable[P, TResult]) -> Callable[P, TResult]:
+    The decorated function's body is never executed — it serves as a typed stub.
+    The wrapper enforces the deployment contract: (project_name, documents, options, context).
+    """
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Coroutine[Any, Any, TResult]]:
         fname = getattr(func, "__name__", deployment_class.name)
 
         if _is_already_traced(func):
             raise TypeError(f"@remote_deployment target '{fname}' already has @trace")
 
         @wraps(func)
-        async def _wrapper(*args: P.args, **kwargs: P.kwargs) -> TResult:
-            sig = inspect.signature(func)
-            bound = sig.bind(*args, **kwargs)
-            bound.apply_defaults()
-
-            # Pass parameters with proper types - Prefect handles Pydantic serialization
-            parameters: dict[str, Any] = {}
-            for pname, value in bound.arguments.items():
-                if value is None and pname == "context":
-                    parameters[pname] = DeploymentContext()
-                else:
-                    parameters[pname] = value
+        async def _wrapper(
+            project_name: str,
+            documents: list[Document],
+            options: TOptions,
+            context: DeploymentContext | None = None,
+            *,
+            on_progress: ProgressCallback | None = None,
+        ) -> TResult:
+            parameters: dict[str, Any] = {
+                "project_name": project_name,
+                "documents": documents,
+                "options": options,
+                "context": context if context is not None else DeploymentContext(),
+            }
 
             full_name = f"{deployment_class.name}/{deployment_name or deployment_class.name.replace('-', '_')}"
 
-            result = await run_remote_deployment(full_name, parameters)
+            result = await run_remote_deployment(full_name, parameters, on_progress=on_progress)
 
             if trace_cost is not None and trace_cost > 0:
                 set_trace_cost(trace_cost)
@@ -897,24 +918,28 @@ def remote_deployment(
             name=name or deployment_class.name,
         )(_wrapper)
 
-        return traced_wrapper  # type: ignore[return-value]
+        return traced_wrapper
 
     return decorator
 
 # === EXAMPLES (from tests/) ===
 
 # Example: Basic remote deployment
-# Source: tests/deployment/test_remote.py:64
+# Source: tests/deployment/test_remote.py:61
 async def test_basic_remote_deployment(self):
     """Test basic decorator usage returns correct result type."""
 
     @remote_deployment(SamplePipeline)
-    async def my_flow(project_name: str, options: FlowOptions) -> SampleResult:  # pyright: ignore[reportReturnType]
-        ...
+    async def my_flow(
+        project_name: str,
+        documents: list[Document],
+        options: FlowOptions,
+        context: DeploymentContext | None = None,
+    ) -> SampleResult: ...
 
     with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
         mock_run.return_value = SampleResult(success=True, report="test")
-        result = await my_flow("test-project", FlowOptions())
+        result = await my_flow("test-project", [], FlowOptions())
 
         assert isinstance(result, SampleResult)
         assert result.success is True
@@ -954,7 +979,7 @@ def test_default_creation(self):
     assert ctx.output_documents_urls == {}
 
 # Example: Default name matches deployer convention
-# Source: tests/deployment/test_remote.py:208
+# Source: tests/deployment/test_remote.py:281
 async def test_default_name_matches_deployer_convention(self):
     """Test that default deployment path matches what Deployer registers in Prefect.
 
@@ -963,12 +988,16 @@ async def test_default_name_matches_deployer_convention(self):
     """
 
     @remote_deployment(SamplePipeline)
-    async def my_flow(project_name: str) -> SampleResult:  # pyright: ignore[reportReturnType]
-        ...
+    async def my_flow(
+        project_name: str,
+        documents: list[Document],
+        options: FlowOptions,
+        context: DeploymentContext | None = None,
+    ) -> SampleResult: ...
 
     with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
         mock_run.return_value = SampleResult(success=True)
-        await my_flow("project")
+        await my_flow("project", [], FlowOptions())
 
         full_name = mock_run.call_args[0][0]
         flow_name, deployment_name = full_name.split("/")
@@ -990,17 +1019,19 @@ def test_missing_pyproject_raises(self, tmp_path: Path):
         deployer._build_wheel_from_source(tmp_path)
 
 # Error: Already traced raises error
-# Source: tests/deployment/test_remote.py:197
+# Source: tests/deployment/test_remote.py:268
 async def test_already_traced_raises_error(self):
     """Test that applying @trace before @remote_deployment raises TypeError."""
     with pytest.raises(TypeError, match="already has @trace"):
 
         @remote_deployment(SamplePipeline)
         @trace(level="always")
-        async def my_flow(  # pyright: ignore[reportUnusedFunction]
+        async def my_flow(
             project_name: str,
-        ) -> SampleResult:  # pyright: ignore[reportReturnType]
-            ...
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
 
 # Error: Dies when cli agents dir missing
 # Source: tests/deployment/test_deploy.py:221

@@ -383,7 +383,7 @@ class Deployer:
         dest_uri = f"gs://{self.config['bucket']}/{flow_folder}/{tarball.name}"
         self._info(f"Uploading to {dest_uri}")
 
-        tarball_bytes = tarball.read_bytes()  # noqa: ASYNC240
+        tarball_bytes = tarball.read_bytes()
         await bucket.write_path(tarball.name, tarball_bytes)
 
         self._success(f"Package uploaded to {flow_folder}/{tarball.name}")
@@ -527,15 +527,16 @@ class Deployer:
         # Phase 3: Build vendor packages from [tool.deploy].vendor_packages
         vendor_wheels = self._build_vendor_packages()
 
-        # Also include cli_agents wheels from agent builds
-        if agent_builds:
-            seen_agent: set[str] = set()
-            for build_info in agent_builds.values():
-                for filename, filepath in build_info["files"].items():
-                    if filename.endswith(".whl") and filename not in seen_agent and "cli_agents" in filename:
-                        if filename not in {w.name for w in vendor_wheels}:
-                            vendor_wheels.append(filepath)
-                        seen_agent.add(filename)
+        # Build cli-agents wheel if source is configured — it's a private package
+        # not on PyPI, so the worker needs the wheel even when no agents are deployed
+        cli_agents_source = self._get_cli_agents_source()
+        if cli_agents_source:
+            cli_dir = Path(cli_agents_source).resolve()
+            if (cli_dir / "pyproject.toml").exists():
+                cli_wheel = self._build_wheel_from_source(cli_dir)
+                if cli_wheel.name not in {w.name for w in vendor_wheels}:
+                    vendor_wheels.append(cli_wheel)
+                    self._success(f"Built cli-agents vendor wheel: {cli_wheel.name}")
 
         # Phase 4: Upload flow package + vendor wheels
         await self._upload_package(tarball, vendor_wheels)

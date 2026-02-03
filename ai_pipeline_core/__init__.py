@@ -64,7 +64,7 @@ from .prompt_manager import PromptManager
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
 
-__version__ = "0.4.5"
+__version__ = "0.4.6"
 
 __all__ = [
     "AIMessageType",

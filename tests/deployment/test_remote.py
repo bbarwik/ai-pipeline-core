@@ -1,17 +1,14 @@
 """Tests for remote_deployment decorator and utilities."""
 
-# remote_deployment's type signature uses Callable[P, TResult] which doesn't
-# match async functions (Callable[P, Coroutine[..., TResult]]). The runtime
-# behavior is correct; the type narrowing is a known limitation.
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false
-
 from functools import wraps
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
 from ai_pipeline_core import (
+    DeploymentContext,
     DeploymentResult,
     Document,
     FlowOptions,
@@ -65,12 +62,16 @@ class TestRemoteDeploymentDecorator:
         """Test basic decorator usage returns correct result type."""
 
         @remote_deployment(SamplePipeline)
-        async def my_flow(project_name: str, options: FlowOptions) -> SampleResult:  # pyright: ignore[reportReturnType]
-            ...
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
 
         with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
             mock_run.return_value = SampleResult(success=True, report="test")
-            result = await my_flow("test-project", FlowOptions())
+            result = await my_flow("test-project", [], FlowOptions())
 
             assert isinstance(result, SampleResult)
             assert result.success is True
@@ -81,12 +82,16 @@ class TestRemoteDeploymentDecorator:
         """Test default deployment name converts hyphens to underscores (matching Deployer)."""
 
         @remote_deployment(SamplePipeline)
-        async def my_flow(project_name: str) -> SampleResult:  # pyright: ignore[reportReturnType]
-            ...
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
 
         with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
             mock_run.return_value = SampleResult(success=True)
-            await my_flow("project")
+            await my_flow("project", [], FlowOptions())
 
             full_name = mock_run.call_args[0][0]
             # Deployer registers as {flow_name}/{package_name} where package_name uses underscores.
@@ -97,45 +102,99 @@ class TestRemoteDeploymentDecorator:
         """Test custom deployment_name overrides default."""
 
         @remote_deployment(SamplePipeline, deployment_name="custom-name")
-        async def my_flow(project_name: str) -> SampleResult:  # pyright: ignore[reportReturnType]
-            ...
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
 
         with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
             mock_run.return_value = SampleResult(success=True)
-            await my_flow("project")
+            await my_flow("project", [], FlowOptions())
 
             full_name = mock_run.call_args[0][0]
             assert full_name == "sample-pipeline/custom-name"
 
     async def test_parameters_passed_correctly(self):
-        """Test all function parameters are forwarded to run_remote_deployment."""
+        """Test all four deployment parameters are forwarded to run_remote_deployment."""
 
         @remote_deployment(SamplePipeline)
-        async def my_flow(project_name: str, options: FlowOptions, extra: str = "default") -> SampleResult:  # pyright: ignore[reportReturnType]
-            ...
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
 
         with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
             mock_run.return_value = SampleResult(success=True)
-            await my_flow("project", FlowOptions(), extra="custom")
+            test_options = FlowOptions()
+            await my_flow("project", [], test_options)
 
             params = mock_run.call_args[0][1]
             assert params["project_name"] == "project"
-            assert params["extra"] == "custom"
+            assert params["documents"] == []
+            assert params["options"] is test_options
+            assert isinstance(params["context"], DeploymentContext)
 
     async def test_context_none_replaced_with_default(self):
         """Test that context=None is replaced with DeploymentContext()."""
-        from ai_pipeline_core import DeploymentContext
 
         @remote_deployment(SamplePipeline)
-        async def my_flow(project_name: str, context: Any = None) -> SampleResult:  # pyright: ignore[reportReturnType]
-            ...
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
 
         with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
             mock_run.return_value = SampleResult(success=True)
-            await my_flow("project")
+            await my_flow("project", [], FlowOptions())
 
             params = mock_run.call_args[0][1]
             assert isinstance(params["context"], DeploymentContext)
+
+    async def test_documents_forwarded_correctly(self):
+        """Test documents parameter is forwarded to run_remote_deployment."""
+
+        @remote_deployment(SamplePipeline)
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
+
+        with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
+            mock_run.return_value = SampleResult(success=True)
+            test_docs = [SampleInputDoc.create(name="test.txt", content="test data")]
+            await my_flow("project", test_docs, FlowOptions())
+
+            params = mock_run.call_args[0][1]
+            assert params["documents"] == test_docs
+            assert len(params["documents"]) == 1
+
+    async def test_explicit_context_preserved(self):
+        """Test explicit DeploymentContext is passed through, not replaced."""
+
+        @remote_deployment(SamplePipeline)
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
+
+        custom_context = DeploymentContext(progress_webhook_url="http://example.com")
+        with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
+            mock_run.return_value = SampleResult(success=True)
+            await my_flow("project", [], FlowOptions(), context=custom_context)
+
+            params = mock_run.call_args[0][1]
+            assert params["context"] is custom_context
+            assert params["context"].progress_webhook_url == "http://example.com"
 
     async def test_trace_cost_called(self):
         """Test trace_cost > 0 calls set_trace_cost."""
@@ -144,12 +203,14 @@ class TestRemoteDeploymentDecorator:
             @remote_deployment(SamplePipeline, trace_cost=0.05)
             async def my_flow(
                 project_name: str,
-            ) -> SampleResult:  # pyright: ignore[reportReturnType]
-                ...
+                documents: list[Document],
+                options: FlowOptions,
+                context: DeploymentContext | None = None,
+            ) -> SampleResult: ...
 
             with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
                 mock_run.return_value = SampleResult(success=True)
-                await my_flow("project")
+                await my_flow("project", [], FlowOptions())
                 mock_cost.assert_called_once_with(0.05)
 
     async def test_trace_cost_zero_not_called(self):
@@ -159,24 +220,30 @@ class TestRemoteDeploymentDecorator:
             @remote_deployment(SamplePipeline, trace_cost=0)
             async def my_flow(
                 project_name: str,
-            ) -> SampleResult:  # pyright: ignore[reportReturnType]
-                ...
+                documents: list[Document],
+                options: FlowOptions,
+                context: DeploymentContext | None = None,
+            ) -> SampleResult: ...
 
             with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
                 mock_run.return_value = SampleResult(success=True)
-                await my_flow("project")
+                await my_flow("project", [], FlowOptions())
                 mock_cost.assert_not_called()
 
     async def test_dict_result_deserialized_to_result_type(self):
         """Test dict return value is deserialized via deployment result_type."""
 
         @remote_deployment(SamplePipeline)
-        async def my_flow(project_name: str) -> SampleResult:  # pyright: ignore[reportReturnType]
-            ...
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
 
         with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
             mock_run.return_value = {"success": True, "report": "from dict"}
-            result = await my_flow("project")
+            result = await my_flow("project", [], FlowOptions())
 
             assert isinstance(result, SampleResult)
             assert result.report == "from dict"
@@ -185,14 +252,18 @@ class TestRemoteDeploymentDecorator:
         """Test non-dict, non-DeploymentResult return raises TypeError."""
 
         @remote_deployment(SamplePipeline)
-        async def my_flow(project_name: str) -> SampleResult:  # pyright: ignore[reportReturnType]
-            ...
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
 
         with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
             mock_run.return_value = "invalid"
 
             with pytest.raises(TypeError, match="Expected DeploymentResult"):
-                await my_flow("project")
+                await my_flow("project", [], FlowOptions())
 
     async def test_already_traced_raises_error(self):
         """Test that applying @trace before @remote_deployment raises TypeError."""
@@ -200,10 +271,12 @@ class TestRemoteDeploymentDecorator:
 
             @remote_deployment(SamplePipeline)
             @trace(level="always")
-            async def my_flow(  # pyright: ignore[reportUnusedFunction]
+            async def my_flow(
                 project_name: str,
-            ) -> SampleResult:  # pyright: ignore[reportReturnType]
-                ...
+                documents: list[Document],
+                options: FlowOptions,
+                context: DeploymentContext | None = None,
+            ) -> SampleResult: ...
 
     async def test_default_name_matches_deployer_convention(self):
         """Test that default deployment path matches what Deployer registers in Prefect.
@@ -213,12 +286,16 @@ class TestRemoteDeploymentDecorator:
         """
 
         @remote_deployment(SamplePipeline)
-        async def my_flow(project_name: str) -> SampleResult:  # pyright: ignore[reportReturnType]
-            ...
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
 
         with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
             mock_run.return_value = SampleResult(success=True)
-            await my_flow("project")
+            await my_flow("project", [], FlowOptions())
 
             full_name = mock_run.call_args[0][0]
             flow_name, deployment_name = full_name.split("/")
@@ -231,14 +308,53 @@ class TestRemoteDeploymentDecorator:
         """Test ValueError from run_remote_deployment propagates."""
 
         @remote_deployment(SamplePipeline)
-        async def my_flow(project_name: str) -> SampleResult:  # pyright: ignore[reportReturnType]
-            ...
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
 
         with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
             mock_run.side_effect = ValueError("deployment not found")
 
             with pytest.raises(ValueError, match="deployment not found"):
-                await my_flow("project")
+                await my_flow("project", [], FlowOptions())
+
+    async def test_on_progress_forwarded(self):
+        """Test on_progress callback is forwarded to run_remote_deployment."""
+
+        @remote_deployment(SamplePipeline)
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
+
+        callback = AsyncMock()
+        with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
+            mock_run.return_value = SampleResult(success=True)
+            await my_flow("project", [], FlowOptions(), on_progress=callback)
+
+            assert mock_run.call_args.kwargs["on_progress"] is callback
+
+    async def test_on_progress_none_by_default(self):
+        """Test on_progress defaults to None when not provided."""
+
+        @remote_deployment(SamplePipeline)
+        async def my_flow(
+            project_name: str,
+            documents: list[Document],
+            options: FlowOptions,
+            context: DeploymentContext | None = None,
+        ) -> SampleResult: ...
+
+        with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
+            mock_run.return_value = SampleResult(success=True)
+            await my_flow("project", [], FlowOptions())
+
+            assert mock_run.call_args.kwargs["on_progress"] is None
 
 
 # --- run_remote_deployment tests ---
@@ -354,3 +470,177 @@ class TestIsAlreadyTraced:
         wrapper.__wrapped__ = base_func  # type: ignore[attr-defined]
 
         assert _is_already_traced(wrapper) is True
+
+
+# --- Polling tests ---
+
+
+def _make_flow_run(
+    labels: dict[str, Any] | None = None,
+    *,
+    is_final: bool = False,
+    is_completed: bool = False,
+    result: Any = None,
+    error: Exception | None = None,
+) -> MagicMock:
+    """Create a mock FlowRun with controlled state and labels."""
+    fr = MagicMock()
+    fr.id = UUID(int=1)
+    fr.labels = labels or {}
+    fr.state = MagicMock()
+    fr.state.is_final.return_value = is_final
+    fr.state.is_completed.return_value = is_completed
+    fr.state.result = AsyncMock(side_effect=error) if error else AsyncMock(return_value=result)
+    return fr
+
+
+def _progress_labels(progress: float, flow_name: str = "", message: str = "") -> dict[str, Any]:
+    """Build progress.* labels matching what PipelineDeployment writes."""
+    return {
+        "progress.progress": progress,
+        "progress.flow_name": flow_name,
+        "progress.message": message,
+    }
+
+
+class TestPollRemoteFlowRun:
+    """Test _poll_remote_flow_run with and without callback."""
+
+    async def test_callback_receives_progress(self):
+        """Callback is called with fractions from remote labels."""
+        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
+
+        client = AsyncMock()
+        client.read_flow_run = AsyncMock(
+            side_effect=[
+                _make_flow_run(labels=_progress_labels(0.3, "plan", "Planning")),
+                _make_flow_run(labels=_progress_labels(0.7, "execute", "Executing")),
+                _make_flow_run(is_final=True, is_completed=True, result={"success": True}),
+            ]
+        )
+
+        callback = AsyncMock()
+        result = await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
+
+        assert result == {"success": True}
+        assert callback.call_count == 3
+        fractions = [call.args[0] for call in callback.call_args_list]
+        assert fractions == [0.3, 0.7, 1.0]
+
+    async def test_no_completion_on_failure(self):
+        """Callback does NOT receive 1.0 when run fails."""
+        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
+
+        client = AsyncMock()
+        client.read_flow_run = AsyncMock(
+            side_effect=[
+                _make_flow_run(labels=_progress_labels(0.5, "step1", "Working")),
+                _make_flow_run(is_final=True, is_completed=False, error=RuntimeError("Crashed")),
+            ]
+        )
+
+        callback = AsyncMock()
+        with pytest.raises(RuntimeError, match="Crashed"):
+            await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
+
+        fractions = [call.args[0] for call in callback.call_args_list]
+        assert 0.5 in fractions
+        assert 1.0 not in fractions
+
+    async def test_progress_never_regresses(self):
+        """Max guard prevents fraction from going backwards."""
+        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
+
+        client = AsyncMock()
+        client.read_flow_run = AsyncMock(
+            side_effect=[
+                _make_flow_run(labels=_progress_labels(0.8, "s1", "high")),
+                _make_flow_run(labels=_progress_labels(0.3, "s2", "lower")),
+                _make_flow_run(is_final=True, is_completed=True, result="ok"),
+            ]
+        )
+
+        callback = AsyncMock()
+        await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
+
+        fractions = [call.args[0] for call in callback.call_args_list]
+        assert fractions == [0.8, 0.8, 1.0]
+
+    async def test_no_callback_result_still_returned(self):
+        """Without callback, result is returned and no progress is reported."""
+        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
+
+        client = AsyncMock()
+        client.read_flow_run = AsyncMock(
+            side_effect=[
+                _make_flow_run(labels=_progress_labels(0.5, "step1", "Working")),
+                _make_flow_run(is_final=True, is_completed=True, result=42),
+            ]
+        )
+
+        result = await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0)
+
+        assert result == 42
+        assert client.read_flow_run.call_count == 2
+
+    async def test_no_labels_sends_waiting(self):
+        """No progress labels → callback receives 'Waiting to start' message."""
+        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
+
+        client = AsyncMock()
+        client.read_flow_run = AsyncMock(
+            side_effect=[
+                _make_flow_run(labels={}),
+                _make_flow_run(is_final=True, is_completed=True, result="done"),
+            ]
+        )
+
+        callback = AsyncMock()
+        await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
+
+        # First call: waiting (0.0), second call: completion (1.0)
+        assert callback.call_count == 2
+        assert callback.call_args_list[0].args[0] == 0.0
+        assert "Waiting to start" in callback.call_args_list[0].args[1]
+        assert callback.call_args_list[1].args[0] == 1.0
+
+    async def test_api_error_retries(self):
+        """Prefect API error on poll → logged, continues polling, returns result."""
+        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
+
+        client = AsyncMock()
+        client.read_flow_run = AsyncMock(
+            side_effect=[
+                _make_flow_run(labels=_progress_labels(0.3, "s1", "Starting")),
+                ConnectionError("API unavailable"),
+                _make_flow_run(is_final=True, is_completed=True, result="recovered"),
+            ]
+        )
+
+        callback = AsyncMock()
+        result = await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
+
+        assert result == "recovered"
+        assert client.read_flow_run.call_count == 3
+        fractions = [call.args[0] for call in callback.call_args_list]
+        assert fractions == [0.3, 1.0]
+
+    async def test_display_includes_flow_name(self):
+        """Progress message includes flow_name from labels when available."""
+        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
+
+        client = AsyncMock()
+        client.read_flow_run = AsyncMock(
+            side_effect=[
+                _make_flow_run(labels=_progress_labels(0.5, "research", "Analyzing sources")),
+                _make_flow_run(is_final=True, is_completed=True, result="ok"),
+            ]
+        )
+
+        callback = AsyncMock()
+        await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
+
+        display = callback.call_args_list[0].args[1]
+        assert "[test-deploy]" in display
+        assert "research" in display
+        assert "Analyzing sources" in display

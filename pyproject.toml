@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.4.5"
+version = "0.4.6"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -142,7 +142,7 @@ convention = "google"
 ".vulture_whitelist.py" = ["B018", "E402", "F401", "D"]
 "ai_pipeline_core/__init__.py" = ["RUF067"]
 "ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046"]
-"ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC2701", "S404", "S602", "S603"]
+"ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC2701", "S404", "S602", "S603", "ASYNC"]
 "ai_pipeline_core/deployment/remote.py" = ["UP047"]
 "ai_pipeline_core/deployment/progress.py" = ["RUF029"]
 "ai_pipeline_core/documents/document.py" = ["PLR0904"]
