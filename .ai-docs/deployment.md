@@ -1,7 +1,7 @@
 # MODULE: deployment
 # CLASSES: DeploymentContext, DeploymentResult, FlowCallable, PipelineDeployment, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, DownloadedDocument, StatusPayload, ProgressContext
 # DEPENDS: BaseModel, Generic, Protocol, TypedDict
-# SIZE: ~38KB
+# SIZE: ~39KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -582,21 +582,26 @@ deployment creation/updates, and all edge cases automatically."""
         # Phase 2: Build agent bundles (if configured)
         agent_builds = self._build_agents()
 
-        # Phase 3: Upload flow package (include private dependency wheels from agent builds)
-        vendor_wheels: list[Path] = []
+        # Phase 3: Build vendor packages from [tool.deploy].vendor_packages
+        vendor_wheels = self._build_vendor_packages()
+
+        # Also include cli_agents wheels from agent builds
         if agent_builds:
-            seen: set[str] = set()
+            seen_agent: set[str] = set()
             for build_info in agent_builds.values():
                 for filename, filepath in build_info["files"].items():
-                    if filename.endswith(".whl") and filename not in seen and "cli_agents" in filename:
-                        vendor_wheels.append(filepath)
-                        seen.add(filename)
+                    if filename.endswith(".whl") and filename not in seen_agent and "cli_agents" in filename:
+                        if filename not in {w.name for w in vendor_wheels}:
+                            vendor_wheels.append(filepath)
+                        seen_agent.add(filename)
+
+        # Phase 4: Upload flow package + vendor wheels
         await self._upload_package(tarball, vendor_wheels)
 
-        # Phase 4: Upload agent bundles
+        # Phase 5: Upload agent bundles
         await self._upload_agents(agent_builds)
 
-        # Phase 5: Create/update Prefect deployment
+        # Phase 6: Create/update Prefect deployment
         await self._deploy_via_api(agent_builds)
 
         print()
@@ -874,7 +879,7 @@ def remote_deployment(
                 else:
                     parameters[pname] = value
 
-            full_name = f"{deployment_class.name}/{deployment_name or deployment_class.name}"
+            full_name = f"{deployment_class.name}/{deployment_name or deployment_class.name.replace('-', '_')}"
 
             result = await run_remote_deployment(full_name, parameters)
 
@@ -948,19 +953,34 @@ def test_default_creation(self):
     assert ctx.input_documents_urls == ()
     assert ctx.output_documents_urls == {}
 
-# Example: Deployment result data
-# Source: tests/deployment/test_deployment_base.py:195
-def test_deployment_result_data(self):
-    """Test DeploymentResultData."""
-    data = DeploymentResultData(success=True, error=None)
-    assert data.success is True
-    dumped = data.model_dump()
-    assert "success" in dumped
+# Example: Default name matches deployer convention
+# Source: tests/deployment/test_remote.py:208
+async def test_default_name_matches_deployer_convention(self):
+    """Test that default deployment path matches what Deployer registers in Prefect.
+
+    Deployer registers: flow_name=kebab-case, deployment_name=underscore (Python package name).
+    remote_deployment must produce the same '{flow_name}/{package_name}' path.
+    """
+
+    @remote_deployment(SamplePipeline)
+    async def my_flow(project_name: str) -> SampleResult:  # pyright: ignore[reportReturnType]
+        ...
+
+    with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
+        mock_run.return_value = SampleResult(success=True)
+        await my_flow("project")
+
+        full_name = mock_run.call_args[0][0]
+        flow_name, deployment_name = full_name.split("/")
+        # flow_name is kebab-case (class_name_to_deployment_name)
+        assert flow_name == SamplePipeline.name
+        assert "-" not in deployment_name, "deployment name must use underscores, not hyphens"
+        assert deployment_name == SamplePipeline.name.replace("-", "_")
 
 # === ERROR EXAMPLES (What NOT to Do) ===
 
 # Error: Missing pyproject raises
-# Source: tests/deployment/test_deploy.py:407
+# Source: tests/deployment/test_deploy.py:410
 def test_missing_pyproject_raises(self, tmp_path: Path):
     """Should die if source dir has no pyproject.toml."""
     deployer = Deployer.__new__(Deployer)
@@ -970,7 +990,7 @@ def test_missing_pyproject_raises(self, tmp_path: Path):
         deployer._build_wheel_from_source(tmp_path)
 
 # Error: Already traced raises error
-# Source: tests/deployment/test_remote.py:195
+# Source: tests/deployment/test_remote.py:197
 async def test_already_traced_raises_error(self):
     """Test that applying @trace before @remote_deployment raises TypeError."""
     with pytest.raises(TypeError, match="already has @trace"):
@@ -983,7 +1003,7 @@ async def test_already_traced_raises_error(self):
             ...
 
 # Error: Dies when cli agents dir missing
-# Source: tests/deployment/test_deploy.py:218
+# Source: tests/deployment/test_deploy.py:221
 def test_dies_when_cli_agents_dir_missing(self, tmp_path: Path):
     """Should die when cli_agents_source points to non-existent dir."""
     deployer = Deployer.__new__(Deployer)
@@ -1002,7 +1022,7 @@ def test_dies_when_cli_agents_dir_missing(self, tmp_path: Path):
         deployer._build_agents()
 
 # Error: Dies when no cli agents source
-# Source: tests/deployment/test_deploy.py:207
+# Source: tests/deployment/test_deploy.py:210
 def test_dies_when_no_cli_agents_source(self):
     """Should die when agents configured but cli_agents_source missing."""
     deployer = Deployer.__new__(Deployer)

@@ -78,7 +78,7 @@ class TestRemoteDeploymentDecorator:
             mock_run.assert_called_once()
 
     async def test_deployment_name_default(self):
-        """Test default deployment name uses deployment_class.name."""
+        """Test default deployment name converts hyphens to underscores (matching Deployer)."""
 
         @remote_deployment(SamplePipeline)
         async def my_flow(project_name: str) -> SampleResult:  # pyright: ignore[reportReturnType]
@@ -89,7 +89,9 @@ class TestRemoteDeploymentDecorator:
             await my_flow("project")
 
             full_name = mock_run.call_args[0][0]
-            assert full_name == "sample-pipeline/sample-pipeline"
+            # Deployer registers as {flow_name}/{package_name} where package_name uses underscores.
+            # flow_name is kebab-case (from class_name_to_deployment_name), deployment name is underscore.
+            assert full_name == "sample-pipeline/sample_pipeline"
 
     async def test_custom_deployment_name(self):
         """Test custom deployment_name overrides default."""
@@ -202,6 +204,28 @@ class TestRemoteDeploymentDecorator:
                 project_name: str,
             ) -> SampleResult:  # pyright: ignore[reportReturnType]
                 ...
+
+    async def test_default_name_matches_deployer_convention(self):
+        """Test that default deployment path matches what Deployer registers in Prefect.
+
+        Deployer registers: flow_name=kebab-case, deployment_name=underscore (Python package name).
+        remote_deployment must produce the same '{flow_name}/{package_name}' path.
+        """
+
+        @remote_deployment(SamplePipeline)
+        async def my_flow(project_name: str) -> SampleResult:  # pyright: ignore[reportReturnType]
+            ...
+
+        with patch("ai_pipeline_core.deployment.remote.run_remote_deployment") as mock_run:
+            mock_run.return_value = SampleResult(success=True)
+            await my_flow("project")
+
+            full_name = mock_run.call_args[0][0]
+            flow_name, deployment_name = full_name.split("/")
+            # flow_name is kebab-case (class_name_to_deployment_name)
+            assert flow_name == SamplePipeline.name
+            assert "-" not in deployment_name, "deployment name must use underscores, not hyphens"
+            assert deployment_name == SamplePipeline.name.replace("-", "_")
 
     async def test_deployment_not_found_propagates(self):
         """Test ValueError from run_remote_deployment propagates."""

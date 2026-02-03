@@ -312,6 +312,28 @@ class Deployer:
 
         return builds
 
+    def _build_vendor_packages(self) -> list[Path]:
+        """Build vendor wheels from [tool.deploy].vendor_packages paths.
+
+        Returns:
+            List of built wheel paths, deduplicated by filename.
+        """
+        vendor_paths: list[str] = self._pyproject_data.get("tool", {}).get("deploy", {}).get("vendor_packages", [])
+        if not vendor_paths:
+            return []
+
+        self._info(f"Building {len(vendor_paths)} vendor package(s)")
+        wheels: list[Path] = []
+        seen: set[str] = set()
+        for vendor_path_str in vendor_paths:
+            vendor_dir = Path(vendor_path_str).resolve()
+            wheel = self._build_wheel_from_source(vendor_dir)
+            if wheel.name not in seen:
+                wheels.append(wheel)
+                seen.add(wheel.name)
+                self._success(f"Built vendor wheel: {wheel.name}")
+        return wheels
+
     def _create_gcs_bucket(self, bucket_folder: str) -> Any:
         """Create a GcsBucket instance for uploading files.
 
@@ -457,6 +479,14 @@ class Deployer:
             paused=False,
         )
 
+        # Populate parameter schema from flow function signature
+        deployment._set_defaults_from_flow(flow)  # pyright: ignore[reportPossiblyUnboundVariable]
+
+        # Inject result type schema so consumers can discover the response shape
+        return_type = getattr(flow.fn, "__annotations__", {}).get("return")  # pyright: ignore[reportPossiblyUnboundVariable]
+        if return_type is not None and hasattr(return_type, "model_json_schema"):
+            deployment._parameter_openapi_schema.definitions["_ResultSchema"] = return_type.model_json_schema()
+
         # Verify work pool exists before deploying
         async with get_client() as client:
             try:
@@ -494,21 +524,26 @@ class Deployer:
         # Phase 2: Build agent bundles (if configured)
         agent_builds = self._build_agents()
 
-        # Phase 3: Upload flow package (include private dependency wheels from agent builds)
-        vendor_wheels: list[Path] = []
+        # Phase 3: Build vendor packages from [tool.deploy].vendor_packages
+        vendor_wheels = self._build_vendor_packages()
+
+        # Also include cli_agents wheels from agent builds
         if agent_builds:
-            seen: set[str] = set()
+            seen_agent: set[str] = set()
             for build_info in agent_builds.values():
                 for filename, filepath in build_info["files"].items():
-                    if filename.endswith(".whl") and filename not in seen and "cli_agents" in filename:
-                        vendor_wheels.append(filepath)
-                        seen.add(filename)
+                    if filename.endswith(".whl") and filename not in seen_agent and "cli_agents" in filename:
+                        if filename not in {w.name for w in vendor_wheels}:
+                            vendor_wheels.append(filepath)
+                        seen_agent.add(filename)
+
+        # Phase 4: Upload flow package + vendor wheels
         await self._upload_package(tarball, vendor_wheels)
 
-        # Phase 4: Upload agent bundles
+        # Phase 5: Upload agent bundles
         await self._upload_agents(agent_builds)
 
-        # Phase 5: Create/update Prefect deployment
+        # Phase 6: Create/update Prefect deployment
         await self._deploy_via_api(agent_builds)
 
         print()

@@ -93,7 +93,7 @@ def remote_deployment(
                 else:
                     parameters[pname] = value
 
-            full_name = f"{deployment_class.name}/{deployment_name or deployment_class.name}"
+            full_name = f"{deployment_class.name}/{deployment_name or deployment_class.name.replace('-', '_')}"
 
             result = await run_remote_deployment(full_name, parameters)
 
