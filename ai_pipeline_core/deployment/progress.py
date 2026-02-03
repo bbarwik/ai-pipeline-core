@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
+from prefect import get_client
+
 from ai_pipeline_core.logging import get_pipeline_logger
 
 from .contract import ProgressRun
@@ -38,9 +40,14 @@ _context: ContextVar[ProgressContext | None] = ContextVar("progress_context", de
 
 
 async def update(fraction: float, message: str = "") -> None:
-    """Report intra-flow progress (0.0-1.0). No-op without context."""
+    """Report intra-flow progress (0.0-1.0). No-op without context.
+
+    Sends webhook payload (if webhook_url configured) AND updates Prefect
+    flow run labels (if flow_run_id available) so both push and poll consumers
+    see progress, and staleness detection stays current.
+    """
     ctx = _context.get()
-    if ctx is None or not ctx.webhook_url:
+    if ctx is None:
         return
 
     fraction = max(0.0, min(1.0, fraction))
@@ -50,22 +57,43 @@ async def update(fraction: float, message: str = "") -> None:
     else:
         overall = fraction
     overall = round(max(0.0, min(1.0, overall)), 4)
+    step_progress = round(fraction, 4)
 
-    payload = ProgressRun(
-        flow_run_id=UUID(ctx.flow_run_id) if ctx.flow_run_id else UUID(int=0),
-        project_name=ctx.project_name,
-        state="RUNNING",
-        timestamp=datetime.now(UTC),
-        step=ctx.step,
-        total_steps=ctx.total_steps,
-        flow_name=ctx.flow_name,
-        status="progress",
-        progress=overall,
-        step_progress=round(fraction, 4),
-        message=message,
-    )
+    # Enqueue webhook payload for async delivery
+    if ctx.webhook_url:
+        payload = ProgressRun(
+            flow_run_id=UUID(ctx.flow_run_id) if ctx.flow_run_id else UUID(int=0),
+            project_name=ctx.project_name,
+            state="RUNNING",
+            timestamp=datetime.now(UTC),
+            step=ctx.step,
+            total_steps=ctx.total_steps,
+            flow_name=ctx.flow_name,
+            status="progress",
+            progress=overall,
+            step_progress=step_progress,
+            message=message,
+        )
+        ctx.queue.put_nowait(payload)
 
-    ctx.queue.put_nowait(payload)
+    # Update Prefect labels so polling consumers and staleness detection stay current
+    if ctx.flow_run_id:
+        try:
+            async with get_client() as client:
+                await client.update_flow_run_labels(
+                    flow_run_id=UUID(ctx.flow_run_id),
+                    labels={
+                        "progress.step": ctx.step,
+                        "progress.total_steps": ctx.total_steps,
+                        "progress.flow_name": ctx.flow_name,
+                        "progress.status": "progress",
+                        "progress.progress": overall,
+                        "progress.step_progress": step_progress,
+                        "progress.message": message,
+                    },
+                )
+        except Exception as e:
+            logger.warning(f"Progress label update failed: {e}")
 
 
 async def webhook_worker(

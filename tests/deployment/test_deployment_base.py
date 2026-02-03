@@ -1,10 +1,12 @@
 """Tests for deployment base module classes and validation."""
 
-# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportPrivateUsage=false, reportUnusedClass=false
+# pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportPrivateUsage=false, reportUnusedClass=false, reportFunctionMemberAccess=false
 
 from datetime import UTC
+from typing import Any
 
 import pytest
+from pydantic import Field
 
 from ai_pipeline_core import (
     DeploymentResult,
@@ -591,3 +593,90 @@ class TestReattachFlowMetadata:
         _reattach_flow_metadata(original, target)  # type: ignore[arg-type]
         assert target.input_document_types == [MiddleDoc]
         assert target.estimated_minutes == 10
+
+
+# --- as_prefect_flow parameter schema tests ---
+
+
+class _SchemaTestOptions(FlowOptions):
+    """Options with concrete fields for schema testing."""
+
+    task_name: str = Field(default="", description="Name of the task")
+    max_retries: int = Field(default=3, ge=1, le=10, description="Max retry count")
+    threshold: float = Field(default=0.5, description="Score threshold")
+
+
+class _SchemaTestResult(DeploymentResult):
+    """Result for schema testing."""
+
+    output: str = ""
+
+
+@pipeline_flow()
+async def _schema_test_flow(project_name: str, documents: list[InputDoc], flow_options: _SchemaTestOptions) -> list[OutputDoc]:
+    return [OutputDoc(name="out.txt", content=b"ok")]
+
+
+class _SchemaTestDeployment(PipelineDeployment[_SchemaTestOptions, _SchemaTestResult]):
+    flows = [_schema_test_flow]  # type: ignore[reportAssignmentType]
+
+    @staticmethod
+    def build_result(project_name: str, documents: list[Document], options: _SchemaTestOptions) -> _SchemaTestResult:
+        return _SchemaTestResult(success=True, output="done")
+
+
+def _resolve_options_properties(schema: Any) -> dict[str, Any]:
+    """Resolve the 'options' parameter properties from a ParameterSchema, following $ref if needed."""
+    options_schema = schema.properties.get("options", {})
+    if "$ref" in options_schema:
+        ref_name = options_schema["$ref"].split("/")[-1]
+        return schema.definitions.get(ref_name, {}).get("properties", {})
+    if "allOf" in options_schema:
+        for item in options_schema["allOf"]:
+            if "$ref" in item:
+                ref_name = item["$ref"].split("/")[-1]
+                return schema.definitions.get(ref_name, {}).get("properties", {})
+    return options_schema.get("properties", {})
+
+
+class TestAsPrefectFlowParameterSchema:
+    """Test that as_prefect_flow() exposes concrete options schema to Prefect."""
+
+    def test_parameter_schema_contains_concrete_options_fields(self):
+        """Prefect flow parameter schema must include fields from the concrete options type."""
+        prefect_flow = _SchemaTestDeployment().as_prefect_flow()
+        schema = prefect_flow.parameters
+
+        options_props = _resolve_options_properties(schema)
+
+        assert "task_name" in options_props, f"task_name missing from schema: {options_props}"
+        assert "max_retries" in options_props, f"max_retries missing from schema: {options_props}"
+        assert "threshold" in options_props, f"threshold missing from schema: {options_props}"
+
+    def test_parameter_schema_field_types(self):
+        """Schema field types must match the Pydantic model field types."""
+        prefect_flow = _SchemaTestDeployment().as_prefect_flow()
+        schema = prefect_flow.parameters
+        options_props = _resolve_options_properties(schema)
+
+        assert options_props["task_name"]["type"] == "string"
+        assert options_props["max_retries"]["type"] == "integer"
+        assert options_props["threshold"]["type"] == "number"
+
+    def test_parameter_schema_field_defaults(self):
+        """Schema field defaults must match the Pydantic model defaults."""
+        prefect_flow = _SchemaTestDeployment().as_prefect_flow()
+        schema = prefect_flow.parameters
+        options_props = _resolve_options_properties(schema)
+
+        assert options_props["task_name"].get("default") == ""
+        assert options_props["max_retries"].get("default") == 3
+        assert options_props["threshold"].get("default") == 0.5
+
+    def test_base_flow_options_produces_no_custom_fields(self):
+        """Base FlowOptions (no fields) should still appear in schema but with no custom properties."""
+        prefect_flow = ValidDeployment().as_prefect_flow()
+        schema = prefect_flow.parameters
+
+        # options parameter must exist in the schema
+        assert "options" in schema.properties

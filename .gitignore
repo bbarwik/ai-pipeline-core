@@ -160,7 +160,6 @@ ehthumbs.db
 .prefect/
 
 # Test artifacts
-tests/test_data/
 test_output/
 
 # temporary specification

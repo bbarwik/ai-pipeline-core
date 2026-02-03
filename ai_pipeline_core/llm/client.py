@@ -258,10 +258,10 @@ def _model_name_to_openrouter_model(model: ModelName) -> str:
     Returns:
         OpenRouter model name.
     """
-    if model == "gemini-3-flash-search":
-        return "google/gemini-3-flash:online"
     if model == "sonar-pro-search":
         return "perplexity/sonar-pro-search"
+    if model.endswith("-search"):
+        model = model.replace("-search", ":online")
     if model.startswith("gemini"):
         return f"google/{model}"
     elif model.startswith("gpt"):

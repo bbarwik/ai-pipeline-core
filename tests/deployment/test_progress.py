@@ -5,8 +5,18 @@
 import asyncio
 from uuid import UUID
 
+import pytest
+
 from ai_pipeline_core.deployment.contract import ProgressRun
 from ai_pipeline_core.deployment.progress import ProgressContext, flow_context, update
+from ai_pipeline_core.documents import Document
+from ai_pipeline_core.pipeline import pipeline_flow
+from ai_pipeline_core.pipeline.options import FlowOptions
+from ai_pipeline_core.testing import prefect_test_harness
+
+
+class _ProgressTestDoc(Document):
+    """Minimal document for progress integration tests."""
 
 
 class TestUpdate:
@@ -16,9 +26,14 @@ class TestUpdate:
         """Test update is a no-op when no context is set."""
         await update(0.5, "test")  # Should not raise
 
-    async def test_noop_without_webhook_url(self):
-        """Test update is a no-op when webhook_url is empty."""
+    async def test_no_webhook_without_webhook_url(self):
+        """Test webhook is not enqueued when webhook_url is empty (labels still update)."""
+        from unittest.mock import AsyncMock, patch
+
         queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
 
         with flow_context(
             webhook_url="",
@@ -32,9 +47,11 @@ class TestUpdate:
             completed_minutes=0.0,
             queue=queue,
         ):
-            await update(0.5, "halfway")
+            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
+                await update(0.5, "halfway")
 
         assert queue.empty()
+        mock_client.update_flow_run_labels.assert_called_once()
 
     async def test_sends_progress_payload(self):
         """Test update creates and enqueues ProgressRun."""
@@ -90,6 +107,102 @@ class TestUpdate:
         p2 = queue.get_nowait()
         assert p1.step_progress == 0.0
         assert p2.step_progress == 1.0
+
+
+class TestUpdateLabels:
+    """Test that update() refreshes Prefect flow run labels."""
+
+    async def test_updates_prefect_labels(self):
+        """update() must call update_flow_run_labels with correct progress data."""
+        from unittest.mock import AsyncMock, patch
+
+        queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
+        flow_run_id = str(UUID(int=42))
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with flow_context(
+            webhook_url="http://example.com/progress",
+            project_name="test-project",
+            run_id="run-1",
+            flow_run_id=flow_run_id,
+            flow_name="analysis",
+            step=2,
+            total_steps=4,
+            flow_minutes=(1.0, 2.0, 1.0, 1.0),
+            completed_minutes=1.0,
+            queue=queue,
+        ):
+            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
+                await update(0.5, "halfway")
+
+        mock_client.update_flow_run_labels.assert_called_once()
+        labels = mock_client.update_flow_run_labels.call_args.kwargs["labels"]
+        assert labels["progress.step"] == 2
+        assert labels["progress.total_steps"] == 4
+        assert labels["progress.flow_name"] == "analysis"
+        assert labels["progress.status"] == "progress"
+        assert labels["progress.step_progress"] == 0.5
+        assert labels["progress.progress"] == 0.4  # (1.0 + 2.0 * 0.5) / 5.0
+        assert labels["progress.message"] == "halfway"
+
+    async def test_no_labels_without_flow_run_id(self):
+        """No label update when flow_run_id is empty (CLI mode)."""
+        from unittest.mock import AsyncMock, patch
+
+        queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with flow_context(
+            webhook_url="http://example.com/progress",
+            project_name="test",
+            run_id="run-1",
+            flow_run_id="",
+            flow_name="flow",
+            step=1,
+            total_steps=1,
+            flow_minutes=(1.0,),
+            completed_minutes=0.0,
+            queue=queue,
+        ):
+            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
+                await update(0.5, "msg")
+
+        # Webhook still enqueued
+        assert not queue.empty()
+        # But no label update
+        mock_client.update_flow_run_labels.assert_not_called()
+
+    async def test_label_failure_does_not_raise(self):
+        """Failed label update is logged but does not crash the flow."""
+        from unittest.mock import AsyncMock, patch
+
+        queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.update_flow_run_labels.side_effect = Exception("Prefect unavailable")
+
+        with flow_context(
+            webhook_url="http://example.com/progress",
+            project_name="test",
+            run_id="run-1",
+            flow_run_id=str(UUID(int=1)),
+            flow_name="flow",
+            step=1,
+            total_steps=1,
+            flow_minutes=(1.0,),
+            completed_minutes=0.0,
+            queue=queue,
+        ):
+            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
+                await update(0.5, "msg")  # Must not raise
+
+        # Webhook still enqueued despite label failure
+        assert not queue.empty()
 
 
 class TestFlowContext:
@@ -255,3 +368,88 @@ class TestWebhookWorker:
             await webhook_worker(queue, "http://example.com/hook")
             # Should complete without raising, but send_webhook must have been called
             mock_send.assert_called_once()
+
+
+# --- Integration tests: ContextVar propagation through @pipeline_flow + Prefect ---
+
+
+@pipeline_flow(estimated_minutes=1)
+async def _progress_test_flow(
+    project_name: str,
+    documents: list[Document],
+    flow_options: FlowOptions,
+) -> list[_ProgressTestDoc]:
+    """Test flow that calls progress_update."""
+    await update(0.25, "quarter")
+    await update(0.75, "three-quarters")
+    return [_ProgressTestDoc.create(name="test.md", content="done")]
+
+
+class TestProgressIntegration:
+    """Integration tests: progress_update() called from inside @pipeline_flow."""
+
+    @pytest.mark.integration
+    async def test_progress_propagates_through_pipeline_flow(self):
+        """ContextVar set via flow_context must be visible inside @pipeline_flow."""
+        queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
+
+        with flow_context(
+            webhook_url="http://test.example.com/progress",
+            project_name="test-project",
+            run_id="test-run",
+            flow_run_id=str(UUID(int=1)),
+            flow_name="progress_test_flow",
+            step=1,
+            total_steps=1,
+            flow_minutes=(1.0,),
+            completed_minutes=0.0,
+            queue=queue,
+        ):
+            with prefect_test_harness():
+                await _progress_test_flow("test-project", [], FlowOptions())
+
+        payloads: list[ProgressRun] = []
+        while not queue.empty():
+            item = queue.get_nowait()
+            if item is not None:
+                payloads.append(item)
+
+        assert len(payloads) == 2
+        assert payloads[0].step_progress == 0.25
+        assert payloads[0].message == "quarter"
+        assert payloads[0].status == "progress"
+        assert payloads[1].step_progress == 0.75
+        assert payloads[1].message == "three-quarters"
+
+    @pytest.mark.integration
+    async def test_progress_overall_calculation(self):
+        """Verify overall progress is computed correctly from step weights."""
+        queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
+
+        # Simulate step 2 of 3 flows, with minutes (10, 20, 30), 10 completed
+        with flow_context(
+            webhook_url="http://test.example.com/progress",
+            project_name="test-project",
+            run_id="test-run",
+            flow_run_id=str(UUID(int=1)),
+            flow_name="progress_test_flow",
+            step=2,
+            total_steps=3,
+            flow_minutes=(10.0, 20.0, 30.0),
+            completed_minutes=10.0,
+            queue=queue,
+        ):
+            with prefect_test_harness():
+                await _progress_test_flow("test-project", [], FlowOptions())
+
+        payloads: list[ProgressRun] = []
+        while not queue.empty():
+            item = queue.get_nowait()
+            if item is not None:
+                payloads.append(item)
+
+        assert len(payloads) == 2
+        # First update: fraction=0.25, overall = (10 + 20*0.25) / 60 = 15/60 = 0.25
+        assert payloads[0].progress == 0.25
+        # Second update: fraction=0.75, overall = (10 + 20*0.75) / 60 = 25/60 ≈ 0.4167
+        assert payloads[1].progress == pytest.approx(0.4167, abs=0.001)

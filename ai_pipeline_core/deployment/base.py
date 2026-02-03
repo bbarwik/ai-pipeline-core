@@ -821,7 +821,31 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 else:
                     current_docs = initial_documents or []
 
-                await flow_fn(project_name, current_docs, options)
+                # Set up intra-flow progress context so progress_update() works inside flows
+                flow_minutes = tuple(getattr(f, "estimated_minutes", 1) for f in self.flows)
+                completed_mins = sum(flow_minutes[: max(step - 1, 0)])
+                progress_queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
+                wh_url = context.progress_webhook_url or ""
+                worker = asyncio.create_task(webhook_worker(progress_queue, wh_url)) if wh_url else None
+
+                with flow_context(
+                    webhook_url=wh_url,
+                    project_name=project_name,
+                    run_id=str(run_uuid) if run_uuid else "",
+                    flow_run_id=str(run_uuid) if run_uuid else "",
+                    flow_name=flow_name,
+                    step=step,
+                    total_steps=total_steps,
+                    flow_minutes=flow_minutes,
+                    completed_minutes=completed_mins,
+                    queue=progress_queue,
+                ):
+                    try:
+                        await flow_fn(project_name, current_docs, options)
+                    finally:
+                        progress_queue.put_nowait(None)
+                        if worker:
+                            await worker
 
             # Build result from all documents in store
             if store:
@@ -852,12 +876,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         """
         deployment = self
 
-        @flow(
-            name=self.name,
-            flow_run_name=f"{self.name}-{{project_name}}",
-            persist_result=True,
-            result_serializer="json",
-        )
         async def _deployment_flow(
             project_name: str,
             documents: list[Document],
@@ -875,7 +893,16 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 store.shutdown()
                 set_document_store(None)
 
-        return _deployment_flow
+        # Patch annotations so Prefect generates the parameter schema from the concrete types
+        _deployment_flow.__annotations__["options"] = self.options_type
+        _deployment_flow.__annotations__["return"] = self.result_type
+
+        return flow(
+            name=self.name,
+            flow_run_name=f"{self.name}-{{project_name}}",
+            persist_result=True,
+            result_serializer="json",
+        )(_deployment_flow)
 
 
 __all__ = [

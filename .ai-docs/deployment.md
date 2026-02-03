@@ -1,7 +1,7 @@
 # MODULE: deployment
 # CLASSES: DeploymentContext, DeploymentResult, FlowCallable, PipelineDeployment, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, DownloadedDocument, StatusPayload, ProgressContext
 # DEPENDS: BaseModel, Generic, Protocol, TypedDict
-# SIZE: ~37KB
+# SIZE: ~38KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -122,12 +122,6 @@ Features enabled by default:
         """
         deployment = self
 
-        @flow(
-            name=self.name,
-            flow_run_name=f"{self.name}-{{project_name}}",
-            persist_result=True,
-            result_serializer="json",
-        )
         async def _deployment_flow(
             project_name: str,
             documents: list[Document],
@@ -145,7 +139,16 @@ Features enabled by default:
                 store.shutdown()
                 set_document_store(None)
 
-        return _deployment_flow
+        # Patch annotations so Prefect generates the parameter schema from the concrete types
+        _deployment_flow.__annotations__["options"] = self.options_type
+        _deployment_flow.__annotations__["return"] = self.result_type
+
+        return flow(
+            name=self.name,
+            flow_run_name=f"{self.name}-{{project_name}}",
+            persist_result=True,
+            result_serializer="json",
+        )(_deployment_flow)
 
     @staticmethod
     @abstractmethod
@@ -701,9 +704,14 @@ async def send_webhook(
                 raise
 
 async def update(fraction: float, message: str = "") -> None:
-    """Report intra-flow progress (0.0-1.0). No-op without context."""
+    """Report intra-flow progress (0.0-1.0). No-op without context.
+
+    Sends webhook payload (if webhook_url configured) AND updates Prefect
+    flow run labels (if flow_run_id available) so both push and poll consumers
+    see progress, and staleness detection stays current.
+    """
     ctx = _context.get()
-    if ctx is None or not ctx.webhook_url:
+    if ctx is None:
         return
 
     fraction = max(0.0, min(1.0, fraction))
@@ -713,22 +721,43 @@ async def update(fraction: float, message: str = "") -> None:
     else:
         overall = fraction
     overall = round(max(0.0, min(1.0, overall)), 4)
+    step_progress = round(fraction, 4)
 
-    payload = ProgressRun(
-        flow_run_id=UUID(ctx.flow_run_id) if ctx.flow_run_id else UUID(int=0),
-        project_name=ctx.project_name,
-        state="RUNNING",
-        timestamp=datetime.now(UTC),
-        step=ctx.step,
-        total_steps=ctx.total_steps,
-        flow_name=ctx.flow_name,
-        status="progress",
-        progress=overall,
-        step_progress=round(fraction, 4),
-        message=message,
-    )
+    # Enqueue webhook payload for async delivery
+    if ctx.webhook_url:
+        payload = ProgressRun(
+            flow_run_id=UUID(ctx.flow_run_id) if ctx.flow_run_id else UUID(int=0),
+            project_name=ctx.project_name,
+            state="RUNNING",
+            timestamp=datetime.now(UTC),
+            step=ctx.step,
+            total_steps=ctx.total_steps,
+            flow_name=ctx.flow_name,
+            status="progress",
+            progress=overall,
+            step_progress=step_progress,
+            message=message,
+        )
+        ctx.queue.put_nowait(payload)
 
-    ctx.queue.put_nowait(payload)
+    # Update Prefect labels so polling consumers and staleness detection stay current
+    if ctx.flow_run_id:
+        try:
+            async with get_client() as client:
+                await client.update_flow_run_labels(
+                    flow_run_id=UUID(ctx.flow_run_id),
+                    labels={
+                        "progress.step": ctx.step,
+                        "progress.total_steps": ctx.total_steps,
+                        "progress.flow_name": ctx.flow_name,
+                        "progress.status": "progress",
+                        "progress.progress": overall,
+                        "progress.step_progress": step_progress,
+                        "progress.message": message,
+                    },
+                )
+        except Exception as e:
+            logger.warning(f"Progress label update failed: {e}")
 
 async def webhook_worker(
     queue: asyncio.Queue[ProgressRun | None],
@@ -888,7 +917,7 @@ async def test_basic_remote_deployment(self):
         mock_run.assert_called_once()
 
 # Example: Creation
-# Source: tests/deployment/test_progress.py:152
+# Source: tests/deployment/test_progress.py:265
 def test_creation(self):
     """Test ProgressContext creation."""
     queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
@@ -909,7 +938,7 @@ def test_creation(self):
     assert ctx.total_steps == 3
 
 # Example: Default creation
-# Source: tests/deployment/test_deployment_base.py:70
+# Source: tests/deployment/test_deployment_base.py:72
 def test_default_creation(self):
     """Test default context has empty values."""
     ctx = DeploymentContext()
@@ -920,7 +949,7 @@ def test_default_creation(self):
     assert ctx.output_documents_urls == {}
 
 # Example: Deployment result data
-# Source: tests/deployment/test_deployment_base.py:193
+# Source: tests/deployment/test_deployment_base.py:195
 def test_deployment_result_data(self):
     """Test DeploymentResultData."""
     data = DeploymentResultData(success=True, error=None)

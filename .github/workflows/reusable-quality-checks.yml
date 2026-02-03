@@ -134,7 +134,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run ClickHouse integration tests
-        run: pytest -v --tb=short -m "clickhouse" --maxfail=1 --durations=30
+        run: pytest -v --tb=short -m "clickhouse" --maxfail=1 --durations=30 -n 0
 
   integration-test:
     if: github.event_name == 'push' || github.event_name == 'workflow_call'

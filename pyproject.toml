@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.4.3"
+version = "0.4.4"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -61,7 +61,7 @@ dev = [
 minversion = "8.0"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-q -n 8 -m 'not integration and not clickhouse'"
+addopts = "-q -m 'not integration and not clickhouse'"
 testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
