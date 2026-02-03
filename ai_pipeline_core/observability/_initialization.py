@@ -8,7 +8,6 @@ import importlib
 from typing import Any, Protocol
 from uuid import UUID
 
-from lmnr import Laminar
 from opentelemetry import trace as otel_trace
 from pydantic import BaseModel, ConfigDict
 
@@ -180,10 +179,12 @@ def initialize_observability(config: ObservabilityConfig | None = None) -> None:
     if config is None:
         config = _build_config_from_settings()
 
-    # 1. Laminar
+    # 1. Laminar - use canonical initializer from tracing module
     if config.has_lmnr:
         try:
-            Laminar.initialize(project_api_key=config.lmnr_project_api_key, export_timeout_seconds=15)
+            from ai_pipeline_core.observability import tracing  # noqa: PLC0415
+
+            tracing._initialise_laminar()
             logger.info("Laminar initialized")
         except Exception as e:
             logger.warning(f"Laminar initialization failed: {e}")

@@ -216,7 +216,9 @@ def trace(  # noqa: UP047
             return f
 
         # --- Pre-computation (done once when the function is decorated) ---
-        _initialise_laminar()
+        # NOTE: _initialise_laminar() is NOT called here (at decoration/import time)
+        # to allow LMNR_SPAN_CONTEXT to be set before Laminar.initialize() runs.
+        # It's called lazily in the wrapper functions at first execution.
         sig = inspect.signature(f)
         is_coroutine = inspect.iscoroutinefunction(f)
         observe_name = name or f.__name__
@@ -366,6 +368,9 @@ def trace(  # noqa: UP047
             Returns:
                 The result of the wrapped function.
             """
+            # Lazy initialization: called at first execution, not at decoration time.
+            # This allows LMNR_SPAN_CONTEXT to be set before Laminar.initialize().
+            _initialise_laminar()
             observe_params = _prepare_and_get_observe_params(kwargs)
             observed_func = bound_observe(**observe_params)(f)
             return observed_func(*args, **kwargs)
@@ -377,6 +382,9 @@ def trace(  # noqa: UP047
             Returns:
                 The result of the wrapped function.
             """
+            # Lazy initialization: called at first execution, not at decoration time.
+            # This allows LMNR_SPAN_CONTEXT to be set before Laminar.initialize().
+            _initialise_laminar()
             observe_params = _prepare_and_get_observe_params(kwargs)
             observed_func = bound_observe(**observe_params)(f)
             return await observed_func(*args, **kwargs)  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]

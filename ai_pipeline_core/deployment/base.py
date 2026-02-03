@@ -661,7 +661,10 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         except Exception as e:
             logger.warning(f"Failed to initialize observability: {e}")
             with contextlib.suppress(Exception):
-                Laminar.initialize(export_timeout_seconds=15)
+                # Use canonical initializer to ensure consistent Laminar setup
+                from ai_pipeline_core.observability import tracing
+
+                tracing._initialise_laminar()
 
         deployment = self
 
@@ -882,13 +885,34 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             options: FlowOptions,
             context: DeploymentContext,
         ) -> DeploymentResult:
+            # Initialize observability for remote workers
+            try:
+                initialize_observability()
+            except Exception as e:
+                logger.warning(f"Failed to initialize observability: {e}")
+                with contextlib.suppress(Exception):
+                    # Use canonical initializer to ensure consistent Laminar setup
+                    from ai_pipeline_core.observability import tracing
+
+                    tracing._initialise_laminar()
+
+            # Set session ID from Prefect flow run for trace grouping
+            flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else str(uuid4())  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
+            os.environ["LMNR_SESSION_ID"] = flow_run_id
+
             store = create_document_store(
                 settings,
                 summary_generator=_build_summary_generator(),
             )
             set_document_store(store)
             try:
-                return await deployment.run(project_name, documents, cast(Any, options), context)
+                # Create parent span to group all traces under a single deployment trace
+                with Laminar.start_as_current_span(
+                    name=f"{deployment.name}-{project_name}",
+                    input={"project_name": project_name, "options": options.model_dump()},
+                    session_id=flow_run_id,
+                ):
+                    return await deployment.run(project_name, documents, cast(Any, options), context)
             finally:
                 store.shutdown()
                 set_document_store(None)

@@ -10,6 +10,7 @@ import contextlib
 import inspect
 import json
 import os
+import threading
 from collections.abc import Callable
 from functools import wraps
 from typing import Any, Literal, ParamSpec, TypeVar, cast, overload
@@ -220,19 +221,42 @@ class TraceInfo(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_laminar_initialized = False
+_laminar_init_lock = threading.Lock()
+
+
 def _initialise_laminar() -> None:
-    """Initialize Laminar SDK with project configuration.
+    """Initialize Laminar SDK with project configuration (lazy, once per process).
 
     Sets up the Laminar observability client with the project API key
     from settings. Disables automatic OpenAI instrumentation to avoid
     conflicts with our custom tracing.
 
-    Called once per process. Multiple calls are safe (Laminar handles idempotency).
+    IMPORTANT: This is called lazily at first trace execution (not at decoration time)
+    to allow LMNR_SPAN_CONTEXT environment variable to be set before initialization.
+    Laminar reads LMNR_SPAN_CONTEXT during initialize() to establish parent context
+    for cross-process tracing.
+
+    Uses double-checked locking pattern for thread safety. The flag is set AFTER
+    successful initialization to prevent permanently disabled tracing on init failure.
     """
-    if settings.lmnr_project_api_key:
-        Laminar.initialize(
-            project_api_key=settings.lmnr_project_api_key, disabled_instruments=[Instruments.OPENAI] if Instruments.OPENAI else [], export_timeout_seconds=15
-        )
+    global _laminar_initialized  # noqa: PLW0603
+
+    # Fast path: already initialized (no lock needed)
+    if _laminar_initialized:
+        return
+
+    with _laminar_init_lock:
+        # Double-check inside lock
+        if _laminar_initialized:
+            return
+
+        if settings.lmnr_project_api_key:
+            disabled = [Instruments.OPENAI] if Instruments.OPENAI else []
+            Laminar.initialize(project_api_key=settings.lmnr_project_api_key, disabled_instruments=disabled, export_timeout_seconds=15)
+
+        # Set flag AFTER successful initialization
+        _laminar_initialized = True
 
 
 # Overload for calls like @trace(name="...", level="debug")
@@ -400,7 +424,9 @@ def trace(  # noqa: UP047
             return f
 
         # --- Pre-computation (done once when the function is decorated) ---
-        _initialise_laminar()
+        # NOTE: _initialise_laminar() is NOT called here (at decoration/import time)
+        # to allow LMNR_SPAN_CONTEXT to be set before Laminar.initialize() runs.
+        # It's called lazily in the wrapper functions at first execution.
         sig = inspect.signature(f)
         is_coroutine = inspect.iscoroutinefunction(f)
         observe_name = name or f.__name__
@@ -550,6 +576,9 @@ def trace(  # noqa: UP047
             Returns:
                 The result of the wrapped function.
             """
+            # Lazy initialization: called at first execution, not at decoration time.
+            # This allows LMNR_SPAN_CONTEXT to be set before Laminar.initialize().
+            _initialise_laminar()
             observe_params = _prepare_and_get_observe_params(kwargs)
             observed_func = bound_observe(**observe_params)(f)
             return observed_func(*args, **kwargs)
@@ -561,6 +590,9 @@ def trace(  # noqa: UP047
             Returns:
                 The result of the wrapped function.
             """
+            # Lazy initialization: called at first execution, not at decoration time.
+            # This allows LMNR_SPAN_CONTEXT to be set before Laminar.initialize().
+            _initialise_laminar()
             observe_params = _prepare_and_get_observe_params(kwargs)
             observed_func = bound_observe(**observe_params)(f)
             return await observed_func(*args, **kwargs)  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
