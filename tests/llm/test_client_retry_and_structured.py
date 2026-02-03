@@ -93,6 +93,73 @@ class TestRetryLogic:
         assert "Either context or messages must be provided" in str(exc_info.value)
 
 
+class TestCacheRemovalOnRetry:
+    """Test that cache is properly disabled on non-timeout retry."""
+
+    @pytest.mark.asyncio
+    async def test_prompt_cache_key_removed_on_non_timeout_error(self):
+        """Test that prompt_cache_key is removed from completion_kwargs on non-timeout error."""
+        with patch("ai_pipeline_core.llm.client._generate") as mock_generate:
+            # First call fails with ValueError (non-timeout), second succeeds
+            mock_response = MagicMock()
+            mock_response.content = "Success"
+            mock_response.reasoning_content = None
+            mock_response.get_laminar_metadata.return_value = {}
+            mock_response.validate_output.return_value = None
+            mock_generate.side_effect = [ValueError("Test error"), mock_response]
+
+            with patch("asyncio.sleep"):
+                with patch("ai_pipeline_core.llm.client.Laminar") as mock_laminar:
+                    mock_span = MagicMock()
+                    mock_laminar.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
+                    mock_laminar.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+
+                    messages = AIMessages(["Test message"])
+                    context = AIMessages(["Large context " * 1000])  # Large enough to trigger caching
+                    options = ModelOptions(retries=2, retry_delay_seconds=0, cache_ttl="300s")
+
+                    # Use gpt model to avoid Gemini's minimum context size check
+                    await _generate_with_retry("gpt-5.1", context, messages, options)
+
+                    # Check that the second call had prompt_cache_key removed
+                    assert mock_generate.call_count == 2
+                    second_call_kwargs = mock_generate.call_args_list[1][0][2]  # completion_kwargs
+                    assert "prompt_cache_key" not in second_call_kwargs
+                    assert second_call_kwargs["extra_body"]["cache"] == {"no-cache": True}
+
+    @pytest.mark.asyncio
+    async def test_cache_not_removed_on_timeout_error(self):
+        """Test that cache is NOT removed on timeout error (only on other errors)."""
+        with patch("ai_pipeline_core.llm.client._generate") as mock_generate:
+            # First call fails with TimeoutError, second succeeds
+            mock_response = MagicMock()
+            mock_response.content = "Success"
+            mock_response.reasoning_content = None
+            mock_response.get_laminar_metadata.return_value = {}
+            mock_response.validate_output.return_value = None
+
+            mock_generate.side_effect = [TimeoutError("Timeout"), mock_response]
+
+            with patch("asyncio.sleep"):
+                with patch("ai_pipeline_core.llm.client.Laminar") as mock_laminar:
+                    mock_span = MagicMock()
+                    mock_laminar.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
+                    mock_laminar.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+
+                    messages = AIMessages(["Test message"])
+                    context = AIMessages(["Large context " * 1000])
+                    options = ModelOptions(retries=2, retry_delay_seconds=0, cache_ttl="300s")
+
+                    # Use gpt model to avoid Gemini's minimum context size check
+                    await _generate_with_retry("gpt-5.1", context, messages, options)
+
+                    # Check that the second call still has prompt_cache_key (not removed for timeout)
+                    assert mock_generate.call_count == 2
+                    second_call_kwargs = mock_generate.call_args_list[1][0][2]
+                    # prompt_cache_key should still be present for timeout errors
+                    assert "prompt_cache_key" in second_call_kwargs
+
+
 class TestStructuredGeneration:
     """Test structured generation with Pydantic models."""
 

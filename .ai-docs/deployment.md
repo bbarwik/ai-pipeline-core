@@ -1,9 +1,13 @@
 # MODULE: deployment
-# CLASSES: DeploymentContext, DeploymentResult, FlowCallable, PipelineDeployment, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, DownloadedDocument, StatusPayload, ProgressContext
-# DEPENDS: BaseModel, Generic, Protocol, TypedDict
-# SIZE: ~42KB
+# CLASSES: DeploymentContext, DeploymentResult, FlowCallable, PipelineDeployment, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, DownloadedDocument, StatusPayload, DeploymentHookResult, DeploymentHook, ProgressContext
+# DEPENDS: ABC, BaseModel, Generic, Protocol, TypedDict
+# SIZE: ~45KB
 
 # === DEPENDENCIES (Resolved) ===
+
+class ABC:
+    """Python abstract base class marker."""
+    ...
 
 class BaseModel:
     """Pydantic base model. Fields are typed class attributes."""
@@ -603,10 +607,15 @@ deployment creation/updates, and all edge cases automatically."""
         # Phase 1: Build flow package
         tarball = self._build_package()
 
-        # Phase 2: Build agent bundles (if configured)
-        agent_builds = self._build_agents()
+        # Phase 2: Run deployment hooks (if configured)
+        hook_result = await self._run_deployment_hooks()
 
-        # Phase 3: Build vendor packages from [tool.deploy].vendor_packages
+        # Phase 3: Build agent bundles (legacy path, only if no hooks produced agents)
+        agent_builds: dict[str, dict[str, Any]] = {}
+        if hook_result is None or not any(path.startswith("agents/") for path, _ in hook_result.artifacts):
+            agent_builds = self._build_agents()
+
+        # Phase 4: Build vendor packages from [tool.deploy].vendor_packages
         vendor_wheels = self._build_vendor_packages()
 
         # Build cli-agents wheel if source is configured — it's a private package
@@ -620,14 +629,22 @@ deployment creation/updates, and all edge cases automatically."""
                     vendor_wheels.append(cli_wheel)
                     self._success(f"Built cli-agents vendor wheel: {cli_wheel.name}")
 
-        # Phase 4: Upload flow package + vendor wheels
+        # Phase 5: Upload flow package + vendor wheels
         await self._upload_package(tarball, vendor_wheels)
 
-        # Phase 5: Upload agent bundles
+        # Phase 6: Upload agent bundles (legacy path)
         await self._upload_agents(agent_builds)
 
-        # Phase 6: Create/update Prefect deployment
-        await self._deploy_via_api(agent_builds)
+        # Phase 7: Upload hook artifacts
+        if hook_result:
+            await self._upload_hook_artifacts(hook_result)
+
+        # Phase 8: Create/update Prefect deployment
+        # Merge job_variables from hooks and legacy agent_builds
+        combined_job_vars: dict[str, Any] = {}
+        if hook_result and hook_result.job_variables:
+            combined_job_vars = hook_result.job_variables
+        await self._deploy_via_api(agent_builds, hook_job_variables=combined_job_vars)
 
         print()
         print("=" * 70)
@@ -652,6 +669,60 @@ class StatusPayload(TypedDict):
     state: str
     state_name: str
     timestamp: str
+
+
+@dataclass
+class DeploymentHookResult:
+    """Result from a deployment hook.
+
+Attributes:
+    artifacts: List of (relative_path, bytes) tuples to upload
+    job_variables: Dict to deep-merge into Prefect job_variables
+        Example: {"env": {"MY_VAR": "value"}}"""
+    artifacts: list[tuple[str, bytes]] = field(default_factory=list)
+    job_variables: dict[str, Any] = field(default_factory=dict)
+
+
+class DeploymentHook(ABC):
+    """Abstract base class for deployment hooks.
+
+Implementations extend the deployment process with custom logic.
+Each hook is called once during deployment and can:
+- Build additional artifacts (agent bundles, config files, etc.)
+- Add environment variables to Prefect worker configuration
+
+Hooks are loaded explicitly from pyproject.toml configuration,
+not auto-registered, for predictable behavior."""
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Hook name for logging and debugging."""
+
+    @abstractmethod
+    async def process(
+        self,
+        project_root: Path,
+        pyproject: dict[str, Any],
+        build_dir: Path,
+        upload_uri: str,
+    ) -> DeploymentHookResult | None:
+        """Process the deployment.
+
+        Called during deployment after the main package is built.
+        Return None to skip (e.g., if this hook doesn't apply),
+        or DeploymentHookResult with artifacts and job_variables.
+
+        Args:
+            project_root: Root directory of the project being deployed
+            pyproject: Parsed pyproject.toml contents
+            build_dir: Temporary directory for build artifacts
+            upload_uri: Base URI where artifacts will be uploaded
+                (e.g., "gs://bucket/flows/my-project")
+
+        Returns:
+            DeploymentHookResult with artifacts and job_variables,
+            or None to skip this hook
+        """
 
 
 @dataclass(frozen=True, slots=True)
@@ -732,6 +803,43 @@ async def send_webhook(
             else:
                 logger.exception(f"Webhook failed after {max_retries} attempts")
                 raise
+
+def load_deployment_hooks(pyproject: dict[str, Any]) -> list[DeploymentHook]:
+    """Load deployment hooks from pyproject.toml configuration.
+
+    Hooks are specified as module paths in [tool.deploy.hooks].
+    Each module must have a get_hook() function returning a DeploymentHook.
+
+    Args:
+        pyproject: Parsed pyproject.toml contents
+
+    Returns:
+        List of DeploymentHook instances
+
+    Example pyproject.toml:
+        [tool.deploy]
+        hooks = ["cli_agents.pipeline_integration.deployment_hook"]
+    """
+    import importlib
+
+    hook_modules = pyproject.get("tool", {}).get("deploy", {}).get("hooks", [])
+    hooks: list[DeploymentHook] = []
+
+    for module_path in hook_modules:
+        try:
+            module = importlib.import_module(module_path)
+            if hasattr(module, "get_hook"):
+                hook = module.get_hook()
+                if isinstance(hook, DeploymentHook):
+                    hooks.append(hook)
+                else:
+                    raise TypeError(f"get_hook() must return DeploymentHook, got {type(hook).__name__}")
+            else:
+                raise AttributeError(f"Hook module {module_path} must have get_hook() function")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load deployment hook '{module_path}': {e}") from e
+
+    return hooks
 
 async def update(fraction: float, message: str = "") -> None:
     """Report intra-flow progress (0.0-1.0). No-op without context.

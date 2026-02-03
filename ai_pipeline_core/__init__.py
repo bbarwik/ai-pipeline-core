@@ -15,7 +15,17 @@ os.environ.setdefault("PREFECT_CLOUD_ENABLE_ORCHESTRATION_TELEMETRY", "false")
 if "prefect" in sys.modules and get_current_settings().cloud.enable_orchestration_telemetry:
     refresh_global_settings_context()
 
-from . import llm
+from . import agents, llm
+from .agents import (
+    AgentOutputDocument,
+    AgentProvider,
+    AgentResult,
+    get_agent_provider,
+    register_agent_provider,
+    reset_agent_provider,
+    run_agent,
+    temporary_provider,
+)
 from .deployment import DeploymentContext, DeploymentResult, PipelineDeployment, progress
 from .deployment.remote import remote_deployment
 from .document_store import DocumentStore, SummaryGenerator, create_document_store, get_document_store, set_document_store
@@ -64,11 +74,16 @@ from .prompt_manager import PromptManager
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
 
-__version__ = "0.4.9"
+__version__ = "0.5.0"
 
 __all__ = [
     "AIMessageType",
     "AIMessages",
+    # Agent framework
+    "AgentOutputDocument",
+    "AgentProvider",
+    "AgentResult",
+    # Documents
     "Attachment",
     "DeploymentContext",
     "DeploymentResult",
@@ -95,11 +110,13 @@ __all__ = [
     "TaskDocumentContext",
     "TraceInfo",
     "TraceLevel",
+    "agents",
     "canonical_name_key",
     "create_document_store",
     "disable_run_logger",
     "generate",
     "generate_structured",
+    "get_agent_provider",
     "get_document_store",
     "get_logger",
     "get_pipeline_logger",
@@ -112,12 +129,16 @@ __all__ = [
     "process_image",
     "process_image_to_documents",
     "progress",
+    "register_agent_provider",
     "remote_deployment",
+    "reset_agent_provider",
     "reset_run_context",
+    "run_agent",
     "sanitize_url",
     "set_document_store",
     "set_run_context",
     "set_trace_cost",
     "setup_logging",
+    "temporary_provider",
     "trace",
 ]

@@ -440,6 +440,8 @@ async def _generate_with_retry(  # noqa: PLR0917
             if not isinstance(e, asyncio.TimeoutError):
                 # disable cache if it's not a timeout because it may cause an error
                 completion_kwargs["extra_body"]["cache"] = {"no-cache": True}
+                # remove prompt_cache_key to fully disable caching on retry
+                completion_kwargs.pop("prompt_cache_key", None)
                 # sometimes there are issues with cache so cache is removed in case of failure
                 processed_messages = _remove_cache_control(processed_messages)
 

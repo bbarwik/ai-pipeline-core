@@ -4,17 +4,18 @@ Auto-generated guide index. Do not edit manually.
 
 ## Reading Order
 
-1. [deployment](deployment.md)
-2. [document_store](document_store.md)
-3. [documents](documents.md)
-4. [exceptions](exceptions.md)
-5. [images](images.md)
-6. [llm](llm.md)
-7. [logging](logging.md)
-8. [observability](observability.md)
-9. [pipeline](pipeline.md)
-10. [prompt_manager](prompt_manager.md)
-11. [settings](settings.md)
+1. [agents](agents.md)
+2. [deployment](deployment.md)
+3. [document_store](document_store.md)
+4. [documents](documents.md)
+5. [exceptions](exceptions.md)
+6. [images](images.md)
+7. [llm](llm.md)
+8. [logging](logging.md)
+9. [observability](observability.md)
+10. [pipeline](pipeline.md)
+11. [prompt_manager](prompt_manager.md)
+12. [settings](settings.md)
 
 ## Task-Based Lookup
 
@@ -36,15 +37,16 @@ Auto-generated guide index. Do not edit manually.
 
 | Module | Size |
 | ------ | ---- |
-| deployment | 42,768 bytes |
+| agents | 17,604 bytes |
+| deployment | 46,774 bytes |
 | document_store | 16,490 bytes |
 | documents | 40,984 bytes |
 | exceptions | 1,461 bytes |
 | images | 10,055 bytes |
-| llm | 54,646 bytes |
+| llm | 54,748 bytes |
 | logging | 14,785 bytes |
 | observability | 23,209 bytes |
 | pipeline | 28,189 bytes |
 | prompt_manager | 12,924 bytes |
 | settings | 7,582 bytes |
-| **Total** | **253,093 bytes** |
+| **Total** | **274,805 bytes** |

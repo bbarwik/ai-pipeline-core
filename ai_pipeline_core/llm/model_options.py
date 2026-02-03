@@ -15,6 +15,7 @@ class ModelOptions(BaseModel):
     ModelOptions encapsulates all configuration parameters for model
     generation, including model behavior settings, retry logic, and
     advanced features. All fields are optional with sensible defaults.
+    Extra fields are forbidden to catch typos and incorrect usage.
 
     Attributes:
         temperature: Controls randomness in generation (0.0-2.0).
@@ -105,6 +106,8 @@ class ModelOptions(BaseModel):
     like "120s", "5m", "1h" or None (default: "300s"). Stop sequences are limited to 4 by
     most providers.
     """
+
+    model_config = {"extra": "forbid"}
 
     temperature: float | None = None
     system_prompt: str | None = None

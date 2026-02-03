@@ -34,6 +34,7 @@ from prefect.deployments.runner import RunnerDeployment
 from prefect.flows import load_flow_from_entrypoint
 from prefect_gcp.cloud_storage import GcpCredentials, GcsBucket  # pyright: ignore[reportMissingTypeStubs]
 
+from ai_pipeline_core.deployment.hooks import DeploymentHookResult, load_deployment_hooks
 from ai_pipeline_core.settings import settings
 
 # ============================================================================
@@ -370,6 +371,91 @@ class Deployer:
 
             self._success(f"Agent '{agent_name}' uploaded ({len(build_info['files'])} files)")
 
+    async def _run_deployment_hooks(self) -> DeploymentHookResult | None:
+        """Run deployment hooks from pyproject.toml [tool.deploy].hooks.
+
+        Returns:
+            Combined DeploymentHookResult from all hooks, or None if no hooks configured
+        """
+        hooks = load_deployment_hooks(self._pyproject_data)
+        if not hooks:
+            return None
+
+        self._info(f"Running {len(hooks)} deployment hook(s): {', '.join(h.name for h in hooks)}")
+
+        project_root = Path.cwd()
+        build_dir = Path(tempfile.mkdtemp(prefix="deploy_hooks_"))
+        upload_uri = f"gs://{self.config['bucket']}/{self.config['folder']}"
+
+        # Aggregate results from all hooks
+        combined_artifacts: list[tuple[str, bytes]] = []
+        combined_job_vars: dict[str, Any] = {}
+
+        try:
+            for hook in hooks:
+                self._info(f"Running hook: {hook.name}")
+                result = await hook.process(
+                    project_root=project_root,
+                    pyproject=self._pyproject_data,
+                    build_dir=build_dir,
+                    upload_uri=upload_uri,
+                )
+
+                if result is None:
+                    self._info(f"Hook '{hook.name}' skipped (not applicable)")
+                    continue
+
+                combined_artifacts.extend(result.artifacts)
+
+                # Deep merge job_variables
+                for key, value in result.job_variables.items():
+                    if key not in combined_job_vars:
+                        combined_job_vars[key] = value
+                    elif isinstance(combined_job_vars[key], dict) and isinstance(value, dict):
+                        combined_job_vars[key].update(value)
+                    else:
+                        combined_job_vars[key] = value
+
+                self._success(f"Hook '{hook.name}' completed ({len(result.artifacts)} artifacts)")
+
+            # Return result if there are artifacts OR job_variables
+            if not combined_artifacts and not combined_job_vars:
+                return None
+
+            return DeploymentHookResult(
+                artifacts=combined_artifacts,
+                job_variables=combined_job_vars,
+            )
+
+        finally:
+            # Clean up build directory
+            import shutil
+
+            shutil.rmtree(build_dir, ignore_errors=True)
+
+    async def _upload_hook_artifacts(self, hook_result: DeploymentHookResult):
+        """Upload artifacts from deployment hooks.
+
+        Args:
+            hook_result: Result from _run_deployment_hooks()
+        """
+        if not hook_result.artifacts:
+            return
+
+        flow_folder = self.config["folder"]
+        self._info(f"Uploading {len(hook_result.artifacts)} hook artifact(s)")
+
+        # Group artifacts by directory for efficient upload
+        for path, content in hook_result.artifacts:
+            # Determine the bucket folder for this artifact
+            artifact_folder = f"{flow_folder}/{'/'.join(path.split('/')[:-1])}" if "/" in path else flow_folder
+            filename = path.split("/")[-1]
+
+            bucket = self._create_gcs_bucket(artifact_folder)
+            await bucket.write_path(filename, content)
+
+        self._success("Hook artifacts uploaded")
+
     async def _upload_package(self, tarball: Path, vendor_wheels: list[Path] | None = None):
         """Upload package tarball and vendor wheels to Google Cloud Storage.
 
@@ -392,7 +478,11 @@ class Deployer:
             await bucket.write_path(wheel.name, wheel.read_bytes())
             self._success(f"Vendor wheel uploaded: {wheel.name}")
 
-    async def _deploy_via_api(self, agent_builds: dict[str, dict[str, Any]] | None = None):
+    async def _deploy_via_api(
+        self,
+        agent_builds: dict[str, dict[str, Any]] | None = None,
+        hook_job_variables: dict[str, Any] | None = None,
+    ):
         """Create or update Prefect deployment using RunnerDeployment pattern.
 
         This is the official Prefect approach that:
@@ -403,6 +493,7 @@ class Deployer:
         Args:
             agent_builds: Output from _build_agents(). If non-empty, sets
                 AGENT_BUNDLES_URI env var on the deployment.
+            hook_job_variables: Job variables from deployment hooks to merge.
         """
         # Define entrypoint (assumes flow function has same name as package)
         entrypoint = f"{self.config['package']}:{self.config['package']}"
@@ -457,12 +548,24 @@ class Deployer:
         # This is the official Prefect pattern that handles all the complexity
         self._info(f"Creating deployment for flow '{flow.name}'")  # pyright: ignore[reportPossiblyUnboundVariable]
 
-        # Set AGENT_BUNDLES_URI env var if agents were built
+        # Start with hook job_variables (if any)
         job_variables: dict[str, Any] = {}
-        if agent_builds:
+        if hook_job_variables:
+            for key, value in hook_job_variables.items():
+                if key not in job_variables:
+                    job_variables[key] = value
+                elif isinstance(job_variables[key], dict) and isinstance(value, dict):
+                    job_variables[key].update(value)
+                else:
+                    job_variables[key] = value
+
+        # Set AGENT_BUNDLES_URI env var if agents were built (legacy path)
+        if agent_builds and "env" not in job_variables:
             bundles_uri = f"gs://{self.config['bucket']}/{self.config['folder']}/agents"
             job_variables["env"] = {"AGENT_BUNDLES_URI": bundles_uri}
             self._info(f"Setting AGENT_BUNDLES_URI={bundles_uri}")
+        elif "env" in job_variables and "AGENT_BUNDLES_URI" in job_variables.get("env", {}):
+            self._info(f"Setting AGENT_BUNDLES_URI={job_variables['env']['AGENT_BUNDLES_URI']}")
 
         deployment = RunnerDeployment(
             name=self.config["package"],
@@ -521,10 +624,15 @@ class Deployer:
         # Phase 1: Build flow package
         tarball = self._build_package()
 
-        # Phase 2: Build agent bundles (if configured)
-        agent_builds = self._build_agents()
+        # Phase 2: Run deployment hooks (if configured)
+        hook_result = await self._run_deployment_hooks()
 
-        # Phase 3: Build vendor packages from [tool.deploy].vendor_packages
+        # Phase 3: Build agent bundles (legacy path, only if no hooks produced agents)
+        agent_builds: dict[str, dict[str, Any]] = {}
+        if hook_result is None or not any(path.startswith("agents/") for path, _ in hook_result.artifacts):
+            agent_builds = self._build_agents()
+
+        # Phase 4: Build vendor packages from [tool.deploy].vendor_packages
         vendor_wheels = self._build_vendor_packages()
 
         # Build cli-agents wheel if source is configured — it's a private package
@@ -538,14 +646,22 @@ class Deployer:
                     vendor_wheels.append(cli_wheel)
                     self._success(f"Built cli-agents vendor wheel: {cli_wheel.name}")
 
-        # Phase 4: Upload flow package + vendor wheels
+        # Phase 5: Upload flow package + vendor wheels
         await self._upload_package(tarball, vendor_wheels)
 
-        # Phase 5: Upload agent bundles
+        # Phase 6: Upload agent bundles (legacy path)
         await self._upload_agents(agent_builds)
 
-        # Phase 6: Create/update Prefect deployment
-        await self._deploy_via_api(agent_builds)
+        # Phase 7: Upload hook artifacts
+        if hook_result:
+            await self._upload_hook_artifacts(hook_result)
+
+        # Phase 8: Create/update Prefect deployment
+        # Merge job_variables from hooks and legacy agent_builds
+        combined_job_vars: dict[str, Any] = {}
+        if hook_result and hook_result.job_variables:
+            combined_job_vars = hook_result.job_variables
+        await self._deploy_via_api(agent_builds, hook_job_variables=combined_job_vars)
 
         print()
         print("=" * 70)

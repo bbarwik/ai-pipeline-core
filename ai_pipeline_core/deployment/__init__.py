@@ -14,12 +14,15 @@ from .contract import (
     ProgressRun,
     RunResponse,
 )
+from .hooks import DeploymentHook, DeploymentHookResult, load_deployment_hooks
 from .progress import ProgressContext, flow_context, webhook_worker
 from .progress import update as progress_update
 
 __all__ = [
     "CompletedRun",
     "DeploymentContext",
+    "DeploymentHook",
+    "DeploymentHookResult",
     "DeploymentResult",
     "DeploymentResultData",
     "FailedRun",
@@ -29,6 +32,7 @@ __all__ = [
     "ProgressRun",
     "RunResponse",
     "flow_context",
+    "load_deployment_hooks",
     "progress_update",
     "webhook_worker",
 ]

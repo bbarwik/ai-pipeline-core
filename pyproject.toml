@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.4.9"
+version = "0.5.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -137,13 +137,17 @@ ignore = [
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "TID251"]
+"tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "TID251"]
 "examples/**/*.py" = ["D", "DOC", "PLC0415", "S", "ARG", "T20", "RUF029"]
 "dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
 ".vulture_whitelist.py" = ["B018", "E402", "F401", "D"]
 "ai_pipeline_core/__init__.py" = ["RUF067"]
+"ai_pipeline_core/agents/base.py" = ["PLR6301", "B027"]
+"ai_pipeline_core/agents/documents.py" = ["C901", "PLR0912"]
+"ai_pipeline_core/agents/registry.py" = ["PLW0603"]
 "ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046"]
-"ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC2701", "S404", "S602", "S603", "ASYNC"]
+"ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912"]
+"ai_pipeline_core/deployment/hooks.py" = ["PLC0415"]
 "ai_pipeline_core/deployment/remote.py" = ["UP047"]
 "ai_pipeline_core/deployment/progress.py" = ["RUF029"]
 "ai_pipeline_core/documents/document.py" = ["PLR0904"]
