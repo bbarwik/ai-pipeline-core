@@ -1,7 +1,7 @@
 # MODULE: deployment
 # CLASSES: DeploymentContext, DeploymentResult, FlowCallable, PipelineDeployment, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, DownloadedDocument, StatusPayload, ProgressContext
 # DEPENDS: BaseModel, Generic, Protocol, TypedDict
-# SIZE: ~36KB
+# SIZE: ~37KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -273,16 +273,39 @@ Features enabled by default:
                 else:
                     current_docs = input_docs
 
-                try:
-                    await active_flow(project_name, current_docs, options.model_dump())
-                except Exception as e:
-                    # Upload partial results on failure
-                    if context.output_documents_urls and store:
-                        all_docs = await store.load(run_scope, self._all_document_types())
-                        await upload_documents(all_docs, context.output_documents_urls)
-                    await self._send_completion(context, flow_run_id, project_name, result=None, error=str(e))
-                    completion_sent = True
-                    raise
+                # Set up intra-flow progress context so progress_update() works inside flows
+                flow_minutes = tuple(getattr(f, "estimated_minutes", 1) for f in self.flows)
+                completed_mins = sum(flow_minutes[: max(step - 1, 0)])
+                progress_queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
+                wh_url = context.progress_webhook_url or ""
+                worker = asyncio.create_task(webhook_worker(progress_queue, wh_url)) if wh_url else None
+
+                with flow_context(
+                    webhook_url=wh_url,
+                    project_name=project_name,
+                    run_id=flow_run_id,
+                    flow_run_id=flow_run_id,
+                    flow_name=flow_name,
+                    step=step,
+                    total_steps=total_steps,
+                    flow_minutes=flow_minutes,
+                    completed_minutes=completed_mins,
+                    queue=progress_queue,
+                ):
+                    try:
+                        await active_flow(project_name, current_docs, options.model_dump())
+                    except Exception as e:
+                        # Upload partial results on failure
+                        if context.output_documents_urls and store:
+                            all_docs = await store.load(run_scope, self._all_document_types())
+                            await upload_documents(all_docs, context.output_documents_urls)
+                        await self._send_completion(context, flow_run_id, project_name, result=None, error=str(e))
+                        completion_sent = True
+                        raise
+                    finally:
+                        progress_queue.put_nowait(None)
+                        if worker:
+                            await worker
 
                 # Per-flow upload (load from store since @pipeline_flow saves there)
                 if context.output_documents_urls and store and output_types:

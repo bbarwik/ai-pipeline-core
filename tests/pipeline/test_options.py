@@ -19,10 +19,10 @@ class TestFlowOptionsInheritance:
         assert not hasattr(options, "core_model")
         assert not hasattr(options, "small_model")
 
-    def test_base_flow_options_ignores_extra(self):
-        """Test that base FlowOptions silently ignores unknown fields."""
+    def test_base_flow_options_accepts_extra(self):
+        """Test that base FlowOptions accepts extra fields (extra='allow')."""
         options = FlowOptions(unknown_field="value")
-        assert not hasattr(options, "unknown_field")
+        assert options.unknown_field == "value"
 
     def test_flow_options_is_frozen(self):
         """Test that FlowOptions instances are immutable."""
