@@ -1,0 +1,94 @@
+rules:
+  # Rule: async def must have await (backup for ruff RUF029)
+  # Excludes: Protocol stubs, ABC base classes, in-memory implementations
+  - id: async-function-without-await
+    patterns:
+      - pattern: |
+          async def $F(...):
+              ...
+      - pattern-not: |
+          async def $F(...):
+              ...
+              await ...
+      - pattern-not: |
+          async def $F(...):
+              ...
+              async for ... in ...:
+                  ...
+      - pattern-not: |
+          async def $F(...):
+              ...
+              async with ...:
+                  ...
+      # Allow stubs (just ... or pass)
+      - pattern-not: |
+          async def $F(...):
+              ...
+    message: "async function '$F' contains no await/async for/async with — remove async or add async operation"
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+      exclude:
+        - "**/tests/**"
+        - "**/examples/**"
+        - "**/protocol.py"
+        - "**/protocols.py"
+        - "**/*_protocol.py"
+        - "**/base.py"
+        - "**/memory.py"
+
+  # Rule: Protocol separation - Protocols must be in dedicated files
+  # Excludes internal protocols (underscore-prefixed) and files that are already dedicated
+  - id: protocol-in-dedicated-files
+    pattern: |
+      class $P(Protocol):
+          ...
+    paths:
+      include: ["ai_pipeline_core/"]
+      exclude:
+        - "*_protocol.py"
+        - "*_protocols.py"
+        - "**/protocols.py"
+        - "**/protocols/*.py"
+        - "**/types.py"
+        - "**/_types.py"
+        - "**/__init__.py"
+        - "**/protocol.py"
+        - "**/_hashing.py"
+        - "**/_models.py"
+        - "**/decorators.py"
+        - "**/_initialization.py"
+        - "**/substitutor.py"
+        - "**/deployment/base.py"
+    message: "Protocol '$P' must be in a dedicated file (*_protocol.py, protocols.py, or _types.py)"
+    severity: ERROR
+    languages: [python]
+
+  # Rule: No patch reference comments
+  - id: no-patch-reference-comments
+    languages: [generic]
+    severity: ERROR
+    message: "Patch/workaround comments are forbidden. Address root cause or document via regression tests."
+    pattern-regex: '#\s*(FIX\s*\d|[Ff]ixes?\s+(#\d|issue|bug)|[Pp]atch\s+(for|to)|[Ww]orkaround\s+(for|to))'
+    paths:
+      include:
+        - "*.py"
+      exclude:
+        - "**/tests/**"
+
+  # Note: Silent exception handling is enforced by ruff BLE001/S110/E722
+  # Semgrep pattern for except blocks doesn't parse correctly, so we rely on ruff
+
+  # Rule: No Example: blocks in docstrings
+  # Tests serve as usage examples, not docstrings
+  - id: no-example-blocks-in-docstrings
+    pattern-regex: '"""[\s\S]*?Example:[\s\S]*?"""'
+    message: "Docstrings must not contain 'Example:' blocks. Write tests instead."
+    severity: WARNING
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+      exclude:
+        - "**/tests/**"
+        - "**/examples/**"

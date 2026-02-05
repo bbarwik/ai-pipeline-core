@@ -80,6 +80,12 @@ jobs:
       - name: Docstring coverage (Interrogate)
         run: interrogate -v --fail-under 100 ai_pipeline_core
 
+      - name: File size limits
+        run: make filesize
+
+      - name: AI docs freshness
+        run: make docs-ai-check
+
   test:
     runs-on: ubuntu-latest
     strategy:

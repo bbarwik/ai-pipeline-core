@@ -15,7 +15,7 @@ AI Pipeline Core is a production-ready framework that combines document processi
 
 - **Document System**: Single `Document` base class with immutable content, SHA256-based identity, automatic MIME type detection, provenance tracking, and multi-part attachments
 - **Document Store**: Pluggable storage backends (ClickHouse production, local filesystem CLI/debug, in-memory testing) with automatic deduplication
-- **LLM Integration**: Unified interface to any model via LiteLLM proxy with context caching (default 300s TTL)
+- **LLM Integration**: Unified interface to any model via LiteLLM proxy (OpenRouter compatible) with context caching (default 300s TTL)
 - **Structured Output**: Type-safe generation with Pydantic model validation via `generate_structured()`
 - **Agent Framework**: Provider-agnostic interface for running agents with thread-safe registry, lazy validation, and document wrapping for provenance tracking
 - **Workflow Orchestration**: Prefect-based flows and tasks with annotation-driven document types
@@ -369,7 +369,7 @@ async def generate_structured(
     options: ModelOptions | None = None,
     purpose: str | None = None,
     expected_cost: float | None = None,
-) -> StructuredModelResponse[T]
+) -> ModelResponse[T]
 ```
 
 **`ModelOptions` key fields (all optional with sensible defaults):**
@@ -384,7 +384,68 @@ async def generate_structured(
 - `max_completion_tokens`: Max output tokens
 - `temperature`: Generation randomness (usually omit -- use provider defaults)
 
-**ModelName predefined values:** `"gemini-3-pro"`, `"gpt-5.1"`, `"gemini-3-flash"`, `"gpt-5-mini"`, `"grok-4.1-fast"`, `"gemini-3-flash-search"`, `"sonar-pro-search"` (also accepts any string for custom models).
+**ModelName predefined values:** `"gemini-3-pro"`, `"gpt-5.1"`, `"gemini-3-flash"`, `"gpt-5-mini"`, `"grok-4.1-fast"`, `"gemini-3-flash-search"`, `"gpt-5-mini-search"`, `"grok-4.1-fast-search"`, `"sonar-pro-search"` (also accepts any string for custom models).
+
+### Conversation Class
+
+The `Conversation` class provides immutable, stateful conversation management for multi-turn LLM interactions:
+
+```python
+from ai_pipeline_core import llm
+from ai_pipeline_core.llm import Conversation
+
+# Create a conversation with model and optional context
+conv = Conversation(model="gemini-3-pro")
+
+# Add documents to context (cacheable prefix)
+conv = conv.with_document(my_document)
+conv = conv.with_context(doc1, doc2, doc3)
+
+# Send a message and get response (returns NEW Conversation instance)
+conv = await conv.send("Analyze the document")
+print(conv.content)  # Response text
+
+# Structured output
+conv = await conv.send_structured("Extract key points", response_format=KeyPoints)
+print(conv.parsed)  # KeyPoints instance
+
+# Access response properties
+print(conv.reasoning_content)  # Thinking/reasoning text (if available)
+print(conv.usage)              # TokenUsage with input/output counts
+print(conv.cost)               # Estimated cost
+print(conv.citations)          # List of Citation objects (for search models)
+```
+
+**Key features:**
+- **Immutability**: Every method returns a NEW `Conversation` instance. The original is never modified. This enables safe forking for warmup+fork pattern.
+- **Context caching**: Documents added via `with_document()` or `with_context()` form the cacheable prefix
+- **Content protection**: URLs and high-entropy strings are automatically shortened to save tokens; use `restore_content(text)` to restore originals in outputs
+
+### Content Protection
+
+The framework automatically protects against token waste from long URLs, blockchain addresses, and high-entropy strings:
+
+```python
+from ai_pipeline_core.llm import URLSubstitutor, ContentSubstitutor
+
+# URLSubstitutor is the default implementation
+substitutor = URLSubstitutor()
+
+# Prepare learns patterns from content
+await substitutor.prepare(documents)
+
+# Substitute shortens URLs/addresses in text
+shortened = substitutor.substitute(long_text)
+
+# Restore expands back to originals
+original = substitutor.restore(shortened)
+
+# In Conversation, use restore_content() for outputs
+conv = await conv.send("Find URLs in the document")
+output_with_original_urls = conv.restore_content(conv.content)
+```
+
+Content protection is enabled by default in `Conversation`. The `ContentSubstitutor` protocol allows custom implementations.
 
 ### Agent Framework
 
@@ -572,6 +633,8 @@ image_docs = process_image_to_documents(screenshot_bytes, name_prefix="screensho
 ```
 
 Available presets: `GEMINI` (3000px, 9M pixels), `CLAUDE` (1568px, 1.15M pixels), `GPT4V` (2048px, 4M pixels).
+
+**Token cost:** A single image consumes **1080 tokens** regardless of pixel dimensions.
 
 The LLM client automatically splits oversized images at the model boundary -- you typically don't need to call these functions directly.
 
@@ -811,6 +874,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - Built on [Prefect](https://www.prefect.io/) for workflow orchestration
-- Uses [LiteLLM](https://github.com/BerriAI/litellm) for LLM provider abstraction
+- Uses [LiteLLM](https://github.com/BerriAI/litellm) for LLM provider abstraction (also compatible with [OpenRouter](https://openrouter.ai/))
 - Integrates [Laminar (LMNR)](https://www.lmnr.ai/) for observability
 - Type checking with [Pydantic](https://pydantic.dev/) and [basedpyright](https://github.com/DetachHead/basedpyright)

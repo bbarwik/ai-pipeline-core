@@ -69,7 +69,6 @@ instance/
 # claude and cursor
 .claude
 .cursor
-CLAUDE.md
 
 # Sphinx documentation
 docs/_build/

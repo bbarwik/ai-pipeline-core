@@ -6,7 +6,7 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.12"
 authors = [
-    {name = "bbarwik", email = "bbarwik@gmail.com"}
+    {name = "ResearchTech Inc.", email = "bartosz@research.tech"}
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -56,6 +56,7 @@ dev = [
     "ruff==0.14.14",
     "testcontainers[clickhouse]>=4.0.0",
     "vulture==2.14",
+    "pylint>=3.0.0",
 ]
 
 [tool.pytest.ini_options]
@@ -115,6 +116,7 @@ select = [
     "A",       # flake8-builtins — shadowing builtins
     "ASYNC",   # flake8-async — blocking calls in async
     "TRY",     # tryceratops — exception patterns
+    "BLE",     # blind-except — catches 'except Exception:' without logging/re-raising
 ]
 ignore = [
     "DOC201", "DOC501", "DOC502", "D105",
@@ -122,9 +124,10 @@ ignore = [
     "RET504",  # unnecessary variable before return — readability preference
     "ARG002",  # unused method argument — Pydantic validators have required signatures
     "FBT001",  # boolean positional arg — too strict for internal helpers
-    "PLR2004", # magic value in comparison — too noisy for constants
+    "PLR2004", # magic value in comparison — domain thresholds are clearer inline
     "PLR0913", # too many arguments — some constructors legitimately need many params
     "TRY003",  # long exception messages — project uses detailed errors by design
+    "D102",    # Protocol methods — documented by class docstring
     "D107",    # __init__ docstring — interrogate handles with ignore-init-method (3/3)
     "D417",    # missing arg descriptions — type hints suffice (3/3)
     "SIM108",  # ternary — reduces readability for multi-line (3/3)
@@ -142,23 +145,32 @@ convention = "google"
 "dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
 ".vulture_whitelist.py" = ["B018", "E402", "F401", "D"]
 "ai_pipeline_core/__init__.py" = ["RUF067"]
-"ai_pipeline_core/agents/base.py" = ["PLR6301", "B027"]
+"ai_pipeline_core/agents/base.py" = ["PLR6301", "B027", "RUF029"]
 "ai_pipeline_core/agents/documents.py" = ["C901", "PLR0912"]
 "ai_pipeline_core/agents/registry.py" = ["PLW0603"]
-"ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046"]
-"ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912"]
+"ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046", "BLE001"]
+"ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912", "BLE001"]
 "ai_pipeline_core/deployment/hooks.py" = ["PLC0415"]
 "ai_pipeline_core/deployment/remote.py" = ["UP047"]
-"ai_pipeline_core/deployment/progress.py" = ["RUF029"]
+"ai_pipeline_core/deployment/progress.py" = ["RUF029", "BLE001"]
 "ai_pipeline_core/documents/document.py" = ["PLR0904"]
 "ai_pipeline_core/document_store/factory.py" = ["F821", "PLC0415"]
-"ai_pipeline_core/document_store/clickhouse.py" = ["S608"]
+"ai_pipeline_core/document_store/clickhouse.py" = ["S608", "BLE001"]
 "ai_pipeline_core/document_store/protocol.py" = ["PLW0603"]
-"ai_pipeline_core/llm/client.py" = ["PLR0911", "RET505", "TRY203"]
-"ai_pipeline_core/observability/_debug/_content.py" = ["PLR1702", "C901", "PLR0912", "PLR0915", "PLR6301"]
-"ai_pipeline_core/observability/tracing.py" = ["C901", "PLR0912", "PLR0915", "PLR0914"]
-"ai_pipeline_core/pipeline/decorators.py" = ["C901", "PLR0912", "PLR0915", "S110", "SIM105"]
-"ai_pipeline_core/observability/_debug/_writer.py" = ["S112", "S324", "SIM116"]
+"ai_pipeline_core/llm/client.py" = ["PLR0911", "RET505", "TRY203", "BLE001"]
+"ai_pipeline_core/observability/_debug/_content.py" = ["PLR1702", "C901", "PLR0912", "PLR0915", "PLR6301", "BLE001"]
+"ai_pipeline_core/observability/_debug/_writer.py" = ["S112", "S324", "SIM116", "BLE001"]
+"ai_pipeline_core/observability/_debug/_summary.py" = ["BLE001"]
+"ai_pipeline_core/observability/_initialization.py" = ["BLE001"]
+"ai_pipeline_core/observability/_summary.py" = ["BLE001"]
+"ai_pipeline_core/observability/_tracking/_processor.py" = ["BLE001"]
+"ai_pipeline_core/observability/_tracking/_writer.py" = ["BLE001"]
+"ai_pipeline_core/observability/tracing.py" = ["C901", "PLR0912", "PLR0915", "PLR0914", "BLE001"]
+"ai_pipeline_core/document_store/_summary_worker.py" = ["BLE001"]
+"ai_pipeline_core/document_store/memory.py" = ["RUF029"]
+"ai_pipeline_core/llm/validation.py" = ["BLE001"]
+"ai_pipeline_core/llm/model_response.py" = ["BLE001"]
+"ai_pipeline_core/pipeline/decorators.py" = ["C901", "PLR0912", "PLR0915", "S110", "SIM105", "BLE001"]
 "ai_pipeline_core/logging/logging_config.py" = ["TID251"]
 "ai_pipeline_core/prompt_manager.py" = ["S701"]
 "ai_pipeline_core/docs_generator/cli.py" = ["T20"]
@@ -231,6 +243,13 @@ reportUnreachable = "error"
 reportDeprecated = "warning"
 reportUnusedCoroutine = "error"
 reportImplicitStringConcatenation = false
+
+[tool.pylint.SIMILARITIES]
+min-similarity-lines = 10
+ignore-imports = true
+ignore-comments = true
+ignore-docstrings = true
+ignore-signatures = true
 
 [tool.bumpversion]
 current_version = "0.5.1"
