@@ -9,41 +9,34 @@ creating unified, type-safe pipeline deployments with:
 """
 
 import asyncio
-import contextlib
 import hashlib
 import os
-import sys
 from abc import abstractmethod
 from collections.abc import Callable
-from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
+from typing import Any, ClassVar, Generic, TypeVar, cast, final
 from uuid import UUID, uuid4
 
 import httpx
 from lmnr import Laminar
-from opentelemetry import trace as otel_trace
 from prefect import flow, get_client, runtime
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
+from pydantic_settings import BaseSettings
 
 from ai_pipeline_core.document_store import SummaryGenerator, create_document_store, get_document_store, set_document_store
-from ai_pipeline_core.document_store.local import LocalDocumentStore
 from ai_pipeline_core.document_store.memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents.context import RunContext, reset_run_context, set_run_context
-from ai_pipeline_core.logging import get_pipeline_logger, setup_logging
-from ai_pipeline_core.observability._debug import LocalDebugSpanProcessor, LocalTraceWriter, TraceDebugConfig
+from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._initialization import get_tracking_service, initialize_observability
 from ai_pipeline_core.observability._tracking._models import RunStatus
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 from ai_pipeline_core.testing import disable_run_logger, prefect_test_harness
 
-from .contract import CompletedRun, DeploymentResultData, FailedRun, ProgressRun
-from .helpers import (
+from ._helpers import (
     StatusPayload,
     class_name_to_deployment_name,
     download_documents,
@@ -51,7 +44,8 @@ from .helpers import (
     send_webhook,
     upload_documents,
 )
-from .progress import flow_context, webhook_worker
+from .contract import CompletedRun, DeploymentResultData, FailedRun, ProgressRun
+from .progress import flow_context
 
 logger = get_pipeline_logger(__name__)
 
@@ -72,7 +66,7 @@ def _build_summary_generator() -> SummaryGenerator | None:
 
 
 # Fields added by run_cli()'s _CliOptions that should not affect the run scope fingerprint
-_CLI_FIELDS: set[str] = {"working_directory", "project_name", "start", "end", "no_trace"}
+_CLI_FIELDS: frozenset[str] = frozenset({"working_directory", "project_name", "start", "end", "no_trace"})
 
 
 def _compute_run_scope(project_name: str, documents: list[Document], options: FlowOptions) -> str:
@@ -81,7 +75,7 @@ def _compute_run_scope(project_name: str, documents: list[Document], options: Fl
     Different inputs or options produce a different scope, preventing
     stale cache hits when re-running with the same project name.
     """
-    exclude = _CLI_FIELDS & set(type(options).model_fields)
+    exclude = set(_CLI_FIELDS & set(type(options).model_fields))
     options_json = options.model_dump_json(exclude=exclude, exclude_none=True)
 
     if not documents:
@@ -146,25 +140,7 @@ TOptions = TypeVar("TOptions", bound=FlowOptions)
 TResult = TypeVar("TResult", bound=DeploymentResult)
 
 
-class FlowCallable(Protocol):
-    """Protocol for @pipeline_flow decorated functions."""
-
-    name: str
-    __name__: str
-    input_document_types: list[type[Document]]
-    output_document_types: list[type[Document]]
-    estimated_minutes: int
-
-    def __call__(self, project_name: str, documents: list[Document], flow_options: FlowOptions | dict[str, Any]) -> Any:  # type: ignore[type-arg]
-        """Execute the flow with standard pipeline signature."""
-        ...
-
-    def with_options(self, **kwargs: Any) -> "FlowCallable":
-        """Return a copy with overridden Prefect flow options (e.g., hooks)."""
-        ...
-
-
-def _reattach_flow_metadata(original: FlowCallable, target: Any) -> None:
+def _reattach_flow_metadata(original: Any, target: Any) -> None:
     """Reattach custom flow attributes that Prefect's with_options() may strip."""
     for attr in ("input_document_types", "output_document_types", "estimated_minutes"):
         if hasattr(original, attr) and not hasattr(target, attr):
@@ -198,7 +174,7 @@ class _StatusWebhookHook:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(self.webhook_url, json=payload)
         except Exception as e:
-            logger.warning(f"Status webhook failed: {e}")
+            logger.warning("Status webhook failed: %s", e)
 
 
 def _validate_flow_chain(deployment_name: str, flows: list[Any]) -> None:
@@ -244,7 +220,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     - Upload on failure: Save partial results if pipeline fails
     """
 
-    flows: ClassVar[list[FlowCallable]]
+    flows: ClassVar[list[Any]]
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
@@ -366,7 +342,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             try:
                 await send_webhook(context.progress_webhook_url, payload)
             except Exception as e:
-                logger.warning(f"Progress webhook failed: {e}")
+                logger.warning("Progress webhook failed: %s", e)
 
         if flow_run_id:
             try:
@@ -384,7 +360,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                         },
                     )
             except Exception as e:
-                logger.warning(f"Progress label update failed: {e}")
+                logger.warning("Progress label update failed: %s", e)
 
     async def _send_completion(
         self,
@@ -419,7 +395,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 )
             await send_webhook(context.completion_webhook_url, payload)
         except Exception as e:
-            logger.warning(f"Completion webhook failed: {e}")
+            logger.warning("Completion webhook failed: %s", e)
 
     @final
     async def run(
@@ -428,20 +404,32 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         documents: list[Document],
         options: TOptions,
         context: DeploymentContext,
+        start_step: int = 1,
+        end_step: int | None = None,
     ) -> TResult:
-        """Execute all flows with resume, per-flow uploads, and webhooks.
+        """Execute flows with resume, per-flow uploads, webhooks, and step control.
 
         Args:
             project_name: Unique identifier for this pipeline run (used as run_scope).
             documents: Initial input documents for the first flow.
             options: Flow options passed to each flow.
             context: Deployment context with webhook URLs and document upload config.
+            start_step: First flow to execute (1-indexed, default 1).
+            end_step: Last flow to execute (inclusive, default all flows).
 
         Returns:
             Typed deployment result built from all pipeline documents.
         """
         store = get_document_store()
         total_steps = len(self.flows)
+
+        if end_step is None:
+            end_step = total_steps
+        if start_step < 1 or start_step > total_steps:
+            raise ValueError(f"start_step must be 1-{total_steps}, got {start_step}")
+        if end_step < start_step or end_step > total_steps:
+            raise ValueError(f"end_step must be {start_step}-{total_steps}, got {end_step}")
+
         flow_run_id: str = str(runtime.flow_run.get_id()) if runtime.flow_run else ""  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
 
         # Write identity labels for polling endpoint
@@ -453,7 +441,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                         labels={"pipeline.project_name": project_name},
                     )
             except Exception as e:
-                logger.warning(f"Identity label update failed: {e}")
+                logger.warning("Identity label update failed: %s", e)
 
         # Download additional input documents
         input_docs = list(documents)
@@ -479,7 +467,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 run_uuid = UUID(flow_run_id) if flow_run_id else uuid4()
                 tracking_svc.set_run_context(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
                 tracking_svc.track_run_start(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
-        except Exception:
+        except Exception as e:
+            logger.warning("Tracking service initialization failed: %s", e)
             tracking_svc = None
 
         # Set RunContext for the entire pipeline run
@@ -489,16 +478,19 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             if store and input_docs:
                 await store.save_batch(input_docs, run_scope)
 
-            for step, flow_fn in enumerate(self.flows, start=1):
+            for i in range(start_step - 1, end_step):
+                step = i + 1
+                flow_fn = self.flows[i]
                 flow_name = getattr(flow_fn, "name", flow_fn.__name__)
-                flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else ""  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
+                # Re-read flow_run_id in case Prefect subflow changes it
+                flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else flow_run_id  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
 
                 # Resume check: skip if output documents already exist in store
                 output_types = getattr(flow_fn, "output_document_types", [])
                 if store and output_types:
                     all_outputs_exist = all([await store.has_documents(run_scope, ot) for ot in output_types])
                     if all_outputs_exist:
-                        logger.info(f"[{step}/{total_steps}] Resume: skipping {flow_name} (outputs exist)")
+                        logger.info("[%d/%d] Resume: skipping %s (outputs exist)", step, total_steps, flow_name)
                         await self._send_progress(
                             context,
                             flow_run_id,
@@ -512,7 +504,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                         )
                         continue
 
-                # Prefect state hooks
+                # Prefect state hooks (conditional on status_webhook_url)
                 active_flow = flow_fn
                 if context.status_webhook_url:
                     hooks = self._build_status_hooks(context, flow_run_id, project_name, step, total_steps, flow_name)
@@ -532,7 +524,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     message=f"Starting: {flow_name}",
                 )
 
-                logger.info(f"[{step}/{total_steps}] Starting: {flow_name}")
+                logger.info("[%d/%d] Starting: %s", step, total_steps, flow_name)
 
                 # Load input documents from store
                 input_types = getattr(flow_fn, "input_document_types", [])
@@ -544,24 +536,20 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 # Set up intra-flow progress context so progress_update() works inside flows
                 flow_minutes = tuple(getattr(f, "estimated_minutes", 1) for f in self.flows)
                 completed_mins = sum(flow_minutes[: max(step - 1, 0)])
-                progress_queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
                 wh_url = context.progress_webhook_url or ""
-                worker = asyncio.create_task(webhook_worker(progress_queue, wh_url)) if wh_url else None
 
                 with flow_context(
                     webhook_url=wh_url,
                     project_name=project_name,
-                    run_id=flow_run_id,
                     flow_run_id=flow_run_id,
                     flow_name=flow_name,
                     step=step,
                     total_steps=total_steps,
                     flow_minutes=flow_minutes,
                     completed_minutes=completed_mins,
-                    queue=progress_queue,
                 ):
                     try:
-                        await active_flow(project_name, current_docs, options.model_dump())
+                        await active_flow(project_name, current_docs, options)
                     except Exception as e:
                         # Upload partial results on failure
                         if context.output_documents_urls and store:
@@ -570,10 +558,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                         await self._send_completion(context, flow_run_id, project_name, result=None, error=str(e))
                         completion_sent = True
                         raise
-                    finally:
-                        progress_queue.put_nowait(None)
-                        if worker:
-                            await worker
 
                 # Per-flow upload (load from store since @pipeline_flow saves there)
                 if context.output_documents_urls and store and output_types:
@@ -593,7 +577,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     message=f"Completed: {flow_name}",
                 )
 
-                logger.info(f"[{step}/{total_steps}] Completed: {flow_name}")
+                logger.info("[%d/%d] Completed: %s", step, total_steps, flow_name)
 
             # Build result from all documents in store
             if store:
@@ -613,12 +597,16 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             reset_run_context(run_token)
             store = get_document_store()
             if store:
-                with contextlib.suppress(Exception):
+                try:
                     store.flush()
+                except Exception as e:
+                    logger.warning("Store flush failed: %s", e)
             if (svc := tracking_svc) is not None and run_uuid is not None:
-                with contextlib.suppress(Exception):
+                try:
                     svc.track_run_end(run_id=run_uuid, status=RunStatus.FAILED if run_failed else RunStatus.COMPLETED)
                     svc.flush()
+                except Exception as e:
+                    logger.warning("Tracking shutdown failed: %s", e)
 
     @final
     def run_local(
@@ -673,233 +661,11 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         Args:
             initializer: Optional callback returning (project_name, documents) from options.
             trace_name: Optional Laminar trace span name prefix.
+            cli_mixin: Optional BaseSettings subclass with CLI-only fields mixed into options.
         """
-        if len(sys.argv) == 1:
-            sys.argv.append("--help")
+        from ._cli import run_cli_for_deployment
 
-        setup_logging()
-        try:
-            initialize_observability()
-            logger.info("Observability initialized.")
-        except Exception as e:
-            logger.warning(f"Failed to initialize observability: {e}")
-            with contextlib.suppress(Exception):
-                # Use canonical initializer to ensure consistent Laminar setup
-                from ai_pipeline_core.observability import tracing
-
-                tracing._initialise_laminar()
-
-        deployment = self
-
-        _options_base = deployment.options_type
-        if cli_mixin is not None:
-            _options_base = type(deployment.options_type)(
-                "_OptionsBase",
-                (cli_mixin, deployment.options_type),
-                {"__module__": __name__, "__annotations__": {}},
-            )
-
-        class _CliOptions(
-            _options_base,
-            cli_parse_args=True,
-            cli_kebab_case=True,
-            cli_exit_on_error=True,
-            cli_prog_name=deployment.name,
-            cli_use_class_docs_for_groups=True,
-        ):
-            working_directory: CliPositionalArg[Path]
-            project_name: str | None = None
-            start: int = 1
-            end: int | None = None
-            no_trace: bool = False
-
-            model_config = SettingsConfigDict(frozen=True, extra="ignore")
-
-        opts = cast(TOptions, _CliOptions())  # type: ignore[reportCallIssue]
-
-        wd = cast(Path, opts.working_directory)  # pyright: ignore[reportAttributeAccessIssue]
-        wd.mkdir(parents=True, exist_ok=True)
-
-        project_name = cast(str, opts.project_name or wd.name)  # pyright: ignore[reportAttributeAccessIssue]
-        start_step = getattr(opts, "start", 1)
-        end_step = getattr(opts, "end", None)
-        no_trace = getattr(opts, "no_trace", False)
-
-        # Set up local debug tracing (writes to <working_dir>/.trace)
-        debug_processor: LocalDebugSpanProcessor | None = None
-        if not no_trace:
-            try:
-                trace_path = wd / ".trace"
-                trace_path.mkdir(parents=True, exist_ok=True)
-                debug_config = TraceDebugConfig(path=trace_path, max_traces=20)
-                debug_writer = LocalTraceWriter(debug_config)
-                debug_processor = LocalDebugSpanProcessor(debug_writer)
-                provider: Any = otel_trace.get_tracer_provider()
-                if hasattr(provider, "add_span_processor"):
-                    provider.add_span_processor(debug_processor)
-                    logger.info(f"Local debug tracing enabled at {trace_path}")
-            except Exception as e:
-                logger.warning(f"Failed to set up local debug tracing: {e}")
-                debug_processor = None
-
-        # Initialize document store — ClickHouse when configured, local filesystem otherwise
-        summary_generator = _build_summary_generator()
-        if settings.clickhouse_host:
-            store = create_document_store(settings, summary_generator=summary_generator)
-        else:
-            store = LocalDocumentStore(base_path=wd, summary_generator=summary_generator)
-        set_document_store(store)
-
-        # Initialize documents (always run initializer for run scope fingerprinting,
-        # even when start_step > 1, so --start N resumes find the correct scope)
-        initial_documents: list[Document] = []
-        if initializer:
-            _, initial_documents = initializer(opts)
-
-        context = DeploymentContext()
-
-        with ExitStack() as stack:
-            if trace_name:
-                stack.enter_context(
-                    Laminar.start_as_current_span(
-                        name=f"{trace_name}-{project_name}",
-                        input=[opts.model_dump_json()],
-                    )
-                )
-
-            under_pytest = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
-            if not settings.prefect_api_key and not under_pytest:
-                stack.enter_context(prefect_test_harness())
-                stack.enter_context(disable_run_logger())
-
-            result = asyncio.run(
-                self._run_with_steps(
-                    project_name=project_name,
-                    options=opts,
-                    context=context,
-                    start_step=start_step,
-                    end_step=end_step,
-                    initial_documents=initial_documents,
-                )
-            )
-
-        result_file = wd / "result.json"
-        result_file.write_text(result.model_dump_json(indent=2))
-        logger.info(f"Result saved to {result_file}")
-
-        # Shutdown background workers (debug tracing, document summaries, tracking)
-        if debug_processor is not None:
-            debug_processor.shutdown()
-        store = get_document_store()
-        if store:
-            store.shutdown()
-        tracking_svc = get_tracking_service()
-        if tracking_svc:
-            tracking_svc.shutdown()
-
-    async def _run_with_steps(
-        self,
-        project_name: str,
-        options: TOptions,
-        context: DeploymentContext,
-        start_step: int = 1,
-        end_step: int | None = None,
-        initial_documents: list[Document] | None = None,
-    ) -> TResult:
-        """Run pipeline with start/end step control and DocumentStore-based resume."""
-        store = get_document_store()
-        if end_step is None:
-            end_step = len(self.flows)
-
-        total_steps = len(self.flows)
-        run_scope = _compute_run_scope(project_name, initial_documents or [], options)
-
-        # Tracking lifecycle for CLI path
-        tracking_svc = None
-        run_uuid: UUID | None = None
-        run_failed = False
-        try:
-            tracking_svc = get_tracking_service()
-            if tracking_svc:
-                run_uuid = uuid4()
-                tracking_svc.set_run_context(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
-                tracking_svc.track_run_start(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
-        except Exception:
-            tracking_svc = None
-
-        # Set RunContext for the entire pipeline run
-        run_token = set_run_context(RunContext(run_scope=run_scope))
-        try:
-            # Save initial documents to store
-            if store and initial_documents:
-                await store.save_batch(initial_documents, run_scope)
-
-            for i in range(start_step - 1, end_step):
-                step = i + 1
-                flow_fn = self.flows[i]
-                flow_name = getattr(flow_fn, "name", flow_fn.__name__)
-                logger.info(f"--- [Step {step}/{total_steps}] {flow_name} ---")
-
-                # Resume check: skip if output documents already exist
-                output_types = getattr(flow_fn, "output_document_types", [])
-                if store and output_types:
-                    all_outputs_exist = all([await store.has_documents(run_scope, ot) for ot in output_types])
-                    if all_outputs_exist:
-                        logger.info(f"--- [Step {step}/{total_steps}] Skipping {flow_name} (outputs exist) ---")
-                        continue
-
-                # Load inputs from store
-                input_types = getattr(flow_fn, "input_document_types", [])
-                if store and input_types:
-                    current_docs = await store.load(run_scope, input_types)
-                else:
-                    current_docs = initial_documents or []
-
-                # Set up intra-flow progress context so progress_update() works inside flows
-                flow_minutes = tuple(getattr(f, "estimated_minutes", 1) for f in self.flows)
-                completed_mins = sum(flow_minutes[: max(step - 1, 0)])
-                progress_queue: asyncio.Queue[ProgressRun | None] = asyncio.Queue()
-                wh_url = context.progress_webhook_url or ""
-                worker = asyncio.create_task(webhook_worker(progress_queue, wh_url)) if wh_url else None
-
-                with flow_context(
-                    webhook_url=wh_url,
-                    project_name=project_name,
-                    run_id=str(run_uuid) if run_uuid else "",
-                    flow_run_id=str(run_uuid) if run_uuid else "",
-                    flow_name=flow_name,
-                    step=step,
-                    total_steps=total_steps,
-                    flow_minutes=flow_minutes,
-                    completed_minutes=completed_mins,
-                    queue=progress_queue,
-                ):
-                    try:
-                        await flow_fn(project_name, current_docs, options)
-                    finally:
-                        progress_queue.put_nowait(None)
-                        if worker:
-                            await worker
-
-            # Build result from all documents in store
-            if store:
-                all_docs = await store.load(run_scope, self._all_document_types())
-            else:
-                all_docs = initial_documents or []
-            return self.build_result(project_name, all_docs, options)
-        except Exception:
-            run_failed = True
-            raise
-        finally:
-            reset_run_context(run_token)
-            store = get_document_store()
-            if store:
-                with contextlib.suppress(Exception):
-                    store.flush()
-            if (svc := tracking_svc) is not None and run_uuid is not None:
-                with contextlib.suppress(Exception):
-                    svc.track_run_end(run_id=run_uuid, status=RunStatus.FAILED if run_failed else RunStatus.COMPLETED)
-                    svc.flush()
+        run_cli_for_deployment(self, initializer, trace_name, cli_mixin)
 
     @final
     def as_prefect_flow(self) -> Callable[..., Any]:
@@ -920,12 +686,13 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             try:
                 initialize_observability()
             except Exception as e:
-                logger.warning(f"Failed to initialize observability: {e}")
-                with contextlib.suppress(Exception):
-                    # Use canonical initializer to ensure consistent Laminar setup
+                logger.warning("Failed to initialize observability: %s", e)
+                try:
                     from ai_pipeline_core.observability import tracing
 
                     tracing._initialise_laminar()
+                except Exception as e2:
+                    logger.warning("Laminar fallback initialization failed: %s", e2)
 
             # Set session ID from Prefect flow run for trace grouping
             flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else str(uuid4())  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]

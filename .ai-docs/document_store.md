@@ -1,7 +1,7 @@
 # MODULE: document_store
 # CLASSES: ClickHouseDocumentStore, LocalDocumentStore, MemoryDocumentStore, DocumentStore
 # DEPENDS: Protocol
-# SIZE: ~16KB
+# SIZE: ~17KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -332,7 +332,7 @@ def set_document_store(store: DocumentStore | None) -> None:
 # === EXAMPLES (from tests/) ===
 
 # Example: Create document store returns local when no clickhouse
-# Source: tests/document_store/test_local.py:294
+# Source: tests/document_store/test_local.py:383
 def test_create_document_store_returns_local_when_no_clickhouse(self):
     from ai_pipeline_core.settings import Settings
 
@@ -364,34 +364,62 @@ def test_set_and_get_document_store():
     set_document_store(store)
     assert get_document_store() is store
 
-# Example: Basic round trip
-# Source: tests/document_store/test_local.py:45
-@pytest.mark.asyncio
-async def test_basic_round_trip(self, store: LocalDocumentStore):
-    doc = _make(ReportDoc, "report.md", "# Hello\nWorld")
-    await store.save(doc, "run1")
-    loaded = await store.load("run1", [ReportDoc])
-    assert len(loaded) == 1
-    assert loaded[0].name == "report.md"
-    assert loaded[0].content == b"# Hello\nWorld"
-    assert isinstance(loaded[0], ReportDoc)
-
-# Example: Satisfies document store protocol
-# Source: tests/document_store/test_local.py:38
-def test_satisfies_document_store_protocol(self, tmp_path: Path):
-    store = LocalDocumentStore(base_path=tmp_path)
-    assert isinstance(store, DocumentStore)
-
-# Example: Satisfies document store protocol
-# Source: tests/document_store/test_memory.py:28
-def test_satisfies_document_store_protocol(self):
-    store = MemoryDocumentStore()
-    assert isinstance(store, DocumentStore)
-
 # === ERROR EXAMPLES (What NOT to Do) ===
 
 # Error: Create document store rejects non settings
-# Source: tests/document_store/test_local.py:301
+# Source: tests/document_store/test_local.py:390
 def test_create_document_store_rejects_non_settings(self):
     with pytest.raises(TypeError, match="Expected Settings"):
         create_document_store("not_settings")  # type: ignore[arg-type]
+
+# Error: Primary flush failure still attempts secondary
+# Source: tests/document_store/test_dual_store.py:180
+def test_primary_flush_failure_still_attempts_secondary(self):
+    flushed = []
+
+    class FailingFlush(MemoryDocumentStore):
+        def flush(self) -> None:
+            raise RuntimeError("primary flush failed")
+
+    class TrackingFlush(MemoryDocumentStore):
+        def flush(self) -> None:
+            flushed.append(True)
+
+    dual = DualDocumentStore(primary=FailingFlush(), secondary=TrackingFlush())
+    with pytest.raises(RuntimeError, match="primary flush failed"):
+        dual.flush()
+    assert flushed == [True]
+
+# Error: Primary save failure propagates
+# Source: tests/document_store/test_dual_store.py:151
+@pytest.mark.asyncio
+async def test_primary_save_failure_propagates(self):
+    class FailingSave(MemoryDocumentStore):
+        async def save(self, document: Document, run_scope: str) -> None:
+            raise RuntimeError("primary down")
+
+    secondary = MemoryDocumentStore()
+    dual = DualDocumentStore(primary=FailingSave(), secondary=secondary)
+    doc = _make("a.md", "content")
+    with pytest.raises(RuntimeError, match="primary down"):
+        await dual.save(doc, "run1")
+    # Secondary should NOT have been called since primary failed first
+    assert not await secondary.has_documents("run1", DualReportDoc)
+
+# Error: Primary update summary failure still attempts secondary
+# Source: tests/document_store/test_dual_store.py:165
+@pytest.mark.asyncio
+async def test_primary_update_summary_failure_still_attempts_secondary(self):
+    class FailingSummary(MemoryDocumentStore):
+        async def update_summary(self, run_scope: str, document_sha256: str, summary: str) -> None:
+            raise RuntimeError("primary down")
+
+    secondary = MemoryDocumentStore()
+    dual = DualDocumentStore(primary=FailingSummary(), secondary=secondary)
+    doc = _make("a.md", "content")
+    sha = compute_document_sha256(doc)
+    await secondary.save(doc, "run1")
+    with pytest.raises(RuntimeError, match="primary down"):
+        await dual.update_summary("run1", sha, "summary")
+    # Secondary should still have been updated
+    assert (await secondary.load_summaries("run1", [sha]))[sha] == "summary"

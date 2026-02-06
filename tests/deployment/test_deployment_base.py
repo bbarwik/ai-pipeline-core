@@ -756,3 +756,91 @@ class TestAsPrefectFlowParameterSchema:
 
         # options parameter must exist in the schema
         assert "options" in schema.properties
+
+
+# --- Refactoring verification tests ---
+
+
+class TestCliFieldsFrozenset:
+    """Verify _CLI_FIELDS is immutable."""
+
+    def test_cli_fields_is_frozenset(self):
+        from ai_pipeline_core.deployment.base import _CLI_FIELDS
+
+        assert isinstance(_CLI_FIELDS, frozenset)
+
+
+class TestStepValidation:
+    """Test start_step/end_step validation in run()."""
+
+    @pytest.fixture
+    def deployment(self):
+        return ValidDeployment()
+
+    async def test_start_step_zero_raises(self, deployment):
+        from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+        from ai_pipeline_core.document_store import set_document_store
+
+        set_document_store(MemoryDocumentStore())
+        try:
+            with pytest.raises(ValueError, match="start_step must be 1"):
+                await deployment.run("proj", [], FlowOptions(), DeploymentContext(), start_step=0)
+        finally:
+            set_document_store(None)
+
+    async def test_start_step_too_large_raises(self, deployment):
+        from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+        from ai_pipeline_core.document_store import set_document_store
+
+        set_document_store(MemoryDocumentStore())
+        try:
+            with pytest.raises(ValueError, match="start_step must be 1"):
+                await deployment.run("proj", [], FlowOptions(), DeploymentContext(), start_step=99)
+        finally:
+            set_document_store(None)
+
+    async def test_end_step_less_than_start_raises(self, deployment):
+        from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+        from ai_pipeline_core.document_store import set_document_store
+
+        set_document_store(MemoryDocumentStore())
+        try:
+            with pytest.raises(ValueError, match="end_step must be"):
+                await deployment.run("proj", [], FlowOptions(), DeploymentContext(), start_step=1, end_step=0)
+        finally:
+            set_document_store(None)
+
+
+class TestRunPassesOptionsObject:
+    """Verify run() passes options object (not dict) to flows."""
+
+    async def test_flow_receives_options_not_dict(self):
+        from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+        from ai_pipeline_core.document_store import set_document_store
+
+        received_options = []
+
+        @pipeline_flow()
+        async def capturing_flow(project_name: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
+            received_options.append(flow_options)
+            return [OutputDoc(name="out.txt", content=b"ok")]
+
+        class CapturingDeployment(PipelineDeployment[FlowOptions, ValidResult]):
+            flows = [capturing_flow]  # type: ignore[reportAssignmentType]
+
+            @staticmethod
+            def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> ValidResult:
+                return ValidResult(success=True, count=len(documents))
+
+        store = MemoryDocumentStore()
+        set_document_store(store)
+        try:
+            deployment = CapturingDeployment()
+            opts = FlowOptions()
+            await deployment.run("proj", [InputDoc(name="in.txt", content=b"input")], opts, DeploymentContext())
+            assert len(received_options) == 1
+            assert isinstance(received_options[0], FlowOptions), f"Expected FlowOptions, got {type(received_options[0])}"
+            assert not isinstance(received_options[0], dict)
+        finally:
+            store.shutdown()
+            set_document_store(None)

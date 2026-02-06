@@ -2,8 +2,7 @@
 
 import asyncio
 import types
-from collections.abc import Awaitable, Callable, Coroutine
-from functools import wraps
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
 from uuid import UUID
 
@@ -14,8 +13,8 @@ from prefect.context import AsyncClientContext
 from prefect.deployments.flow_runs import run_deployment
 from prefect.exceptions import ObjectNotFound
 
-from ai_pipeline_core.deployment import DeploymentContext, DeploymentResult, PipelineDeployment
-from ai_pipeline_core.deployment.helpers import class_name_to_deployment_name, extract_generic_params
+from ai_pipeline_core.deployment import DeploymentContext, DeploymentResult
+from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
@@ -136,66 +135,8 @@ async def run_remote_deployment(
     raise ValueError(f"{deployment_name} deployment not found")
 
 
-def remote_deployment(
-    deployment_class: type[PipelineDeployment[TOptions, TResult]],
-    *,
-    deployment_name: str | None = None,
-    name: str | None = None,
-    trace_level: TraceLevel = "always",
-    trace_cost: float | None = None,
-) -> Callable[[Callable[..., Any]], Callable[..., Coroutine[Any, Any, TResult]]]:
-    """Decorator to call PipelineDeployment flows remotely with automatic serialization.
-
-    The decorated function's body is never executed — it serves as a typed stub.
-    The wrapper enforces the deployment contract: (project_name, documents, options, context).
-    """
-
-    def decorator(func: Callable[..., Any]) -> Callable[..., Coroutine[Any, Any, TResult]]:
-        fname = getattr(func, "__name__", deployment_class.name)
-
-        if _is_already_traced(func):
-            raise TypeError(f"@remote_deployment target '{fname}' already has @trace")
-
-        @wraps(func)
-        async def _wrapper(
-            project_name: str,
-            documents: list[Document],
-            options: TOptions,
-            context: DeploymentContext | None = None,
-            on_progress: ProgressCallback | None = None,
-        ) -> TResult:
-            parameters: dict[str, Any] = {
-                "project_name": project_name,
-                "documents": [doc.serialize_model() for doc in documents],
-                "options": options,
-                "context": context if context is not None else DeploymentContext(),
-            }
-
-            full_name = f"{deployment_class.name}/{deployment_name or deployment_class.name.replace('-', '_')}"
-
-            result = await run_remote_deployment(full_name, parameters, on_progress=on_progress)
-
-            if trace_cost is not None and trace_cost > 0:
-                set_trace_cost(trace_cost)
-
-            if isinstance(result, DeploymentResult):
-                return cast(TResult, result)
-            if isinstance(result, dict):
-                return cast(TResult, deployment_class.result_type(**cast(dict[str, Any], result)))
-            raise TypeError(f"Expected DeploymentResult, got {type(result).__name__}")
-
-        traced_wrapper = trace(
-            level=trace_level,
-            name=name or deployment_class.name,
-        )(_wrapper)
-
-        return traced_wrapper
-
-    return decorator
-
-
 # ---------------------------------------------------------------------------
-# RemoteDeployment class — replaces @remote_deployment + stub pattern
+# RemoteDeployment class
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +211,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
 
         # Apply @trace to _execute: combined guard prevents no-op and double-wrap
         trace_level = getattr(cls, "trace_level", "always")
-        if trace_level != "off" and not _is_already_traced(cls._execute):  # type: ignore[arg-type]
+        if trace_level != "off" and not _is_already_traced(cls._execute):
             cls._execute = trace(name=cls.name, level=trace_level)(cls._execute)  # type: ignore[assignment]
 
     @property

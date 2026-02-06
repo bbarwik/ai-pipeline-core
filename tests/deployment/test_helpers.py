@@ -17,7 +17,7 @@ from ai_pipeline_core import (
 )
 from ai_pipeline_core.deployment import DeploymentResult
 from ai_pipeline_core.deployment.contract import ProgressRun
-from ai_pipeline_core.deployment.helpers import (
+from ai_pipeline_core.deployment._helpers import (
     class_name_to_deployment_name,
     download_documents,
     extract_generic_params,
@@ -88,7 +88,7 @@ class TestSendWebhook:
         mock_response = AsyncMock()
         mock_response.raise_for_status = lambda: None
 
-        with patch("ai_pipeline_core.deployment.helpers.httpx.AsyncClient") as mock_client_cls:
+        with patch("ai_pipeline_core.deployment._helpers.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
@@ -114,14 +114,14 @@ class TestSendWebhook:
             message="msg",
         )
 
-        with patch("ai_pipeline_core.deployment.helpers.httpx.AsyncClient") as mock_client_cls:
+        with patch("ai_pipeline_core.deployment._helpers.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
             mock_client.post.side_effect = httpx.HTTPError("timeout")
             mock_client_cls.return_value = mock_client
 
-            with patch("ai_pipeline_core.deployment.helpers.asyncio.sleep"), pytest.raises(httpx.HTTPError):
+            with patch("ai_pipeline_core.deployment._helpers.asyncio.sleep"), pytest.raises(httpx.HTTPError):
                 await send_webhook("http://example.com/hook", payload, max_retries=2, retry_delay=0)
 
             assert mock_client.post.call_count == 2
@@ -136,7 +136,7 @@ class TestDownloadDocuments:
         mock_response.content = b"test content"
         mock_response.raise_for_status = lambda: None
 
-        with patch("ai_pipeline_core.deployment.helpers.httpx.AsyncClient") as mock_client_cls:
+        with patch("ai_pipeline_core.deployment._helpers.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
@@ -164,7 +164,7 @@ class TestUploadDocuments:
         mock_response = AsyncMock()
         mock_response.raise_for_status = lambda: None
 
-        with patch("ai_pipeline_core.deployment.helpers.httpx.AsyncClient") as mock_client_cls:
+        with patch("ai_pipeline_core.deployment._helpers.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None

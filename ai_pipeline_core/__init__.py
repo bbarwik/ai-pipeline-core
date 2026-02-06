@@ -27,7 +27,7 @@ from .agents import (
     temporary_provider,
 )
 from .deployment import DeploymentContext, DeploymentResult, PipelineDeployment, progress
-from .deployment.remote import remote_deployment
+from .deployment.remote import RemoteDeployment, run_remote_deployment
 from .document_store import DocumentStore, SummaryGenerator, create_document_store, get_document_store, set_document_store
 from .documents import (
     Attachment,
@@ -73,16 +73,13 @@ from .prompt_manager import PromptManager
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 __all__ = [
-    # Agent framework
     "AgentOutputDocument",
     "AgentProvider",
     "AgentResult",
-    # Documents
     "Attachment",
-    # LLM
     "Citation",
     "Conversation",
     "ConversationContent",
@@ -103,6 +100,7 @@ __all__ = [
     "PipelineDeployment",
     "ProcessedImage",
     "PromptManager",
+    "RemoteDeployment",
     "RunContext",
     "Settings",
     "StructuredLoggerMixin",
@@ -131,10 +129,10 @@ __all__ = [
     "process_image",
     "progress",
     "register_agent_provider",
-    "remote_deployment",
     "reset_agent_provider",
     "reset_run_context",
     "run_agent",
+    "run_remote_deployment",
     "sanitize_url",
     "set_document_store",
     "set_run_context",

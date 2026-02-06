@@ -1,7 +1,5 @@
-"""Intra-flow progress tracking with order-preserving webhook delivery."""
+"""Intra-flow progress tracking with webhook delivery and Prefect label updates."""
 
-import asyncio
-import contextlib
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -13,8 +11,8 @@ from prefect import get_client
 
 from ai_pipeline_core.logging import get_pipeline_logger
 
+from ._helpers import send_webhook
 from .contract import ProgressRun
-from .helpers import send_webhook
 
 logger = get_pipeline_logger(__name__)
 
@@ -25,7 +23,6 @@ class ProgressContext:
 
     webhook_url: str
     project_name: str
-    run_id: str
     flow_run_id: str
     flow_name: str
     step: int
@@ -33,10 +30,12 @@ class ProgressContext:
     total_minutes: float
     completed_minutes: float
     current_flow_minutes: float
-    queue: asyncio.Queue[ProgressRun | None]
 
 
 _context: ContextVar[ProgressContext | None] = ContextVar("progress_context", default=None)
+
+_PROGRESS_WEBHOOK_MAX_RETRIES = 1
+_PROGRESS_WEBHOOK_RETRY_DELAY = 0.0
 
 
 async def update(fraction: float, message: str = "") -> None:
@@ -59,7 +58,6 @@ async def update(fraction: float, message: str = "") -> None:
     overall = round(max(0.0, min(1.0, overall)), 4)
     step_progress = round(fraction, 4)
 
-    # Enqueue webhook payload for async delivery
     if ctx.webhook_url:
         payload = ProgressRun(
             flow_run_id=UUID(ctx.flow_run_id) if ctx.flow_run_id else UUID(int=0),
@@ -74,9 +72,11 @@ async def update(fraction: float, message: str = "") -> None:
             step_progress=step_progress,
             message=message,
         )
-        ctx.queue.put_nowait(payload)
+        try:
+            await send_webhook(ctx.webhook_url, payload, _PROGRESS_WEBHOOK_MAX_RETRIES, _PROGRESS_WEBHOOK_RETRY_DELAY)
+        except Exception as e:
+            logger.warning("Progress webhook failed: %s", e)
 
-    # Update Prefect labels so polling consumers and staleness detection stay current
     if ctx.flow_run_id:
         try:
             async with get_client() as client:
@@ -93,40 +93,20 @@ async def update(fraction: float, message: str = "") -> None:
                     },
                 )
         except Exception as e:
-            logger.warning(f"Progress label update failed: {e}")
-
-
-async def webhook_worker(
-    queue: asyncio.Queue[ProgressRun | None],
-    webhook_url: str,
-    max_retries: int = 3,
-    retry_delay: float = 10.0,
-) -> None:
-    """Process webhooks sequentially with retries, preserving order."""
-    while True:
-        payload = await queue.get()
-        if payload is None:
-            queue.task_done()
-            break
-
-        with contextlib.suppress(Exception):
-            await send_webhook(webhook_url, payload, max_retries, retry_delay)
-
-        queue.task_done()
+            logger.warning("Progress label update failed: %s", e)
 
 
 @contextmanager
-def flow_context(  # noqa: PLR0917
+def flow_context(
     webhook_url: str,
     project_name: str,
-    run_id: str,
     flow_run_id: str,
     flow_name: str,
     step: int,
+    *,
     total_steps: int,
     flow_minutes: tuple[float, ...],
     completed_minutes: float,
-    queue: asyncio.Queue[ProgressRun | None],
 ) -> Generator[None, None, None]:
     """Set up progress context for a flow. Framework internal use."""
     current_flow_minutes = flow_minutes[step - 1] if step <= len(flow_minutes) else 1.0
@@ -134,7 +114,6 @@ def flow_context(  # noqa: PLR0917
     ctx = ProgressContext(
         webhook_url=webhook_url,
         project_name=project_name,
-        run_id=run_id,
         flow_run_id=flow_run_id,
         flow_name=flow_name,
         step=step,
@@ -142,7 +121,6 @@ def flow_context(  # noqa: PLR0917
         total_minutes=total_minutes,
         completed_minutes=completed_minutes,
         current_flow_minutes=current_flow_minutes,
-        queue=queue,
     )
     token = _context.set(ctx)
     try:
@@ -151,4 +129,4 @@ def flow_context(  # noqa: PLR0917
         _context.reset(token)
 
 
-__all__ = ["ProgressContext", "flow_context", "update", "webhook_worker"]
+__all__ = ["ProgressContext", "flow_context", "update"]

@@ -1,7 +1,7 @@
 # MODULE: llm
 # CLASSES: Conversation
 # DEPENDS: BaseModel, Generic
-# SIZE: ~15KB
+# SIZE: ~12KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -160,41 +160,14 @@ Attributes:
         Returns:
             New Conversation[None] with response accessible via .content, .reasoning_content, etc.
         """
-        docs = _normalize_content(content)
-        new_messages = self.messages + docs
-
-        # Prepare substitutor with all text content
-        if self.substitutor:
-            all_items_for_sub = self.context + tuple(m for m in new_messages if isinstance(m, (Document, _UserMessage)))
-            self.substitutor.prepare(self._collect_text_for_substitutor(all_items_for_sub))
-
-        # Build CoreMessages (CPU-bound image/PDF processing runs in thread pool)
-        all_items = self.context + new_messages
-        core_messages = await asyncio.to_thread(self._to_core_messages, all_items)
-        context_count = len(await asyncio.to_thread(self._to_core_messages, self.context))
-
-        # Apply substitution if enabled
-        if self.substitutor:
-            core_messages = self._apply_substitution(core_messages)
-
-        response = await core_generate(
-            core_messages,
-            model=self.model,
-            model_options=self.model_options,
-            purpose=purpose,
-            expected_cost=expected_cost,
-            context_count=context_count,
-        )
-
-        response = self._restore_response(response)
-
+        new_messages, response = await self._execute_send(content, None, purpose, expected_cost)
         return Conversation[None](  # type: ignore[type-var]
             model=self.model,
             context=self.context,
             messages=new_messages + (response,),
             model_options=self.model_options,
             enable_substitutor=self.enable_substitutor,
-            substitutor=self.substitutor,  # Pass through - no hack needed!
+            substitutor=self.substitutor,
         )
 
     async def send_structured(
@@ -216,35 +189,7 @@ Attributes:
         Returns:
             New Conversation[T] with .parsed returning T instance.
         """
-        docs = _normalize_content(content)
-        new_messages = self.messages + docs
-
-        # Prepare substitutor with all text content
-        if self.substitutor:
-            all_items_for_sub = self.context + tuple(m for m in new_messages if isinstance(m, (Document, _UserMessage)))
-            self.substitutor.prepare(self._collect_text_for_substitutor(all_items_for_sub))
-
-        # Build CoreMessages (CPU-bound image/PDF processing runs in thread pool)
-        all_items = self.context + new_messages
-        core_messages = await asyncio.to_thread(self._to_core_messages, all_items)
-        context_count = len(await asyncio.to_thread(self._to_core_messages, self.context))
-
-        # Apply substitution if enabled
-        if self.substitutor:
-            core_messages = self._apply_substitution(core_messages)
-
-        response = await core_generate_structured(
-            core_messages,
-            response_format,
-            model=self.model,
-            model_options=self.model_options,
-            purpose=purpose,
-            expected_cost=expected_cost,
-            context_count=context_count,
-        )
-
-        response = self._restore_response(response, response_format)
-
+        new_messages, response = await self._execute_send(content, response_format, purpose, expected_cost)
         return Conversation[T](
             model=self.model,
             context=self.context,

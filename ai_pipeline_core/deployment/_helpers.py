@@ -13,10 +13,6 @@ from ai_pipeline_core.logging import get_pipeline_logger
 logger = get_pipeline_logger(__name__)
 
 
-class DownloadedDocument(Document):
-    """Concrete document for downloaded content."""
-
-
 class StatusPayload(TypedDict):
     """Webhook payload for Prefect state transitions (sub-flow level)."""
 
@@ -53,16 +49,21 @@ def extract_generic_params(cls: type, base_class: type) -> tuple[Any, ...]:
     return (None, None)
 
 
+class _DownloadedDocument(Document):
+    """Document created from a downloaded URL."""
+
+
 async def download_documents(urls: list[str]) -> list[Document]:
-    """Download documents from URLs."""
-    documents: list[Document] = []
+    """Download documents from URLs in parallel."""
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        for url in urls:
+
+        async def _download(url: str) -> Document:
             response = await client.get(url)
             response.raise_for_status()
-            filename = url.split("/")[-1].split("?")[0] or "document"
-            documents.append(DownloadedDocument(name=filename, content=response.content))
-    return documents
+            filename = url.rsplit("/", maxsplit=1)[-1].split("?")[0] or "document"
+            return _DownloadedDocument(name=filename, content=response.content)
+
+        return list(await asyncio.gather(*[_download(url) for url in urls]))
 
 
 async def upload_documents(documents: list[Document], url_mapping: dict[str, str]) -> None:
@@ -84,18 +85,18 @@ async def send_webhook(
     max_retries: int = 3,
     retry_delay: float = 10.0,
 ) -> None:
-    """Send webhook with retries."""
+    """Send webhook with retries. Uses a single httpx client across retry attempts."""
     data: dict[str, Any] = payload.model_dump(mode="json")
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
+        for attempt in range(max_retries):
+            try:
                 response = await client.post(url, json=data, follow_redirects=True)
                 response.raise_for_status()
-            return
-        except Exception as e:
-            if attempt < max_retries - 1:
-                logger.warning(f"Webhook retry {attempt + 1}/{max_retries}: {e}")
-                await asyncio.sleep(retry_delay)
-            else:
-                logger.exception(f"Webhook failed after {max_retries} attempts")
-                raise
+                return
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning("Webhook retry %d/%d: %s", attempt + 1, max_retries, e)
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.exception("Webhook failed after %d attempts", max_retries)
+                    raise

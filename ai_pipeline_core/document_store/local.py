@@ -21,6 +21,14 @@ from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
 
+DOC_ID_LENGTH = 6
+
+
+def _safe_filename(name: str, doc_sha256: str) -> str:
+    """Build collision-safe filename: {stem}_{sha256[:DOC_ID_LENGTH]}{suffix}."""
+    p = Path(name)
+    return f"{p.stem}_{doc_sha256[:DOC_ID_LENGTH]}{p.suffix}"
+
 
 class LocalDocumentStore:
     """Filesystem-backed document store for local development and debugging.
@@ -102,13 +110,17 @@ class LocalDocumentStore:
         doc_dir = self._scope_path(run_scope) / canonical
         doc_dir.mkdir(parents=True, exist_ok=True)
 
-        content_path = doc_dir / document.name
-        if not content_path.resolve().is_relative_to(doc_dir.resolve()):
+        # Path traversal check on original name before any filesystem operations
+        raw_check = doc_dir / document.name
+        if not raw_check.resolve().is_relative_to(doc_dir.resolve()):
             raise ValueError(f"Path traversal detected: document name '{document.name}' escapes store directory")
-        meta_path = doc_dir / f"{document.name}.meta.json"
 
         doc_sha256 = compute_document_sha256(document)
         content_sha256 = compute_content_sha256(document.content)
+        safe_name = _safe_filename(document.name, doc_sha256)
+
+        content_path = doc_dir / safe_name
+        meta_path = doc_dir / f"{safe_name}.meta.json"
 
         # Check for concurrent access: if meta exists with different SHA256, log warning
         if meta_path.exists():
@@ -130,7 +142,7 @@ class LocalDocumentStore:
         # Write attachments
         att_meta_list: list[dict[str, Any]] = []
         if document.attachments:
-            att_dir = doc_dir / f"{document.name}.att"
+            att_dir = doc_dir / f"{safe_name}.att"
             att_dir.mkdir(exist_ok=True)
             for att in document.attachments:
                 att_path = att_dir / att.name
@@ -145,6 +157,7 @@ class LocalDocumentStore:
 
         # Write meta last (crash safety — content is already on disk)
         meta = {
+            "name": document.name,
             "document_sha256": doc_sha256,
             "content_sha256": content_sha256,
             "class_name": document.__class__.__name__,
@@ -189,8 +202,9 @@ class LocalDocumentStore:
             if meta is None:
                 continue
 
-            content_name = meta_path.name.removesuffix(".meta.json")
-            content_path = type_dir / content_name
+            # Filesystem name (with collision-safe suffix) for locating files on disk
+            fs_name = meta_path.name.removesuffix(".meta.json")
+            content_path = type_dir / fs_name
 
             if not content_path.exists():
                 logger.warning(f"Meta file {meta_path} has no corresponding content file, skipping")
@@ -198,11 +212,11 @@ class LocalDocumentStore:
 
             content = content_path.read_bytes()
 
-            # Load attachments
+            # Load attachments (use filesystem name for paths)
             attachments: tuple[Attachment, ...] = ()
             att_meta_list = meta.get("attachments", [])
             if att_meta_list:
-                att_dir = type_dir / f"{content_name}.att"
+                att_dir = type_dir / f"{fs_name}.att"
                 att_list: list[Attachment] = []
                 for att_meta in att_meta_list:
                     att_path = att_dir / att_meta["name"]
@@ -218,8 +232,11 @@ class LocalDocumentStore:
                     )
                 attachments = tuple(att_list)
 
+            # Use original document name from meta (fallback to filesystem name for old stores)
+            original_name = meta.get("name", fs_name)
+
             doc = doc_type(
-                name=content_name,
+                name=original_name,
                 content=content,
                 description=meta.get("description"),
                 sources=tuple(meta.get("sources", ())),

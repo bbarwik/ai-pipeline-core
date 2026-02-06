@@ -15,8 +15,9 @@ from pydantic import BaseModel
 
 from ai_pipeline_core import DeploymentContext, DeploymentResult, Document, FlowOptions
 from ai_pipeline_core.deployment.base import _reconstruct_documents
-from ai_pipeline_core.deployment.helpers import class_name_to_deployment_name, extract_generic_params
+from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
 from ai_pipeline_core.deployment.remote import RemoteDeployment
+from ai_pipeline_core.observability.tracing import TraceLevel
 
 
 # ---------------------------------------------------------------------------
@@ -54,26 +55,26 @@ class NestedDocResult(DeploymentResult):
 class TestNameDerivation:
     def test_auto_derives_kebab_case(self):
         class MyResearchPipeline(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert MyResearchPipeline.name == "my-research-pipeline"
 
     def test_single_word(self):
         class Research(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert Research.name == "research"
 
     def test_explicit_name_override(self):
         class CustomNamed(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
             name = "my-explicit-name"
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert CustomNamed.name == "my-explicit-name"
 
     def test_auto_derived_matches_pipeline_deployment_convention(self):
         class SamplePipeline(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert SamplePipeline.name == class_name_to_deployment_name("SamplePipeline")
 
@@ -81,19 +82,19 @@ class TestNameDerivation:
 class TestGenericExtraction:
     def test_extracts_options_type(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert Foo.options_type is FlowOptions
 
     def test_extracts_result_type(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert Foo.result_type is SimpleResult
 
     def test_three_args_returned_by_helper(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         args = extract_generic_params(Foo, RemoteDeployment)
         assert len(args) == 3
@@ -103,7 +104,7 @@ class TestGenericExtraction:
 
     def test_union_doc_arg_is_union_type(self):
         class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         args = extract_generic_params(Foo, RemoteDeployment)
         assert isinstance(args[0], types.UnionType)
@@ -113,25 +114,25 @@ class TestGenericExtraction:
 class TestTDocValidation:
     def test_single_document_type_accepted(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert Foo.result_type is SimpleResult
 
     def test_union_of_two_documents_accepted(self):
         class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert Foo.name == "foo"
 
     def test_union_of_three_documents_accepted(self):
         class Foo(RemoteDeployment[AlphaDoc | BetaDoc | GammaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert Foo.result_type is SimpleResult
 
     def test_base_document_accepted(self):
         class Foo(RemoteDeployment[Document, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert Foo.name == "foo"
 
@@ -139,19 +140,19 @@ class TestTDocValidation:
         with pytest.raises(TypeError, match="Document subclass"):
 
             class Bad(RemoteDeployment[str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[str] = "off"
+                trace_level: ClassVar[TraceLevel] = "off"
 
     def test_rejects_non_document_in_union(self):
         with pytest.raises(TypeError, match="Document subclass"):
 
             class Bad(RemoteDeployment[AlphaDoc | str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[str] = "off"
+                trace_level: ClassVar[TraceLevel] = "off"
 
     def test_rejects_int(self):
         with pytest.raises(TypeError, match="Document subclass"):
 
             class Bad(RemoteDeployment[int, FlowOptions, SimpleResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[str] = "off"
+                trace_level: ClassVar[TraceLevel] = "off"
 
 
 class TestTOptionsValidation:
@@ -162,7 +163,7 @@ class TestTOptionsValidation:
         with pytest.raises(TypeError, match="FlowOptions subclass"):
 
             class Bad(RemoteDeployment[AlphaDoc, NotFlowOptions, SimpleResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[str] = "off"
+                trace_level: ClassVar[TraceLevel] = "off"
 
 
 class TestTResultValidation:
@@ -173,7 +174,7 @@ class TestTResultValidation:
         with pytest.raises(TypeError, match="DeploymentResult subclass"):
 
             class Bad(RemoteDeployment[AlphaDoc, FlowOptions, NotAResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[str] = "off"
+                trace_level: ClassVar[TraceLevel] = "off"
 
 
 class TestMissingGenerics:
@@ -181,13 +182,13 @@ class TestMissingGenerics:
         with pytest.raises(TypeError, match="must specify 3 Generic parameters"):
 
             class Bad(RemoteDeployment):  # type: ignore[type-arg]
-                trace_level: ClassVar[str] = "off"
+                trace_level: ClassVar[TraceLevel] = "off"
 
     def test_rejects_two_generic_params(self):
         with pytest.raises(TypeError):
 
             class Bad(RemoteDeployment[FlowOptions, SimpleResult]):  # type: ignore[type-arg]
-                trace_level: ClassVar[str] = "off"
+                trace_level: ClassVar[TraceLevel] = "off"
 
 
 # ===================================================================
@@ -198,20 +199,20 @@ class TestMissingGenerics:
 class TestDeploymentPath:
     def test_auto_derived(self):
         class AiResearch(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert AiResearch().deployment_path == "ai-research/ai_research"
 
     def test_explicit_name(self):
         class CustomName(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
             name = "my-pipeline"
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert CustomName().deployment_path == "my-pipeline/my_pipeline"
 
     def test_path_format_matches_deployer(self):
         class SamplePipeline(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         path = SamplePipeline().deployment_path
         flow_name, deployment_name = path.split("/")
@@ -231,7 +232,7 @@ _REMOTE_RUN = "ai_pipeline_core.deployment.remote.run_remote_deployment"
 class TestRunBasic:
     async def test_returns_typed_result(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = SimpleResult(success=True, report="done")
@@ -242,7 +243,7 @@ class TestRunBasic:
 
     async def test_deployment_path_used_in_prefect_call(self):
         class MyPipeline(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = SimpleResult(success=True)
@@ -253,7 +254,7 @@ class TestRunBasic:
 
     async def test_options_passed_through(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         opts = FlowOptions()
         with patch(_REMOTE_RUN) as mock_run:
@@ -267,7 +268,7 @@ class TestRunBasic:
 class TestRunDocumentSerialization:
     async def test_documents_serialized_via_serialize_model(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         doc = AlphaDoc.create(name="test.txt", content="hello world")
         with patch(_REMOTE_RUN) as mock_run:
@@ -282,7 +283,7 @@ class TestRunDocumentSerialization:
 
     async def test_multiple_union_docs_serialized(self):
         class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         docs = [
             AlphaDoc.create(name="a.txt", content="alpha"),
@@ -299,7 +300,7 @@ class TestRunDocumentSerialization:
 
     async def test_empty_documents_list(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = SimpleResult(success=True)
@@ -312,7 +313,7 @@ class TestRunDocumentSerialization:
 class TestRunContext:
     async def test_context_none_replaced_with_default(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = SimpleResult(success=True)
@@ -323,7 +324,7 @@ class TestRunContext:
 
     async def test_explicit_context_preserved(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         ctx = DeploymentContext(progress_webhook_url="http://example.com")
         with patch(_REMOTE_RUN) as mock_run:
@@ -337,7 +338,7 @@ class TestRunContext:
 class TestRunResultDeserialization:
     async def test_deployment_result_instance_returned_directly(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         expected = SimpleResult(success=True, report="direct")
         with patch(_REMOTE_RUN) as mock_run:
@@ -348,7 +349,7 @@ class TestRunResultDeserialization:
 
     async def test_dict_result_deserialized_via_model_validate(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = {"success": True, "report": "from dict"}
@@ -359,7 +360,7 @@ class TestRunResultDeserialization:
 
     async def test_nested_document_in_result_deserialized(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, NestedDocResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         original_doc = AlphaDoc.create(name="output.txt", content="result data")
         original_result = NestedDocResult(success=True, output_doc=original_doc)
@@ -375,7 +376,7 @@ class TestRunResultDeserialization:
 
     async def test_invalid_result_type_raises(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = "invalid string"
@@ -386,7 +387,7 @@ class TestRunResultDeserialization:
 class TestRunProgress:
     async def test_on_progress_forwarded(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         callback = AsyncMock()
         with patch(_REMOTE_RUN) as mock_run:
@@ -397,7 +398,7 @@ class TestRunProgress:
 
     async def test_on_progress_none_by_default(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = SimpleResult(success=True)
@@ -409,7 +410,7 @@ class TestRunProgress:
 class TestRunErrorPropagation:
     async def test_deployment_not_found_propagates(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.side_effect = ValueError("deployment not found")
@@ -431,7 +432,7 @@ class TestTracing:
 
     def test_trace_level_off_skips_tracing(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert getattr(Foo._execute, "__is_traced__", False) is False
 
@@ -446,7 +447,7 @@ class TestTracing:
 
     async def test_trace_cost_set_when_configured(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
             trace_cost: ClassVar[float | None] = 0.05
 
         with (
@@ -459,7 +460,7 @@ class TestTracing:
 
     async def test_trace_cost_none_not_set(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         with (
             patch(_REMOTE_RUN) as mock_run,
@@ -488,7 +489,7 @@ class TestTraceCombinedGuard:
 
     def test_trace_level_off_with_untraced_execute(self):
         class NoTrace(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         assert getattr(NoTrace._execute, "__is_traced__", False) is False
 
@@ -526,7 +527,7 @@ class TestSerializationRoundTrip:
 
     async def test_full_run_serialization_path(self):
         class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         docs = [
             AlphaDoc.create(name="input.txt", content="input data"),
@@ -556,7 +557,7 @@ class TestSerializationRoundTrip:
 class TestEdgeCases:
     def test_module_level_instantiation_no_event_loop(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         instance = Foo()
         assert instance.name == "foo"
@@ -564,7 +565,7 @@ class TestEdgeCases:
 
     def test_multiple_instances_share_class_state(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         a = Foo()
         b = Foo()
@@ -574,7 +575,7 @@ class TestEdgeCases:
 
     def test_union_with_three_plus_doc_types(self):
         class Foo(RemoteDeployment[AlphaDoc | BetaDoc | GammaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         args = extract_generic_params(Foo, RemoteDeployment)
         assert isinstance(args[0], types.UnionType)
@@ -582,10 +583,10 @@ class TestEdgeCases:
 
     async def test_concurrent_instances_independent(self):
         class ClientA(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         class ClientB(RemoteDeployment[BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         a = ClientA()
         b = ClientB()
@@ -609,7 +610,7 @@ class TestEdgeCases:
 class TestExtractGenericParamsUpdated:
     def test_three_params_from_remote_deployment(self):
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         result = extract_generic_params(Foo, RemoteDeployment)
         assert len(result) == 3
@@ -619,7 +620,7 @@ class TestExtractGenericParamsUpdated:
 
     def test_union_in_first_position(self):
         class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         result = extract_generic_params(Foo, RemoteDeployment)
         assert isinstance(result[0], types.UnionType)
@@ -647,7 +648,7 @@ class TestReportedBugs:
         """
 
         class ParentOff(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[str] = "off"
+            trace_level: ClassVar[TraceLevel] = "off"
 
         class ChildInherits(ParentOff):
             pass
@@ -660,13 +661,11 @@ class TestReportedBugs:
 
         Project bans Union syntax per CLAUDE.md, but should it raise a clear error?
         """
-        from typing import Union
-
-        # This tests whether typing.Union is handled at all
+        # This tests whether PEP 604 union syntax is handled
         try:
 
-            class UnionSyntax(RemoteDeployment[Union[AlphaDoc, BetaDoc], FlowOptions, SimpleResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[str] = "off"
+            class UnionSyntax(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):  # type: ignore[type-var]
+                trace_level: ClassVar[TraceLevel] = "off"
 
             accepted = True
         except TypeError:

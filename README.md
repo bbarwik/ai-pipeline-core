@@ -23,7 +23,7 @@ AI Pipeline Core is a production-ready framework that combines document processi
 - **Auto-Persistence**: `@pipeline_task` saves returned documents to `DocumentStore` automatically (configurable via `persist` parameter)
 - **Image Processing**: Automatic image tiling/splitting for LLM vision models with model-specific presets
 - **Observability**: Built-in distributed tracing via Laminar (LMNR) with cost tracking, local trace debugging, and ClickHouse-based tracking
-- **Deployment**: Unified pipeline execution for local, CLI, and production environments with per-flow resume and deployment hooks
+- **Deployment**: Unified pipeline execution for local, CLI, and production environments with per-flow resume and dual-store support
 
 ## Installation
 
@@ -300,11 +300,12 @@ Documents support:
 Documents are automatically persisted by `@pipeline_task` to a `DocumentStore`. The store is a protocol with three implementations:
 
 - **ClickHouseDocumentStore**: Production backend (selected when `CLICKHOUSE_HOST` is configured). Requires `clickhouse-connect` (included in dependencies).
-- **LocalDocumentStore**: CLI/debug mode (filesystem-based, browsable files on disk)
+- **LocalDocumentStore**: CLI/debug mode (filesystem-based, browsable files on disk). Uses collision-safe filenames (`{stem}_{sha256[:6]}{suffix}`) so same-name documents coexist.
 - **MemoryDocumentStore**: Testing (in-memory, zero I/O)
+- **DualDocumentStore**: Wraps primary (ClickHouse) + secondary (local filesystem). Saves to both, reads from primary only. Secondary failures are best-effort.
 
 **Store selection depends on the execution mode:**
-- `run_cli()`: Always uses `LocalDocumentStore` (files saved to the working directory)
+- `run_cli()`: Uses `DualDocumentStore` (ClickHouse + local) when `CLICKHOUSE_HOST` is configured, `LocalDocumentStore` otherwise
 - `run_local()`: Always uses `MemoryDocumentStore` (in-memory, no persistence)
 - `as_prefect_flow()`: Auto-selects based on settings -- `ClickHouseDocumentStore` when `CLICKHOUSE_HOST` is set, `LocalDocumentStore` otherwise
 
@@ -823,7 +824,7 @@ ai-pipeline-core/
 |-- ai_pipeline_core/
 |   |-- _llm_core/        # Internal LLM client, model types, and response handling
 |   |-- agents/            # Agent framework (AgentProvider, run_agent, AgentOutputDocument)
-|   |-- deployment/        # Pipeline deployment, deploy script, progress, remote, hooks
+|   |-- deployment/        # Pipeline deployment, deploy script, CLI bootstrap, progress, remote
 |   |-- docs_generator/    # AI-focused documentation generator
 |   |-- document_store/    # Store protocol and backends (ClickHouse, local, memory)
 |   |-- documents/         # Document system (Document base class, attachments, context)

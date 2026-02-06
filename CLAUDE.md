@@ -188,9 +188,10 @@ This section documents capabilities the framework must provide to applications.
 - Webhook push + Prefect labels pull
 - Weighted calculation based on `estimated_minutes`
 
-**Hooks System:**
-- `DeploymentHook` ABC for external packages
-- Artifact injection and environment variable merging
+**DualDocumentStore:**
+- When ClickHouse is configured, CLI mode uses `DualDocumentStore` — saves to ClickHouse (primary) and local filesystem (secondary)
+- All reads delegate to primary; secondary failures are best-effort (logged as warnings)
+- Owns `SummaryWorker` for correct summary fan-out to both stores
 
 ### 2.6 Agents (`agents/`)
 

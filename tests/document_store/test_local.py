@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ai_pipeline_core.document_store import DocumentStore, create_document_store, set_document_store
-from ai_pipeline_core.document_store.local import LocalDocumentStore
+from ai_pipeline_core.document_store.local import LocalDocumentStore, _safe_filename
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._hashing import compute_document_sha256
 
@@ -180,16 +180,17 @@ class TestConcurrentAccess:
         assert len(loaded) == 1
 
     @pytest.mark.asyncio
-    async def test_overwrite_different_content_logs_warning(self, store: LocalDocumentStore, tmp_path: Path):
-        """Saving a document with same name but different content overwrites with warning."""
+    async def test_same_name_different_content_coexist(self, store: LocalDocumentStore):
+        """Documents with same name but different content get separate files."""
         doc1 = _make(ReportDoc, "report.md", "version 1")
         doc2 = _make(ReportDoc, "report.md", "version 2")
         await store.save(doc1, "run1")
         await store.save(doc2, "run1")
 
         loaded = await store.load("run1", [ReportDoc])
-        assert len(loaded) == 1
-        assert loaded[0].content == b"version 2"
+        assert len(loaded) == 2
+        contents = {d.content for d in loaded}
+        assert contents == {b"version 1", b"version 2"}
 
 
 class TestHasDocuments:
@@ -227,24 +228,29 @@ class TestFileLayout:
     @pytest.mark.asyncio
     async def test_creates_correct_directory_structure(self, store: LocalDocumentStore, tmp_path: Path):
         doc = _make(ReportDoc, "report.md", "# Hello")
+        sha = compute_document_sha256(doc)
+        safe_name = _safe_filename("report.md", sha)
         await store.save(doc, "run1")
 
         canonical = ReportDoc.canonical_name()
-        assert (tmp_path / "run1" / canonical / "report.md").exists()
-        assert (tmp_path / "run1" / canonical / "report.md.meta.json").exists()
+        assert (tmp_path / "run1" / canonical / safe_name).exists()
+        assert (tmp_path / "run1" / canonical / f"{safe_name}.meta.json").exists()
 
     @pytest.mark.asyncio
     async def test_meta_json_content(self, store: LocalDocumentStore, tmp_path: Path):
         doc = _make(ReportDoc, "report.md", "content", description="desc")
+        sha = compute_document_sha256(doc)
+        safe_name = _safe_filename("report.md", sha)
         await store.save(doc, "run1")
 
         canonical = ReportDoc.canonical_name()
-        meta_path = tmp_path / "run1" / canonical / "report.md.meta.json"
+        meta_path = tmp_path / "run1" / canonical / f"{safe_name}.meta.json"
         meta = json.loads(meta_path.read_text())
 
+        assert meta["name"] == "report.md"
         assert meta["class_name"] == "ReportDoc"
         assert meta["description"] == "desc"
-        assert "document_sha256" in meta
+        assert meta["document_sha256"] == sha
         assert "content_sha256" in meta
         assert isinstance(meta["sources"], list)
         assert isinstance(meta["origins"], list)
@@ -253,10 +259,12 @@ class TestFileLayout:
     async def test_attachment_directory(self, store: LocalDocumentStore, tmp_path: Path):
         att = Attachment(name="img.png", content=b"\x89PNG" + b"\x00" * 50)
         doc = ReportDoc.create(name="report.md", content="text", attachments=(att,))
+        sha = compute_document_sha256(doc)
+        safe_name = _safe_filename("report.md", sha)
         await store.save(doc, "run1")
 
         canonical = ReportDoc.canonical_name()
-        att_dir = tmp_path / "run1" / canonical / "report.md.att"
+        att_dir = tmp_path / "run1" / canonical / f"{safe_name}.att"
         assert att_dir.is_dir()
         assert (att_dir / "img.png").exists()
 
@@ -288,6 +296,87 @@ class TestEdgeCases:
         await store.save(doc, "run1")
         loaded = await store.load("run1", [ReportDoc])
         assert loaded[0].origins == ()
+
+
+class TestCollisionSafeFilenames:
+    @pytest.mark.asyncio
+    async def test_loaded_name_is_original(self, store: LocalDocumentStore):
+        """Loaded document.name must be the original, not the suffixed filesystem name."""
+        doc = _make(ReportDoc, "report.md", "content")
+        await store.save(doc, "run1")
+        loaded = await store.load("run1", [ReportDoc])
+        assert loaded[0].name == "report.md"
+
+    @pytest.mark.asyncio
+    async def test_sha256_preserved_after_round_trip(self, store: LocalDocumentStore):
+        """Document SHA256 must be identical after save/load (name round-trips correctly)."""
+        doc = _make(ReportDoc, "report.md", "content")
+        original_sha = compute_document_sha256(doc)
+        await store.save(doc, "run1")
+        loaded = await store.load("run1", [ReportDoc])
+        assert compute_document_sha256(loaded[0]) == original_sha
+
+    @pytest.mark.asyncio
+    async def test_no_extension(self, store: LocalDocumentStore):
+        doc = _make(ReportDoc, "README", "content")
+        await store.save(doc, "run1")
+        loaded = await store.load("run1", [ReportDoc])
+        assert loaded[0].name == "README"
+
+    @pytest.mark.asyncio
+    async def test_multiple_dots_in_name(self, store: LocalDocumentStore):
+        doc = _make(ReportDoc, "archive.tar.gz", "content")
+        await store.save(doc, "run1")
+        loaded = await store.load("run1", [ReportDoc])
+        assert loaded[0].name == "archive.tar.gz"
+
+    @pytest.mark.asyncio
+    async def test_dotfile_name(self, store: LocalDocumentStore):
+        doc = _make(ReportDoc, ".gitignore", "content")
+        await store.save(doc, "run1")
+        loaded = await store.load("run1", [ReportDoc])
+        assert loaded[0].name == ".gitignore"
+
+    def test_path_traversal_rejected_at_document_level(self):
+        """Document validation rejects path traversal before the store."""
+        with pytest.raises(Exception, match="path traversal"):
+            ReportDoc(name="../../../etc/passwd", content=b"evil")
+
+    @pytest.mark.asyncio
+    async def test_backward_compat_load_without_name_in_meta(self, store: LocalDocumentStore, tmp_path: Path):
+        """Old meta.json files without 'name' field should fall back to filesystem name."""
+        canonical = ReportDoc.canonical_name()
+        doc_dir = tmp_path / "run1" / canonical
+        doc_dir.mkdir(parents=True)
+        (doc_dir / "old_doc.md").write_bytes(b"old content")
+        meta = {
+            "document_sha256": "X" * 52,
+            "content_sha256": "Y" * 52,
+            "class_name": "ReportDoc",
+            "description": None,
+            "sources": [],
+            "origins": [],
+            "mime_type": "text/markdown",
+            "attachments": [],
+        }
+        (doc_dir / "old_doc.md.meta.json").write_text(json.dumps(meta))
+        loaded = await store.load("run1", [ReportDoc])
+        assert len(loaded) == 1
+        assert loaded[0].name == "old_doc.md"
+
+
+class TestSafeFilenameHelper:
+    def test_standard_extension(self):
+        assert _safe_filename("report.md", "A7B2C9XXXX") == "report_A7B2C9.md"
+
+    def test_no_extension(self):
+        assert _safe_filename("README", "A7B2C9XXXX") == "README_A7B2C9"
+
+    def test_multiple_dots(self):
+        assert _safe_filename("archive.tar.gz", "A7B2C9XXXX") == "archive.tar_A7B2C9.gz"
+
+    def test_dotfile(self):
+        assert _safe_filename(".gitignore", "A7B2C9XXXX") == ".gitignore_A7B2C9"
 
 
 class TestFactory:

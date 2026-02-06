@@ -14,7 +14,6 @@ from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDe
 from ai_pipeline_core.deployment import DeploymentContext
 from ai_pipeline_core.document_store.memory import MemoryDocumentStore
 from ai_pipeline_core.document_store.protocol import set_document_store
-from ai_pipeline_core.testing import disable_run_logger, prefect_test_harness
 from pydantic import Field
 
 
@@ -85,56 +84,52 @@ class TestResumeLogic:
         documents: list[Document],
         options: ResumeOptions | None = None,
     ) -> ResumeResult:
-        """Run pipeline through _run_with_steps (CLI path) with shared store."""
-        return await ResumeDeployment()._run_with_steps(
+        """Run pipeline through run() with shared store."""
+        return await ResumeDeployment().run(
             project_name=project_name,
+            documents=documents,
             options=options or ResumeOptions(),
             context=DeploymentContext(),
-            initial_documents=documents,
         )
 
     @pytest.mark.asyncio
     async def test_skip_when_same_inputs_and_options(self):
         """Re-running with identical project, inputs, and options → flow skipped."""
         docs = [ResumeInputDoc(name="a.txt", content=b"aaa")]
-        with prefect_test_harness(), disable_run_logger():
-            await self._run("proj", docs)
-            assert len(_flow_executions) == 1
+        await self._run("proj", docs)
+        assert len(_flow_executions) == 1
 
-            await self._run("proj", docs)
-            assert len(_flow_executions) == 1  # skipped
+        await self._run("proj", docs)
+        assert len(_flow_executions) == 1  # skipped
 
     @pytest.mark.asyncio
     async def test_no_skip_when_inputs_change(self):
         """Re-running with different input documents → flow must re-execute."""
         docs_a = [ResumeInputDoc(name="a.txt", content=b"aaa")]
         docs_b = [ResumeInputDoc(name="b.txt", content=b"bbb")]
-        with prefect_test_harness(), disable_run_logger():
-            await self._run("proj", docs_a)
-            assert len(_flow_executions) == 1
+        await self._run("proj", docs_a)
+        assert len(_flow_executions) == 1
 
-            await self._run("proj", docs_b)
-            assert len(_flow_executions) == 2  # must re-execute
+        await self._run("proj", docs_b)
+        assert len(_flow_executions) == 2  # must re-execute
 
     @pytest.mark.asyncio
     async def test_no_skip_when_options_change(self):
         """Re-running with different options → flow must re-execute."""
         docs = [ResumeInputDoc(name="a.txt", content=b"aaa")]
-        with prefect_test_harness(), disable_run_logger():
-            await self._run("proj", docs, ResumeOptions(mode="fast"))
-            assert len(_flow_executions) == 1
+        await self._run("proj", docs, ResumeOptions(mode="fast"))
+        assert len(_flow_executions) == 1
 
-            await self._run("proj", docs, ResumeOptions(mode="thorough"))
-            assert len(_flow_executions) == 2  # must re-execute
+        await self._run("proj", docs, ResumeOptions(mode="thorough"))
+        assert len(_flow_executions) == 2  # must re-execute
 
     @pytest.mark.asyncio
     async def test_skip_still_works_with_identical_run(self):
         """Regression guard: identical inputs + options → flow still skipped after fix."""
         docs = [ResumeInputDoc(name="a.txt", content=b"aaa")]
         opts = ResumeOptions(mode="exact")
-        with prefect_test_harness(), disable_run_logger():
-            await self._run("proj", docs, opts)
-            assert len(_flow_executions) == 1
+        await self._run("proj", docs, opts)
+        assert len(_flow_executions) == 1
 
-            await self._run("proj", docs, opts)
-            assert len(_flow_executions) == 1  # still skipped
+        await self._run("proj", docs, opts)
+        assert len(_flow_executions) == 1  # still skipped
