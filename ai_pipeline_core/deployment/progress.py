@@ -16,6 +16,16 @@ from .contract import ProgressRun
 
 logger = get_pipeline_logger(__name__)
 
+_ZERO_UUID = UUID(int=0)
+
+
+def _safe_uuid(value: str) -> UUID | None:
+    """Parse a UUID string, returning None if invalid."""
+    try:
+        return UUID(value)
+    except (ValueError, AttributeError):
+        return None
+
 
 @dataclass(frozen=True, slots=True)
 class ProgressContext:
@@ -58,9 +68,11 @@ async def update(fraction: float, message: str = "") -> None:
     overall = round(max(0.0, min(1.0, overall)), 4)
     step_progress = round(fraction, 4)
 
+    run_uuid = _safe_uuid(ctx.flow_run_id) if ctx.flow_run_id else None
+
     if ctx.webhook_url:
         payload = ProgressRun(
-            flow_run_id=UUID(ctx.flow_run_id) if ctx.flow_run_id else UUID(int=0),
+            flow_run_id=run_uuid or _ZERO_UUID,
             project_name=ctx.project_name,
             state="RUNNING",
             timestamp=datetime.now(UTC),
@@ -77,11 +89,11 @@ async def update(fraction: float, message: str = "") -> None:
         except Exception as e:
             logger.warning("Progress webhook failed: %s", e)
 
-    if ctx.flow_run_id:
+    if run_uuid is not None:
         try:
             async with get_client() as client:
                 await client.update_flow_run_labels(
-                    flow_run_id=UUID(ctx.flow_run_id),
+                    flow_run_id=run_uuid,
                     labels={
                         "progress.step": ctx.step,
                         "progress.total_steps": ctx.total_steps,

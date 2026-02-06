@@ -310,6 +310,166 @@ async def _generate_non_streaming(
     return response, metadata, None
 
 
+async def _generate_impl(
+    messages: list[CoreMessage],
+    *,
+    model: str,
+    model_options: ModelOptions,
+    purpose: str | None = None,
+    expected_cost: float | None = None,
+    context_count: int = 0,
+) -> ModelResponse[Any]:
+    """Shared LLM generation with single retry loop. Handles both text and structured output."""
+    if not messages:
+        raise ValueError("messages must not be empty")
+    if not model:
+        raise ValueError("model must be provided")
+
+    # Inject system_prompt as first system message if provided
+    effective_messages = list(messages)
+    effective_context_count = context_count
+    if model_options.system_prompt:
+        system_msg = CoreMessage(role=Role.SYSTEM, content=model_options.system_prompt)
+        effective_messages = [system_msg] + effective_messages
+        effective_context_count = context_count + 1 if context_count > 0 else 1
+
+    api_messages = _messages_to_api(effective_messages)
+
+    if "openrouter" in settings.openai_base_url.lower():
+        model = _model_name_to_openrouter_model(model)
+
+    # Apply caching
+    cache_ttl = model_options.cache_ttl
+    if cache_ttl and effective_context_count > 0:
+        if "gemini" in model.lower() and _estimate_token_count(api_messages[:effective_context_count]) < 10000:
+            cache_ttl = None
+            logger.debug("Disabling cache for Gemini with <10k context tokens")
+        if cache_ttl:
+            _apply_cache_control(api_messages, cache_ttl, effective_context_count)
+
+    completion_kwargs: dict[str, Any] = {**model_options.to_openai_completion_kwargs()}
+    if cache_ttl and effective_context_count > 0:
+        completion_kwargs["prompt_cache_key"] = _compute_cache_key(api_messages[:effective_context_count], model_options.system_prompt)
+
+    response_format = model_options.response_format
+
+    for attempt in range(model_options.retries):
+        try:
+            async with AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url) as client:
+                with Laminar.start_as_current_span(purpose or model, span_type="LLM", input=api_messages) as span:
+                    if model_options.stream:
+                        response, metadata, stream_usage = await _generate_streaming(client, model, api_messages, completion_kwargs)
+                    else:
+                        response, metadata, stream_usage = await _generate_non_streaming(client, model, api_messages, completion_kwargs)
+
+                    # Normalize response to fix provider bugs
+                    for choice in response.choices:
+                        if hasattr(choice.message, "role") and choice.message.role != "assistant":
+                            object.__setattr__(choice.message, "role", "assistant")
+                        if choice.finish_reason not in _VALID_FINISH_REASONS:
+                            object.__setattr__(choice, "finish_reason", "stop")
+
+                    content = response.choices[0].message.content or ""
+                    if "</think>" in content:
+                        content = content.split("</think>")[-1].strip()
+
+                    reasoning_content = ""
+                    msg = response.choices[0].message
+                    if rc := getattr(msg, "reasoning_content", None):
+                        reasoning_content = rc
+                    elif "</think>" in (msg.content or ""):
+                        reasoning_content = (msg.content or "").split("</think>")[0].strip()
+
+                    thinking_blocks: tuple[dict[str, Any], ...] | None = None
+                    provider_specific_fields: dict[str, Any] | None = None
+                    if hasattr(msg, "thinking_blocks") and msg.thinking_blocks:
+                        thinking_blocks = tuple(tb if isinstance(tb, dict) else tb.__dict__ for tb in msg.thinking_blocks)
+                    if hasattr(msg, "provider_specific_fields") and msg.provider_specific_fields:
+                        provider_specific_fields = dict(msg.provider_specific_fields)
+
+                    usage = _extract_usage(response)
+                    if stream_usage:
+                        usage = TokenUsage(
+                            prompt_tokens=stream_usage.prompt_tokens,
+                            completion_tokens=stream_usage.completion_tokens,
+                            total_tokens=stream_usage.total_tokens,
+                            cached_tokens=usage.cached_tokens,
+                            reasoning_tokens=usage.reasoning_tokens,
+                        )
+                    cost = _extract_cost(response)
+
+                    if not content:
+                        raise ValueError("Empty response content")
+
+                    # For structured output, parse and validate inside the retry loop
+                    parsed: Any = content
+                    if response_format is not None:
+                        parsed = response_format.model_validate_json(content)
+
+                    citations: tuple[Citation, ...] = ()
+                    if annotations := response.choices[0].message.annotations:
+                        url_citations = [a for a in annotations if getattr(a, "type", None) == "url_citation" and a.url_citation]
+                        citations = tuple(
+                            Citation(
+                                title=a.url_citation.title,
+                                url=a.url_citation.url,
+                                start_index=a.url_citation.start_index,
+                                end_index=a.url_citation.end_index,
+                            )
+                            for a in url_citations
+                        )
+
+                    model_response: ModelResponse[Any] = ModelResponse(
+                        content=content,
+                        parsed=parsed,
+                        reasoning_content=reasoning_content,
+                        citations=citations,
+                        usage=usage,
+                        cost=cost,
+                        model=model,
+                        response_id=response.id or "",
+                        metadata=metadata,
+                        thinking_blocks=thinking_blocks,
+                        provider_specific_fields=provider_specific_fields,
+                    )
+
+                    span_attrs = model_response.get_laminar_metadata()
+                    if expected_cost is not None:
+                        span_attrs["expected_cost"] = expected_cost
+                    if purpose:
+                        span_attrs["purpose"] = purpose
+                    span.set_attributes(span_attrs)  # pyright: ignore[reportArgumentType]
+
+                    outputs = [o for o in (reasoning_content, content) if o]
+                    Laminar.set_span_output(outputs if len(outputs) > 1 else content)
+
+                    return model_response
+
+        except TimeoutError:
+            logger.warning(f"LLM generation timeout (attempt {attempt + 1}/{model_options.retries})")
+            if attempt == model_options.retries - 1:
+                raise LLMError("Exhausted all retry attempts for LLM generation.") from None
+        except Exception as e:
+            if isinstance(e, ValidationError):
+                logger.warning(f"Structured output validation failed (attempt {attempt + 1}/{model_options.retries}): {e}")
+                final_error_msg = f"Structured output validation failed after {model_options.retries} attempts"
+            else:
+                logger.warning(f"LLM generation failed (attempt {attempt + 1}/{model_options.retries}): {e}")
+                final_error_msg = "Exhausted all retry attempts for LLM generation."
+
+            completion_kwargs.setdefault("extra_body", {})
+            completion_kwargs["extra_body"]["cache"] = {"no-cache": True}
+            completion_kwargs.pop("prompt_cache_key", None)
+            api_messages = _remove_cache_control(api_messages)
+
+            if attempt == model_options.retries - 1:
+                raise LLMError(final_error_msg) from e
+
+        await asyncio.sleep(model_options.retry_delay_seconds)
+
+    raise LLMError("Unknown error occurred during LLM generation.")
+
+
 async def generate(
     messages: list[CoreMessage],
     *,
@@ -339,180 +499,15 @@ async def generate(
         ValueError: If messages is empty or model is not provided.
         LLMError: If generation fails after all retries.
     """
-    if not messages:
-        raise ValueError("messages must not be empty")
-    if not model:
-        raise ValueError("model must be provided")
-
-    if model_options is None:
-        model_options = ModelOptions()
-    else:
-        model_options = model_options.model_copy()
-
-    # Inject system_prompt as first system message if provided
-    effective_messages = list(messages)
-    effective_context_count = context_count
-    if model_options.system_prompt:
-        system_msg = CoreMessage(role=Role.SYSTEM, content=model_options.system_prompt)
-        effective_messages = [system_msg] + effective_messages
-        # Include system prompt in cache prefix
-        effective_context_count = context_count + 1 if context_count > 0 else 1
-
-    api_messages = _messages_to_api(effective_messages)
-
-    if "openrouter" in settings.openai_base_url.lower():
-        model = _model_name_to_openrouter_model(model)
-
-    # Apply caching
-    cache_ttl = model_options.cache_ttl
-    if cache_ttl and effective_context_count > 0:
-        # Gemini requires minimum ~10k tokens for caching to be effective
-        if "gemini" in model.lower() and _estimate_token_count(api_messages[:effective_context_count]) < 10000:
-            cache_ttl = None
-            logger.debug("Disabling cache for Gemini with <10k context tokens")
-
-        if cache_ttl:
-            _apply_cache_control(api_messages, cache_ttl, effective_context_count)
-
-    completion_kwargs: dict[str, Any] = {
-        **model_options.to_openai_completion_kwargs(),
-    }
-
-    # Add cache key if caching
-    if cache_ttl and effective_context_count > 0:
-        completion_kwargs["prompt_cache_key"] = _compute_cache_key(api_messages[:effective_context_count], model_options.system_prompt)
-
-    for attempt in range(model_options.retries):
-        try:
-            async with AsyncOpenAI(
-                api_key=settings.openai_api_key,
-                base_url=settings.openai_base_url,
-            ) as client:
-                with Laminar.start_as_current_span(purpose or model, span_type="LLM", input=api_messages) as span:
-                    # Use streaming or non-streaming based on options
-                    if model_options.stream:
-                        response, metadata, stream_usage = await _generate_streaming(client, model, api_messages, completion_kwargs)
-                    else:
-                        response, metadata, stream_usage = await _generate_non_streaming(client, model, api_messages, completion_kwargs)
-
-                    # Normalize response to fix provider bugs
-                    for choice in response.choices:
-                        # Fix role duplication bug (some providers return "assistantassistant")
-                        if hasattr(choice.message, "role") and choice.message.role != "assistant":
-                            object.__setattr__(choice.message, "role", "assistant")
-                        # Fix invalid finish_reason
-                        if choice.finish_reason not in _VALID_FINISH_REASONS:
-                            object.__setattr__(choice, "finish_reason", "stop")
-
-                    content = response.choices[0].message.content or ""
-                    # Strip thinking tags if present
-                    if "</think>" in content:
-                        content = content.split("</think>")[-1].strip()
-
-                    reasoning_content = ""
-                    msg = response.choices[0].message
-                    if rc := getattr(msg, "reasoning_content", None):
-                        reasoning_content = rc
-                    elif "</think>" in (msg.content or ""):
-                        reasoning_content = (msg.content or "").split("</think>")[0].strip()
-
-                    # Extract provider-specific fields for multi-turn reasoning
-                    thinking_blocks: tuple[dict[str, Any], ...] | None = None
-                    provider_specific_fields: dict[str, Any] | None = None
-
-                    if hasattr(msg, "thinking_blocks") and msg.thinking_blocks:
-                        thinking_blocks = tuple(tb if isinstance(tb, dict) else tb.__dict__ for tb in msg.thinking_blocks)
-
-                    if hasattr(msg, "provider_specific_fields") and msg.provider_specific_fields:
-                        provider_specific_fields = dict(msg.provider_specific_fields)
-
-                    usage = _extract_usage(response)
-                    if stream_usage:
-                        # Override with streaming usage if available
-                        usage = TokenUsage(
-                            prompt_tokens=stream_usage.prompt_tokens,
-                            completion_tokens=stream_usage.completion_tokens,
-                            total_tokens=stream_usage.total_tokens,
-                            cached_tokens=usage.cached_tokens,
-                            reasoning_tokens=usage.reasoning_tokens,
-                        )
-                    cost = _extract_cost(response)
-
-                    # Set span attributes
-                    span_attrs: dict[str, Any] = {
-                        "time_taken": metadata["time_taken"],
-                        "gen_ai.usage.prompt_tokens": usage.prompt_tokens,
-                        "gen_ai.usage.completion_tokens": usage.completion_tokens,
-                        "gen_ai.usage.total_tokens": usage.total_tokens,
-                    }
-                    if "first_token_time" in metadata:
-                        span_attrs["first_token_time"] = metadata["first_token_time"]
-                    if usage.cached_tokens:
-                        span_attrs["gen_ai.usage.cached_tokens"] = usage.cached_tokens
-                    if cost:
-                        span_attrs["gen_ai.cost"] = cost
-                    if expected_cost is not None:
-                        span_attrs["expected_cost"] = expected_cost
-                    if purpose:
-                        span_attrs["purpose"] = purpose
-
-                    span.set_attributes(span_attrs)
-
-                    # Output both reasoning and content if available
-                    outputs = [o for o in (reasoning_content, content) if o]
-                    Laminar.set_span_output(outputs if len(outputs) > 1 else content)
-
-                    if not content:
-                        raise ValueError("Empty response content")
-
-                    # Extract citations (filter by type to exclude non-URL annotations)
-                    citations: tuple[Citation, ...] = ()
-                    if annotations := response.choices[0].message.annotations:
-                        url_citations = [a for a in annotations if getattr(a, "type", None) == "url_citation" and a.url_citation]
-                        citations = tuple(
-                            Citation(
-                                title=a.url_citation.title,
-                                url=a.url_citation.url,
-                                start_index=a.url_citation.start_index,
-                                end_index=a.url_citation.end_index,
-                            )
-                            for a in url_citations
-                        )
-
-                    # Build ModelResponse[str] for unstructured output
-                    return ModelResponse[str](
-                        content=content,
-                        parsed=content,  # For unstructured, parsed = content
-                        reasoning_content=reasoning_content,
-                        citations=citations,
-                        usage=usage,
-                        cost=cost,
-                        model=model,
-                        response_id=response.id or "",
-                        metadata=metadata,
-                        thinking_blocks=thinking_blocks,
-                        provider_specific_fields=provider_specific_fields,
-                    )
-
-        except TimeoutError:
-            logger.warning(f"LLM generation timeout (attempt {attempt + 1}/{model_options.retries})")
-            if attempt == model_options.retries - 1:
-                raise LLMError("Exhausted all retry attempts for LLM generation.") from None
-        except Exception as e:
-            logger.warning(f"LLM generation failed (attempt {attempt + 1}/{model_options.retries}): {e}")
-
-            # On non-timeout errors, disable caching to avoid cache-related failures
-            completion_kwargs.setdefault("extra_body", {})
-            completion_kwargs["extra_body"]["cache"] = {"no-cache": True}
-            completion_kwargs.pop("prompt_cache_key", None)
-            api_messages = _remove_cache_control(api_messages)
-
-            if attempt == model_options.retries - 1:
-                raise LLMError("Exhausted all retry attempts for LLM generation.") from e
-
-        await asyncio.sleep(model_options.retry_delay_seconds)
-
-    raise LLMError("Unknown error occurred during LLM generation.")
+    options = model_options.model_copy() if model_options else ModelOptions()
+    return await _generate_impl(
+        messages,
+        model=model,
+        model_options=options,
+        purpose=purpose,
+        expected_cost=expected_cost,
+        context_count=context_count,
+    )
 
 
 async def generate_structured(
@@ -546,52 +541,13 @@ async def generate_structured(
         ValueError: If messages is empty or model is not provided.
         LLMError: If generation and parsing fail after all retries.
     """
-    if model_options is None:
-        model_options = ModelOptions()
-    else:
-        model_options = model_options.model_copy()
-
-    model_options.response_format = response_format
-
-    last_error: Exception | None = None
-
-    for attempt in range(model_options.retries):
-        try:
-            # Call generate to get the raw response
-            result = await generate(
-                messages,
-                model=model,
-                model_options=model_options,
-                purpose=purpose,
-                expected_cost=expected_cost,
-                context_count=context_count,
-            )
-
-            # Parse the content into the response format
-            parsed = response_format.model_validate_json(result.content)
-
-            # Return ModelResponse[T] with the parsed model
-            return ModelResponse[T](
-                content=result.content,
-                parsed=parsed,
-                reasoning_content=result.reasoning_content,
-                citations=result.citations,
-                usage=result.usage,
-                cost=result.cost,
-                model=result.model,
-                response_id=result.response_id,
-                metadata=result.metadata,
-                thinking_blocks=result.thinking_blocks,
-                provider_specific_fields=result.provider_specific_fields,
-            )
-        except ValidationError as e:
-            last_error = e
-            logger.warning(f"Structured output validation failed (attempt {attempt + 1}/{model_options.retries}): {e}")
-            if attempt < model_options.retries - 1:
-                # Disable cache for retry
-                if model_options.extra_body is None:
-                    model_options.extra_body = {}
-                model_options.extra_body["cache"] = {"no-cache": True}
-                await asyncio.sleep(model_options.retry_delay_seconds)
-
-    raise LLMError(f"Structured output validation failed after {model_options.retries} attempts") from last_error
+    options = model_options.model_copy() if model_options else ModelOptions()
+    options.response_format = response_format
+    return await _generate_impl(
+        messages,
+        model=model,
+        model_options=options,
+        purpose=purpose,
+        expected_cost=expected_cost,
+        context_count=context_count,
+    )

@@ -45,7 +45,7 @@ from ._helpers import (
     upload_documents,
 )
 from .contract import CompletedRun, DeploymentResultData, FailedRun, ProgressRun
-from .progress import flow_context
+from .progress import _ZERO_UUID, _safe_uuid, flow_context
 
 logger = get_pipeline_logger(__name__)
 
@@ -133,7 +133,7 @@ class DeploymentResult(BaseModel):
     success: bool
     error: str | None = None
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
 
 TOptions = TypeVar("TOptions", bound=FlowOptions)
@@ -325,9 +325,11 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         current_flow_minutes = flow_minutes[step - 1] if step - 1 < len(flow_minutes) else 1
         progress = round(max(0.0, min(1.0, (completed_minutes + current_flow_minutes * step_progress) / total_minutes)), 4)
 
+        run_uuid = _safe_uuid(flow_run_id) if flow_run_id else None
+
         if context.progress_webhook_url:
             payload = ProgressRun(
-                flow_run_id=UUID(flow_run_id) if flow_run_id else UUID(int=0),
+                flow_run_id=run_uuid or _ZERO_UUID,
                 project_name=project_name,
                 state="RUNNING",
                 timestamp=datetime.now(UTC),
@@ -344,11 +346,11 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             except Exception as e:
                 logger.warning("Progress webhook failed: %s", e)
 
-        if flow_run_id:
+        if run_uuid is not None:
             try:
                 async with get_client() as client:
                     await client.update_flow_run_labels(
-                        flow_run_id=UUID(flow_run_id),
+                        flow_run_id=run_uuid,
                         labels={
                             "progress.step": step,
                             "progress.total_steps": total_steps,
@@ -375,7 +377,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             return
         try:
             now = datetime.now(UTC)
-            frid = UUID(flow_run_id) if flow_run_id else UUID(int=0)
+            frid = (_safe_uuid(flow_run_id) if flow_run_id else None) or _ZERO_UUID
             payload: CompletedRun | FailedRun
             if result is not None:
                 payload = CompletedRun(
@@ -430,14 +432,15 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         if end_step < start_step or end_step > total_steps:
             raise ValueError(f"end_step must be {start_step}-{total_steps}, got {end_step}")
 
-        flow_run_id: str = str(runtime.flow_run.get_id()) if runtime.flow_run else ""  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
+        flow_run_id: str = (runtime.flow_run.get_id() or "") if runtime.flow_run else ""  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
 
         # Write identity labels for polling endpoint
-        if flow_run_id:
+        flow_run_uuid = _safe_uuid(flow_run_id) if flow_run_id else None
+        if flow_run_uuid is not None:
             try:
                 async with get_client() as client:
                     await client.update_flow_run_labels(
-                        flow_run_id=UUID(flow_run_id),
+                        flow_run_id=flow_run_uuid,
                         labels={"pipeline.project_name": project_name},
                     )
             except Exception as e:
@@ -464,7 +467,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         try:
             tracking_svc = get_tracking_service()
             if tracking_svc:
-                run_uuid = UUID(flow_run_id) if flow_run_id else uuid4()
+                run_uuid = (_safe_uuid(flow_run_id) if flow_run_id else None) or uuid4()
                 tracking_svc.set_run_context(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
                 tracking_svc.track_run_start(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
         except Exception as e:
@@ -483,7 +486,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 flow_fn = self.flows[i]
                 flow_name = getattr(flow_fn, "name", flow_fn.__name__)
                 # Re-read flow_run_id in case Prefect subflow changes it
-                flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else flow_run_id  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
+                flow_run_id = (runtime.flow_run.get_id() or "") if runtime.flow_run else flow_run_id  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
 
                 # Resume check: skip if output documents already exist in store
                 output_types = getattr(flow_fn, "output_document_types", [])

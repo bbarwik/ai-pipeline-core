@@ -382,6 +382,66 @@ class TestProgressIntegration:
         assert payloads[1].progress == pytest.approx(0.4167, abs=0.001)
 
 
+class TestInvalidFlowRunId:
+    """Test handling of non-UUID flow_run_id values (e.g. str(None) → "None")."""
+
+    async def test_non_uuid_flow_run_id_does_not_raise(self):
+        """update() must not raise when flow_run_id is a non-UUID string.
+
+        Regression: runtime.flow_run.get_id() can return None, and
+        str(None) produces "None" which passes truthiness but fails UUID().
+        """
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with flow_context(
+            webhook_url="",
+            project_name="test",
+            flow_run_id="None",  # str(None) — the actual bug scenario
+            flow_name="flow",
+            step=1,
+            total_steps=1,
+            flow_minutes=(1.0,),
+            completed_minutes=0.0,
+        ):
+            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
+                await update(0.5, "halfway")  # Must not raise ValueError
+
+        # Label update should be skipped for invalid UUID
+        mock_client.update_flow_run_labels.assert_not_called()
+
+    async def test_non_uuid_flow_run_id_skips_webhook_uuid(self):
+        """Webhook payload uses UUID(int=0) fallback for invalid flow_run_id."""
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with flow_context(
+            webhook_url="http://example.com/progress",
+            project_name="test",
+            flow_run_id="not-a-uuid",
+            flow_name="flow",
+            step=1,
+            total_steps=1,
+            flow_minutes=(1.0,),
+            completed_minutes=0.0,
+        ):
+            with (
+                patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client),
+                patch("ai_pipeline_core.deployment.progress.send_webhook", new_callable=AsyncMock) as mock_send,
+            ):
+                await update(0.5, "halfway")  # Must not raise
+
+        # Webhook should still be sent with fallback UUID
+        mock_send.assert_called_once()
+        payload = mock_send.call_args[0][1]
+        assert payload.flow_run_id == UUID(int=0)
+
+        # Label update should be skipped for invalid UUID
+        mock_client.update_flow_run_labels.assert_not_called()
+
+
 class TestProgressWebhookFailure:
     """Test that webhook failure in update() is logged and doesn't propagate."""
 

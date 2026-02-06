@@ -16,10 +16,11 @@ import base64
 import html
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Generic, Literal, TypeVar, cast
+from typing import Any, Generic, Literal, cast
 
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from typing_extensions import TypeVar
 
 from ai_pipeline_core._llm_core import CoreMessage, ModelOptions, ModelResponse, Role, TokenUsage
 from ai_pipeline_core._llm_core import generate as core_generate
@@ -32,6 +33,13 @@ from ai_pipeline_core.logging import get_pipeline_logger
 from ._substitutor import URLSubstitutor
 from ._validation import validate_image, validate_pdf, validate_text
 
+# Default system prompt injected when substitutor is active with patterns and no user system prompt
+_DEFAULT_SUBSTITUTOR_PROMPT = (
+    "When you see ~text~ in text, address or url it means that original text was replaced and shortened."
+    " When reffering to test with ~text~, eg https://example.com/page~a7ae~ then preserve ~ markers,"
+    " as they will be replaced in your response to original text. Do not remove them in your repsonse."
+)
+
 logger = get_pipeline_logger(__name__)
 
 # Supported image formats that don't need conversion
@@ -42,7 +50,8 @@ _FORMAT_TO_MIME: dict[str, ImageMimeType] = {"JPEG": "image/jpeg", "PNG": "image
 # Token count per image/PDF (per CLAUDE.md §3.6)
 _TOKENS_PER_IMAGE = 1080
 
-T = TypeVar("T", bound=BaseModel)
+T = TypeVar("T", default=None)
+U = TypeVar("U", bound=BaseModel)
 
 # Content can be string, Document, or list of Documents
 ConversationContent = str | Document | list[Document]
@@ -449,6 +458,16 @@ class Conversation(BaseModel, Generic[T]):
             all_items_for_sub = self.context + tuple(m for m in new_messages if isinstance(m, (Document, _UserMessage)))
             self.substitutor.prepare(self._collect_text_for_substitutor(all_items_for_sub))
 
+        # Inject default substitutor prompt if substitutor is active with patterns and no user system prompt
+        effective_options = self.model_options
+        if self.substitutor and self.substitutor.pattern_count > 0:
+            has_user_prompt = self.model_options is not None and self.model_options.system_prompt is not None
+            if not has_user_prompt:
+                if self.model_options is not None:
+                    effective_options = self.model_options.model_copy(update={"system_prompt": _DEFAULT_SUBSTITUTOR_PROMPT})
+                else:
+                    effective_options = ModelOptions(system_prompt=_DEFAULT_SUBSTITUTOR_PROMPT)
+
         # Build CoreMessages in single thread call (CPU-bound image/PDF processing)
         context_core, messages_core = await asyncio.to_thread(lambda: (self._to_core_messages(self.context), self._to_core_messages(new_messages)))
         core_messages = context_core + messages_core
@@ -463,7 +482,7 @@ class Conversation(BaseModel, Generic[T]):
                 core_messages,
                 response_format,
                 model=self.model,
-                model_options=self.model_options,
+                model_options=effective_options,
                 purpose=purpose,
                 expected_cost=expected_cost,
                 context_count=context_count,
@@ -473,7 +492,7 @@ class Conversation(BaseModel, Generic[T]):
             response = await core_generate(
                 core_messages,
                 model=self.model,
-                model_options=self.model_options,
+                model_options=effective_options,
                 purpose=purpose,
                 expected_cost=expected_cost,
                 context_count=context_count,
@@ -488,7 +507,7 @@ class Conversation(BaseModel, Generic[T]):
         *,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[None]":  # type: ignore[type-var]
+    ) -> "Conversation[None]":
         """Send message, returns NEW Conversation with response.
 
         Args:
@@ -500,7 +519,7 @@ class Conversation(BaseModel, Generic[T]):
             New Conversation[None] with response accessible via .content, .reasoning_content, etc.
         """
         new_messages, response = await self._execute_send(content, None, purpose, expected_cost)
-        return Conversation[None](  # type: ignore[type-var]
+        return Conversation[None](
             model=self.model,
             context=self.context,
             messages=new_messages + (response,),
@@ -512,11 +531,11 @@ class Conversation(BaseModel, Generic[T]):
     async def send_structured(
         self,
         content: ConversationContent,
-        response_format: type[T],
+        response_format: type[U],
         *,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[T]":
+    ) -> "Conversation[U]":
         """Send message expecting structured response.
 
         Args:
@@ -526,10 +545,10 @@ class Conversation(BaseModel, Generic[T]):
             expected_cost: Optional expected cost for tracking.
 
         Returns:
-            New Conversation[T] with .parsed returning T instance.
+            New Conversation[U] with .parsed returning U instance.
         """
         new_messages, response = await self._execute_send(content, response_format, purpose, expected_cost)
-        return Conversation[T](
+        return Conversation[U](
             model=self.model,
             context=self.context,
             messages=new_messages + (response,),

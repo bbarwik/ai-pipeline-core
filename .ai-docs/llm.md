@@ -149,7 +149,7 @@ Attributes:
         *,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[None]":  # type: ignore[type-var]
+    ) -> "Conversation[None]":
         """Send message, returns NEW Conversation with response.
 
         Args:
@@ -161,7 +161,7 @@ Attributes:
             New Conversation[None] with response accessible via .content, .reasoning_content, etc.
         """
         new_messages, response = await self._execute_send(content, None, purpose, expected_cost)
-        return Conversation[None](  # type: ignore[type-var]
+        return Conversation[None](
             model=self.model,
             context=self.context,
             messages=new_messages + (response,),
@@ -173,11 +173,11 @@ Attributes:
     async def send_structured(
         self,
         content: ConversationContent,
-        response_format: type[T],
+        response_format: type[U],
         *,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[T]":
+    ) -> "Conversation[U]":
         """Send message expecting structured response.
 
         Args:
@@ -187,10 +187,10 @@ Attributes:
             expected_cost: Optional expected cost for tracking.
 
         Returns:
-            New Conversation[T] with .parsed returning T instance.
+            New Conversation[U] with .parsed returning U instance.
         """
         new_messages, response = await self._execute_send(content, response_format, purpose, expected_cost)
-        return Conversation[T](
+        return Conversation[U](
             model=self.model,
             context=self.context,
             messages=new_messages + (response,),

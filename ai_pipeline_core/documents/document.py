@@ -526,9 +526,9 @@ class Document(BaseModel):
         """Check if a source (Document or string) is in this document's sources."""
         if isinstance(source, str):
             return source in self.sources
-        if isinstance(source, Document):  # type: ignore[misc]
-            return source.sha256 in self.sources
-        raise TypeError(f"Invalid source type: {type(source)}")  # pyright: ignore[reportUnreachable]
+        if not isinstance(source, Document):
+            raise TypeError(f"Invalid source type: {type(source)}")  # pyright: ignore[reportUnreachable]
+        return source.sha256 in self.sources
 
     @final
     def serialize_model(self) -> dict[str, Any]:

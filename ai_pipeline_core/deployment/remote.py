@@ -66,10 +66,10 @@ async def _poll_remote_flow_run(
             continue
 
         state = flow_run.state
-        if state and state.is_final():
+        if state is not None and state.is_final():
             if on_progress and state.is_completed():
                 await on_progress(1.0, f"[{deployment_name}] Completed")
-            return await state.result()  # type: ignore[union-attr]
+            return await state.result()
 
         if on_progress:
             labels: dict[str, Any] = flow_run.labels or {}
@@ -100,13 +100,13 @@ async def run_remote_deployment(
     """
 
     async def _create_and_poll(client: PrefectClient, as_subflow: bool) -> Any:
-        fr: FlowRun = await run_deployment(
+        fr: FlowRun = await run_deployment(  # type: ignore[assignment]
             client=client,
             name=deployment_name,
             parameters=parameters,
             as_subflow=as_subflow,
             timeout=0,
-        )  # type: ignore
+        )
         return await _poll_remote_flow_run(client, fr.id, deployment_name, on_progress=on_progress)
 
     async with get_client() as client:

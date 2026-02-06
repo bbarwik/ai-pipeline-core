@@ -248,6 +248,7 @@ class URLSubstitutor:
 
     _forward: dict[str, str] = field(default_factory=dict)
     _reverse: dict[str, str] = field(default_factory=dict)
+    _stripped_reverse: dict[str, str] = field(default_factory=dict)
     _hashes: dict[str, str] = field(default_factory=dict)
     _prepared: bool = False
 
@@ -264,13 +265,20 @@ class URLSubstitutor:
         return dict(self._forward)
 
     def _add_mapping(self, original: str, shortened: str) -> None:
-        """Add bidirectional mapping with lowercase variant for LLM resilience."""
+        """Add bidirectional mapping with lowercase and tilde-stripped variants for LLM resilience."""
         self._forward[original] = shortened
         self._reverse[shortened] = original
-        # Add lowercase variant for LLM that lowercase output
+        # Add lowercase variant for LLMs that lowercase output
         lower = shortened.lower()
         if lower != shortened and lower not in self._reverse:
             self._reverse[lower] = original
+        # Add tilde-stripped variant for LLMs that strip ~ delimiters
+        stripped = shortened.replace("~", "")
+        if stripped != shortened and stripped not in self._reverse and stripped not in self._stripped_reverse:
+            self._stripped_reverse[stripped] = original
+            stripped_lower = stripped.lower()
+            if stripped_lower != stripped and stripped_lower not in self._reverse and stripped_lower not in self._stripped_reverse:
+                self._stripped_reverse[stripped_lower] = original
 
     def _generate_hash(self, value: str, start_length: int = 3) -> str:
         """Generate unique hash suffix, extending on collision."""
@@ -534,15 +542,25 @@ class URLSubstitutor:
         return result
 
     def restore(self, text: str) -> str:
-        """Restore shortened forms to originals."""
+        """Restore shortened forms to originals.
+
+        Two-pass approach: exact matches first, then tilde-stripped fallback.
+        Both passes use longest-first ordering to prevent partial matches.
+        """
         if not text or not self._reverse:
             return text
 
         result = text
 
-        # Exact match (longest first to avoid partial matches)
+        # Pass 1: Exact match (longest first to avoid partial matches)
         for short in sorted(self._reverse, key=len, reverse=True):
             if short in result:
                 result = result.replace(short, self._reverse[short])
+
+        # Pass 2: Tilde-stripped fallback (longest first)
+        if self._stripped_reverse:
+            for stripped in sorted(self._stripped_reverse, key=len, reverse=True):
+                if stripped in result:
+                    result = result.replace(stripped, self._stripped_reverse[stripped])
 
         return result

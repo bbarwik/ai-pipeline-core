@@ -216,7 +216,7 @@ class Deployer:
 
         self._info("Applying deployment (create or update)...")
         try:
-            deployment_id = await deployment.apply()  # type: ignore
+            deployment_id = await deployment.apply()  # type: ignore[no-untyped-call]
             self._success(f"Deployment ID: {deployment_id}")
 
             if self.api_url:

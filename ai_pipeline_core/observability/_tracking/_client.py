@@ -139,23 +139,25 @@ class ClickHouseClient:
 
     def ensure_tables(self) -> None:
         """Create tables if they don't exist. Call after connect()."""
-        if self._client is None:
+        client = self._client
+        if client is None:
             raise RuntimeError("Not connected — call connect() first")
         if self._tables_initialized:
             return
         for sql in _CREATE_TABLES_SQL:
-            self._client.command(sql)  # type: ignore[union-attr]
+            client.command(sql)  # pyright: ignore[reportAttributeAccessIssue]
 
         self._tables_initialized = True
         logger.info("ClickHouse tables verified/created")
 
     def _insert_rows(self, table: str, rows: list[BaseModel]) -> None:
         """Insert rows into a table using columnar format."""
-        if not rows or self._client is None:
+        client = self._client
+        if not rows or client is None:
             return
         column_names = list(type(rows[0]).model_fields.keys())
         data = [[getattr(row, col) for row in rows] for col in column_names]
-        self._client.insert(table, data, column_names=column_names, column_oriented=True)  # type: ignore[union-attr]
+        client.insert(table, data, column_names=column_names, column_oriented=True)  # pyright: ignore[reportAttributeAccessIssue]
 
     def insert_runs(self, rows: list[BaseModel]) -> None:
         """Insert pipeline run rows."""
