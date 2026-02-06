@@ -34,8 +34,8 @@ class DeploymentHookResult:
 
     Attributes:
         artifacts: List of (relative_path, bytes) tuples to upload
-        job_variables: Dict to deep-merge into Prefect job_variables
-            Example: {"env": {"MY_VAR": "value"}}
+        job_variables: Dict to deep-merge into Prefect job_variables,
+            e.g. {"env": {"MY_VAR": "value"}}
     """
 
     artifacts: list[tuple[str, bytes]] = field(default_factory=list)

@@ -6,6 +6,9 @@ rules:
               ...
               model_config = ConfigDict(..., frozen=True, ...)
               ...
+      - pattern-not-inside: |
+          def $METHOD(...):
+              ...
       - pattern-either:
           - pattern: "$FIELD: list[$T] = ..."
           - pattern: "$FIELD: list[$T]"

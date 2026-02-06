@@ -26,17 +26,18 @@ class TestDocumentTrimming:
         long_text = "a" * 300
         doc_dict = {
             "class_name": "TracingTestTaskDoc",
-            "content": long_text,
-            "content_encoding": "utf-8",
+            "content": {"v": long_text, "e": "utf-8"},
         }
 
         result = _trim_document_content(doc_dict)
 
-        # Should be trimmed to first 100 + last 100 chars
-        assert len(result["content"]) < len(long_text)
-        assert result["content"].startswith("a" * 100)
-        assert result["content"].endswith("a" * 100)
-        assert " ... [trimmed 100 chars] ... " in result["content"]
+        # Should be trimmed to first 100 + last 100 chars - output is {v, e} format
+        content = result["content"]
+        assert isinstance(content, dict)
+        assert len(content["v"]) < len(long_text)
+        assert content["v"].startswith("a" * 100)
+        assert content["v"].endswith("a" * 100)
+        assert " ... [trimmed 100 chars] ... " in content["v"]
 
     def test_trim_document_content_all_documents_trimmed_equally(self):
         """Test that all documents are trimmed equally (no flow/task distinction)."""
@@ -47,15 +48,16 @@ class TestDocumentTrimming:
         long_text = "b" * 300
         doc_dict = {
             "class_name": "TracingTestFlowDoc",
-            "content": long_text,
-            "content_encoding": "utf-8",
+            "content": {"v": long_text, "e": "utf-8"},
         }
 
         result = _trim_document_content(doc_dict)
 
-        # All documents are trimmed equally
-        assert len(result["content"]) < len(long_text)
-        assert " ... [trimmed 100 chars] ... " in result["content"]
+        # All documents are trimmed equally - output is {v, e} format
+        content = result["content"]
+        assert isinstance(content, dict)
+        assert len(content["v"]) < len(long_text)
+        assert " ... [trimmed 100 chars] ... " in content["v"]
 
     def test_trim_document_content_short_text(self):
         """Test that short text content is not trimmed."""
@@ -66,14 +68,13 @@ class TestDocumentTrimming:
         short_text = "Hello World"
         doc_dict = {
             "class_name": "TracingTestTaskDoc",
-            "content": short_text,
-            "content_encoding": "utf-8",
+            "content": {"v": short_text, "e": "utf-8"},
         }
 
         result = _trim_document_content(doc_dict)
 
-        # Should NOT be trimmed when under 250 chars
-        assert result["content"] == short_text
+        # Should NOT be trimmed when under 250 chars - preserves {v, e} format
+        assert result["content"] == {"v": short_text, "e": "utf-8"}
 
     def test_trim_document_content_binary(self):
         """Test that binary content is removed."""
@@ -83,13 +84,12 @@ class TestDocumentTrimming:
 
         doc_dict = {
             "class_name": "TracingTestTaskDoc",
-            "content": "SGVsbG8gV29ybGQ=",  # base64
-            "content_encoding": "base64",
+            "content": {"v": "SGVsbG8gV29ybGQ=", "e": "base64"},
         }
 
         result = _trim_document_content(doc_dict)
 
-        assert result["content"] == "[binary content removed]"
+        assert result["content"] == {"v": "[binary content removed]", "e": "utf-8"}
 
     def test_trim_document_content_binary_all_types(self):
         """Test that binary content is removed for all document types."""
@@ -99,13 +99,12 @@ class TestDocumentTrimming:
 
         doc_dict = {
             "class_name": "TracingTestFlowDoc",
-            "content": "SGVsbG8gV29ybGQ=",  # base64
-            "content_encoding": "base64",
+            "content": {"v": "SGVsbG8gV29ybGQ=", "e": "base64"},
         }
 
         result = _trim_document_content(doc_dict)
 
-        assert result["content"] == "[binary content removed]"
+        assert result["content"] == {"v": "[binary content removed]", "e": "utf-8"}
 
     def test_trim_documents_in_data_nested(self):
         """Test trimming documents in nested data structures."""
@@ -118,34 +117,31 @@ class TestDocumentTrimming:
             "docs": [
                 {
                     "class_name": "TracingTestTaskDoc",
-                    "content": long_text,
-                    "content_encoding": "utf-8",
+                    "content": {"v": long_text, "e": "utf-8"},
                 },
                 {
                     "class_name": "TracingTestFlowDoc",
-                    "content": long_text,
-                    "content_encoding": "utf-8",
+                    "content": {"v": long_text, "e": "utf-8"},
                 },
             ],
             "nested": {
                 "doc": {
                     "class_name": "SomeDocument",
-                    "content": "SGVsbG8=",  # base64
-                    "content_encoding": "base64",
+                    "content": {"v": "SGVsbG8=", "e": "base64"},
                 }
             },
         }
 
         result = _trim_documents_in_data(data)
 
-        # Both docs should be trimmed (all documents trimmed equally)
-        assert "[trimmed" in result["docs"][0]["content"]
-        assert "chars]" in result["docs"][0]["content"]
-        assert "[trimmed" in result["docs"][1]["content"]
-        assert "chars]" in result["docs"][1]["content"]
+        # Both docs should be trimmed (all documents trimmed equally) - output is {v, e} format
+        assert "[trimmed" in result["docs"][0]["content"]["v"]
+        assert "chars]" in result["docs"][0]["content"]["v"]
+        assert "[trimmed" in result["docs"][1]["content"]["v"]
+        assert "chars]" in result["docs"][1]["content"]["v"]
 
         # Nested binary doc should have content removed
-        assert result["nested"]["doc"]["content"] == "[binary content removed]"
+        assert result["nested"]["doc"]["content"] == {"v": "[binary content removed]", "e": "utf-8"}
 
     @patch("ai_pipeline_core.observability.tracing.observe")
     def test_trace_with_trim_documents_true(self, mock_observe):
@@ -205,11 +201,11 @@ class TestDocumentTrimming:
 
         result = _trim_documents_in_data(serialized)
 
-        # Both documents should be trimmed (all trimmed equally)
-        assert "[trimmed" in result[0]["content"]
-        assert "chars]" in result[0]["content"]
-        assert "[trimmed" in result[1]["content"]
-        assert "chars]" in result[1]["content"]
+        # Both documents should be trimmed (all trimmed equally) - output is {v, e} format
+        assert "[trimmed" in result[0]["content"]["v"]
+        assert "chars]" in result[0]["content"]["v"]
+        assert "[trimmed" in result[1]["content"]["v"]
+        assert "chars]" in result[1]["content"]["v"]
 
     def test_trimming_formatter_with_ai_messages(self):
         """Test that AIMessages with documents are properly handled."""
@@ -231,8 +227,9 @@ class TestDocumentTrimming:
         assert result[0] == "User question"
         assert result[2] == "AI response"
 
-        assert "[trimmed" in result[1]["content"]
-        assert "chars]" in result[1]["content"]
+        # Output is {v, e} format
+        assert "[trimmed" in result[1]["content"]["v"]
+        assert "chars]" in result[1]["content"]["v"]
 
     def test_trimming_preserves_document_metadata(self):
         """Test that trimming preserves all document metadata except content."""
@@ -243,8 +240,7 @@ class TestDocumentTrimming:
         doc_dict = {
             "name": "test.txt",
             "class_name": "TracingTestTaskDoc",
-            "content": "a" * 300,
-            "content_encoding": "utf-8",
+            "content": {"v": "a" * 300, "e": "utf-8"},
             "sha256": "ABC123",
             "mime_type": "text/plain",
             "size": 300,
@@ -261,10 +257,10 @@ class TestDocumentTrimming:
         assert result["size"] == doc_dict["size"]
         assert result["id"] == doc_dict["id"]
 
-        # Only content should be modified
+        # Only content should be modified - output is {v, e} format
         assert result["content"] != doc_dict["content"]
-        assert "[trimmed" in result["content"]
-        assert "chars]" in result["content"]
+        assert "[trimmed" in result["content"]["v"]
+        assert "chars]" in result["content"]["v"]
 
     def test_trimming_with_custom_formatter(self):
         """Test that custom formatters work with trimming."""
@@ -272,13 +268,14 @@ class TestDocumentTrimming:
             _trim_documents_in_data,
         )
 
-        custom_formatter = Mock(return_value={"doc": {"class_name": "SomeDoc", "content": "a" * 300, "content_encoding": "utf-8"}})
+        custom_formatter = Mock(return_value={"doc": {"class_name": "SomeDoc", "content": {"v": "a" * 300, "e": "utf-8"}}})
 
         result = custom_formatter("arg1", "arg2")
         trimmed = _trim_documents_in_data(result)
 
-        assert "[trimmed" in trimmed["doc"]["content"]
-        assert "chars]" in trimmed["doc"]["content"]
+        # Output is {v, e} format
+        assert "[trimmed" in trimmed["doc"]["content"]["v"]
+        assert "chars]" in trimmed["doc"]["content"]["v"]
 
     def test_document_trimming_any_subclass(self):
         """Test that any Document subclass content is trimmed."""
@@ -289,15 +286,17 @@ class TestDocumentTrimming:
         long_text = "t" * 300
         doc_dict = {
             "class_name": "SomeCustomDocument",
-            "content": long_text,
-            "content_encoding": "utf-8",
+            "content": {"v": long_text, "e": "utf-8"},
         }
 
         result = _trim_document_content(doc_dict)
 
-        assert len(result["content"]) < len(long_text)
-        assert "[trimmed" in result["content"]
-        assert "chars]" in result["content"]
+        # Output is {v, e} format
+        content = result["content"]
+        assert isinstance(content, dict)
+        assert len(content["v"]) < len(long_text)
+        assert "[trimmed" in content["v"]
+        assert "chars]" in content["v"]
 
     def test_edge_case_exactly_250_chars(self):
         """Test edge case with exactly 250 characters."""
@@ -308,14 +307,13 @@ class TestDocumentTrimming:
         text_250 = "x" * 250
         doc_dict = {
             "class_name": "SomeDocument",
-            "content": text_250,
-            "content_encoding": "utf-8",
+            "content": {"v": text_250, "e": "utf-8"},
         }
 
         result = _trim_document_content(doc_dict)
 
-        # Should NOT be trimmed at exactly 250 chars
-        assert result["content"] == text_250
+        # Should NOT be trimmed at exactly 250 chars - preserves {v, e} format
+        assert result["content"] == {"v": text_250, "e": "utf-8"}
 
     def test_edge_case_251_chars(self):
         """Test edge case with 251 characters (just over threshold)."""
@@ -326,11 +324,13 @@ class TestDocumentTrimming:
         text_251 = "x" * 251
         doc_dict = {
             "class_name": "SomeDocument",
-            "content": text_251,
-            "content_encoding": "utf-8",
+            "content": {"v": text_251, "e": "utf-8"},
         }
 
         result = _trim_document_content(doc_dict)
 
-        assert len(result["content"]) < len(text_251)
-        assert " ... [trimmed 51 chars] ... " in result["content"]
+        # Output is {v, e} format
+        content = result["content"]
+        assert isinstance(content, dict)
+        assert len(content["v"]) < len(text_251)
+        assert " ... [trimmed 51 chars] ... " in content["v"]

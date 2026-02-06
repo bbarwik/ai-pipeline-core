@@ -1,4 +1,4 @@
-"""Tests for ai_pipeline_core.images public API — process_image and process_image_to_documents."""
+"""Tests for ai_pipeline_core.images public API — process_image."""
 
 from io import BytesIO
 
@@ -6,14 +6,12 @@ import pytest
 from PIL import Image
 
 from ai_pipeline_core import (
-    Document,
     ImagePart,
     ImagePreset,
     ImageProcessingConfig,
     ImageProcessingError,
     ProcessedImage,
     process_image,
-    process_image_to_documents,
 )
 
 # ---------------------------------------------------------------------------
@@ -25,12 +23,6 @@ def make_image_bytes(width: int, height: int, fmt: str = "PNG", color: tuple[int
     buf = BytesIO()
     Image.new("RGB", (width, height), color).save(buf, format=fmt)
     return buf.getvalue()
-
-
-def make_document(width: int, height: int) -> Document:
-    from ai_pipeline_core.images import ImageDocument
-
-    return ImageDocument(name="screenshot.png", content=make_image_bytes(width, height))
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +57,12 @@ class TestConfig:
         assert config.max_dimension == 2048
         assert config.max_pixels == 4_000_000
         assert config.jpeg_quality == 70
+
+    def test_default_preset_values(self):
+        config = ImageProcessingConfig.for_preset(ImagePreset.DEFAULT)
+        assert config.max_dimension == 1000
+        assert config.max_pixels == 1_000_000
+        assert config.jpeg_quality == 75
 
     def test_custom_config(self):
         config = ImageProcessingConfig(max_dimension=2000, max_pixels=3_000_000, jpeg_quality=80)
@@ -224,25 +222,6 @@ class TestProcessImagePresets:
 
 
 # ---------------------------------------------------------------------------
-# process_image — Document input
-# ---------------------------------------------------------------------------
-
-
-class TestProcessImageDocument:
-    """Tests for Document input support."""
-
-    def test_accepts_document(self):
-        doc = make_document(800, 600)
-        result = process_image(doc)
-        assert len(result) == 1
-        assert result.original_width == 800
-
-    def test_accepts_bytes(self):
-        result = process_image(make_image_bytes(800, 600))
-        assert len(result) == 1
-
-
-# ---------------------------------------------------------------------------
 # process_image — error handling
 # ---------------------------------------------------------------------------
 
@@ -257,64 +236,6 @@ class TestProcessImageErrors:
     def test_invalid_bytes(self):
         with pytest.raises(ImageProcessingError, match="Failed to decode"):
             process_image(b"not an image at all")
-
-    def test_invalid_type(self):
-        with pytest.raises(ImageProcessingError, match="Unsupported"):
-            process_image(12345)  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# process_image_to_documents
-# ---------------------------------------------------------------------------
-
-
-class TestProcessImageToDocuments:
-    """Tests for the Document convenience wrapper."""
-
-    def test_single_part_naming(self):
-        docs = process_image_to_documents(make_image_bytes(800, 600))
-        assert len(docs) == 1
-        assert docs[0].name == "image.jpg"
-        assert docs[0].description is None
-
-    def test_multi_part_naming(self):
-        docs = process_image_to_documents(make_image_bytes(1000, 7000))
-        assert len(docs) > 1
-        for i, doc in enumerate(docs):
-            expected = f"image_{i + 1:02d}_of_{len(docs):02d}.jpg"
-            assert doc.name == expected
-            assert doc.description is not None
-
-    def test_custom_prefix(self):
-        docs = process_image_to_documents(make_image_bytes(800, 600), name_prefix="screenshot")
-        assert docs[0].name == "screenshot.jpg"
-
-    def test_returns_image_documents(self):
-        docs = process_image_to_documents(make_image_bytes(800, 600))
-        assert all(isinstance(d, Document) for d in docs)
-
-    def test_sources_propagated(self):
-        docs = process_image_to_documents(make_image_bytes(800, 600), sources=("https://example.com/ref1", "https://example.com/ref2"))
-        for doc in docs:
-            assert doc.sources is not None
-            assert "https://example.com/ref1" in doc.sources
-            assert "https://example.com/ref2" in doc.sources
-
-    def test_document_input_adds_sha256(self):
-        doc = make_document(800, 600)
-        docs = process_image_to_documents(doc)
-        for d in docs:
-            assert d.sources is not None
-            assert doc.sha256 in d.sources
-
-    def test_preset_forwarded(self):
-        docs_gemini = process_image_to_documents(make_image_bytes(1920, 1080), preset=ImagePreset.GEMINI)
-        docs_claude = process_image_to_documents(make_image_bytes(1920, 1080), preset=ImagePreset.CLAUDE)
-        # Claude trims 1920px to 1568px, Gemini doesn't
-        gemini_img = Image.open(BytesIO(docs_gemini[0].content))
-        claude_img = Image.open(BytesIO(docs_claude[0].content))
-        assert gemini_img.size[0] == 1920
-        assert claude_img.size[0] <= 1568
 
 
 # ---------------------------------------------------------------------------

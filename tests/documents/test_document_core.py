@@ -261,22 +261,22 @@ class TestDocumentProperties:
         assert serialized["id"] == doc.id
         assert serialized["sha256"] == doc.sha256
         assert "mime_type" in serialized
-        assert serialized["content"] == "Hello, world!"
-        assert serialized["content_encoding"] == "utf-8"
+        # New format: content is {v: value, e: encoding}
+        assert serialized["content"] == {"v": "Hello, world!", "e": "utf-8"}
 
-        # Binary content should be base64 encoded
-        doc_binary = ConcreteTestDocument(name="test.bin", content=b"\x00\x01\x02\x03")
+        # Binary content should be base64 encoded (use bytes that can't be decoded as UTF-8)
+        binary_content = b"\x89PNG\r\n\x1a\n"  # PNG header - contains invalid UTF-8 sequences
+        doc_binary = ConcreteTestDocument(name="test.bin", content=binary_content)
         serialized_binary = doc_binary.serialize_model()
-        assert serialized_binary["content_encoding"] == "base64"
-        assert serialized_binary["content"] == base64.b64encode(b"\x00\x01\x02\x03").decode()
+        expected_b64 = base64.b64encode(binary_content).decode()
+        assert serialized_binary["content"] == {"v": expected_b64, "e": "base64"}
 
     def test_from_dict(self):
         """Test from_dict deserialization."""
-        # UTF-8 content
+        # UTF-8 content - new format with {v, e}
         data = {
             "name": "test.txt",
-            "content": "Hello, world!",
-            "content_encoding": "utf-8",
+            "content": {"v": "Hello, world!", "e": "utf-8"},
             "description": "Test doc",
         }
         doc = ConcreteTestDocument.from_dict(data)
@@ -284,14 +284,22 @@ class TestDocumentProperties:
         assert doc.content == b"Hello, world!"
         assert doc.description == "Test doc"
 
-        # Base64 content
+        # Base64 content - new format with {v, e}
         data_base64 = {
             "name": "test.bin",
-            "content": base64.b64encode(b"\x00\x01\x02\x03").decode(),
-            "content_encoding": "base64",
+            "content": {"v": base64.b64encode(b"\x00\x01\x02\x03").decode(), "e": "base64"},
         }
         doc_binary = ConcreteTestDocument.from_dict(data_base64)
         assert doc_binary.content == b"\x00\x01\x02\x03"
+
+        # Legacy format with content_encoding should also work (backward compat)
+        data_legacy = {
+            "name": "test.txt",
+            "content": "Legacy format",
+            "content_encoding": "utf-8",  # Will be stripped by from_dict
+        }
+        doc_legacy = ConcreteTestDocument.from_dict(data_legacy)
+        assert doc_legacy.content == b"Legacy format"
 
     def test_document_type_name(self):
         """Test document class name is accessible."""

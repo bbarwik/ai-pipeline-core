@@ -15,8 +15,9 @@ AI Pipeline Core is a production-ready framework that combines document processi
 
 - **Document System**: Single `Document` base class with immutable content, SHA256-based identity, automatic MIME type detection, provenance tracking, and multi-part attachments
 - **Document Store**: Pluggable storage backends (ClickHouse production, local filesystem CLI/debug, in-memory testing) with automatic deduplication
+- **Conversation Class**: Immutable, stateful multi-turn LLM conversations with context caching, automatic URL/address shortening, and eager response restoration
 - **LLM Integration**: Unified interface to any model via LiteLLM proxy (OpenRouter compatible) with context caching (default 300s TTL)
-- **Structured Output**: Type-safe generation with Pydantic model validation via `generate_structured()`
+- **Structured Output**: Type-safe generation with Pydantic model validation via `generate_structured()` and `Conversation.send_structured()`
 - **Agent Framework**: Provider-agnostic interface for running agents with thread-safe registry, lazy validation, and document wrapping for provenance tracking
 - **Workflow Orchestration**: Prefect-based flows and tasks with annotation-driven document types
 - **Auto-Persistence**: `@pipeline_task` saves returned documents to `DocumentStore` automatically (configurable via `persist` parameter)
@@ -154,6 +155,37 @@ pipeline = MyPipeline()
 pipeline.run_cli(initializer=initialize, trace_name="my-pipeline")
 ```
 
+### Conversation (Multi-Turn LLM)
+
+```python
+from ai_pipeline_core.llm import Conversation, ModelOptions
+
+# Create a conversation with model and optional context
+conv = Conversation(model="gemini-3-pro")
+
+# Add documents to context (cacheable prefix)
+conv = conv.with_document(my_document)
+conv = conv.with_context(doc1, doc2, doc3)
+
+# Send a message (returns NEW immutable Conversation instance)
+conv = await conv.send("Analyze the document")
+print(conv.content)  # Response text
+
+# Structured output
+conv = await conv.send_structured("Extract key points", response_format=KeyPoints)
+print(conv.parsed)  # KeyPoints instance
+
+# Multi-turn: each send() appends to conversation history
+conv = await conv.send("Now summarize the key points")
+print(conv.content)
+
+# Access response properties
+print(conv.reasoning_content)  # Thinking/reasoning text (if available)
+print(conv.usage)              # TokenUsage with input/output counts
+print(conv.cost)               # Estimated cost
+print(conv.citations)          # Citation objects (for search models)
+```
+
 ### Structured Output
 
 ```python
@@ -289,7 +321,7 @@ Documents are automatically persisted by `@pipeline_task` to a `DocumentStore`. 
 
 **Document summaries:** When a `SummaryGenerator` callable is provided, stores automatically generate LLM-powered summaries in the background after each new document is saved (including empty and binary documents). Summaries are best-effort (failures are logged and skipped) and stored as store-level metadata (not on the `Document` model). Configure via `DOC_SUMMARY_ENABLED` and `DOC_SUMMARY_MODEL` environment variables.
 
-**Note:** Store implementations are not exported from the top-level package. Import from submodules:
+Store implementations are not exported from the top-level package. Import from submodules:
 
 ```python
 from ai_pipeline_core.document_store.local import LocalDocumentStore
@@ -299,10 +331,56 @@ from ai_pipeline_core.document_store.clickhouse import ClickHouseDocumentStore
 
 ### LLM Integration
 
-The framework provides a unified interface for LLM interactions with context caching:
+Two interfaces are available: **`Conversation`** for multi-turn interactions and **`generate()`/`generate_structured()`** for single-shot calls.
+
+#### Conversation (Recommended)
+
+The `Conversation` class provides immutable, stateful conversation management:
 
 ```python
-from ai_pipeline_core import llm, AIMessages, ModelOptions
+from ai_pipeline_core.llm import Conversation, ModelOptions
+
+# Create with model and optional configuration
+conv = Conversation(model="gemini-3-pro")
+
+# Add documents to context (cacheable prefix)
+conv = conv.with_document(my_document)
+conv = conv.with_context(doc1, doc2, doc3)
+
+# Configure model options
+conv = conv.with_model_options(ModelOptions(
+    system_prompt="You are a research analyst.",
+    reasoning_effort="high",
+))
+
+# Send a message (returns NEW Conversation instance)
+conv = await conv.send("Analyze the document")
+print(conv.content)  # Response text
+
+# Multi-turn: conversation history is preserved
+conv = await conv.send("Now summarize the key points")
+print(conv.content)
+
+# Structured output
+conv = await conv.send_structured("Extract entities", response_format=Entities)
+print(conv.parsed)  # Entities instance
+
+# Warmup + fork pattern for parallel calls with shared cache
+base = await conv.send("Acknowledge the context")  # Warmup
+# Fork: create parallel conversations from the same base
+results = await asyncio.gather(
+    base.send("Analyze source 1"),
+    base.send("Analyze source 2"),
+    base.send("Analyze source 3"),
+)
+```
+
+**Content protection (automatic):** URLs, blockchain addresses, and high-entropy strings in context documents are automatically shortened to save tokens. Responses are eagerly restored — `conv.content` always contains original URLs/addresses. Use `conv.restore_content(text)` for text from earlier turns if needed.
+
+#### Single-Shot Functions
+
+```python
+from ai_pipeline_core import llm
 
 # Simple generation
 response = await llm.generate(
@@ -311,38 +389,13 @@ response = await llm.generate(
 )
 print(response.content)
 
-# With context caching (saves 50-90% tokens on repeated calls)
-static_context = AIMessages([large_document])
-
-# First call: caches context (default TTL is 300s / 5 minutes)
-r1 = await llm.generate(
+# Structured output
+response = await llm.generate_structured(
     model="gemini-3-pro",
-    context=static_context,
-    messages="Summarize"
+    response_format=Analysis,
+    messages="Analyze this review: ..."
 )
-
-# Second call: reuses cache
-r2 = await llm.generate(
-    model="gemini-3-pro",
-    context=static_context,
-    messages="Key points?"
-)
-
-# Multi-turn conversation
-messages = AIMessages([
-    "What is Python?",
-    r1,  # ModelResponse from previous call
-    "Can you give an example?"
-])
-response = await llm.generate("gemini-3-pro", messages=messages)
-
-# Observability: purpose labels traces, expected_cost tracks budget
-response = await llm.generate(
-    model="gemini-3-pro",
-    messages="Analyze this",
-    purpose="source-verification",
-    expected_cost=0.05,
-)
+print(response.parsed.sentiment)
 ```
 
 **`generate()` signature:**
@@ -350,11 +403,11 @@ response = await llm.generate(
 async def generate(
     model: ModelName,
     *,
-    context: AIMessages | None = None,   # Static cacheable content
-    messages: AIMessages | str,           # Dynamic query
-    options: ModelOptions | None = None,  # Usually omit (defaults are optimal)
-    purpose: str | None = None,           # Span name for tracing
-    expected_cost: float | None = None,   # Cost tracking attribute
+    context: list[CoreMessage] | None = None,
+    messages: list[CoreMessage] | str,
+    options: ModelOptions | None = None,
+    purpose: str | None = None,
+    expected_cost: float | None = None,
 ) -> ModelResponse
 ```
 
@@ -362,10 +415,10 @@ async def generate(
 ```python
 async def generate_structured(
     model: ModelName,
-    response_format: type[T],             # Pydantic model class
+    response_format: type[T],
     *,
-    context: AIMessages | None = None,
-    messages: AIMessages | str,
+    context: list[CoreMessage] | None = None,
+    messages: list[CoreMessage] | str,
     options: ModelOptions | None = None,
     purpose: str | None = None,
     expected_cost: float | None = None,
@@ -386,66 +439,24 @@ async def generate_structured(
 
 **ModelName predefined values:** `"gemini-3-pro"`, `"gpt-5.1"`, `"gemini-3-flash"`, `"gpt-5-mini"`, `"grok-4.1-fast"`, `"gemini-3-flash-search"`, `"gpt-5-mini-search"`, `"grok-4.1-fast-search"`, `"sonar-pro-search"` (also accepts any string for custom models).
 
-### Conversation Class
+### Image Processing
 
-The `Conversation` class provides immutable, stateful conversation management for multi-turn LLM interactions:
-
-```python
-from ai_pipeline_core import llm
-from ai_pipeline_core.llm import Conversation
-
-# Create a conversation with model and optional context
-conv = Conversation(model="gemini-3-pro")
-
-# Add documents to context (cacheable prefix)
-conv = conv.with_document(my_document)
-conv = conv.with_context(doc1, doc2, doc3)
-
-# Send a message and get response (returns NEW Conversation instance)
-conv = await conv.send("Analyze the document")
-print(conv.content)  # Response text
-
-# Structured output
-conv = await conv.send_structured("Extract key points", response_format=KeyPoints)
-print(conv.parsed)  # KeyPoints instance
-
-# Access response properties
-print(conv.reasoning_content)  # Thinking/reasoning text (if available)
-print(conv.usage)              # TokenUsage with input/output counts
-print(conv.cost)               # Estimated cost
-print(conv.citations)          # List of Citation objects (for search models)
-```
-
-**Key features:**
-- **Immutability**: Every method returns a NEW `Conversation` instance. The original is never modified. This enables safe forking for warmup+fork pattern.
-- **Context caching**: Documents added via `with_document()` or `with_context()` form the cacheable prefix
-- **Content protection**: URLs and high-entropy strings are automatically shortened to save tokens; use `restore_content(text)` to restore originals in outputs
-
-### Content Protection
-
-The framework automatically protects against token waste from long URLs, blockchain addresses, and high-entropy strings:
+Image processing for LLM vision models is available from the top-level package:
 
 ```python
-from ai_pipeline_core.llm import URLSubstitutor, ContentSubstitutor
+from ai_pipeline_core import process_image, ImagePreset
 
-# URLSubstitutor is the default implementation
-substitutor = URLSubstitutor()
-
-# Prepare learns patterns from content
-await substitutor.prepare(documents)
-
-# Substitute shortens URLs/addresses in text
-shortened = substitutor.substitute(long_text)
-
-# Restore expands back to originals
-original = substitutor.restore(shortened)
-
-# In Conversation, use restore_content() for outputs
-conv = await conv.send("Find URLs in the document")
-output_with_original_urls = conv.restore_content(conv.content)
+# Process an image with model-specific presets
+result = process_image(screenshot_bytes, preset=ImagePreset.GEMINI)
+for part in result:
+    print(part.label, len(part.data))
 ```
 
-Content protection is enabled by default in `Conversation`. The `ContentSubstitutor` protocol allows custom implementations.
+Available presets: `GEMINI` (3000px, 9M pixels), `CLAUDE` (1568px, 1.15M pixels), `GPT4V` (2048px, 4M pixels).
+
+**Token cost:** A single image consumes **1080 tokens** regardless of pixel dimensions.
+
+The `Conversation` class automatically splits oversized images when documents are added to context — you typically don't need to call `process_image` directly.
 
 ### Agent Framework
 
@@ -616,28 +627,6 @@ Features:
 - **Per-flow uploads**: Upload documents after each flow completes
 - **CLI mode**: `--start N` / `--end N` for step control, automatic `LocalDocumentStore`
 
-### Image Processing
-
-The `images` module provides image splitting and compression for LLM vision models:
-
-```python
-from ai_pipeline_core.images import process_image, process_image_to_documents, ImagePreset
-
-# Process an image with model-specific presets
-result = process_image(screenshot_bytes, preset=ImagePreset.GEMINI)
-for part in result:
-    print(part.label, len(part.data))
-
-# Convert to Document objects for AIMessages
-image_docs = process_image_to_documents(screenshot_bytes, name_prefix="screenshot")
-```
-
-Available presets: `GEMINI` (3000px, 9M pixels), `CLAUDE` (1568px, 1.15M pixels), `GPT4V` (2048px, 4M pixels).
-
-**Token cost:** A single image consumes **1080 tokens** regardless of pixel dimensions.
-
-The LLM client automatically splits oversized images at the model boundary -- you typically don't need to call these functions directly.
-
 ### Prompt Manager
 
 Jinja2 template management for structured prompts:
@@ -752,7 +741,7 @@ print(settings.app_name)
 
 1. **Decorators**: Use `@pipeline_task` without parameters for most cases, `@pipeline_flow(estimated_minutes=N)` with annotations (always requires parentheses)
 2. **Logging**: Use `get_pipeline_logger(__name__)` -- never `print()` or `logging` module directly
-3. **LLM calls**: Use `AIMessages` or `str` for messages. Wrap Documents in `AIMessages`
+3. **LLM calls**: Use `Conversation` for multi-turn interactions, `generate()`/`generate_structured()` for single-shot calls
 4. **Options**: Omit `ModelOptions` unless specifically needed (defaults are production-optimized)
 5. **Documents**: Create with just `name` and `content` -- skip `description`. Always subclass `Document`
 6. **Flow annotations**: Input/output types are in the function signature -- `list[InputDoc]` and `-> list[OutputDoc]`
@@ -765,7 +754,7 @@ Always import from the top-level package when possible:
 
 ```python
 # CORRECT - top-level imports
-from ai_pipeline_core import Document, pipeline_flow, pipeline_task, llm, AIMessages
+from ai_pipeline_core import Document, pipeline_flow, pipeline_task, llm, Conversation
 
 # ALSO CORRECT - store implementations are NOT exported from top-level
 from ai_pipeline_core.document_store.local import LocalDocumentStore
@@ -832,24 +821,23 @@ python examples/showcase_document_store.py
 ```
 ai-pipeline-core/
 |-- ai_pipeline_core/
-|   |-- agents/           # Agent framework (AgentProvider, run_agent, AgentOutputDocument)
-|   |-- deployment/       # Pipeline deployment, deploy script, progress, remote, hooks
-|   |-- docs_generator/   # AI-focused documentation generator
-|   |-- document_store/   # Store protocol and backends (ClickHouse, local, memory)
-|   |-- documents/        # Document system (Document base class, attachments, context)
-|   |-- images/           # Image processing for LLM vision models
-|   |-- llm/              # LLM client, AIMessages, ModelOptions, ModelResponse
-|   |-- logging/          # Logging infrastructure
-|   |-- observability/    # Tracing, tracking, and debug trace writer
-|   |-- pipeline/         # Pipeline decorators and FlowOptions
-|   |-- prompt_manager.py # Jinja2 template management
-|   |-- settings.py       # Configuration management (Pydantic BaseSettings)
-|   |-- testing.py        # Prefect test harness re-exports
-|   +-- exceptions.py     # Framework exceptions (LLMError, DocumentNameError, etc.)
-|-- tests/                # Comprehensive test suite
-|-- examples/             # Usage examples
-|-- .specification/       # Framework requirements and documentation spec
-+-- pyproject.toml        # Project configuration
+|   |-- _llm_core/        # Internal LLM client, model types, and response handling
+|   |-- agents/            # Agent framework (AgentProvider, run_agent, AgentOutputDocument)
+|   |-- deployment/        # Pipeline deployment, deploy script, progress, remote, hooks
+|   |-- docs_generator/    # AI-focused documentation generator
+|   |-- document_store/    # Store protocol and backends (ClickHouse, local, memory)
+|   |-- documents/         # Document system (Document base class, attachments, context)
+|   |-- llm/               # Conversation class, URLSubstitutor, image processing, validation
+|   |-- logging/           # Logging infrastructure
+|   |-- observability/     # Tracing, tracking, and debug trace writer
+|   |-- pipeline/          # Pipeline decorators and FlowOptions
+|   |-- prompt_manager.py  # Jinja2 template management
+|   |-- settings.py        # Configuration management (Pydantic BaseSettings)
+|   |-- testing.py         # Prefect test harness re-exports
+|   +-- exceptions.py      # Framework exceptions (LLMError, DocumentNameError, etc.)
+|-- tests/                 # Comprehensive test suite
+|-- examples/              # Usage examples
++-- pyproject.toml         # Project configuration
 ```
 
 ## Contributing

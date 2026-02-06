@@ -171,13 +171,13 @@ class ModelOptions(BaseModel):
         if self.extra_body:
             kwargs["extra_body"] = self.extra_body
 
-        if self.temperature:
+        if self.temperature is not None:
             kwargs["temperature"] = self.temperature
 
-        if self.max_completion_tokens:
+        if self.max_completion_tokens is not None:
             kwargs["max_completion_tokens"] = self.max_completion_tokens
 
-        if self.stop:
+        if self.stop is not None:
             kwargs["stop"] = self.stop
 
         if self.reasoning_effort:

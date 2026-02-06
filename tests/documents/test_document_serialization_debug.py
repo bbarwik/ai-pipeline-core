@@ -111,7 +111,8 @@ async def test_roundtrip_preserves_content_ignores_debug():
 
 
 JPEG_HEADER = b"\xff\xd8\xff\xe0" + b"\x00" * 100
-PDF_HEADER = b"%PDF-1.4 " + b"\x00" * 100
+# PDF_HEADER needs invalid UTF-8 bytes to trigger base64 encoding
+PDF_HEADER = b"%PDF-1.4\xff" + b"\x00" * 100  # \xff is invalid UTF-8 when standalone
 
 
 @pytest.mark.asyncio
@@ -138,7 +139,8 @@ async def test_serialize_text_attachment_metadata():
     serialized = doc.serialize_model()
 
     att_dict = serialized["attachments"][0]
-    assert att_dict["content_encoding"] == "utf-8"
+    # New format: content is {v: value, e: encoding}
+    assert att_dict["content"]["e"] == "utf-8"
     assert att_dict["mime_type"] == "text/plain"
     assert att_dict["size"] == len(content)
 
@@ -151,7 +153,8 @@ async def test_serialize_pdf_attachment_metadata():
     serialized = doc.serialize_model()
 
     att_dict = serialized["attachments"][0]
-    assert att_dict["content_encoding"] == "base64"
+    # New format: content is {v: value, e: encoding}
+    assert att_dict["content"]["e"] == "base64"
     assert att_dict["mime_type"] == "application/pdf"
     assert att_dict["size"] == len(PDF_HEADER)
 

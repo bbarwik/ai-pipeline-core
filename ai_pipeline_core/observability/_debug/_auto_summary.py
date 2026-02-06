@@ -1,15 +1,11 @@
 """LLM-powered auto-summary generation for trace debugging.
 
-Separated from _summary.py to avoid circular imports: this module depends on
-ai_pipeline_core.llm, which cannot be imported during the initial package load
-chain that includes _debug/__init__.py.
+Uses _llm_core directly to avoid Document dependency cycle.
 """
 
 from pydantic import BaseModel, ConfigDict
 
-from ai_pipeline_core.llm import generate_structured
-from ai_pipeline_core.llm.ai_messages import AIMessages
-from ai_pipeline_core.llm.model_options import ModelOptions
+from ai_pipeline_core._llm_core import CoreMessage, ModelOptions, Role, generate_structured
 
 from ._types import TraceState
 
@@ -42,29 +38,31 @@ async def generate_auto_summary(
     Returns:
         Formatted markdown auto-summary string, or None if generation fails.
     """
-    messages = AIMessages()
-    messages.append(static_summary)
-
-    options = ModelOptions(
-        system_prompt=(
-            "You are analyzing an AI pipeline execution trace. "
-            "Provide concise, actionable analysis based on the execution data. "
-            "Focus on cost efficiency, performance bottlenecks, and errors."
-        ),
+    system_prompt = (
+        "You are analyzing an AI pipeline execution trace. "
+        "Provide concise, actionable analysis based on the execution data. "
+        "Focus on cost efficiency, performance bottlenecks, and errors."
     )
 
-    result = await generate_structured(
-        model=model,
+    messages = [
+        CoreMessage(role=Role.SYSTEM, content=system_prompt),
+        CoreMessage(role=Role.USER, content=static_summary),
+    ]
+
+    options = ModelOptions()
+
+    response = await generate_structured(
+        messages,
         response_format=AutoTraceSummary,
-        messages=messages,
-        options=options,
+        model=model,
+        model_options=options,
         purpose="trace_auto_summary",
     )
 
-    if not result or not result.parsed:
+    if not response.parsed:
         return None
 
-    summary = result.parsed
+    summary = response.parsed
     lines = [
         "# Auto-Summary (LLM-Generated)",
         "",

@@ -1,27 +1,51 @@
 """Large Language Model integration via LiteLLM proxy.
 
-This package provides OpenAI API-compatible LLM interactions with built-in retry logic,
-LMNR tracing, and structured output generation using Pydantic models. Supports per-call
-observability via purpose and expected_cost parameters for span naming and cost tracking.
+This package provides the Conversation class for LLM interactions with built-in
+retry logic, LMNR tracing, and structured output generation using Pydantic models.
+
+Primary API:
+    Conversation class - Immutable, Document-based, warmup+fork friendly
+
+All primitive types (ModelOptions, ModelName, etc.) are re-exported from _llm_core.
 """
 
-from .ai_messages import AIMessages, AIMessageType
-from .client import (
+from ai_pipeline_core._llm_core import (
+    Citation,
+    ModelName,
+    ModelOptions,
+    ModelResponse,
+    TokenUsage,
     generate,
     generate_structured,
 )
-from .model_options import ModelOptions
-from .model_response import Citation, ModelResponse, StructuredModelResponse
-from .model_types import ModelName
+
+from ._images import (
+    ImagePart,
+    ImagePreset,
+    ImageProcessingConfig,
+    ImageProcessingError,
+    ProcessedImage,
+    process_image,
+)
+from ._substitutor import URLSubstitutor
+from .conversation import Conversation, ConversationContent, MessageType
 
 __all__ = [
-    "AIMessageType",
-    "AIMessages",
     "Citation",
+    "Conversation",
+    "ConversationContent",
+    "ImagePart",
+    "ImagePreset",
+    "ImageProcessingConfig",
+    "ImageProcessingError",
+    "MessageType",
     "ModelName",
     "ModelOptions",
     "ModelResponse",
-    "StructuredModelResponse",
+    "ProcessedImage",
+    "TokenUsage",
+    "URLSubstitutor",
     "generate",
     "generate_structured",
+    "process_image",
 ]

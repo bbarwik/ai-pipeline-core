@@ -4,12 +4,12 @@ Auto-generated guide index. Do not edit manually.
 
 ## Reading Order
 
-1. [agents](agents.md)
-2. [deployment](deployment.md)
-3. [document_store](document_store.md)
-4. [documents](documents.md)
-5. [exceptions](exceptions.md)
-6. [images](images.md)
+1. [_llm_core](_llm_core.md)
+2. [agents](agents.md)
+3. [deployment](deployment.md)
+4. [document_store](document_store.md)
+5. [documents](documents.md)
+6. [exceptions](exceptions.md)
 7. [llm](llm.md)
 8. [logging](logging.md)
 9. [observability](observability.md)
@@ -26,7 +26,6 @@ Auto-generated guide index. Do not edit manually.
 | Call LLMs | [llm](llm.md) |
 | Deploy pipelines | [deployment](deployment.md) |
 | Load templates | [prompt_manager](prompt_manager.md) |
-| Process images | [images](images.md) |
 | Define flows/tasks | [pipeline](pipeline.md) |
 | Configure settings | [settings](settings.md) |
 | Handle errors | [exceptions](exceptions.md) |
@@ -37,16 +36,16 @@ Auto-generated guide index. Do not edit manually.
 
 | Module | Size |
 | ------ | ---- |
+| _llm_core | 26,956 bytes |
 | agents | 17,604 bytes |
-| deployment | 46,774 bytes |
+| deployment | 46,756 bytes |
 | document_store | 16,490 bytes |
-| documents | 40,984 bytes |
+| documents | 40,807 bytes |
 | exceptions | 1,461 bytes |
-| images | 10,055 bytes |
-| llm | 54,748 bytes |
+| llm | 15,304 bytes |
 | logging | 14,785 bytes |
 | observability | 23,209 bytes |
 | pipeline | 28,189 bytes |
 | prompt_manager | 12,924 bytes |
-| settings | 7,582 bytes |
-| **Total** | **274,805 bytes** |
+| settings | 7,620 bytes |
+| **Total** | **252,105 bytes** |

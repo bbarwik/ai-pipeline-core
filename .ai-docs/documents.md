@@ -1,7 +1,7 @@
 # MODULE: documents
 # CLASSES: Attachment, TaskDocumentContext, Document
 # DEPENDS: BaseModel
-# SIZE: ~40KB
+# SIZE: ~39KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -48,6 +48,26 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
             raise ValueError(f"Attachment is not text: {self.name}")
         return self.content.decode("utf-8")
 
+    @field_validator("content", mode="before")
+    @classmethod
+    def validate_content(cls, v: Any) -> bytes:
+        """Convert content to bytes, handling encoding markers for correct round-trip.
+
+        Handles three input formats:
+        1. bytes - passed through directly
+        2. dict with {v: str, e: "utf-8"|"base64"} - new Pydantic serialization format
+        3. str - legacy format, treated as UTF-8 text
+        """
+        if isinstance(v, bytes):
+            return v
+        if isinstance(v, dict) and "v" in v and "e" in v:
+            if v["e"] == "base64":
+                return base64.b64decode(v["v"])
+            return v["v"].encode("utf-8")
+        if isinstance(v, str):
+            return v.encode("utf-8")
+        raise ValueError(f"Invalid content type: {type(v)}")
+
     @field_validator("name")
     @classmethod
     def validate_name(cls, v: str) -> str:
@@ -70,12 +90,15 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
         return detect_mime_type(self.content, self.name)
 
     @field_serializer("content")
-    def serialize_content(self, v: bytes) -> str:  # noqa: PLR6301
-        """UTF-8 decode for text, base64 for binary."""
+    def serialize_content(self, v: bytes) -> dict[str, str]:  # noqa: PLR6301
+        """Serialize content with encoding marker for correct round-trip.
+
+        Returns dict with 'v' (value) and 'e' (encoding: "utf-8" or "base64").
+        """
         try:
-            return v.decode("utf-8")
+            return {"v": v.decode("utf-8"), "e": "utf-8"}
         except UnicodeDecodeError:
-            return base64.b64encode(v).decode("ascii")
+            return {"v": base64.b64encode(v).decode("ascii"), "e": "base64"}
 
 
 @dataclass
@@ -288,44 +311,20 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
     @final
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
-        """Deserialize from dict produced by serialize_model(). Roundtrip guarantee."""
-        content_raw = data.get("content", "")
-        content_encoding = data.get("content_encoding", "utf-8")
+        """Deserialize from dict produced by serialize_model(). Roundtrip guarantee.
 
-        content: bytes
-        if content_encoding == "base64":
-            if not isinstance(content_raw, str):
-                raise ValueError("base64 content must be string")
-            content = base64.b64decode(content_raw)
-        elif isinstance(content_raw, str):
-            content = content_raw.encode("utf-8")
-        elif isinstance(content_raw, bytes):
-            content = content_raw
-        else:
-            raise ValueError(f"Invalid content type: {type(content_raw)}")
+        Delegates to model_validate() which handles content decoding via field_validator.
+        Metadata keys are stripped before validation since custom __init__ receives raw data.
+        """
+        # Strip metadata keys added by serialize_model() (model_validator mode="before"
+        # doesn't work with custom __init__ - Pydantic passes raw data to __init__ first)
+        cleaned = {k: v for k, v in data.items() if k not in _DOCUMENT_SERIALIZE_METADATA_KEYS}
 
-        attachments: tuple[Attachment, ...] | None = None
-        if attachments_raw := data.get("attachments"):
-            att_list: list[Attachment] = []  # nosemgrep: mutable-field-on-frozen-pydantic-model
-            for att_data in attachments_raw:
-                att_content_raw = att_data.get("content", "")
-                if att_data.get("content_encoding") == "base64":
-                    att_content = base64.b64decode(att_content_raw)
-                elif isinstance(att_content_raw, str):
-                    att_content = att_content_raw.encode("utf-8")
-                else:
-                    att_content = att_content_raw
-                att_list.append(Attachment(name=att_data["name"], content=att_content, description=att_data.get("description")))
-            attachments = tuple(att_list)
+        # Also strip attachment metadata (including content_encoding for backward compat)
+        if cleaned.get("attachments"):
+            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in {"mime_type", "size", "content_encoding"}} for att in cleaned["attachments"]]
 
-        return cls(
-            name=data["name"],
-            content=content,
-            description=data.get("description"),
-            sources=tuple(data.get("sources") or ()),
-            origins=tuple(data.get("origins") or ()),
-            attachments=attachments,
-        )
+        return cls.model_validate(cleaned)
 
     @final
     @classmethod
@@ -348,8 +347,23 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
     @field_validator("content", mode="before")
     @classmethod
     def validate_content(cls, v: Any, info: ValidationInfo) -> bytes:
-        """Convert content to bytes via `_convert_content` if not already bytes. Enforces MAX_CONTENT_SIZE."""
-        if not isinstance(v, bytes):
+        """Convert content to bytes via `_convert_content` if not already bytes. Enforces MAX_CONTENT_SIZE.
+
+        Handles three input formats:
+        1. bytes - passed through directly
+        2. dict with {v: str, e: "utf-8"|"base64"} - new Pydantic serialization format
+        3. str - legacy format, treated as UTF-8 text
+        """
+        if isinstance(v, bytes):
+            pass  # Already bytes, use as-is
+        elif isinstance(v, dict) and "v" in v and "e" in v:
+            # New format with encoding marker
+            if v["e"] == "base64":
+                v = base64.b64decode(v["v"])
+            else:
+                v = v["v"].encode("utf-8")
+        else:
+            # Legacy format or other types (str, dict without markers, BaseModel, list)
             name = info.data.get("name", "") if hasattr(info, "data") else ""
             v = _convert_content(name, v)
         if len(v) > cls.MAX_CONTENT_SIZE:
@@ -544,55 +558,39 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         raise ValueError(f"Unsupported parse type: {type_}")
 
     @field_serializer("content")
-    def serialize_content(self, v: bytes) -> str:  # noqa: PLR6301
-        """UTF-8 decode for text, base64 for binary. Called by Pydantic during serialization."""
+    def serialize_content(self, v: bytes) -> dict[str, str]:  # noqa: PLR6301
+        """Serialize content with encoding marker for correct round-trip.
+
+        Returns dict with 'v' (value) and 'e' (encoding: "utf-8" or "base64").
+        Text content stays readable, binary is base64-encoded.
+        """
         try:
-            return v.decode("utf-8")
+            return {"v": v.decode("utf-8"), "e": "utf-8"}
         except UnicodeDecodeError:
-            # Fall back to base64 for binary content
-            return base64.b64encode(v).decode("ascii")
+            return {"v": base64.b64encode(v).decode("ascii"), "e": "base64"}
 
     @final
     def serialize_model(self) -> dict[str, Any]:
-        """Serialize to JSON-compatible dict for storage/transmission. Roundtrips with from_dict()."""
-        result: dict[str, Any] = {  # nosemgrep: mutable-field-on-frozen-pydantic-model
-            "name": self.name,
-            "description": self.description,
-            "size": self.size,
-            "id": self.id,
-            "sha256": self.sha256,
-            "content_sha256": self.content_sha256,
-            "mime_type": self.mime_type,
-            "sources": list(self.sources),
-            "origins": list(self.origins),
-            "canonical_name": canonical_name_key(self.__class__),
-            "class_name": self.__class__.__name__,
-        }
+        """Serialize to JSON-compatible dict for storage/transmission. Roundtrips with from_dict().
 
-        if self.is_text:
-            try:
-                result["content"] = self.content.decode("utf-8")
-                result["content_encoding"] = "utf-8"
-            except UnicodeDecodeError:
-                result["content"] = self.content.decode("utf-8", errors="replace")
-                result["content_encoding"] = "utf-8"
-        else:
-            result["content"] = base64.b64encode(self.content).decode("ascii")
-            result["content_encoding"] = "base64"
+        Delegates to model_dump() for content serialization (unified format), then adds metadata.
+        """
+        # Get base serialization from Pydantic (uses field_serializer for content)
+        result = self.model_dump(mode="json")
 
-        serialized_attachments: list[dict[str, Any]] = []  # nosemgrep: mutable-field-on-frozen-pydantic-model
-        for att in self.attachments:
-            att_data: dict[str, Any] = {"name": att.name, "description": att.description}  # nosemgrep: mutable-field-on-frozen-pydantic-model
-            if att.is_text:
-                att_data["content"] = att.content.decode("utf-8", errors="replace")
-                att_data["content_encoding"] = "utf-8"
-            else:
-                att_data["content"] = base64.b64encode(att.content).decode("ascii")
-                att_data["content_encoding"] = "base64"
-            att_data["mime_type"] = att.mime_type
-            att_data["size"] = att.size
-            serialized_attachments.append(att_data)
-        result["attachments"] = serialized_attachments
+        # Add metadata not present in standard model_dump
+        result["id"] = self.id
+        result["sha256"] = self.sha256
+        result["content_sha256"] = self.content_sha256
+        result["size"] = self.size
+        result["mime_type"] = self.mime_type
+        result["canonical_name"] = canonical_name_key(self.__class__)
+        result["class_name"] = self.__class__.__name__
+
+        # Add metadata to attachments
+        for att_dict, att_obj in zip(result.get("attachments", []), self.attachments, strict=False):
+            att_dict["mime_type"] = att_obj.mime_type
+            att_dict["size"] = att_obj.size
 
         return result
 
@@ -960,14 +958,14 @@ def is_document_sha256(value: str) -> bool:
 # === EXAMPLES (from tests/) ===
 
 # Example: Attachment mime type
-# Source: tests/documents/test_document_core.py:948
+# Source: tests/documents/test_document_core.py:956
 def test_attachment_mime_type(self):
     """Attachment.mime_type returns detected MIME type."""
     att = Attachment(name="notes.txt", content=b"Hello")
     assert "text" in att.mime_type
 
 # Example: Attachment no detected mime type
-# Source: tests/documents/test_document_core.py:953
+# Source: tests/documents/test_document_core.py:961
 def test_attachment_no_detected_mime_type(self):
     """Attachment has no detected_mime_type attribute (renamed to mime_type)."""
     att = Attachment(name="notes.txt", content=b"Hello")
@@ -1024,7 +1022,7 @@ def test_cannot_instantiate_document(self):
         Document(name="test.txt", content=b"test")
 
 # Error: Content plus attachments exceeding limit
-# Source: tests/documents/test_document_core.py:1041
+# Source: tests/documents/test_document_core.py:1049
 def test_content_plus_attachments_exceeding_limit(self):
     """Content + attachments exceeding MAX_CONTENT_SIZE is rejected by model_validator."""
     # Content is 7 bytes (under 10-byte limit), but total with attachment is 12

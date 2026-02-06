@@ -135,32 +135,32 @@ class TestUserResearchStructure:
         # Check first result in list
         first_result = input_data["results"][0]
 
-        # All documents use class_name and are trimmed equally
+        # All documents use class_name and are trimmed equally - content is {v, e} format
         assert first_result["research_report"]["class_name"] == "SingleResearchReportDocument"
         # Long content (>250 chars) is trimmed for ALL documents
-        assert "[trimmed" in first_result["research_report"]["content"]
-        assert "chars]" in first_result["research_report"]["content"]
+        assert "[trimmed" in first_result["research_report"]["content"]["v"]
+        assert "chars]" in first_result["research_report"]["content"]["v"]
 
         # Additional report is also trimmed (>250 chars)
         assert first_result["additional_research_report"]["class_name"] == "SingleResearchAdditionalReportDocument"
-        assert "[trimmed" in first_result["additional_research_report"]["content"]
-        assert "chars]" in first_result["additional_research_report"]["content"]
+        assert "[trimmed" in first_result["additional_research_report"]["content"]["v"]
+        assert "chars]" in first_result["additional_research_report"]["content"]["v"]
 
-        # Short content (<250 chars) is NOT trimmed
+        # Short content (<250 chars) is NOT trimmed - preserves {v, e} format
         assert first_result["further_research_plan"]["class_name"] == "SingleResearchFurtherResearchPlanDocument"
-        assert first_result["further_research_plan"]["content"] == short_content
+        assert first_result["further_research_plan"]["content"]["v"] == short_content
 
         # Check second result in list
         second_result = input_data["results"][1]
 
-        # Short text - not trimmed
+        # Short text - not trimmed - content is {v, e} format
         assert second_result["research_report"]["class_name"] == "SingleResearchReportDocument"
-        assert second_result["research_report"]["content"] == "Secondary findings from analysis."
+        assert second_result["research_report"]["content"]["v"] == "Secondary findings from analysis."
 
-        # Long content - should be trimmed
+        # Long content - should be trimmed - content is {v, e} format
         assert second_result["additional_research_report"]["class_name"] == "SingleResearchAdditionalReportDocument"
-        assert "[trimmed" in second_result["additional_research_report"]["content"]
-        assert "chars]" in second_result["additional_research_report"]["content"]
+        assert "[trimmed" in second_result["additional_research_report"]["content"]["v"]
+        assert "chars]" in second_result["additional_research_report"]["content"]["v"]
 
         # Test output formatting for SingleResearchResults
         formatted_output = output_formatter(output)
@@ -171,13 +171,13 @@ class TestUserResearchStructure:
         assert "additional_research_report" in output_data
         assert "further_research_plan" in output_data
 
-        # Output should have same trimming rules applied (all long content trimmed)
+        # Output should have same trimming rules applied (all long content trimmed) - content is {v, e} format
         assert output_data["research_report"]["class_name"] == "SingleResearchReportDocument"
-        assert "[trimmed" in output_data["research_report"]["content"]
+        assert "[trimmed" in output_data["research_report"]["content"]["v"]
 
         assert output_data["additional_research_report"]["class_name"] == "SingleResearchAdditionalReportDocument"
-        assert "[trimmed" in output_data["additional_research_report"]["content"]
-        assert "chars]" in output_data["additional_research_report"]["content"]
+        assert "[trimmed" in output_data["additional_research_report"]["content"]["v"]
+        assert "chars]" in output_data["additional_research_report"]["content"]["v"]
 
     @patch("ai_pipeline_core.observability.tracing.observe")
     def test_complex_processing_pipeline(self, mock_observe):
@@ -259,15 +259,15 @@ class TestUserResearchStructure:
         assert len(data["batch1"]) == 1  # batch1 has 1 item
         assert len(data["batch2"]) == 1  # batch2 has 1 item
 
-        # Verify batch2's long content is trimmed (all documents trimmed equally)
+        # Verify batch2's long content is trimmed (all documents trimmed equally) - content is {v, e} format
         batch2_data = data["batch2"][0]
 
-        # All long documents are trimmed
-        assert "[trimmed" in batch2_data["research_report"]["content"]
-        assert "[trimmed" in batch2_data["additional_research_report"]["content"]
-        assert "chars]" in batch2_data["additional_research_report"]["content"]
-        assert "[trimmed" in batch2_data["further_research_plan"]["content"]
-        assert "chars]" in batch2_data["further_research_plan"]["content"]
+        # All long documents are trimmed - content is {v, e} format
+        assert "[trimmed" in batch2_data["research_report"]["content"]["v"]
+        assert "[trimmed" in batch2_data["additional_research_report"]["content"]["v"]
+        assert "chars]" in batch2_data["additional_research_report"]["content"]["v"]
+        assert "[trimmed" in batch2_data["further_research_plan"]["content"]["v"]
+        assert "chars]" in batch2_data["further_research_plan"]["content"]["v"]
 
     @patch("ai_pipeline_core.observability.tracing.observe")
     def test_with_binary_documents(self, mock_observe):
@@ -289,9 +289,10 @@ class TestUserResearchStructure:
 
         # Create research with binary content (e.g., images, PDFs)
 
-        # Simulate binary data
-        fake_pdf_bytes = b"\x25\x50\x44\x46\x2d\x31\x2e\x34"  # PDF header
-        fake_image_bytes = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a"  # PNG header
+        # Simulate binary data - use truly invalid UTF-8 bytes
+        # PDF header with invalid UTF-8 bytes
+        fake_pdf_bytes = b"%PDF-1.4\xff\xfe" + b"\x00" * 10
+        fake_image_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 10  # PNG header (invalid UTF-8)
 
         research = SingleResearchResults(
             research_report=SingleResearchReportDocument(
@@ -323,16 +324,16 @@ class TestUserResearchStructure:
 
         research_data = data["research"]  # parameter name
 
-        # All binary content should be removed (regardless of document type)
-        assert research_data["research_report"]["content_encoding"] == "base64"
-        assert research_data["research_report"]["content"] == "[binary content removed]"
+        # All binary content should be removed (regardless of document type) - content is {v, e} format
+        assert research_data["research_report"]["content"]["e"] == "utf-8"  # Binary replaced with text marker
+        assert research_data["research_report"]["content"]["v"] == "[binary content removed]"
 
-        assert research_data["additional_research_report"]["content_encoding"] == "base64"
-        assert research_data["additional_research_report"]["content"] == "[binary content removed]"
+        assert research_data["additional_research_report"]["content"]["e"] == "utf-8"  # Binary replaced with text marker
+        assert research_data["additional_research_report"]["content"]["v"] == "[binary content removed]"
 
-        # Text content should be preserved
-        assert research_data["further_research_plan"]["content_encoding"] == "utf-8"
-        assert research_data["further_research_plan"]["content"] == "Text-based plan"
+        # Text content should be preserved - content is {v, e} format
+        assert research_data["further_research_plan"]["content"]["e"] == "utf-8"
+        assert research_data["further_research_plan"]["content"]["v"] == "Text-based plan"
 
     @patch("ai_pipeline_core.observability.tracing.observe")
     def test_empty_and_none_handling(self, mock_observe):

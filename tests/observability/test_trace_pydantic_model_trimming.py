@@ -103,13 +103,13 @@ class TestPydanticModelTrimming:
         # Get the serialized research results
         serialized_results = input_data["results"][0]
 
-        # All documents are trimmed equally (>250 chars)
-        assert "[trimmed" in serialized_results["research_report"]["content"]
-        assert "chars]" in serialized_results["research_report"]["content"]
-        assert "[trimmed" in serialized_results["additional_research_report"]["content"]
-        assert "chars]" in serialized_results["additional_research_report"]["content"]
-        assert "[trimmed" in serialized_results["further_research_plan"]["content"]
-        assert "chars]" in serialized_results["further_research_plan"]["content"]
+        # All documents are trimmed equally (>250 chars) - content is {v, e} format
+        assert "[trimmed" in serialized_results["research_report"]["content"]["v"]
+        assert "chars]" in serialized_results["research_report"]["content"]["v"]
+        assert "[trimmed" in serialized_results["additional_research_report"]["content"]["v"]
+        assert "chars]" in serialized_results["additional_research_report"]["content"]["v"]
+        assert "[trimmed" in serialized_results["further_research_plan"]["content"]["v"]
+        assert "chars]" in serialized_results["further_research_plan"]["content"]["v"]
 
         # Test the output formatter
         output_formatter = observe_kwargs["output_formatter"]
@@ -122,12 +122,12 @@ class TestPydanticModelTrimming:
         assert "additional_research_report" in output_data
         assert "further_research_plan" in output_data
 
-        # Same trimming rules apply to output (all trimmed equally)
-        assert "[trimmed" in output_data["research_report"]["content"]
-        assert "[trimmed" in output_data["additional_research_report"]["content"]
-        assert "chars]" in output_data["additional_research_report"]["content"]
-        assert "[trimmed" in output_data["further_research_plan"]["content"]
-        assert "chars]" in output_data["further_research_plan"]["content"]
+        # Same trimming rules apply to output (all trimmed equally) - content is {v, e} format
+        assert "[trimmed" in output_data["research_report"]["content"]["v"]
+        assert "[trimmed" in output_data["additional_research_report"]["content"]["v"]
+        assert "chars]" in output_data["additional_research_report"]["content"]["v"]
+        assert "[trimmed" in output_data["further_research_plan"]["content"]["v"]
+        assert "chars]" in output_data["further_research_plan"]["content"]["v"]
 
     @patch("ai_pipeline_core.observability.tracing.observe")
     def test_nested_pydantic_models(self, mock_observe):
@@ -195,17 +195,17 @@ class TestPydanticModelTrimming:
         # Verify both results are present
         assert len(results_data) == 2
 
-        # Check first result - all documents trimmed equally
+        # Check first result - all documents trimmed equally - content is {v, e} format
         result1 = results_data[0]
-        assert "[trimmed" in result1["research_report"]["content"]
-        assert "[trimmed" in result1["additional_research_report"]["content"]
-        assert "chars]" in result1["additional_research_report"]["content"]
+        assert "[trimmed" in result1["research_report"]["content"]["v"]
+        assert "[trimmed" in result1["additional_research_report"]["content"]["v"]
+        assert "chars]" in result1["additional_research_report"]["content"]["v"]
 
-        # Check second result - all documents trimmed equally
+        # Check second result - all documents trimmed equally - content is {v, e} format
         result2 = results_data[1]
-        assert "[trimmed" in result2["research_report"]["content"]
-        assert "[trimmed" in result2["further_research_plan"]["content"]
-        assert "chars]" in result2["further_research_plan"]["content"]
+        assert "[trimmed" in result2["research_report"]["content"]["v"]
+        assert "[trimmed" in result2["further_research_plan"]["content"]["v"]
+        assert "chars]" in result2["further_research_plan"]["content"]["v"]
 
         # Verify metadata is preserved
         assert batch_data["batch_id"] == "batch-001"
@@ -267,12 +267,12 @@ class TestPydanticModelTrimming:
         research_data = data["results"]  # parameter name
 
         # Binary content should be removed (PDFs and images are base64 encoded)
-        # Documents with image extensions are automatically base64 encoded
-        assert research_data["research_report"]["content"] == "[binary content removed]"
-        assert research_data["further_research_plan"]["content"] == "[binary content removed]"
+        # Documents with image extensions are automatically base64 encoded - content is {v, e} format
+        assert research_data["research_report"]["content"]["v"] == "[binary content removed]"
+        assert research_data["further_research_plan"]["content"]["v"] == "[binary content removed]"
 
-        # Text content (JSON) should be preserved (short, so not trimmed)
-        assert research_data["additional_research_report"]["content"] == '{"key": "value"}'
+        # Text content (JSON) should be preserved (short, so not trimmed) - content is {v, e} format
+        assert research_data["additional_research_report"]["content"]["v"] == '{"key": "value"}'
 
     @patch("ai_pipeline_core.observability.tracing.observe")
     def test_mixed_types_with_pydantic(self, mock_observe):

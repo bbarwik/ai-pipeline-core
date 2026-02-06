@@ -41,24 +41,23 @@ from .documents import (
     sanitize_url,
     set_run_context,
 )
-from .images import (
+from .llm import (
+    Citation,
+    Conversation,
+    ConversationContent,
     ImagePart,
     ImagePreset,
     ImageProcessingConfig,
     ImageProcessingError,
-    ProcessedImage,
-    process_image,
-    process_image_to_documents,
-)
-from .llm import (
-    AIMessages,
-    AIMessageType,
     ModelName,
     ModelOptions,
     ModelResponse,
-    StructuredModelResponse,
+    ProcessedImage,
+    TokenUsage,
+    URLSubstitutor,
     generate,
     generate_structured,
+    process_image,
 )
 from .logging import (
     LoggerMixin,
@@ -74,17 +73,19 @@ from .prompt_manager import PromptManager
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 __all__ = [
-    "AIMessageType",
-    "AIMessages",
     # Agent framework
     "AgentOutputDocument",
     "AgentProvider",
     "AgentResult",
     # Documents
     "Attachment",
+    # LLM
+    "Citation",
+    "Conversation",
+    "ConversationContent",
     "DeploymentContext",
     "DeploymentResult",
     "Document",
@@ -105,11 +106,12 @@ __all__ = [
     "RunContext",
     "Settings",
     "StructuredLoggerMixin",
-    "StructuredModelResponse",
     "SummaryGenerator",
     "TaskDocumentContext",
+    "TokenUsage",
     "TraceInfo",
     "TraceLevel",
+    "URLSubstitutor",
     "agents",
     "canonical_name_key",
     "create_document_store",
@@ -127,7 +129,6 @@ __all__ = [
     "pipeline_task",
     "prefect_test_harness",
     "process_image",
-    "process_image_to_documents",
     "progress",
     "register_agent_provider",
     "remote_deployment",

@@ -27,8 +27,8 @@ class TestSerializeTextAttachment:
         assert len(serialized["attachments"]) == 1
         att_dict = serialized["attachments"][0]
         assert att_dict["name"] == "notes.txt"
-        assert att_dict["content"] == "Hello world"
-        assert att_dict["content_encoding"] == "utf-8"
+        # New format: content is {v: value, e: encoding}
+        assert att_dict["content"] == {"v": "Hello world", "e": "utf-8"}
         assert "text" in att_dict["mime_type"]
         assert att_dict["size"] == len(b"Hello world")
 
@@ -42,8 +42,9 @@ class TestSerializeBinaryAttachment:
         serialized = doc.serialize_model()
 
         att_dict = serialized["attachments"][0]
-        assert att_dict["content_encoding"] == "base64"
-        assert att_dict["content"] == base64.b64encode(PNG_HEADER).decode("ascii")
+        # New format: content is {v: value, e: encoding}
+        expected_b64 = base64.b64encode(PNG_HEADER).decode("ascii")
+        assert att_dict["content"] == {"v": expected_b64, "e": "base64"}
         assert "image" in att_dict["mime_type"]
         assert att_dict["size"] == len(PNG_HEADER)
 
@@ -167,17 +168,14 @@ class TestMixedAttachments:
         serialized = doc.serialize_model()
 
         assert len(serialized["attachments"]) == 3
-        # Text attachment
-        assert serialized["attachments"][0]["content_encoding"] == "utf-8"
-        assert serialized["attachments"][0]["content"] == "text content"
+        # Text attachment - new format: {v: value, e: encoding}
+        assert serialized["attachments"][0]["content"] == {"v": "text content", "e": "utf-8"}
         # Binary (PNG) attachment
-        assert serialized["attachments"][1]["content_encoding"] == "base64"
         expected_png = base64.b64encode(PNG_HEADER).decode("ascii")
-        assert serialized["attachments"][1]["content"] == expected_png
+        assert serialized["attachments"][1]["content"] == {"v": expected_png, "e": "base64"}
         # Binary (PDF) attachment
-        assert serialized["attachments"][2]["content_encoding"] == "base64"
         expected_pdf = base64.b64encode(PDF_HEADER).decode("ascii")
-        assert serialized["attachments"][2]["content"] == expected_pdf
+        assert serialized["attachments"][2]["content"] == {"v": expected_pdf, "e": "base64"}
 
     def test_mixed_roundtrip(self):
         text_att = Attachment(name="notes.txt", content=b"text content", description="Notes")

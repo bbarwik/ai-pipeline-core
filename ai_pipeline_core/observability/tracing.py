@@ -18,8 +18,8 @@ from typing import Any, Literal, ParamSpec, TypeVar, cast, overload
 from lmnr import Attributes, Instruments, Laminar, observe
 from pydantic import BaseModel, Field
 
+from ai_pipeline_core._llm_core import ModelResponse
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.llm import AIMessages, ModelResponse
 from ai_pipeline_core.settings import settings
 
 # ---------------------------------------------------------------------------
@@ -41,20 +41,12 @@ Values:
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
-def _serialize_for_tracing(obj: Any) -> Any:  # noqa: PLR0911
+def _serialize_for_tracing(obj: Any) -> Any:
     """Convert objects to JSON-serializable format for tracing."""
     if isinstance(obj, Document):
         return obj.serialize_model()
     if isinstance(obj, list) and obj and isinstance(obj[0], Document):
         return [doc.serialize_model() for doc in cast(list[Document], obj)]
-    if isinstance(obj, AIMessages):
-        result: list[Any] = []
-        for msg in obj:
-            if isinstance(msg, Document):
-                result.append(msg.serialize_model())
-            else:
-                result.append(msg)
-        return result
     if isinstance(obj, ModelResponse):
         return obj.model_dump()
     if isinstance(obj, BaseModel):
@@ -76,12 +68,35 @@ def _serialize_for_tracing(obj: Any) -> Any:  # noqa: PLR0911
 # ---------------------------------------------------------------------------
 # Document trimming utilities
 # ---------------------------------------------------------------------------
+def _get_content_encoding(content: Any) -> str:
+    """Extract encoding from content field (handles both {v,e} dict and legacy flat format)."""
+    if isinstance(content, dict) and "e" in content:
+        return content["e"]
+    return "utf-8"  # Default for legacy string format
+
+
+def _get_content_value(content: Any) -> str:
+    """Extract value from content field (handles both {v,e} dict and legacy flat format)."""
+    if isinstance(content, dict) and "v" in content:
+        return content["v"]
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def _make_content(value: str, encoding: str) -> dict[str, str]:
+    """Create content in {v,e} format."""
+    return {"v": value, "e": encoding}
+
+
 def _trim_attachment_list(attachments: list[Any]) -> list[Any]:
     """Trim attachment content in a serialized attachment list.
 
     Always trims regardless of parent document type:
     - Binary (base64): replace content with placeholder
     - Text > 250 chars: keep first 100 + last 100
+
+    Handles both {v,e} format and legacy flat format.
     """
     trimmed: list[Any] = []
     for raw_att in attachments:
@@ -89,21 +104,27 @@ def _trim_attachment_list(attachments: list[Any]) -> list[Any]:
             trimmed.append(raw_att)
             continue
         att: dict[str, Any] = cast(dict[str, Any], raw_att)
-        content_encoding: str = att.get("content_encoding", "utf-8")
+        content = att.get("content")
+        content_encoding = _get_content_encoding(content)
+        content_value = _get_content_value(content)
+
         if content_encoding == "base64":
             att = att.copy()
-            att["content"] = "[binary content removed]"
-        elif isinstance(att.get("content"), str) and len(att["content"]) > 250:
+            att["content"] = _make_content("[binary content removed]", "utf-8")
+        elif len(content_value) > 250:
             att = att.copy()
-            c: str = att["content"]
-            trimmed_chars = len(c) - 200
-            att["content"] = c[:100] + f" ... [trimmed {trimmed_chars} chars] ... " + c[-100:]
+            trimmed_chars = len(content_value) - 200
+            trimmed_text = content_value[:100] + f" ... [trimmed {trimmed_chars} chars] ... " + content_value[-100:]
+            att["content"] = _make_content(trimmed_text, "utf-8")
         trimmed.append(att)
     return trimmed
 
 
 def _trim_document_content(doc_dict: dict[str, Any]) -> dict[str, Any]:
-    """Trim document content for traces. All documents trimmed equally."""
+    """Trim document content for traces. All documents trimmed equally.
+
+    Handles both {v,e} format and legacy flat format.
+    """
     if not isinstance(doc_dict, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
         return doc_dict  # pyright: ignore[reportUnreachable]
 
@@ -111,8 +132,9 @@ def _trim_document_content(doc_dict: dict[str, Any]) -> dict[str, Any]:
         return doc_dict
 
     doc_dict = doc_dict.copy()
-    content = doc_dict.get("content", "")
-    content_encoding = doc_dict.get("content_encoding", "utf-8")
+    content = doc_dict.get("content")
+    content_encoding = _get_content_encoding(content)
+    content_value = _get_content_value(content)
 
     # Trim attachments
     if "attachments" in doc_dict and isinstance(doc_dict["attachments"], list):
@@ -120,13 +142,14 @@ def _trim_document_content(doc_dict: dict[str, Any]) -> dict[str, Any]:
 
     # Binary: remove content
     if content_encoding == "base64":
-        doc_dict["content"] = "[binary content removed]"
+        doc_dict["content"] = _make_content("[binary content removed]", "utf-8")
         return doc_dict
 
     # Text: trim if > 250 chars
-    if isinstance(content, str) and len(content) > 250:
-        trimmed_chars = len(content) - 200
-        doc_dict["content"] = content[:100] + f" ... [trimmed {trimmed_chars} chars] ... " + content[-100:]
+    if len(content_value) > 250:
+        trimmed_chars = len(content_value) - 200
+        trimmed_text = content_value[:100] + f" ... [trimmed {trimmed_chars} chars] ... " + content_value[-100:]
+        doc_dict["content"] = _make_content(trimmed_text, "utf-8")
 
     return doc_dict
 

@@ -677,8 +677,8 @@ class DeploymentHookResult:
 
 Attributes:
     artifacts: List of (relative_path, bytes) tuples to upload
-    job_variables: Dict to deep-merge into Prefect job_variables
-        Example: {"env": {"MY_VAR": "value"}}"""
+    job_variables: Dict to deep-merge into Prefect job_variables,
+        e.g. {"env": {"MY_VAR": "value"}}"""
     artifacts: list[tuple[str, bytes]] = field(default_factory=list)
     job_variables: dict[str, Any] = field(default_factory=dict)
 
@@ -1022,7 +1022,6 @@ def remote_deployment(
             documents: list[Document],
             options: TOptions,
             context: DeploymentContext | None = None,
-            *,
             on_progress: ProgressCallback | None = None,
         ) -> TResult:
             parameters: dict[str, Any] = {

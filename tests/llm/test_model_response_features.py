@@ -1,12 +1,11 @@
-"""Comprehensive tests for new ModelResponse features."""
+"""Comprehensive tests for ModelResponse[T] features."""
 
 import json
 
-import pytest
 from pydantic import BaseModel
 
-from ai_pipeline_core.llm import ModelResponse, StructuredModelResponse
-from tests.support.helpers import create_test_model_response
+from ai_pipeline_core.llm import ModelResponse, TokenUsage
+from tests.support.helpers import create_test_model_response, create_test_structured_model_response
 
 
 class TestModelResponseMetadata:
@@ -15,21 +14,12 @@ class TestModelResponseMetadata:
     def test_metadata_stored_in_response(self):
         """Test that metadata is stored in the response."""
         metadata = {"time_taken": 1.5, "first_token_time": 0.3}
-        response = ModelResponse(
-            chat_completion=create_test_model_response(
-                id="test",
-                object="chat.completion",
-                created=1234567890,
-                model="test",
-                choices=[
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "test"},
-                        "finish_reason": "stop",
-                    }
-                ],
-            ),
-            model_options={"model": "test"},
+        response = ModelResponse[str](
+            content="test",
+            parsed="test",
+            usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            model="test-model",
+            response_id="test-id",
             metadata=metadata,
         )
 
@@ -37,487 +27,132 @@ class TestModelResponseMetadata:
         assert laminar_metadata["time_taken"] == 1.5
         assert laminar_metadata["first_token_time"] == 0.3
 
-    def test_model_options_stored(self):
-        """Test that model options are stored and retrievable."""
-        model_options = {
-            "model": "gpt-5.1",
-            "temperature": 0.7,
-            "max_tokens": 1000,
-        }
-        response = ModelResponse(
-            chat_completion=create_test_model_response(
-                id="test",
-                object="chat.completion",
-                created=1234567890,
-                model="gpt-5.1",
-                choices=[
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "test"},
-                        "finish_reason": "stop",
-                    }
-                ],
-            ),
-            model_options=model_options,
-            metadata={},
+    def test_metadata_includes_usage(self):
+        """Test that metadata includes usage information."""
+        response = create_test_model_response(
+            content="test",
+            prompt_tokens=100,
+            completion_tokens=50,
         )
 
-        laminar_metadata = response.get_laminar_metadata()
-        assert "model_options.model" in laminar_metadata
-        assert laminar_metadata["model_options.model"] == "gpt-5.1"
-        assert "model_options.temperature" in laminar_metadata
-        assert laminar_metadata["model_options.temperature"] == "0.7"
-
-    def test_metadata_excludes_messages(self):
-        """Test that messages are excluded from metadata."""
-        model_options = {
-            "model": "gpt-5.1",
-            "messages": [{"role": "user", "content": "long message"}],
-            "temperature": 0.7,
-        }
-        response = ModelResponse(
-            chat_completion=create_test_model_response(
-                id="test",
-                object="chat.completion",
-                created=1234567890,
-                model="gpt-5.1",
-                choices=[
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "test"},
-                        "finish_reason": "stop",
-                    }
-                ],
-            ),
-            model_options=model_options,
-            metadata={},
-        )
-
-        laminar_metadata = response.get_laminar_metadata()
-        # messages should not be in metadata
-        assert not any("messages" in key for key in laminar_metadata.keys())
+        metadata = response.get_laminar_metadata()
+        assert metadata["gen_ai.usage.prompt_tokens"] == 100
+        assert metadata["gen_ai.usage.completion_tokens"] == 50
+        assert metadata["gen_ai.usage.total_tokens"] == 150
 
 
 class TestModelResponseReasoningContent:
-    """Test reasoning_content property comprehensively."""
+    """Test reasoning_content property."""
 
     def test_no_reasoning_content(self):
         """Test when there is no reasoning content."""
-        response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "Simple response"},
-                    "finish_reason": "stop",
-                }
-            ],
-        )
+        response = create_test_model_response(content="Simple response")
         assert response.reasoning_content == ""
         assert response.content == "Simple response"
 
-    def test_reasoning_with_think_tags(self):
-        """Test reasoning content extraction from think tags."""
+    def test_reasoning_content_preserved(self):
+        """Test reasoning content is preserved when set."""
         response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": "<think>My internal reasoning here</think> Final answer",
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
+            content="Final answer",
+            reasoning_content="My internal reasoning here",
         )
-        assert response.reasoning_content == "<think>My internal reasoning here"
+        assert response.reasoning_content == "My internal reasoning here"
         assert response.content == "Final answer"
 
-    def test_reasoning_with_multiline_think(self):
-        """Test reasoning extraction with multiline think content."""
-        response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": """<think>
-Step 1: Analyze the problem
+    def test_reasoning_content_with_multiline(self):
+        """Test reasoning with multiline content."""
+        reasoning = """Step 1: Analyze the problem
 Step 2: Consider options
-Step 3: Choose best solution
-</think>
-Here is the final answer""",
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
+Step 3: Choose best solution"""
+        response = create_test_model_response(
+            content="Here is the final answer",
+            reasoning_content=reasoning,
         )
-        assert "<think>" in response.reasoning_content
         assert "Step 1" in response.reasoning_content
         assert "Step 3" in response.reasoning_content
         assert response.content == "Here is the final answer"
 
-    def test_reasoning_with_empty_think_tags(self):
-        """Test reasoning with empty think tags."""
+
+class TestModelResponseUsage:
+    """Test usage tracking."""
+
+    def test_usage_basic(self):
+        """Test basic usage tracking."""
         response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": "<think></think> Content",
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
+            content="test",
+            prompt_tokens=100,
+            completion_tokens=50,
         )
-        assert response.reasoning_content == "<think>"
-        assert response.content == "Content"
 
-    def test_reasoning_with_only_think_tags(self):
-        """Test when message is only think tags."""
-        response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": "<think>Only reasoning</think>",
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-        )
-        assert "<think>Only reasoning" in response.reasoning_content
-        assert response.content == ""  # Empty after stripping
+        assert response.usage.prompt_tokens == 100
+        assert response.usage.completion_tokens == 50
+        assert response.usage.total_tokens == 150
 
-    def test_content_property_strips_think_tags(self):
-        """Test that content property shows text after the LAST closing think tag."""
-        response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": "<think>Hidden</think>Visible<think>More hidden</think>Final",
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-        )
-        # Content should only show text after the LAST </think>
-        assert "Hidden" not in response.content
-        assert "Visible" not in response.content
-        assert "More hidden" not in response.content
-        assert response.content == "Final"
-
-
-class TestModelResponseValidateOutput:
-    """Test validate_output method comprehensively."""
-
-    def test_validate_non_empty_content(self):
-        """Test validation passes for non-empty content."""
-        response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "Valid content"},
-                    "finish_reason": "stop",
-                }
-            ],
-        )
-        response._model_options = {}  # type: ignore[reportPrivateUsage]
-        # Should not raise
-        response.validate_output()
-
-    def test_validate_empty_content_raises(self):
-        """Test validation raises for empty content."""
-        response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": ""},
-                    "finish_reason": "stop",
-                }
-            ],
-        )
-        response._model_options = {}  # type: ignore[reportPrivateUsage]
-
-        with pytest.raises(ValueError, match="Empty response content"):
-            response.validate_output()
-
-    def test_validate_none_content_raises(self):
-        """Test validation raises for None content."""
-        response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": None},
-                    "finish_reason": "stop",
-                }
-            ],
-        )
-        response._model_options = {}  # type: ignore[reportPrivateUsage]
-
-        with pytest.raises(ValueError, match="Empty response content"):
-            response.validate_output()
-
-    def test_validate_structured_output_valid_json(self):
-        """Test validation with valid structured JSON output."""
-
-        class OutputModel(BaseModel):
-            name: str
-            value: int
-
-        response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps({"name": "test", "value": 42}),
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-        )
-        response._model_options = {"response_format": OutputModel}  # type: ignore[reportPrivateUsage]
-
-        # Should not raise
-        response.validate_output()
-
-    def test_validate_without_response_format(self):
-        """Test validation without response_format just checks for empty content."""
-
-        response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": "Any content works",
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-        )
-        response._model_options = {}  # type: ignore[reportPrivateUsage]
-
-        # Should not raise for non-empty content
-        response.validate_output()
-
-    def test_validate_output_with_response_format_type(self):
-        """Test that response_format as type doesn't trigger validation."""
-
-        class OutputModel(BaseModel):
-            name: str
-            value: int
-
-        response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps({"name": "test", "wrong_field": "invalid"}),
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-        )
-        # response_format is a class/type, not instance, so isinstance check fails
-        response._model_options = {"response_format": OutputModel}  # type: ignore[reportPrivateUsage]
-
-        # Should not raise because isinstance(OutputModel, BaseModel) is False
-        response.validate_output()
-
-
-class TestStructuredModelResponseFromModelResponse:
-    """Test StructuredModelResponse.from_model_response class method."""
-
-    def test_from_model_response_conversion(self):
-        """Test converting ModelResponse to StructuredModelResponse."""
-
-        class TestModel(BaseModel):
-            field: str
-
-        model_response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps({"field": "value"}),
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-        )
-        model_response._model_options = {"response_format": TestModel}  # type: ignore[reportPrivateUsage]
-
-        structured = StructuredModelResponse.from_model_response(model_response)
-
-        assert isinstance(structured, StructuredModelResponse)
-        assert structured.id == "test"
-        assert structured.parsed.field == "value"
-
-    def test_from_model_response_preserves_metadata(self):
-        """Test that conversion preserves all metadata."""
-
-        class TestModel(BaseModel):
-            value: int
-
-        model_response = ModelResponse(
-            chat_completion=create_test_model_response(
-                id="test",
-                object="chat.completion",
-                created=1234567890,
-                model="test",
-                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-                choices=[
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": json.dumps({"value": 42}),
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
+    def test_usage_with_cached_tokens(self):
+        """Test usage with cached tokens."""
+        response = ModelResponse[str](
+            content="test",
+            parsed="test",
+            usage=TokenUsage(
+                prompt_tokens=100,
+                completion_tokens=50,
+                total_tokens=150,
+                cached_tokens=80,
             ),
-            model_options={"response_format": TestModel, "temperature": 0.7},
-            metadata={"time_taken": 1.5, "first_token_time": 0.3},
-        )
-
-        structured = StructuredModelResponse.from_model_response(model_response)
-
-        # Check metadata is preserved
-        assert structured.usage.total_tokens == 15  # type: ignore
-        laminar_metadata = structured.get_laminar_metadata()
-        assert laminar_metadata["time_taken"] == 1.5
-        assert laminar_metadata["first_token_time"] == 0.3
-
-    def test_from_model_response_lazy_parsing(self):
-        """Test that parsing is lazy (only happens when accessed)."""
-
-        class TestModel(BaseModel):
-            field: str
-
-        model_response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
             model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps({"field": "test"}),
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
+            response_id="test-id",
         )
-        model_response._model_options = {"response_format": TestModel}  # type: ignore[reportPrivateUsage]
 
-        structured = StructuredModelResponse.from_model_response(model_response)
+        assert response.usage.cached_tokens == 80
+        metadata = response.get_laminar_metadata()
+        assert metadata["gen_ai.usage.cached_tokens"] == 80
 
-        # Check that _parsed_value doesn't exist yet
-        assert not hasattr(structured, "_parsed_value")
-
-        # Access parsed property triggers parsing
-        parsed = structured.parsed
-        assert parsed.field == "test"
-
-        # Now _parsed_value should exist
-        assert hasattr(structured, "_parsed_value")
-
-    def test_from_model_response_caches_parsed(self):
-        """Test that parsed value is cached after first access."""
-
-        class TestModel(BaseModel):
-            field: str
-
-        model_response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
+    def test_usage_with_reasoning_tokens(self):
+        """Test usage with reasoning tokens."""
+        response = ModelResponse[str](
+            content="test",
+            parsed="test",
+            usage=TokenUsage(
+                prompt_tokens=100,
+                completion_tokens=50,
+                total_tokens=150,
+                reasoning_tokens=30,
+            ),
             model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps({"field": "cached"}),
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
+            response_id="test-id",
         )
-        model_response._model_options = {"response_format": TestModel}  # type: ignore[reportPrivateUsage]
 
-        structured = StructuredModelResponse.from_model_response(model_response)
+        assert response.usage.reasoning_tokens == 30
+        metadata = response.get_laminar_metadata()
+        assert metadata["gen_ai.usage.reasoning_tokens"] == 30
 
-        # Access twice
-        parsed1 = structured.parsed
-        parsed2 = structured.parsed
 
-        # Should be the same object (cached)
-        assert parsed1 is parsed2
+class TestStructuredModelResponse:
+    """Test ModelResponse with structured output."""
 
-    def test_from_model_response_with_complex_model(self):
+    class TestModel(BaseModel):
+        field: str
+        value: int
+
+    def test_structured_response_creation(self):
+        """Test creating a structured response."""
+        parsed = self.TestModel(field="test", value=42)
+        response = create_test_structured_model_response(parsed=parsed)
+
+        assert response.parsed.field == "test"
+        assert response.parsed.value == 42
+
+    def test_structured_response_content_is_json(self):
+        """Test that content is JSON string."""
+        parsed = self.TestModel(field="test", value=42)
+        response = create_test_structured_model_response(parsed=parsed)
+
+        # Content should be valid JSON
+        content_dict = json.loads(response.content)
+        assert content_dict["field"] == "test"
+        assert content_dict["value"] == 42
+
+    def test_structured_with_complex_model(self):
         """Test with complex nested Pydantic model."""
 
         class NestedModel(BaseModel):
@@ -529,36 +164,70 @@ class TestStructuredModelResponseFromModelResponse:
             nested: NestedModel
             items: list[str]
 
-        model_response = create_test_model_response(
-            id="test",
-            object="chat.completion",
-            created=1234567890,
-            model="test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps({
-                            "name": "test",
-                            "count": 5,
-                            "nested": {"inner": "value"},
-                            "items": ["a", "b", "c"],
-                        }),
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
+        parsed = ComplexModel(
+            name="test",
+            count=5,
+            nested=NestedModel(inner="value"),
+            items=["a", "b", "c"],
         )
-        model_response._model_options = {"response_format": ComplexModel}  # type: ignore[reportPrivateUsage]
+        response = create_test_structured_model_response(parsed=parsed)
 
-        structured = StructuredModelResponse.from_model_response(model_response)
-        parsed = structured.parsed
+        assert response.parsed.name == "test"
+        assert response.parsed.count == 5
+        assert response.parsed.nested.inner == "value"
+        assert response.parsed.items == ["a", "b", "c"]
 
-        assert parsed.name == "test"
-        assert parsed.count == 5
-        assert parsed.nested.inner == "value"
-        assert parsed.items == ["a", "b", "c"]
+
+class TestModelResponseSerialization:
+    """Test serialization features."""
+
+    def test_serialization_roundtrip(self):
+        """Test JSON serialization roundtrip."""
+        response = create_test_model_response(
+            content="test content",
+            reasoning_content="some reasoning",
+            cost=0.05,
+        )
+
+        json_str = response.model_dump_json()
+        restored = ModelResponse.model_validate_json(json_str)
+
+        assert restored.content == response.content
+        assert restored.reasoning_content == response.reasoning_content
+        assert restored.cost == response.cost
+
+    def test_structured_serialization_roundtrip(self):
+        """Test structured response serialization."""
+
+        class MyModel(BaseModel):
+            name: str
+            value: int
+
+        parsed = MyModel(name="test", value=123)
+        response = create_test_structured_model_response(parsed=parsed)
+
+        json_str = response.model_dump_json()
+        restored = ModelResponse.model_validate_json(json_str)
+
+        # After deserialization, parsed is a dict
+        assert isinstance(restored.parsed, dict)
+        assert restored.parsed["name"] == "test"
+        assert restored.parsed["value"] == 123
+
+        # Can reconstruct typed model
+        typed = MyModel.model_validate(restored.parsed)
+        assert typed.name == "test"
+        assert typed.value == 123
+
+    def test_metadata_json_serialization(self):
+        """Test that metadata is JSON serializable."""
+        response = create_test_model_response(content="test")
+        metadata = response.get_laminar_metadata()
+
+        # Should be JSON serializable
+        json_str = json.dumps(metadata, default=str)
+        assert json_str is not None
+        assert len(json_str) > 0
 
 
 class TestModelResponseLaminarMetadata:
@@ -566,67 +235,58 @@ class TestModelResponseLaminarMetadata:
 
     def test_metadata_includes_all_fields(self):
         """Test that get_laminar_metadata includes all expected fields."""
-        response = ModelResponse(
-            chat_completion=create_test_model_response(
-                id="test-id",
-                object="chat.completion",
-                created=1234567890,
-                model="gpt-5.1",
-                usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
-                choices=[
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "test response"},
-                        "finish_reason": "stop",
-                    }
-                ],
-            ),
-            model_options={"model": "gpt-5.1", "temperature": 0.7},
+        response = ModelResponse[str](
+            content="test response",
+            parsed="test response",
+            usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+            cost=0.01,
+            model="gpt-5.1",
+            response_id="test-id",
             metadata={"time_taken": 2.5, "first_token_time": 0.5},
         )
 
         metadata = response.get_laminar_metadata()
 
         # Basic fields
-        assert "gen_ai.response.id" in metadata
-        assert "gen_ai.system" in metadata
+        assert metadata["gen_ai.response.id"] == "test-id"
+        assert metadata["gen_ai.system"] == "litellm"
 
         # Usage fields
-        assert "gen_ai.usage.prompt_tokens" in metadata
-        assert "gen_ai.usage.completion_tokens" in metadata
-        assert "gen_ai.usage.total_tokens" in metadata
+        assert metadata["gen_ai.usage.prompt_tokens"] == 100
+        assert metadata["gen_ai.usage.completion_tokens"] == 50
+        assert metadata["gen_ai.usage.total_tokens"] == 150
+
+        # Cost fields
+        assert metadata["gen_ai.cost"] == 0.01
 
         # Timing metadata
-        assert "time_taken" in metadata
-        assert "first_token_time" in metadata
+        assert metadata["time_taken"] == 2.5
+        assert metadata["first_token_time"] == 0.5
 
-        # Model options
-        assert "model_options.model" in metadata
-        assert "model_options.temperature" in metadata
-
-    def test_metadata_json_serialization(self):
-        """Test that metadata is JSON serializable."""
-        response = ModelResponse(
-            chat_completion=create_test_model_response(
-                id="test",
-                object="chat.completion",
-                created=1234567890,
-                model="test",
-                choices=[
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "test"},
-                        "finish_reason": "stop",
-                    }
-                ],
-            ),
-            model_options={"model": "test"},
-            metadata={"time_taken": 1.5},
+    def test_metadata_excludes_non_scalar_values(self):
+        """Test that non-scalar metadata values are excluded."""
+        response = ModelResponse[str](
+            content="test",
+            parsed="test",
+            usage=TokenUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+            model="test",
+            response_id="test-id",
+            metadata={
+                "scalar_int": 42,
+                "scalar_float": 3.14,
+                "scalar_str": "hello",
+                "non_scalar_list": [1, 2, 3],
+                "non_scalar_dict": {"a": 1},
+            },
         )
 
         metadata = response.get_laminar_metadata()
 
-        # Should be JSON serializable
-        json_str = json.dumps(metadata, default=str)
-        assert json_str is not None
-        assert len(json_str) > 0
+        # Scalar values should be included
+        assert metadata["scalar_int"] == 42
+        assert metadata["scalar_float"] == 3.14
+        assert metadata["scalar_str"] == "hello"
+
+        # Non-scalar values should be excluded
+        assert "non_scalar_list" not in metadata
+        assert "non_scalar_dict" not in metadata

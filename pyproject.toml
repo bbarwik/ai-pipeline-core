@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.5.1"
+version = "0.6.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -157,7 +157,13 @@ convention = "google"
 "ai_pipeline_core/document_store/factory.py" = ["F821", "PLC0415"]
 "ai_pipeline_core/document_store/clickhouse.py" = ["S608", "BLE001"]
 "ai_pipeline_core/document_store/protocol.py" = ["PLW0603"]
-"ai_pipeline_core/llm/client.py" = ["PLR0911", "RET505", "TRY203", "BLE001"]
+"ai_pipeline_core/_llm_core/client.py" = ["PLR0911", "C901", "PLR0912", "PLR0915", "PLR0914", "PLR1702", "RUF005", "PLC2801", "UP047", "BLE001"]
+"ai_pipeline_core/_llm_core/model_response.py" = ["UP046", "PLR6301", "PERF403", "BLE001"]
+"ai_pipeline_core/llm/__init__.py" = ["TID252"]
+"ai_pipeline_core/llm/conversation.py" = ["RUF005", "PERF401", "FBT002", "UP035", "UP046", "PLC0415", "PLC2801", "PLR6301", "C901", "PLR0912", "TID252", "BLE001"]
+"ai_pipeline_core/llm/_substitutor.py" = ["BLE001"]
+"ai_pipeline_core/llm/_validation.py" = ["BLE001"]
+"ai_pipeline_core/llm/_images.py" = ["PLR0917", "BLE001"]
 "ai_pipeline_core/observability/_debug/_content.py" = ["PLR1702", "C901", "PLR0912", "PLR0915", "PLR6301", "BLE001"]
 "ai_pipeline_core/observability/_debug/_writer.py" = ["S112", "S324", "SIM116", "BLE001"]
 "ai_pipeline_core/observability/_debug/_summary.py" = ["BLE001"]
@@ -168,8 +174,6 @@ convention = "google"
 "ai_pipeline_core/observability/tracing.py" = ["C901", "PLR0912", "PLR0915", "PLR0914", "BLE001"]
 "ai_pipeline_core/document_store/_summary_worker.py" = ["BLE001"]
 "ai_pipeline_core/document_store/memory.py" = ["RUF029"]
-"ai_pipeline_core/llm/validation.py" = ["BLE001"]
-"ai_pipeline_core/llm/model_response.py" = ["BLE001"]
 "ai_pipeline_core/pipeline/decorators.py" = ["C901", "PLR0912", "PLR0915", "S110", "SIM105", "BLE001"]
 "ai_pipeline_core/logging/logging_config.py" = ["TID251"]
 "ai_pipeline_core/prompt_manager.py" = ["S701"]
@@ -252,7 +256,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.5.1"
+current_version = "0.6.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"

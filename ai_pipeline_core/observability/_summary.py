@@ -1,9 +1,11 @@
-"""LLM-powered summary generation for tracked spans and documents."""
+"""LLM-powered summary generation for tracked spans and documents.
+
+Uses _llm_core directly to avoid Document dependency cycle.
+"""
 
 from pydantic import BaseModel, Field
 
-from ai_pipeline_core.llm import generate_structured
-from ai_pipeline_core.llm.model_options import ModelOptions
+from ai_pipeline_core._llm_core import CoreMessage, ModelOptions, Role, generate_structured
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._tracking._internal import internal_tracking_context
 
@@ -47,15 +49,20 @@ async def generate_span_summary(label: str, output_hint: str, model: str = "gemi
     Returns plain summary string (stored in tracked_spans.user_summary).
     """
     try:
+        messages = [
+            CoreMessage(role=Role.SYSTEM, content=_SPAN_SUMMARY_SYSTEM_PROMPT),
+            CoreMessage(role=Role.USER, content=f"Task: {label}\nResult: {output_hint}"),
+        ]
+        options = ModelOptions(cache_ttl=None, retries=3, timeout=30)
         with internal_tracking_context():
-            result = await generate_structured(
-                model=model,
+            response = await generate_structured(
+                messages,
                 response_format=SpanSummary,
-                messages=f"Task: {label}\nResult: {output_hint}",
-                options=ModelOptions(system_prompt=_SPAN_SUMMARY_SYSTEM_PROMPT, cache_ttl=None, retries=3, timeout=30),
+                model=model,
+                model_options=options,
                 purpose=f"span_summary: {label}",
             )
-        return result.parsed.summary
+        return response.parsed.summary
     except Exception as e:
         logger.warning(f"Span summary failed for '{label}': {e}")
         return ""
@@ -67,15 +74,20 @@ async def generate_document_summary(name: str, excerpt: str, model: str = "gemin
     Returns JSON-serialized DocumentSummary (stored in document_index.summary).
     """
     try:
+        messages = [
+            CoreMessage(role=Role.SYSTEM, content=_DOC_SUMMARY_SYSTEM_PROMPT),
+            CoreMessage(role=Role.USER, content=f"Document: {name}\nContent excerpt:\n{excerpt}"),
+        ]
+        options = ModelOptions(cache_ttl=None, retries=3, timeout=30)
         with internal_tracking_context():
-            result = await generate_structured(
-                model=model,
+            response = await generate_structured(
+                messages,
                 response_format=DocumentSummary,
-                messages=f"Document: {name}\nContent excerpt:\n{excerpt}",
-                options=ModelOptions(system_prompt=_DOC_SUMMARY_SYSTEM_PROMPT, cache_ttl=None, retries=3, timeout=30),
+                model=model,
+                model_options=options,
                 purpose=f"document_summary: {name}",
             )
-        return result.parsed.model_dump_json()
+        return response.parsed.model_dump_json()
     except Exception as e:
         logger.warning(f"Document summary failed for '{name}': {e}")
         return ""

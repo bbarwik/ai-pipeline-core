@@ -159,7 +159,6 @@ def remote_deployment(
             documents: list[Document],
             options: TOptions,
             context: DeploymentContext | None = None,
-            *,
             on_progress: ProgressCallback | None = None,
         ) -> TResult:
             parameters: dict[str, Any] = {

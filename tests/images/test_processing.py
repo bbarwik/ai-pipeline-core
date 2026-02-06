@@ -1,16 +1,16 @@
-"""Tests for ai_pipeline_core.images._processing — pure planning and splitting logic."""
+"""Tests for ai_pipeline_core.llm._images — pure planning and splitting logic."""
 
 from io import BytesIO
 
 import pytest
 from PIL import Image
 
-from ai_pipeline_core.images._processing import (
-    SplitPlan,
-    encode_jpeg,
-    execute_split,
-    load_and_normalize,
-    plan_split,
+from ai_pipeline_core.llm._images import (
+    _SplitPlan as SplitPlan,
+    _encode_jpeg as encode_jpeg,
+    _execute_split as execute_split,
+    _load_and_normalize as load_and_normalize,
+    _plan_split as plan_split,
 )
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ class TestPlanSplit:
         )
         assert plan.num_parts == 5
         assert len(plan.warnings) == 1
-        assert "Reducing to 5 parts" in plan.warnings[0]
+        assert "Reducing" in plan.warnings[0]
 
     def test_max_parts_1_handles_edge_case(self):
         plan = plan_split(1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=1)
@@ -147,7 +147,7 @@ class TestLoadAndNormalize:
     def test_reject_too_large(self):
         # Create a minimally valid image that claims enormous size
         # We can't easily create a 100MP+ image in memory, so test the check
-        from ai_pipeline_core.images._processing import PIL_MAX_PIXELS
+        from ai_pipeline_core.llm._images import PIL_MAX_PIXELS
 
         assert PIL_MAX_PIXELS == 100_000_000
 

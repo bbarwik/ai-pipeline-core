@@ -59,7 +59,6 @@ rules:
         - "**/_models.py"
         - "**/decorators.py"
         - "**/_initialization.py"
-        - "**/substitutor.py"
         - "**/deployment/base.py"
     message: "Protocol '$P' must be in a dedicated file (*_protocol.py, protocols.py, or _types.py)"
     severity: ERROR
@@ -92,3 +91,5 @@ rules:
       exclude:
         - "**/tests/**"
         - "**/examples/**"
+        # False positive: regex matches "class TestExample:" across string boundaries
+        - "**/guide_builder.py"
