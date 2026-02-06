@@ -1,9 +1,10 @@
 """Remote deployment utilities for calling PipelineDeployment flows via Prefect."""
 
 import asyncio
+import types
 from collections.abc import Awaitable, Callable, Coroutine
 from functools import wraps
-from typing import Any, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar, cast, final
 from uuid import UUID
 
 from prefect import get_client
@@ -14,6 +15,7 @@ from prefect.deployments.flow_runs import run_deployment
 from prefect.exceptions import ObjectNotFound
 
 from ai_pipeline_core.deployment import DeploymentContext, DeploymentResult, PipelineDeployment
+from ai_pipeline_core.deployment.helpers import class_name_to_deployment_name, extract_generic_params
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
@@ -22,6 +24,7 @@ from ai_pipeline_core.settings import settings
 
 logger = get_pipeline_logger(__name__)
 
+TDoc = TypeVar("TDoc", bound=Document)
 TOptions = TypeVar("TOptions", bound=FlowOptions)
 TResult = TypeVar("TResult", bound=DeploymentResult)
 
@@ -163,7 +166,7 @@ def remote_deployment(
         ) -> TResult:
             parameters: dict[str, Any] = {
                 "project_name": project_name,
-                "documents": documents,
+                "documents": [doc.serialize_model() for doc in documents],
                 "options": options,
                 "context": context if context is not None else DeploymentContext(),
             }
@@ -189,3 +192,137 @@ def remote_deployment(
         return traced_wrapper
 
     return decorator
+
+
+# ---------------------------------------------------------------------------
+# RemoteDeployment class — replaces @remote_deployment + stub pattern
+# ---------------------------------------------------------------------------
+
+
+def _validate_document_type(cls_name: str, doc_type: Any) -> None:
+    """Validate TDoc is a Document subclass or union of Document subclasses."""
+    if isinstance(doc_type, types.UnionType):
+        for member in doc_type.__args__:
+            if not isinstance(member, type) or not issubclass(member, Document):
+                raise TypeError(
+                    f"{cls_name}: all TDoc union members must be Document subclasses, got {member.__name__ if isinstance(member, type) else member}"
+                )
+    elif isinstance(doc_type, type):
+        if not issubclass(doc_type, Document):
+            raise TypeError(f"{cls_name}: TDoc must be a Document subclass, got {doc_type.__name__}")
+    else:
+        raise TypeError(f"{cls_name}: TDoc must be a Document type or union of Document types, got {type(doc_type).__name__}")
+
+
+class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
+    """Typed client for calling a remote PipelineDeployment via Prefect.
+
+    Name your client class identically to the server's PipelineDeployment
+    subclass so the auto-derived deployment name matches.
+
+    Generic parameters:
+        TDoc: Document types accepted as input (single type or union).
+        TOptions: FlowOptions subclass for the deployment.
+        TResult: DeploymentResult subclass returned by the deployment.
+
+    Usage::
+
+        class AiResearch(RemoteDeployment[
+            ResearchTaskDocument | ContextDocument,
+            FlowOptions,
+            AiResearchResult,
+        ]): pass
+
+        _client = AiResearch()
+        result = await _client.run("project", docs, FlowOptions())
+    """
+
+    name: ClassVar[str]
+    options_type: ClassVar[type[FlowOptions]]
+    result_type: ClassVar[type[DeploymentResult]]
+
+    trace_level: ClassVar[TraceLevel] = "always"
+    trace_cost: ClassVar[float | None] = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+
+        # Auto-derive name unless explicitly set in class body
+        if "name" not in cls.__dict__:
+            cls.name = class_name_to_deployment_name(cls.__name__)
+
+        # Extract Generic params: (TDoc, TOptions, TResult)
+        generic_args = extract_generic_params(cls, RemoteDeployment)
+        if len(generic_args) < 3 or any(a is None for a in generic_args):
+            raise TypeError(f"{cls.__name__} must specify 3 Generic parameters: class {cls.__name__}(RemoteDeployment[DocType, OptionsType, ResultType])")
+
+        doc_type, options_type, result_type = generic_args
+
+        _validate_document_type(cls.__name__, doc_type)
+
+        if not isinstance(options_type, type) or not issubclass(options_type, FlowOptions):
+            raise TypeError(f"{cls.__name__}: second Generic param must be a FlowOptions subclass, got {options_type}")
+        if not isinstance(result_type, type) or not issubclass(result_type, DeploymentResult):
+            raise TypeError(f"{cls.__name__}: third Generic param must be a DeploymentResult subclass, got {result_type}")
+
+        cls.options_type = options_type
+        cls.result_type = result_type
+
+        # Apply @trace to _execute: combined guard prevents no-op and double-wrap
+        trace_level = getattr(cls, "trace_level", "always")
+        if trace_level != "off" and not _is_already_traced(cls._execute):  # type: ignore[arg-type]
+            cls._execute = trace(name=cls.name, level=trace_level)(cls._execute)  # type: ignore[assignment]
+
+    @property
+    def deployment_path(self) -> str:
+        """Full Prefect deployment path: '{flow_name}/{deployment_name}'."""
+        return f"{self.name}/{self.name.replace('-', '_')}"
+
+    async def _execute(
+        self,
+        project_name: str,
+        documents: list[TDoc],
+        options: TOptions,
+        context: DeploymentContext,
+        on_progress: ProgressCallback | None,
+    ) -> TResult:
+        """Serialize, call Prefect, deserialize. Wrapped with @trace in __init_subclass__."""
+        parameters: dict[str, Any] = {
+            "project_name": project_name,
+            "documents": [doc.serialize_model() for doc in documents],
+            "options": options,
+            "context": context,
+        }
+
+        result = await run_remote_deployment(
+            self.deployment_path,
+            parameters,
+            on_progress=on_progress,
+        )
+
+        if self.trace_cost is not None and self.trace_cost > 0:
+            set_trace_cost(self.trace_cost)
+
+        if isinstance(result, DeploymentResult):
+            return cast(TResult, result)
+        if isinstance(result, dict):
+            return cast(TResult, self.result_type.model_validate(result))
+        raise TypeError(f"Remote deployment '{self.name}' returned unexpected type: {type(result).__name__}. Expected DeploymentResult or dict.")
+
+    @final
+    async def run(
+        self,
+        project_name: str,
+        documents: list[TDoc],
+        options: TOptions,
+        context: DeploymentContext | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> TResult:
+        """Execute the remote deployment via Prefect."""
+        return await self._execute(
+            project_name,
+            documents,
+            options,
+            context if context is not None else DeploymentContext(),
+            on_progress,
+        )

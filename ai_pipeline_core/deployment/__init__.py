@@ -17,6 +17,7 @@ from .contract import (
 from .hooks import DeploymentHook, DeploymentHookResult, load_deployment_hooks
 from .progress import ProgressContext, flow_context, webhook_worker
 from .progress import update as progress_update
+from .remote import ProgressCallback, RemoteDeployment
 
 __all__ = [
     "CompletedRun",
@@ -28,8 +29,10 @@ __all__ = [
     "FailedRun",
     "PendingRun",
     "PipelineDeployment",
+    "ProgressCallback",
     "ProgressContext",
     "ProgressRun",
+    "RemoteDeployment",
     "RunResponse",
     "flow_context",
     "load_deployment_hooks",

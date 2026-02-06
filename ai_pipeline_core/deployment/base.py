@@ -27,7 +27,7 @@ from lmnr import Laminar
 from opentelemetry import trace as otel_trace
 from prefect import flow, get_client, runtime
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic_settings import CliPositionalArg, SettingsConfigDict
+from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
 from ai_pipeline_core.document_store import SummaryGenerator, create_document_store, get_document_store, set_document_store
 from ai_pipeline_core.document_store.local import LocalDocumentStore
@@ -91,6 +91,27 @@ def _compute_run_scope(project_name: str, documents: list[Document], options: Fl
     sha256s = sorted(doc.sha256 for doc in documents)
     fingerprint = hashlib.sha256(f"{':'.join(sha256s)}|{options_json}".encode()).hexdigest()[:16]
     return f"{project_name}:{fingerprint}"
+
+
+def _reconstruct_documents(
+    raw_docs: list[dict[str, Any]],
+    known_types: list[type[Document]],
+) -> list[Document]:
+    """Reconstruct typed Documents from serialized dicts using class_name lookup."""
+    if not raw_docs:
+        return []
+    type_map = {t.__name__: t for t in known_types}
+    result: list[Document] = []
+    for doc_dict in raw_docs:
+        class_name = doc_dict.get("class_name", "")
+        doc_type = type_map.get(class_name)
+        if doc_type is None:
+            if not known_types:
+                raise ValueError(f"Cannot reconstruct document: unknown class_name '{class_name}'")
+            doc_type = known_types[0]
+            logger.warning("Unknown document class_name '%s', using fallback %s", class_name, doc_type.__name__)
+        result.append(doc_type.from_dict(doc_dict))
+    return result
 
 
 class DeploymentContext(BaseModel):
@@ -645,6 +666,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         self,
         initializer: Callable[[TOptions], tuple[str, list[Document]]] | None = None,
         trace_name: str | None = None,
+        cli_mixin: type[BaseSettings] | None = None,
     ) -> None:
         """Execute pipeline from CLI arguments with --start/--end step control.
 
@@ -669,8 +691,16 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
         deployment = self
 
+        _options_base = deployment.options_type
+        if cli_mixin is not None:
+            _options_base = type(deployment.options_type)(
+                "_OptionsBase",
+                (cli_mixin, deployment.options_type),
+                {"__module__": __name__, "__annotations__": {}},
+            )
+
         class _CliOptions(
-            deployment.options_type,
+            _options_base,
             cli_parse_args=True,
             cli_kebab_case=True,
             cli_exit_on_error=True,
@@ -882,7 +912,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
         async def _deployment_flow(
             project_name: str,
-            documents: list[Document],
+            documents: list[dict[str, Any]],
             options: FlowOptions,
             context: DeploymentContext,
         ) -> DeploymentResult:
@@ -913,7 +943,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     input={"project_name": project_name, "options": options.model_dump()},
                     session_id=flow_run_id,
                 ):
-                    return await deployment.run(project_name, documents, cast(Any, options), context)
+                    typed_docs = _reconstruct_documents(documents, deployment._all_document_types())
+                    return await deployment.run(project_name, typed_docs, cast(Any, options), context)
             finally:
                 store.shutdown()
                 set_document_store(None)

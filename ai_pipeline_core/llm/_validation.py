@@ -36,7 +36,7 @@ def validate_pdf(data: bytes, name: str) -> str | None:
         reader = PdfReader(BytesIO(data))
         if len(reader.pages) == 0:
             return f"PDF has no pages in '{name}'"
-    except (OSError, ValueError, KeyError) as e:
+    except Exception as e:
         return f"corrupted PDF in '{name}': {e}"
     return None
 

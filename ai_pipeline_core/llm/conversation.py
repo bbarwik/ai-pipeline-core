@@ -12,6 +12,7 @@ Usage:
 """
 
 import asyncio
+import base64
 import html
 from dataclasses import dataclass
 from io import BytesIO
@@ -108,7 +109,7 @@ def _process_image_to_parts(data: bytes, model: str) -> list[ContentPart]:
         try:
             with Image.open(BytesIO(data)) as img:
                 mime_type: ImageMimeType = _FORMAT_TO_MIME.get(img.format or "", "image/jpeg")
-            return cast(list[ContentPart], [ImageContent(data=data, mime_type=mime_type)])
+            return cast(list[ContentPart], [ImageContent(data=base64.b64encode(data), mime_type=mime_type)])
         except (OSError, ValueError):
             pass  # Fall through to process_image
 
@@ -126,7 +127,7 @@ def _process_image_to_parts(data: bytes, model: str) -> list[ContentPart]:
             # Add label for each part if multiple
             if img_part.total > 1:
                 parts.append(TextContent(text=f"[{img_part.label}]\n"))
-            parts.append(ImageContent(data=img_part.data, mime_type="image/jpeg"))
+            parts.append(ImageContent(data=base64.b64encode(img_part.data), mime_type="image/webp"))
 
         return parts
     except ImageProcessingError as e:
@@ -150,16 +151,27 @@ def _document_to_content_parts(doc: Document, model: str) -> list[ContentPart]:
             return []
         text = _escape_xml(doc.content.decode("utf-8"))
         # Build document with attachments INSIDE the wrapper
-        content_parts = [f"{header}{text}\n"]
+        # Text attachments are inlined as strings, binary attachments become separate ContentParts
+        text_fragments = [f"{header}{text}\n"]
+        binary_att_parts: list[ContentPart] = []
 
-        # Add attachments inside document
         for att in doc.attachments:
-            att_content = _build_attachment_content(att)
-            if att_content:
-                content_parts.append(att_content)
+            if att.is_text:
+                att_content = _build_attachment_content(att)
+                if att_content:
+                    text_fragments.append(att_content)
+            else:
+                binary_att_parts.extend(_build_attachment_parts(att, model))
 
-        content_parts.append("</content>\n</document>")
-        parts.append(TextContent(text="".join(content_parts)))
+        if binary_att_parts:
+            # Mixed content: emit text, then binary parts, then closing tag
+            parts.append(TextContent(text="".join(text_fragments)))
+            parts.extend(binary_att_parts)
+            parts.append(TextContent(text="</content>\n</document>"))
+        else:
+            # Pure text: single TextContent
+            text_fragments.append("</content>\n</document>")
+            parts.append(TextContent(text="".join(text_fragments)))
 
     elif doc.is_image:
         if err := validate_image(doc.content, doc.name):
@@ -181,7 +193,7 @@ def _document_to_content_parts(doc: Document, model: str) -> list[ContentPart]:
             logger.warning(f"Skipping invalid document: {err}")
             return []
         parts.append(TextContent(text=header))
-        parts.append(PDFContent(data=doc.content))
+        parts.append(PDFContent(data=base64.b64encode(doc.content)))
 
         # Add attachments inside document
         for att in doc.attachments:
@@ -236,7 +248,7 @@ def _build_attachment_parts(att: Any, model: str) -> list[ContentPart]:
             logger.warning(f"Skipping invalid attachment: {err}")
             return []
         parts.append(TextContent(text=att_open))
-        parts.append(PDFContent(data=att.content))
+        parts.append(PDFContent(data=base64.b64encode(att.content)))
         parts.append(TextContent(text="</attachment>\n"))
     else:
         logger.warning(f"Skipping unsupported attachment type: {att.name} - {att.mime_type}")
@@ -421,6 +433,55 @@ class Conversation(BaseModel, Generic[T]):
                 texts.append(item.text)
         return texts
 
+    async def _execute_send(
+        self,
+        content: ConversationContent,
+        response_format: type[BaseModel] | None,
+        purpose: str | None,
+        expected_cost: float | None,
+    ) -> tuple[tuple[MessageType | _UserMessage, ...], ModelResponse[Any]]:
+        """Common preparation, LLM call, and response restoration for send methods."""
+        docs = _normalize_content(content)
+        new_messages = self.messages + docs
+
+        # Prepare substitutor with all text content
+        if self.substitutor:
+            all_items_for_sub = self.context + tuple(m for m in new_messages if isinstance(m, (Document, _UserMessage)))
+            self.substitutor.prepare(self._collect_text_for_substitutor(all_items_for_sub))
+
+        # Build CoreMessages in single thread call (CPU-bound image/PDF processing)
+        context_core, messages_core = await asyncio.to_thread(lambda: (self._to_core_messages(self.context), self._to_core_messages(new_messages)))
+        core_messages = context_core + messages_core
+        context_count = len(context_core)
+
+        # Apply substitution if enabled
+        if self.substitutor:
+            core_messages = self._apply_substitution(core_messages)
+
+        if response_format is not None:
+            response: ModelResponse[Any] = await core_generate_structured(
+                core_messages,
+                response_format,
+                model=self.model,
+                model_options=self.model_options,
+                purpose=purpose,
+                expected_cost=expected_cost,
+                context_count=context_count,
+            )
+            response = self._restore_response(response, response_format)
+        else:
+            response = await core_generate(
+                core_messages,
+                model=self.model,
+                model_options=self.model_options,
+                purpose=purpose,
+                expected_cost=expected_cost,
+                context_count=context_count,
+            )
+            response = self._restore_response(response)
+
+        return new_messages, response
+
     async def send(
         self,
         content: ConversationContent,
@@ -438,41 +499,14 @@ class Conversation(BaseModel, Generic[T]):
         Returns:
             New Conversation[None] with response accessible via .content, .reasoning_content, etc.
         """
-        docs = _normalize_content(content)
-        new_messages = self.messages + docs
-
-        # Prepare substitutor with all text content
-        if self.substitutor:
-            all_items_for_sub = self.context + tuple(m for m in new_messages if isinstance(m, (Document, _UserMessage)))
-            self.substitutor.prepare(self._collect_text_for_substitutor(all_items_for_sub))
-
-        # Build CoreMessages (CPU-bound image/PDF processing runs in thread pool)
-        all_items = self.context + new_messages
-        core_messages = await asyncio.to_thread(self._to_core_messages, all_items)
-        context_count = len(await asyncio.to_thread(self._to_core_messages, self.context))
-
-        # Apply substitution if enabled
-        if self.substitutor:
-            core_messages = self._apply_substitution(core_messages)
-
-        response = await core_generate(
-            core_messages,
-            model=self.model,
-            model_options=self.model_options,
-            purpose=purpose,
-            expected_cost=expected_cost,
-            context_count=context_count,
-        )
-
-        response = self._restore_response(response)
-
+        new_messages, response = await self._execute_send(content, None, purpose, expected_cost)
         return Conversation[None](  # type: ignore[type-var]
             model=self.model,
             context=self.context,
             messages=new_messages + (response,),
             model_options=self.model_options,
             enable_substitutor=self.enable_substitutor,
-            substitutor=self.substitutor,  # Pass through - no hack needed!
+            substitutor=self.substitutor,
         )
 
     async def send_structured(
@@ -494,35 +528,7 @@ class Conversation(BaseModel, Generic[T]):
         Returns:
             New Conversation[T] with .parsed returning T instance.
         """
-        docs = _normalize_content(content)
-        new_messages = self.messages + docs
-
-        # Prepare substitutor with all text content
-        if self.substitutor:
-            all_items_for_sub = self.context + tuple(m for m in new_messages if isinstance(m, (Document, _UserMessage)))
-            self.substitutor.prepare(self._collect_text_for_substitutor(all_items_for_sub))
-
-        # Build CoreMessages (CPU-bound image/PDF processing runs in thread pool)
-        all_items = self.context + new_messages
-        core_messages = await asyncio.to_thread(self._to_core_messages, all_items)
-        context_count = len(await asyncio.to_thread(self._to_core_messages, self.context))
-
-        # Apply substitution if enabled
-        if self.substitutor:
-            core_messages = self._apply_substitution(core_messages)
-
-        response = await core_generate_structured(
-            core_messages,
-            response_format,
-            model=self.model,
-            model_options=self.model_options,
-            purpose=purpose,
-            expected_cost=expected_cost,
-            context_count=context_count,
-        )
-
-        response = self._restore_response(response, response_format)
-
+        new_messages, response = await self._execute_send(content, response_format, purpose, expected_cost)
         return Conversation[T](
             model=self.model,
             context=self.context,

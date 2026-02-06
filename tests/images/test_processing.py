@@ -7,7 +7,7 @@ from PIL import Image
 
 from ai_pipeline_core.llm._images import (
     _SplitPlan as SplitPlan,
-    _encode_jpeg as encode_jpeg,
+    _encode_webp as encode_webp,
     _execute_split as execute_split,
     _load_and_normalize as load_and_normalize,
     _plan_split as plan_split,
@@ -157,37 +157,41 @@ class TestLoadAndNormalize:
 
 
 # ---------------------------------------------------------------------------
-# encode_jpeg
+# encode_webp
 # ---------------------------------------------------------------------------
 
 
-class TestEncodeJpeg:
-    """Tests for JPEG encoding."""
+class TestEncodeWebp:
+    """Tests for WebP encoding."""
 
     def test_rgb_image(self):
         img = make_rgb_image(200, 100)
-        data = encode_jpeg(img, quality=60)
+        data = encode_webp(img, quality=60)
         assert len(data) > 0
-        # Verify it's valid JPEG
+        # Verify it's valid WebP
         result = Image.open(BytesIO(data))
-        assert result.format == "JPEG"
+        assert result.format == "WEBP"
         assert result.size == (200, 100)
 
-    def test_rgba_converted_to_rgb(self):
+    def test_rgba_preserved(self):
         img = Image.new("RGBA", (200, 100), (128, 128, 128, 200))
-        data = encode_jpeg(img, quality=60)
+        data = encode_webp(img, quality=60)
         result = Image.open(BytesIO(data))
-        assert result.mode == "RGB"
+        assert result.mode == "RGBA"
 
     def test_grayscale_image(self):
         img = Image.new("L", (200, 100), 128)
-        data = encode_jpeg(img, quality=60)
+        data = encode_webp(img, quality=60)
         assert len(data) > 0
 
     def test_quality_affects_size(self):
-        img = make_rgb_image(500, 500, (100, 150, 200))
-        low = encode_jpeg(img, quality=10)
-        high = encode_jpeg(img, quality=95)
+        import random
+
+        random.seed(42)
+        img = Image.new("RGB", (500, 500))
+        img.putdata([(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for _ in range(500 * 500)])
+        low = encode_webp(img, quality=10)
+        high = encode_webp(img, quality=95)
         assert len(low) < len(high)
 
 
@@ -202,7 +206,7 @@ class TestExecuteSplit:
     def test_single_part_no_split(self):
         img = make_rgb_image(800, 600)
         plan = SplitPlan(tile_width=800, tile_height=600, step_y=0, num_parts=1, trim_width=None, warnings=[])
-        parts = execute_split(img, plan, jpeg_quality=60)
+        parts = execute_split(img, plan, webp_quality=60)
         assert len(parts) == 1
         data, w, h, sy, sh = parts[0]
         assert w == 800
@@ -214,11 +218,11 @@ class TestExecuteSplit:
     def test_multi_part_split(self):
         img = make_rgb_image(1000, 6000)
         plan = plan_split(1000, 6000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20)
-        parts = execute_split(img, plan, jpeg_quality=60)
+        parts = execute_split(img, plan, webp_quality=60)
         assert len(parts) == plan.num_parts
         assert len(parts) > 1
 
-        # All parts should have valid JPEG data
+        # All parts should have valid WebP data
         for data, w, h, _sy, _sh in parts:
             assert len(data) > 0
             assert w == 1000
@@ -235,7 +239,7 @@ class TestExecuteSplit:
     def test_trim_width(self):
         img = make_rgb_image(5000, 600)
         plan = SplitPlan(tile_width=3000, tile_height=600, step_y=0, num_parts=1, trim_width=3000, warnings=[])
-        parts = execute_split(img, plan, jpeg_quality=60)
+        parts = execute_split(img, plan, webp_quality=60)
         assert len(parts) == 1
         _, w, h, _, _ = parts[0]
         assert w == 3000
@@ -244,17 +248,17 @@ class TestExecuteSplit:
     def test_rgba_converted(self):
         img = Image.new("RGBA", (800, 600), (128, 128, 128, 200))
         plan = SplitPlan(tile_width=800, tile_height=600, step_y=0, num_parts=1, trim_width=None, warnings=[])
-        parts = execute_split(img, plan, jpeg_quality=60)
+        parts = execute_split(img, plan, webp_quality=60)
         assert len(parts) == 1
-        # Should produce valid JPEG despite RGBA input
+        # Should produce valid WebP (RGBA preserved)
         result = Image.open(BytesIO(parts[0][0]))
-        assert result.format == "JPEG"
+        assert result.format == "WEBP"
 
     def test_overlap_coverage(self):
         """Verify that with overlap, the entire image is covered."""
         img = make_rgb_image(1000, 7000)
         plan = plan_split(1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20)
-        parts = execute_split(img, plan, jpeg_quality=60)
+        parts = execute_split(img, plan, webp_quality=60)
 
         # First part starts at 0
         assert parts[0][3] == 0

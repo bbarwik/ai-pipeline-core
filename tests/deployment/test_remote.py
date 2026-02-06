@@ -173,7 +173,7 @@ class TestRemoteDeploymentDecorator:
             await my_flow("project", test_docs, FlowOptions())
 
             params = mock_run.call_args[0][1]
-            assert params["documents"] == test_docs
+            assert params["documents"] == [doc.serialize_model() for doc in test_docs]
             assert len(params["documents"]) == 1
 
     async def test_explicit_context_preserved(self):

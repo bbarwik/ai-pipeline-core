@@ -38,37 +38,37 @@ class TestConfig:
             config = ImageProcessingConfig.for_preset(preset)
             assert config.max_dimension > 0
             assert config.max_pixels > 0
-            assert config.jpeg_quality > 0
+            assert config.webp_quality > 0
 
     def test_gemini_preset_values(self):
         config = ImageProcessingConfig.for_preset(ImagePreset.GEMINI)
         assert config.max_dimension == 3000
         assert config.max_pixels == 9_000_000
-        assert config.jpeg_quality == 75
+        assert config.webp_quality == 75
 
     def test_claude_preset_values(self):
         config = ImageProcessingConfig.for_preset(ImagePreset.CLAUDE)
         assert config.max_dimension == 1568
         assert config.max_pixels == 1_150_000
-        assert config.jpeg_quality == 60
+        assert config.webp_quality == 60
 
     def test_gpt4v_preset_values(self):
         config = ImageProcessingConfig.for_preset(ImagePreset.GPT4V)
         assert config.max_dimension == 2048
         assert config.max_pixels == 4_000_000
-        assert config.jpeg_quality == 70
+        assert config.webp_quality == 70
 
     def test_default_preset_values(self):
         config = ImageProcessingConfig.for_preset(ImagePreset.DEFAULT)
         assert config.max_dimension == 1000
         assert config.max_pixels == 1_000_000
-        assert config.jpeg_quality == 75
+        assert config.webp_quality == 75
 
     def test_custom_config(self):
-        config = ImageProcessingConfig(max_dimension=2000, max_pixels=3_000_000, jpeg_quality=80)
+        config = ImageProcessingConfig(max_dimension=2000, max_pixels=3_000_000, webp_quality=80)
         assert config.max_dimension == 2000
         assert config.max_pixels == 3_000_000
-        assert config.jpeg_quality == 80
+        assert config.webp_quality == 80
         assert config.overlap_fraction == 0.20
         assert config.max_parts == 20
 
@@ -108,7 +108,7 @@ class TestProcessImageSmall:
         assert part.source_y == 0
 
     def test_compression_ratio(self):
-        # Use a larger, non-uniform image so JPEG is actually smaller than PNG
+        # Use a larger, non-uniform image so WebP is actually smaller than PNG
         import random
 
         random.seed(42)
@@ -118,12 +118,12 @@ class TestProcessImageSmall:
         img.save(buf, format="PNG")
         raw = buf.getvalue()
         result = process_image(raw)
-        assert 0.0 < result.compression_ratio < 1.0  # JPEG smaller than noisy PNG
+        assert 0.0 < result.compression_ratio < 1.0  # WebP smaller than noisy PNG
 
-    def test_output_is_jpeg(self):
+    def test_output_is_webp(self):
         result = process_image(make_image_bytes(800, 600))
         img = Image.open(BytesIO(result[0].data))
-        assert img.format == "JPEG"
+        assert img.format == "WEBP"
 
     def test_iterable_protocol(self):
         result = process_image(make_image_bytes(800, 600))
@@ -157,11 +157,11 @@ class TestProcessImageTall:
             assert part.total == total
             assert part.label == f"Part {i + 1}/{total}"
 
-    def test_all_parts_valid_jpeg(self):
+    def test_all_parts_valid_webp(self):
         result = process_image(make_image_bytes(1000, 7000))
         for part in result:
             img = Image.open(BytesIO(part.data))
-            assert img.format == "JPEG"
+            assert img.format == "WEBP"
             assert img.size[0] == part.width
             assert img.size[1] == part.height
 
@@ -215,7 +215,7 @@ class TestProcessImagePresets:
         assert result.was_trimmed
 
     def test_custom_config_overrides_preset(self):
-        config = ImageProcessingConfig(max_dimension=500, max_pixels=250_000, jpeg_quality=50)
+        config = ImageProcessingConfig(max_dimension=500, max_pixels=250_000, webp_quality=50)
         result = process_image(make_image_bytes(800, 600), config=config)
         assert result.was_trimmed
         assert result[0].width <= 500

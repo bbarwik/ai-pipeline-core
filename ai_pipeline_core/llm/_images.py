@@ -1,6 +1,6 @@
 """Image processing for LLM vision models.
 
-Splits large images, compresses to JPEG, and respects model-specific constraints.
+Splits large images, compresses to WebP, and respects model-specific constraints.
 Handles EXIF orientation, vertical splitting with overlap, and width trimming.
 
 This module processes raw image bytes and returns ProcessedImage with ImagePart data.
@@ -45,7 +45,7 @@ class ImageProcessingConfig(BaseModel):
     max_pixels: int = Field(default=9_000_000, ge=10_000)
     overlap_fraction: float = Field(default=0.20, ge=0.0, le=0.5)
     max_parts: int = Field(default=20, ge=1, le=100)
-    jpeg_quality: int = Field(default=60, ge=10, le=95)
+    webp_quality: int = Field(default=60, ge=10, le=95)
 
     @classmethod
     def for_preset(cls, preset: ImagePreset) -> "ImageProcessingConfig":
@@ -57,22 +57,22 @@ _PRESETS: dict[ImagePreset, ImageProcessingConfig] = {
     ImagePreset.GEMINI: ImageProcessingConfig(
         max_dimension=3000,
         max_pixels=9_000_000,
-        jpeg_quality=75,
+        webp_quality=75,
     ),
     ImagePreset.CLAUDE: ImageProcessingConfig(
         max_dimension=1568,
         max_pixels=1_150_000,
-        jpeg_quality=60,
+        webp_quality=60,
     ),
     ImagePreset.GPT4V: ImageProcessingConfig(
         max_dimension=2048,
         max_pixels=4_000_000,
-        jpeg_quality=70,
+        webp_quality=70,
     ),
     ImagePreset.DEFAULT: ImageProcessingConfig(
         max_dimension=1000,
         max_pixels=1_000_000,
-        jpeg_quality=75,
+        webp_quality=75,
     ),
 }
 
@@ -213,20 +213,20 @@ def _load_and_normalize(data: bytes) -> Image.Image:
     return ImageOps.exif_transpose(img)
 
 
-def _encode_jpeg(img: Image.Image, quality: int) -> bytes:
-    """Encode PIL Image as JPEG bytes."""
-    if img.mode not in {"RGB", "L"}:
+def _encode_webp(img: Image.Image, quality: int) -> bytes:
+    """Encode PIL Image as WebP bytes."""
+    if img.mode not in {"RGB", "RGBA", "L", "LA"}:
         img = img.convert("RGB")
 
     buf = BytesIO()
-    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    img.save(buf, format="WEBP", quality=quality)
     return buf.getvalue()
 
 
 def _execute_split(
     img: Image.Image,
     plan: _SplitPlan,
-    jpeg_quality: int,
+    webp_quality: int,
 ) -> list[tuple[bytes, int, int, int, int]]:
     """Execute a split plan on an image."""
     width, height = img.size
@@ -235,7 +235,7 @@ def _execute_split(
         img = img.crop((0, 0, plan.trim_width, height))
         width = plan.trim_width
 
-    if img.mode not in {"RGB", "L"}:
+    if img.mode not in {"RGB", "RGBA", "L", "LA"}:
         img = img.convert("RGB")
 
     parts: list[tuple[bytes, int, int, int, int]] = []
@@ -244,7 +244,7 @@ def _execute_split(
         y = 0 if plan.num_parts == 1 else min(i * plan.step_y, max(0, height - plan.tile_height))
         h = min(plan.tile_height, height - y)
         tile = img.crop((0, y, width, y + h))
-        data = _encode_jpeg(tile, jpeg_quality)
+        data = _encode_webp(tile, webp_quality)
         parts.append((data, width, h, y, h))
 
     return parts
@@ -263,7 +263,7 @@ def process_image(
     """Process an image for LLM vision models.
 
     Splits tall images vertically with overlap, trims width if needed,
-    and compresses to JPEG. Only accepts bytes - conversion from Document
+    and compresses to WebP. Only accepts bytes - conversion from Document
     to bytes happens in llm/conversation.py.
     """
     effective = config if config is not None else ImageProcessingConfig.for_preset(preset)
@@ -290,7 +290,7 @@ def process_image(
         max_parts=effective.max_parts,
     )
 
-    raw_parts = _execute_split(img, plan, effective.jpeg_quality)
+    raw_parts = _execute_split(img, plan, effective.webp_quality)
 
     parts: list[ImagePart] = []
     total = len(raw_parts)

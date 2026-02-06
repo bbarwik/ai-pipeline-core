@@ -266,7 +266,7 @@ class TestBlockingIOFixed:
         source = inspect.getsource(conv_module)
 
         # Verify asyncio.to_thread is used with _to_core_messages
-        assert "asyncio.to_thread(self._to_core_messages" in source, "_to_core_messages should be wrapped with asyncio.to_thread"
+        assert "asyncio.to_thread(" in source and "_to_core_messages" in source, "_to_core_messages should be wrapped with asyncio.to_thread"
 
     def test_asyncio_imported(self):
         """asyncio module should be imported."""

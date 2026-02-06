@@ -37,16 +37,20 @@ def class_name_to_deployment_name(class_name: str) -> str:
     return name.lower()
 
 
-def extract_generic_params(cls: type, base_class: type) -> tuple[type | None, type | None]:
-    """Extract TOptions and TResult from a generic base class's args."""
+def extract_generic_params(cls: type, base_class: type) -> tuple[Any, ...]:
+    """Extract Generic type arguments from a class's base.
+
+    Works with any number of Generic parameters (2 for PipelineDeployment, 3 for RemoteDeployment).
+    Returns (None, None) if the base class is not found in __orig_bases__.
+    """
     for base in getattr(cls, "__orig_bases__", []):
         origin = getattr(base, "__origin__", None)
         if origin is base_class:
             args = getattr(base, "__args__", ())
-            if len(args) == 2:
-                return args[0], args[1]
+            if args:
+                return args
 
-    return None, None
+    return (None, None)
 
 
 async def download_documents(urls: list[str]) -> list[Document]:
