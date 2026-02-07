@@ -631,6 +631,20 @@ Features:
 - **Per-flow uploads**: Upload documents after each flow completes
 - **CLI mode**: `--start N` / `--end N` for step control, automatic `LocalDocumentStore`
 
+#### Deploying to Prefect Cloud
+
+The framework includes a deploy script that builds a fully bundled deployment (project wheel + all dependency wheels), uploads to GCS, and creates a Prefect deployment. The worker installs fully offline with `--no-index` — no PyPI contact, no stale cache issues.
+
+```bash
+# From your project root (where pyproject.toml lives)
+python -m ai_pipeline_core.deployment.deploy
+```
+
+**Requirements:**
+- `uv` (dependency resolution) and `pip` (wheel download) on the deploy machine
+- `PREFECT_API_URL`, `PREFECT_GCS_BUCKET` configured
+- `uv` on the worker (for offline install)
+
 ### Prompt Manager
 
 Jinja2 template management for structured prompts:

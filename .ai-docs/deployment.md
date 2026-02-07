@@ -466,24 +466,29 @@ class FailedRun(_RunBase):
 
 
 class Deployer:
-    """Deploy Prefect flows using the RunnerDeployment pattern.
+    """Deploy Prefect flows with fully bundled dependencies.
 
-Handles flow registration, deployment creation/updates, and all edge cases
-using the official Prefect approach."""
-    def __init__(self):
+Build pipeline:
+    wheel build → dependency lock → download wheels → bundle tarball → GCS upload → Prefect deployment
+
+Worker install (pull step):
+    extract tarball → uv pip install --system --no-index --find-links wheels/ ./project.whl"""
+    def __init__(self) -> None:
         self.config = self._load_config()
         self._validate_prefect_settings()
+        self._project_wheel_name: str = ""
 
     async def run(self) -> None:
         """Execute the complete deployment pipeline: build, upload, deploy."""
         print("=" * 70)
         print(f"Prefect Deployment: {self.config['name']} v{self.config['version']}")
         print(f"Target: gs://{self.config['bucket']}/{self.config['folder']}")
+        print("Strategy: Bundled Wheels (Offline Install)")
         print("=" * 70)
         print()
 
-        tarball = self._build_package()
-        await self._upload_package(tarball)
+        bundle = self._build_bundle()
+        await self._upload_bundle(bundle)
         await self._deploy_via_api()
 
         print()

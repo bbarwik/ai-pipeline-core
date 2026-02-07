@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Universal Prefect deployment script using Python API.
+"""Prefect deployment with bundled wheels for offline installation.
 
-This script:
-1. Builds a Python package from pyproject.toml
-2. Uploads it to Google Cloud Storage
-3. Creates/updates a Prefect deployment using the RunnerDeployment pattern
+Strategy: builds a project wheel, resolves and downloads ALL dependency wheels
+at deploy time, bundles them into a single tarball, uploads to GCS. The worker
+extracts and installs fully offline (no PyPI contact).
+
+This eliminates stale pip cache issues, missing transitive dependencies, and
+non-deterministic installs.
 
 Requirements:
-- Settings configured with PREFECT_API_URL and optionally PREFECT_API_KEY
-- Settings configured with PREFECT_GCS_BUCKET
+- `uv` installed locally (for dependency resolution)
+- `pip` installed locally (for wheel download)
+- `python -m build` available (for wheel building)
+- Settings: PREFECT_API_URL, PREFECT_GCS_BUCKET
 - pyproject.toml with project name and version
 - Local package installed for flow metadata extraction
 
@@ -18,8 +22,12 @@ Usage:
 
 import argparse
 import asyncio
+import shlex
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import tomllib
 import traceback
 from pathlib import Path
@@ -33,17 +41,42 @@ from prefect_gcp.cloud_storage import GcpCredentials, GcsBucket  # pyright: igno
 
 from ai_pipeline_core.settings import settings
 
+UV_TARGET_PLATFORM = "x86_64-unknown-linux-gnu"
+PIP_TARGET_PLATFORMS = ("manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64", "linux_x86_64")
+TARGET_PYTHON_VERSION = "3.12"
+TARGET_ABI = "cp312"
+
+
+def _filter_lock_file(lock_file: Path, exclude_names: set[str]) -> None:
+    """Remove vendor packages from lock file so pip download skips them."""
+    lines = lock_file.read_text(encoding="utf-8").splitlines()
+    filtered = [line for line in lines if not _is_excluded_package(line, exclude_names)]
+    lock_file.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+
+
+def _is_excluded_package(line: str, exclude_names: set[str]) -> bool:
+    """Check if a lock file line matches a vendor package name (e.g. 'lib-drive==0.2.0')."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith(("#", "-")):
+        return False
+    pkg_name = stripped.split("==")[0].split(">=")[0].split("<=")[0].split("~=")[0].split("@")[0].split("[")[0].strip().replace("_", "-").lower()
+    return pkg_name in exclude_names
+
 
 class Deployer:
-    """Deploy Prefect flows using the RunnerDeployment pattern.
+    """Deploy Prefect flows with fully bundled dependencies.
 
-    Handles flow registration, deployment creation/updates, and all edge cases
-    using the official Prefect approach.
+    Build pipeline:
+        wheel build → dependency lock → download wheels → bundle tarball → GCS upload → Prefect deployment
+
+    Worker install (pull step):
+        extract tarball → uv pip install --system --no-index --find-links wheels/ ./project.whl
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.config = self._load_config()
         self._validate_prefect_settings()
+        self._project_wheel_name: str = ""
 
     def _load_config(self) -> dict[str, Any]:
         """Load and normalize project configuration from pyproject.toml."""
@@ -69,15 +102,19 @@ class Deployer:
         package_name = name.replace("-", "_")
         flow_folder = name.replace("_", "-")
 
+        deploy_config = data.get("tool", {}).get("deploy", {})
+        vendor_packages: list[str] = deploy_config.get("vendor_packages", [])
+
         return {
             "name": name,
             "package": package_name,
             "version": version,
             "bucket": settings.prefect_gcs_bucket,
             "folder": f"flows/{flow_folder}",
-            "tarball": f"{package_name}-{version}.tar.gz",
+            "bundle": f"{package_name}-{version}-bundle.tar.gz",
             "work_pool": settings.prefect_work_pool_name,
             "work_queue": settings.prefect_work_queue_name,
+            "vendor_packages": vendor_packages,
         }
 
     def _validate_prefect_settings(self) -> None:
@@ -94,7 +131,8 @@ class Deployer:
         """Execute shell command and return output."""
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=False)
         if check and result.returncode != 0:
-            self._die(f"Command failed: {cmd}\n{result.stderr}")
+            output = (result.stdout + result.stderr).strip()
+            self._die(f"Command failed: {cmd}\n{output}")
         return result.stdout.strip() if result.returncode == 0 else None
 
     @staticmethod
@@ -110,17 +148,98 @@ class Deployer:
         print(f"\u2717 {msg}", file=sys.stderr)
         sys.exit(1)
 
-    def _build_package(self) -> Path:
-        """Build Python package using `python -m build`."""
-        self._info(f"Building {self.config['name']} v{self.config['version']}")
-        self._run("python -m build --sdist")
+    def _build_vendor_wheels(self, wheels_dir: Path) -> set[str]:
+        """Build wheels for local/private vendor packages and return their normalized names."""
+        vendor_packages: list[str] = self.config.get("vendor_packages", [])
+        if not vendor_packages:
+            return set()
 
-        tarball_path = Path("dist") / self.config["tarball"]
-        if not tarball_path.exists():
-            self._die(f"Build artifact not found: {tarball_path}\nExpected tarball name: {self.config['tarball']}\nCheck that pyproject.toml version matches.")
+        self._info(f"Building {len(vendor_packages)} vendor package wheels...")
+        for vendor_path_str in vendor_packages:
+            vendor_path = Path(vendor_path_str)
+            if not vendor_path.exists():
+                self._die(f"Vendor package not found: {vendor_path_str}")
+            self._run(f"python -m build --wheel --outdir {shlex.quote(str(wheels_dir))} {shlex.quote(str(vendor_path))}")
 
-        self._success(f"Built {tarball_path.name} ({tarball_path.stat().st_size // 1024} KB)")
-        return tarball_path
+        vendor_names = {whl.name.split("-")[0].replace("_", "-").lower() for whl in wheels_dir.iterdir()}
+        self._success(f"Built vendor wheels: {', '.join(sorted(vendor_names))}")
+        return vendor_names
+
+    def _build_bundle(self) -> Path:
+        """Build deployment bundle: project wheel + all dependency wheels.
+
+        Creates a tarball with the project wheel at the root and all dependency
+        wheels in a wheels/ subdirectory. This enables fully offline installation
+        on the worker with `uv pip install --no-index --find-links wheels/`.
+        """
+        if not shutil.which("uv"):
+            self._die("`uv` is required but not found on PATH.\nInstall with: curl -LsSf https://astral.sh/uv/install.sh | sh")
+
+        self._info(f"Building deployment bundle for {self.config['name']} v{self.config['version']}")
+
+        dist_dir = Path("dist")
+        dist_dir.mkdir(exist_ok=True)
+        bundle_path = dist_dir / self.config["bundle"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wheels_dir = tmp_path / "wheels"
+            wheels_dir.mkdir()
+
+            # 1. Build vendor package wheels (local/private packages from [tool.deploy].vendor_packages)
+            vendor_names = self._build_vendor_wheels(wheels_dir)
+
+            # 2. Build project wheel
+            self._info("Building project wheel...")
+            self._run(f"python -m build --wheel --outdir {shlex.quote(str(tmp_path))}")
+            project_wheels = list(tmp_path.glob("*.whl"))
+            if not project_wheels:
+                self._die("Wheel build produced no output. Check pyproject.toml build configuration.")
+            project_wheel = project_wheels[0]
+            self._project_wheel_name = project_wheel.name
+            self._success(f"Built {project_wheel.name}")
+
+            # 3. Compile lock file (resolve all transitive dependencies, targeting worker platform)
+            self._info("Resolving dependencies...")
+            lock_file = tmp_path / "requirements.lock"
+            find_links = f"--find-links {shlex.quote(str(wheels_dir))}" if vendor_names else ""
+            self._run(
+                f"uv pip compile pyproject.toml -o {shlex.quote(str(lock_file))} "
+                f"--python-platform {UV_TARGET_PLATFORM} --python-version {TARGET_PYTHON_VERSION} "
+                f"{find_links}"
+            )
+
+            # 4. Filter vendor packages from lock file (already have their wheels) and download public deps
+            if vendor_names:
+                _filter_lock_file(lock_file, vendor_names)
+            platform_flags = " ".join(f"--platform {p}" for p in PIP_TARGET_PLATFORMS)
+            self._info(f"Downloading dependency wheels (linux_x86_64/python{TARGET_PYTHON_VERSION})...")
+            self._run(
+                f"pip download -r {shlex.quote(str(lock_file))} -d {shlex.quote(str(wheels_dir))} "
+                f"{platform_flags} --python-version {TARGET_PYTHON_VERSION} "
+                f"--implementation cp --abi {TARGET_ABI} --abi abi3 --abi none "
+                f"--only-binary :all: --no-deps"
+            )
+
+            # Warn if any sdists were downloaded (will need build tools on worker)
+            sdists = [f for f in wheels_dir.iterdir() if f.suffix == ".gz" or not f.name.endswith(".whl")]
+            if sdists:
+                sdist_names = ", ".join(f.name for f in sdists)
+                self._info(f"WARNING: {len(sdists)} source distributions downloaded (may require build tools on worker): {sdist_names}")
+
+            dep_count = len(list(wheels_dir.iterdir()))
+            self._success(f"Downloaded {dep_count} dependency packages")
+
+            # 5. Create bundle tarball (project wheel at root, deps in wheels/)
+            self._info("Creating bundle tarball...")
+            with tarfile.open(bundle_path, "w:gz") as tar:
+                tar.add(str(project_wheel), arcname=project_wheel.name)
+                for whl in sorted(wheels_dir.iterdir()):
+                    tar.add(str(whl), arcname=f"wheels/{whl.name}")
+
+        size_mb = bundle_path.stat().st_size / (1024 * 1024)
+        self._success(f"Bundle: {bundle_path.name} ({size_mb:.1f} MB, {dep_count + 1} packages)")
+        return bundle_path
 
     def _create_gcs_bucket(self, bucket_folder: str) -> Any:
         """Create a GcsBucket instance for uploading files."""
@@ -129,16 +248,22 @@ class Deployer:
             creds = GcpCredentials(service_account_file=Path(settings.gcs_service_account_file))
         return GcsBucket(bucket=self.config["bucket"], bucket_folder=bucket_folder, gcp_credentials=creds)
 
-    async def _upload_package(self, tarball: Path) -> None:
-        """Upload package tarball to Google Cloud Storage."""
+    async def _upload_bundle(self, bundle: Path) -> None:
+        """Upload deployment bundle to Google Cloud Storage."""
         flow_folder = self.config["folder"]
         bucket = self._create_gcs_bucket(flow_folder)
 
-        dest_uri = f"gs://{self.config['bucket']}/{flow_folder}/{tarball.name}"
+        dest_uri = f"gs://{self.config['bucket']}/{flow_folder}/{bundle.name}"
         self._info(f"Uploading to {dest_uri}")
 
-        await bucket.write_path(tarball.name, tarball.read_bytes())
-        self._success(f"Package uploaded to {flow_folder}/{tarball.name}")
+        await bucket.write_path(bundle.name, bundle.read_bytes())
+        self._success(f"Bundle uploaded to {flow_folder}/{bundle.name}")
+
+    def _build_install_script(self) -> str:
+        """Build the worker-side install script for the pull step."""
+        bundle = shlex.quote(self.config["bundle"])
+        wheel = shlex.quote(f"./{self._project_wheel_name}") if self._project_wheel_name else "./*.whl"
+        return f"tar xzf {bundle}\nuv pip install --system --no-index --find-links wheels/ {wheel}"
 
     async def _deploy_via_api(self) -> None:
         """Create or update Prefect deployment using RunnerDeployment pattern."""
@@ -165,6 +290,8 @@ class Deployer:
                 f"Check that your flow is decorated with @flow and named correctly."
             )
 
+        install_script = self._build_install_script()
+
         pull_steps = [
             {
                 "prefect_gcp.deployments.steps.pull_from_gcs": {
@@ -179,7 +306,7 @@ class Deployer:
                     "id": "install_project",
                     "stream_output": True,
                     "directory": "{{ pull_code.directory }}",
-                    "script": f"uv pip install --system --find-links . ./{self.config['tarball']}",
+                    "script": install_script,
                 }
             },
         ]
@@ -231,11 +358,12 @@ class Deployer:
         print("=" * 70)
         print(f"Prefect Deployment: {self.config['name']} v{self.config['version']}")
         print(f"Target: gs://{self.config['bucket']}/{self.config['folder']}")
+        print("Strategy: Bundled Wheels (Offline Install)")
         print("=" * 70)
         print()
 
-        tarball = self._build_package()
-        await self._upload_package(tarball)
+        bundle = self._build_bundle()
+        await self._upload_bundle(bundle)
         await self._deploy_via_api()
 
         print()
@@ -247,10 +375,11 @@ class Deployer:
 def main() -> None:
     """Command-line interface for deployment script."""
     parser = argparse.ArgumentParser(
-        description="Deploy Prefect flows to GCP using the official RunnerDeployment pattern",
+        description="Deploy Prefect flows with bundled wheels (offline install)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Prerequisites:
+  - uv installed (for dependency resolution and wheel download)
   - Settings configured with PREFECT_API_URL (and optionally PREFECT_API_KEY)
   - Settings configured with PREFECT_GCS_BUCKET
   - pyproject.toml with project name and version

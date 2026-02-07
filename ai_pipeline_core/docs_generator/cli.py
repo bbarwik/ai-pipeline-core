@@ -33,7 +33,9 @@ def _discover_modules(source_dir: Path) -> list[str]:
             continue
         relative = py_file.relative_to(source_dir)
         if len(relative.parts) > 1:
-            modules.add(relative.parts[0])
+            module_name = relative.parts[0]
+            if not module_name.startswith("_"):
+                modules.add(module_name)
         else:
             modules.add(relative.stem)
     return sorted(modules - EXCLUDED_MODULES)

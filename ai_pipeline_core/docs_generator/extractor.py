@@ -151,7 +151,45 @@ def build_symbol_table(source_dir: Path) -> SymbolTable:
             table.functions[func.name] = func
             table.function_to_module[func.name] = package_name
 
+    _remap_private_symbols(table, source_dir)
     return table
+
+
+def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:
+    """Remap symbols defined in private modules to public modules that re-export them via __all__."""
+    if not source_dir.is_dir():
+        return
+    public_exports: dict[str, set[str]] = {}
+    for subdir in sorted(source_dir.iterdir()):
+        if not subdir.is_dir() or subdir.name.startswith("_"):
+            continue
+        init_file = subdir / "__init__.py"
+        if not init_file.exists():
+            continue
+        all_names = _parse_dunder_all(init_file)
+        if all_names:
+            public_exports[subdir.name] = all_names
+
+    for symbol_map in (table.class_to_module, table.function_to_module):
+        for name, current_module in list(symbol_map.items()):
+            if not current_module.startswith("_"):
+                continue
+            for public_module, exports in public_exports.items():
+                if name in exports:
+                    symbol_map[name] = public_module
+                    break
+
+
+def _parse_dunder_all(init_file: Path) -> set[str]:
+    """Extract __all__ symbol names from an __init__.py file."""
+    tree = ast.parse(init_file.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "__all__" and isinstance(node.value, ast.List):
+                return {elt.value for elt in node.value.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)}
+    return set()
 
 
 def resolve_dependencies(
