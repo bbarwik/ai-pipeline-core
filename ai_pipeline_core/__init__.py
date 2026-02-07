@@ -73,7 +73,7 @@ from .prompt_manager import PromptManager
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 
 __all__ = [
     "AgentOutputDocument",

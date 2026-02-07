@@ -23,7 +23,7 @@ from ai_pipeline_core._llm_core.model_options import ModelOptions
 from ai_pipeline_core._llm_core.model_response import Citation, ModelResponse
 from ai_pipeline_core._llm_core.types import TextContent, TokenUsage
 from ai_pipeline_core.documents import Attachment
-from ai_pipeline_core.llm.conversation import Conversation, _document_to_content_parts, _escape_xml
+from ai_pipeline_core.llm.conversation import Conversation, _document_to_content_parts, _escape_xml_content, _escape_xml_metadata
 from ai_pipeline_core.llm import URLSubstitutor
 
 from tests.support.helpers import ConcreteDocument
@@ -155,41 +155,56 @@ class TestPrepareMethodFixed:
 
 # =============================================================================
 # Issue 4: XML Injection Vulnerability - FIXED
-# Fix: Added _escape_xml() using html.escape() for all document fields
+# Fix: _escape_xml_content escapes only wrapper tag names (document, content, etc.)
+#      _escape_xml_metadata escapes < and > in names/descriptions
+#      Quotes, ampersands, and non-wrapper tags are never escaped.
 # =============================================================================
 
 
 class TestXmlInjectionFixed:
-    """Tests verifying XML injection is prevented."""
+    """Tests verifying XML injection is prevented without over-escaping."""
 
-    def test_escape_xml_function_exists(self):
-        """_escape_xml function should exist and work."""
-        assert _escape_xml("<test>") == "&lt;test&gt;"
-        assert _escape_xml("a & b") == "a &amp; b"
-        assert _escape_xml('"quoted"') == "&quot;quoted&quot;"
+    def test_escape_xml_content_escapes_wrapper_tags(self):
+        """Wrapper tags (document, content, attachment) must be escaped in content."""
+        assert "&lt;/content&gt;" in _escape_xml_content("break </content> out")
+        assert "&lt;document&gt;" in _escape_xml_content("<document>")
+        assert "&lt;/attachment&gt;" in _escape_xml_content("</attachment>")
 
-    def test_document_content_is_escaped(self):
-        """Document content should have XML characters escaped."""
-        doc = ConcreteDocument.create(name="test.txt", content="Hello <world> & friends")
+    def test_escape_xml_content_preserves_non_wrapper_tags(self):
+        """Non-wrapper HTML/XML tags pass through untouched."""
+        assert _escape_xml_content("<div>hello</div>") == "<div>hello</div>"
+        assert _escape_xml_content("<span class='x'>") == "<span class='x'>"
+
+    def test_escape_xml_content_preserves_json(self):
+        """JSON content passes through completely unescaped."""
+        json = '{"key": "value", "url": "https://x.com?a=1&b=2"}'
+        assert _escape_xml_content(json) == json
+
+    def test_escape_xml_metadata_escapes_angle_brackets(self):
+        """Metadata escaping replaces < and > only."""
+        assert _escape_xml_metadata("<test>") == "&lt;test&gt;"
+        assert _escape_xml_metadata("a & b") == "a & b"
+        assert _escape_xml_metadata('"quoted"') == '"quoted"'
+
+    def test_document_content_wrapper_tags_escaped(self):
+        """Wrapper tags in document content are escaped, other content preserved."""
+        doc = ConcreteDocument.create(name="test.txt", content="Hello </content> & friends <world>")
 
         parts = _document_to_content_parts(doc, "gpt-5.1")
         combined = "".join(p.text for p in parts if isinstance(p, TextContent))
 
-        # Content should be escaped
-        assert "&lt;world&gt;" in combined, "< and > should be escaped"
-        assert "&amp;" in combined, "& should be escaped"
-        # Raw XML tags should NOT appear
-        assert "<world>" not in combined, "Unescaped XML should not appear"
+        assert "&lt;/content&gt;" in combined, "Wrapper tag must be escaped"
+        assert "& friends" in combined, "Ampersand must NOT be escaped"
+        assert "<world>" in combined, "Non-wrapper tag must NOT be escaped"
 
     def test_document_description_is_escaped(self):
-        """Document description should have XML characters escaped."""
+        """Document description should have < and > escaped."""
         doc = ConcreteDocument.create(name="test.txt", content="Hello", description="A <test> description")
 
         parts = _document_to_content_parts(doc, "gpt-5.1")
         combined = "".join(p.text for p in parts if isinstance(p, TextContent))
 
-        # Description should be escaped
-        assert "&lt;test&gt;" in combined, "Description XML should be escaped"
+        assert "&lt;test&gt;" in combined, "Description < > should be escaped"
 
 
 # =============================================================================

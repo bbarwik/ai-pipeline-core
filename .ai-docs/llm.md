@@ -671,7 +671,7 @@ async def generate_structured(
 # === EXAMPLES (from tests/) ===
 
 # Example: Citation has slots
-# Source: tests/llm/test_verified_issues.py:287
+# Source: tests/llm/test_verified_issues.py:302
 def test_citation_has_slots(self):
     """Citation dataclass should have __slots__."""
     assert hasattr(Citation, "__slots__"), "Citation should have slots=True"

@@ -13,7 +13,7 @@ Usage:
 
 import asyncio
 import base64
-import html
+import re
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Generic, Literal, cast
@@ -60,16 +60,31 @@ ConversationContent = str | Document | list[Document]
 MessageType = Document | ModelResponse[Any]
 
 
-def _escape_xml(text: str) -> str:
-    """Escape XML special characters to prevent injection."""
-    return html.escape(text, quote=True)
+# Regex matching XML tags whose names are wrapper elements used by document serialization.
+# Only these tags are escaped in content bodies — everything else (JSON, YAML, HTML, code) passes through.
+_WRAPPER_TAG_RE = re.compile(r"<(/?)(document|content|description|attachment|id|name)\b([^>]*)>", re.IGNORECASE)
+
+
+def _escape_xml_metadata(text: str) -> str:
+    """Escape < and > in metadata fields (names, IDs, descriptions) to prevent tag injection."""
+    return text.replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _escape_xml_content(text: str) -> str:
+    """Escape only XML tags matching wrapper element names to prevent structural injection.
+
+    Leaves all other content intact — JSON, YAML, URLs, code, HTML tags, quotes,
+    ampersands are never modified. Only tags that could break the <document>/<content>/
+    <attachment> wrapper structure are escaped.
+    """
+    return _WRAPPER_TAG_RE.sub(lambda m: f"&lt;{m.group(1)}{m.group(2)}{m.group(3)}&gt;", text)
 
 
 def _document_to_xml_header(doc: Document) -> str:
     """Generate XML header for a document with proper escaping."""
-    escaped_name = _escape_xml(doc.name)
-    escaped_id = _escape_xml(doc.id)
-    desc = f"<description>{_escape_xml(doc.description)}</description>\n" if doc.description else ""
+    escaped_name = _escape_xml_metadata(doc.name)
+    escaped_id = _escape_xml_metadata(doc.id)
+    desc = f"<description>{_escape_xml_metadata(doc.description)}</description>\n" if doc.description else ""
     return f"<document>\n<id>{escaped_id}</id>\n<name>{escaped_name}</name>\n{desc}<content>\n"
 
 
@@ -158,7 +173,7 @@ def _document_to_content_parts(doc: Document, model: str) -> list[ContentPart]:
         if err := validate_text(doc.content, doc.name):
             logger.warning(f"Skipping invalid document: {err}")
             return []
-        text = _escape_xml(doc.content.decode("utf-8"))
+        text = _escape_xml_content(doc.content.decode("utf-8"))
         # Build document with attachments INSIDE the wrapper
         # Text attachments are inlined as strings, binary attachments become separate ContentParts
         text_fragments = [f"{header}{text}\n"]
@@ -225,24 +240,24 @@ def _build_attachment_content(att: Any) -> str | None:
         logger.warning(f"Skipping invalid attachment: {err}")
         return None
 
-    escaped_name = _escape_xml(att.name)
-    desc_attr = f' description="{_escape_xml(att.description)}"' if att.description else ""
-    att_text = _escape_xml(att.content.decode("utf-8"))
+    escaped_name = _escape_xml_metadata(att.name)
+    desc_attr = f' description="{_escape_xml_metadata(att.description)}"' if att.description else ""
+    att_text = _escape_xml_content(att.content.decode("utf-8"))
     return f'<attachment name="{escaped_name}"{desc_attr}>\n{att_text}\n</attachment>\n'
 
 
 def _build_attachment_parts(att: Any, model: str) -> list[ContentPart]:
     """Build content parts for an attachment (for binary attachments)."""
     parts: list[ContentPart] = []
-    escaped_name = _escape_xml(att.name)
-    desc_attr = f' description="{_escape_xml(att.description)}"' if att.description else ""
+    escaped_name = _escape_xml_metadata(att.name)
+    desc_attr = f' description="{_escape_xml_metadata(att.description)}"' if att.description else ""
     att_open = f'<attachment name="{escaped_name}"{desc_attr}>\n'
 
     if att.is_text:
         if err := validate_text(att.content, att.name):
             logger.warning(f"Skipping invalid attachment: {err}")
             return []
-        att_text = _escape_xml(att.content.decode("utf-8"))
+        att_text = _escape_xml_content(att.content.decode("utf-8"))
         parts.append(TextContent(text=f"{att_open}{att_text}\n</attachment>\n"))
     elif att.is_image:
         if err := validate_image(att.content, att.name):
