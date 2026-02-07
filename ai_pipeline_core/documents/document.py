@@ -387,7 +387,7 @@ class Document(BaseModel):
     @final
     @cached_property
     def sha256(self) -> str:
-        """Full SHA256 identity hash (name + content + attachments). BASE32 encoded, cached."""
+        """Full SHA256 identity hash (name + content + sources + origins + attachments). BASE32 encoded, cached."""
         return compute_document_sha256(self)
 
     @final

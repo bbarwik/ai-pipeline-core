@@ -21,7 +21,6 @@ _SENTINEL = object()
 
 @dataclass(frozen=True, slots=True)
 class _SummaryItem:
-    run_scope: str
     sha256: str
     name: str
     excerpt: str
@@ -40,11 +39,11 @@ class SummaryWorker:
         self,
         *,
         generator: SummaryGenerator,
-        update_fn: Callable[[str, str, str], Coroutine[None, None, None]],
+        update_fn: Callable[[str, str], Coroutine[None, None, None]],
     ) -> None:
         self._generator = generator
         self._update_fn = update_fn
-        self._inflight: set[tuple[str, str]] = set()  # (run_scope, sha256)
+        self._inflight: set[str] = set()  # sha256 only — one summary per document globally
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[_SummaryItem | object] | None = None
         self._thread: Thread | None = None
@@ -118,17 +117,17 @@ class SummaryWorker:
                 if otel_token is not None:
                     otel_context.detach(otel_token)
             if summary:
-                await self._update_fn(item.run_scope, item.sha256, summary)
+                await self._update_fn(item.sha256, summary)
         except Exception as e:
             logger.warning(f"Summary generation failed for '{item.name}': {e}")
         finally:
-            self._inflight.discard((item.run_scope, item.sha256))
+            self._inflight.discard(item.sha256)
 
-    def schedule(self, run_scope: str, document: Document) -> None:
+    def schedule(self, document: Document) -> None:
         """Schedule summary generation for a document. Thread-safe, non-blocking."""
         if self._loop is None or self._queue is None:
             return
-        key = (run_scope, document.sha256)
+        key = document.sha256
         if key in self._inflight:
             return
         self._inflight.add(key)
@@ -137,7 +136,6 @@ class SummaryWorker:
         else:
             excerpt = f"[Binary document: {document.mime_type}, {len(document.content)} bytes]"
         item = _SummaryItem(
-            run_scope=run_scope,
             sha256=document.sha256,
             name=document.name,
             excerpt=excerpt,

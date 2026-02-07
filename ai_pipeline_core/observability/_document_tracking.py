@@ -30,6 +30,31 @@ def _get_tracking_service() -> TrackingServiceProtocol | None:
     return get_tracking_service()
 
 
+def _collect_output_documents(
+    container: list[object] | tuple[object, ...],
+    output_sha256s: list[str],
+    service: TrackingServiceProtocol,
+    span_id: str,
+) -> None:
+    """Recursively collect output documents from lists and tuples."""
+    for item in container:
+        if isinstance(item, Document):
+            output_sha256s.append(item.sha256)
+            service.track_document_event(
+                document_sha256=item.sha256,
+                span_id=span_id,
+                event_type=DocumentEventType.TASK_OUTPUT,
+            )
+        elif isinstance(item, (list, tuple)) and item and isinstance(item[0], Document):
+            for doc in cast(list[Document], item):
+                output_sha256s.append(doc.sha256)
+                service.track_document_event(
+                    document_sha256=doc.sha256,
+                    span_id=span_id,
+                    event_type=DocumentEventType.TASK_OUTPUT,
+                )
+
+
 def track_task_io(task_name: str, args: tuple[object, ...], kwargs: dict[str, object], result: object) -> None:  # noqa: ARG001
     """Track input/output documents for a pipeline task."""
     service = _get_tracking_service()
@@ -66,14 +91,8 @@ def track_task_io(task_name: str, args: tuple[object, ...], kwargs: dict[str, ob
             span_id=span_id,
             event_type=DocumentEventType.TASK_OUTPUT,
         )
-    elif isinstance(result, list) and result and isinstance(result[0], Document):
-        for doc in cast(list[Document], result):
-            output_sha256s.append(doc.sha256)
-            service.track_document_event(
-                document_sha256=doc.sha256,
-                span_id=span_id,
-                event_type=DocumentEventType.TASK_OUTPUT,
-            )
+    elif isinstance(result, (list, tuple)):
+        _collect_output_documents(result, output_sha256s, service, span_id)
 
     # Set span attributes for TrackingSpanProcessor to populate tracked_spans columns
     if input_sha256s or output_sha256s:

@@ -52,11 +52,54 @@ class TestComputeDocumentSha256:
         doc2 = HashDoc.create(name="a.txt", content="hello", description="desc2")
         assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
 
-    def test_sources_do_not_affect_hash(self):
-        """Sources are excluded from document_sha256."""
+    def test_sources_affect_hash(self):
+        """Sources are included in document_sha256."""
         doc1 = HashDoc.create(name="a.txt", content="hello", sources=("https://example.com/src1",))
         doc2 = HashDoc.create(name="a.txt", content="hello", sources=("https://example.com/src2",))
+        assert compute_document_sha256(doc1) != compute_document_sha256(doc2)
+
+    def test_origins_affect_hash(self):
+        """Origins are included in document_sha256."""
+        origin_a = compute_document_sha256(HashDoc.create(name="origin_a.txt", content="origin a"))
+        origin_b = compute_document_sha256(HashDoc.create(name="origin_b.txt", content="origin b"))
+        doc1 = HashDoc.create(name="a.txt", content="hello", origins=(origin_a,))
+        doc2 = HashDoc.create(name="a.txt", content="hello", origins=(origin_b,))
+        assert compute_document_sha256(doc1) != compute_document_sha256(doc2)
+
+    def test_source_order_does_not_matter(self):
+        """Sources are sorted before hashing for order-independence."""
+        doc1 = HashDoc.create(name="a.txt", content="hello", sources=("https://a.com", "https://b.com"))
+        doc2 = HashDoc.create(name="a.txt", content="hello", sources=("https://b.com", "https://a.com"))
         assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
+
+    def test_origin_order_does_not_matter(self):
+        """Origins are sorted before hashing for order-independence."""
+        origin_a = compute_document_sha256(HashDoc.create(name="origin_a.txt", content="origin a"))
+        origin_b = compute_document_sha256(HashDoc.create(name="origin_b.txt", content="origin b"))
+        doc1 = HashDoc.create(name="a.txt", content="hello", origins=(origin_a, origin_b))
+        doc2 = HashDoc.create(name="a.txt", content="hello", origins=(origin_b, origin_a))
+        assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
+
+    def test_no_provenance_still_deterministic(self):
+        """Documents without sources/origins produce consistent hashes."""
+        doc1 = HashDoc.create(name="a.txt", content="hello")
+        doc2 = HashDoc.create(name="a.txt", content="hello")
+        assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
+
+    def test_group_count_disambiguation(self):
+        """Moving items between sources and origins produces different hashes.
+
+        Validates count-prefix boundaries: sources=['A'], origins=['B']
+        must differ from sources=['A','B'], origins=[].
+        """
+        url_a = "https://example.com/a"
+        url_b = "https://example.com/b"
+        doc1 = HashDoc.create(name="a.txt", content="hello", sources=(url_a,), origins=())
+        doc2 = HashDoc.create(name="a.txt", content="hello", sources=(), origins=())
+        doc3 = HashDoc.create(name="a.txt", content="hello", sources=(url_a, url_b))
+        doc4 = HashDoc.create(name="a.txt", content="hello", sources=(url_a,))
+        assert compute_document_sha256(doc1) != compute_document_sha256(doc2)
+        assert compute_document_sha256(doc3) != compute_document_sha256(doc4)
 
     def test_length_prefix_prevents_collision(self):
         """Length prefixing prevents 'ab' + 'cd' from colliding with 'abc' + 'd'."""

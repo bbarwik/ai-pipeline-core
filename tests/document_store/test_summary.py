@@ -22,11 +22,11 @@ async def _failing_generator(name: str, excerpt: str) -> str:
     raise RuntimeError("LLM unavailable")
 
 
-async def _wait_for_summary(store: MemoryDocumentStore | LocalDocumentStore, run_scope: str, sha256: str, timeout: float = 5.0) -> str | None:
+async def _wait_for_summary(store: MemoryDocumentStore | LocalDocumentStore, sha256: str, timeout: float = 5.0) -> str | None:
     """Poll for a summary to appear in the store."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        summaries = await store.load_summaries(run_scope, [sha256])
+        summaries = await store.load_summaries([sha256])
         if sha256 in summaries:
             return summaries[sha256]
         await asyncio.sleep(0.1)
@@ -39,8 +39,8 @@ class TestMemoryStoreSummary:
         store = MemoryDocumentStore()
         doc = SummaryTestDocument(name="test.txt", content=b"Hello world", description="test")
         await store.save(doc, "run1")
-        await store.update_summary("run1", doc.sha256, "A greeting document")
-        summaries = await store.load_summaries("run1", [doc.sha256])
+        await store.update_summary(doc.sha256, "A greeting document")
+        summaries = await store.load_summaries([doc.sha256])
         assert summaries[doc.sha256] == "A greeting document"
 
     @pytest.mark.asyncio
@@ -48,7 +48,7 @@ class TestMemoryStoreSummary:
         store = MemoryDocumentStore()
         doc = SummaryTestDocument(name="test.txt", content=b"Hello world", description="test")
         await store.save(doc, "run1")
-        summaries = await store.load_summaries("run1", [doc.sha256])
+        summaries = await store.load_summaries([doc.sha256])
         assert summaries == {}
 
     @pytest.mark.asyncio
@@ -57,7 +57,7 @@ class TestMemoryStoreSummary:
         try:
             doc = SummaryTestDocument(name="report.txt", content=b"some content", description="test")
             await store.save(doc, "run1")
-            summary = await _wait_for_summary(store, "run1", doc.sha256)
+            summary = await _wait_for_summary(store, doc.sha256)
             assert summary == "Summary of report.txt"
         finally:
             store.shutdown()
@@ -68,7 +68,7 @@ class TestMemoryStoreSummary:
         try:
             doc = SummaryTestDocument(name="empty.txt", content=b"", description="test")
             await store.save(doc, "run1")
-            summary = await _wait_for_summary(store, "run1", doc.sha256)
+            summary = await _wait_for_summary(store, doc.sha256)
             assert summary == "Summary of empty.txt"
         finally:
             store.shutdown()
@@ -79,7 +79,7 @@ class TestMemoryStoreSummary:
         try:
             doc = SummaryTestDocument(name="image.bin", content=b"\x00\xff" * 100, description="test")
             await store.save(doc, "run1")
-            summary = await _wait_for_summary(store, "run1", doc.sha256)
+            summary = await _wait_for_summary(store, doc.sha256)
             assert summary == "Summary of image.bin"
         finally:
             store.shutdown()
@@ -91,7 +91,7 @@ class TestMemoryStoreSummary:
             doc = SummaryTestDocument(name="fail.txt", content=b"some content", description="test")
             await store.save(doc, "run1")
             await asyncio.sleep(1.0)
-            summaries = await store.load_summaries("run1", [doc.sha256])
+            summaries = await store.load_summaries([doc.sha256])
             assert summaries == {}
         finally:
             store.shutdown()
@@ -123,8 +123,8 @@ class TestLocalStoreSummary:
         content = "Hello world content for testing"
         doc = SummaryTestDocument(name="test.txt", content=content.encode(), description="test")
         await store.save(doc, "run1")
-        await store.update_summary("run1", doc.sha256, "A greeting document")
-        summaries = await store.load_summaries("run1", [doc.sha256])
+        await store.update_summary(doc.sha256, "A greeting document")
+        summaries = await store.load_summaries([doc.sha256])
         assert summaries[doc.sha256] == "A greeting document"
 
     @pytest.mark.asyncio
@@ -135,7 +135,7 @@ class TestLocalStoreSummary:
         content = "Some content for summary test"
         doc = SummaryTestDocument(name="data.txt", content=content.encode(), description="test")
         await store.save(doc, "run1")
-        await store.update_summary("run1", doc.sha256, "Data summary")
+        await store.update_summary(doc.sha256, "Data summary")
 
         # Verify in meta.json on disk
         meta_files = list(tmp_path.rglob("*.meta.json"))
@@ -149,7 +149,7 @@ class TestLocalStoreSummary:
         try:
             doc = SummaryTestDocument(name="report.txt", content=b"some content", description="test")
             await store.save(doc, "run1")
-            summary = await _wait_for_summary(store, "run1", doc.sha256)
+            summary = await _wait_for_summary(store, doc.sha256)
             assert summary == "Summary of report.txt"
         finally:
             store.shutdown()

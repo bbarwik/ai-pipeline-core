@@ -132,7 +132,9 @@ Features enabled by default:
                     session_id=flow_run_id,
                 ):
                     typed_docs = _reconstruct_documents(documents, deployment._all_document_types())
-                    return await deployment.run(project_name, typed_docs, cast(Any, options), context)
+                    result = await deployment.run(project_name, typed_docs, cast(Any, options), context)
+                    Laminar.set_span_output(result.model_dump())
+                    return result
             finally:
                 store.shutdown()
                 set_document_store(None)

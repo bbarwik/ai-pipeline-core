@@ -3,6 +3,7 @@
 import pytest
 
 from ai_pipeline_core.document_store import (
+    DocumentNode,
     DocumentStore,
     get_document_store,
     set_document_store,
@@ -35,11 +36,20 @@ class _DummyStore:
     async def check_existing(self, sha256s: list[str]) -> set[str]:
         return set()
 
-    async def update_summary(self, run_scope: str, document_sha256: str, summary: str) -> None:
+    async def update_summary(self, document_sha256: str, summary: str) -> None:
         pass
 
-    async def load_summaries(self, run_scope: str, document_sha256s: list[str]) -> dict[str, str]:
+    async def load_summaries(self, document_sha256s: list[str]) -> dict[str, str]:
         return {}
+
+    async def load_by_sha256s(self, sha256s: list[str], document_type: type[Document], run_scope: str | None = None) -> dict[str, Document]:
+        return {}
+
+    async def load_nodes_by_sha256s(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+        return {}
+
+    async def load_scope_metadata(self, run_scope: str) -> list[DocumentNode]:
+        return []
 
     def flush(self) -> None:
         pass

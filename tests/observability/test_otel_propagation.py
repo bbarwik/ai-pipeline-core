@@ -218,7 +218,7 @@ class TestSummaryWorkerContextCapture:
 
         with tracer.start_as_current_span("save_task") as parent_span:
             parent_span_id = parent_span.get_span_context().span_id
-            worker.schedule("scope", doc)
+            worker.schedule(doc)
 
         # Let the call_soon_threadsafe callback execute
         await asyncio.sleep(0)
@@ -249,7 +249,7 @@ class TestSummaryWorkerRunContext:
             origin_trace_id = span.get_span_context().trace_id
             ctx = otel_context.get_current()
 
-        item = _SummaryItem(run_scope="r", sha256="h", name="n", excerpt="e", parent_otel_context=ctx)
+        item = _SummaryItem(sha256="h", name="n", excerpt="e", parent_otel_context=ctx)
         await worker._queue.put(item)
         await worker._queue.put(_SENTINEL)
 
@@ -274,10 +274,10 @@ class TestSummaryWorkerRunContext:
         with tracer.start_as_current_span("task_A") as span_a:
             trace_id_a = span_a.get_span_context().trace_id
             ctx_a = otel_context.get_current()
-        item_a = _SummaryItem(run_scope="r", sha256="h1", name="a", excerpt="e", parent_otel_context=ctx_a)
+        item_a = _SummaryItem(sha256="h1", name="a", excerpt="e", parent_otel_context=ctx_a)
 
         # Job 2: without context
-        item_b = _SummaryItem(run_scope="r", sha256="h2", name="b", excerpt="e", parent_otel_context=None)
+        item_b = _SummaryItem(sha256="h2", name="b", excerpt="e", parent_otel_context=None)
 
         await worker._queue.put(item_a)
         await worker._queue.put(item_b)
@@ -302,7 +302,7 @@ class TestSummaryWorkerRunContext:
         with tracer.start_as_current_span("task"):
             ctx = otel_context.get_current()
 
-        item = _SummaryItem(run_scope="r", sha256="h", name="n", excerpt="e", parent_otel_context=ctx)
+        item = _SummaryItem(sha256="h", name="n", excerpt="e", parent_otel_context=ctx)
         await worker._queue.put(item)
         await worker._queue.put(_SENTINEL)
 
@@ -332,7 +332,7 @@ class TestSummaryWorkerEndToEnd:
             with tracer.start_as_current_span("pipeline_save") as parent_span:
                 parent_trace_id = parent_span.get_span_context().trace_id
                 parent_span_id = parent_span.get_span_context().span_id
-                worker.schedule("scope", doc)
+                worker.schedule(doc)
 
             for _ in range(50):
                 time.sleep(0.1)
@@ -366,11 +366,11 @@ class TestDataModelFieldConfig:
         assert job1 == job2
 
     def test_summary_item_context_excluded_from_hash(self) -> None:
-        item1 = _SummaryItem(run_scope="r", sha256="h", name="n", excerpt="e", parent_otel_context=None)
-        item2 = _SummaryItem(run_scope="r", sha256="h", name="n", excerpt="e", parent_otel_context=otel_context.get_current())
+        item1 = _SummaryItem(sha256="h", name="n", excerpt="e", parent_otel_context=None)
+        item2 = _SummaryItem(sha256="h", name="n", excerpt="e", parent_otel_context=otel_context.get_current())
         assert hash(item1) == hash(item2)
 
     def test_summary_item_context_excluded_from_equality(self) -> None:
-        item1 = _SummaryItem(run_scope="r", sha256="h", name="n", excerpt="e", parent_otel_context=None)
-        item2 = _SummaryItem(run_scope="r", sha256="h", name="n", excerpt="e", parent_otel_context=otel_context.get_current())
+        item1 = _SummaryItem(sha256="h", name="n", excerpt="e", parent_otel_context=None)
+        item2 = _SummaryItem(sha256="h", name="n", excerpt="e", parent_otel_context=otel_context.get_current())
         assert item1 == item2

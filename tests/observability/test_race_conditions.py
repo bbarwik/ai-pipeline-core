@@ -70,7 +70,7 @@ class TestWriterStartupRace:
         async def dummy_gen(name: str, excerpt: str) -> str:
             return "summary"
 
-        async def dummy_update(run_scope: str, sha256: str, summary: str) -> None:
+        async def dummy_update(sha256: str, summary: str) -> None:
             pass
 
         worker = SummaryWorker(generator=dummy_gen, update_fn=dummy_update)

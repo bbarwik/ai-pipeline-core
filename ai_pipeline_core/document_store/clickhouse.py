@@ -1,7 +1,8 @@
 """ClickHouse-backed document store for production use.
 
-Two-table schema: document_content (deduplicated blobs) and document_index
-(per-run document metadata). Uses ReplacingMergeTree for idempotent writes.
+Three-table schema: document_content (deduplicated blobs), document_index
+(global document metadata), and run_documents (run membership mapping).
+Uses ReplacingMergeTree for idempotent writes.
 Circuit breaker buffers writes when ClickHouse is unavailable.
 """
 
@@ -11,10 +12,11 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
 
 import clickhouse_connect
 
+from ai_pipeline_core.document_store._models import DocumentNode
 from ai_pipeline_core.document_store._summary import SummaryGenerator
 from ai_pipeline_core.document_store._summary_worker import SummaryWorker
 from ai_pipeline_core.documents._context_vars import suppress_registration
@@ -25,16 +27,18 @@ from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
 
+_D = TypeVar("_D", bound=Document)
+
 TABLE_DOCUMENT_CONTENT = "document_content"
 TABLE_DOCUMENT_INDEX = "document_index"
+TABLE_RUN_DOCUMENTS = "run_documents"
 
 _DDL_CONTENT = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_DOCUMENT_CONTENT}
 (
     content_sha256     String,
     content            String CODEC(ZSTD(3)),
-    created_at         DateTime64(3, 'UTC'),
-    INDEX content_sha256_idx content_sha256 TYPE bloom_filter GRANULARITY 1
+    stored_at          DateTime64(3, 'UTC')
 )
 ENGINE = ReplacingMergeTree()
 ORDER BY (content_sha256)
@@ -45,7 +49,6 @@ _DDL_INDEX = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_DOCUMENT_INDEX}
 (
     document_sha256        String,
-    run_scope              String,
     content_sha256         String,
     class_name             LowCardinality(String),
     name                   String,
@@ -56,13 +59,25 @@ CREATE TABLE IF NOT EXISTS {TABLE_DOCUMENT_INDEX}
     attachment_names        Array(String),
     attachment_descriptions Array(String),
     attachment_sha256s      Array(String),
-    summary                String DEFAULT '',
+    summary                String DEFAULT '' CODEC(ZSTD(3)),
     stored_at              DateTime64(3, 'UTC'),
-    version                UInt64 DEFAULT 1,
-    INDEX doc_sha256_idx document_sha256 TYPE bloom_filter GRANULARITY 1
+    version                UInt64 DEFAULT 1
 )
 ENGINE = ReplacingMergeTree(version)
-ORDER BY (run_scope, class_name, document_sha256)
+ORDER BY (document_sha256)
+SETTINGS index_granularity = 8192
+"""
+
+_DDL_RUN_DOCUMENTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_RUN_DOCUMENTS}
+(
+    run_scope          String,
+    document_sha256    String,
+    class_name         LowCardinality(String),
+    stored_at          DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree()
+ORDER BY (run_scope, document_sha256)
 SETTINGS index_granularity = 8192
 """
 
@@ -145,6 +160,7 @@ class ClickHouseDocumentStore:
             self._connect()
         self._client.command(_DDL_CONTENT)
         self._client.command(_DDL_INDEX)
+        self._client.command(_DDL_RUN_DOCUMENTS)
         self._tables_initialized = True
         logger.info("Document store tables verified/created")
 
@@ -192,17 +208,17 @@ class ClickHouseDocumentStore:
         """Save a document. Buffers writes when circuit breaker is open."""
         await self._run(self._save_sync, document, run_scope)
         if self._summary_worker and not self._circuit_open:
-            self._summary_worker.schedule(run_scope, document)
+            self._summary_worker.schedule(document)
 
     async def save_batch(self, documents: list[Document], run_scope: str) -> None:
         """Save multiple documents. Remaining docs are buffered on failure."""
         await self._run(self._save_batch_sync, documents, run_scope)
         if self._summary_worker and not self._circuit_open:
             for doc in documents:
-                self._summary_worker.schedule(run_scope, doc)
+                self._summary_worker.schedule(doc)
 
     async def load(self, run_scope: str, document_types: list[type[Document]]) -> list[Document]:
-        """Load documents via index JOIN content, then batch-fetch attachments."""
+        """Load documents via run_documents + index JOIN content, then batch-fetch attachments."""
         return await self._run(self._load_sync, run_scope, document_types)
 
     async def has_documents(self, run_scope: str, document_type: type[Document]) -> bool:
@@ -213,13 +229,25 @@ class ClickHouseDocumentStore:
         """Return the subset of sha256s that exist in the document index."""
         return await self._run(self._check_existing_sync, sha256s)
 
-    async def update_summary(self, run_scope: str, document_sha256: str, summary: str) -> None:
-        """Update summary column for a stored document via ALTER TABLE UPDATE."""
-        await self._run(self._update_summary_sync, run_scope, document_sha256, summary)
+    async def update_summary(self, document_sha256: str, summary: str) -> None:
+        """Update summary via INSERT with incremented version (ReplacingMergeTree dedup)."""
+        await self._run(self._update_summary_sync, document_sha256, summary)
 
-    async def load_summaries(self, run_scope: str, document_sha256s: list[str]) -> dict[str, str]:
+    async def load_summaries(self, document_sha256s: list[str]) -> dict[str, str]:
         """Load summaries by SHA256 from the document index."""
-        return await self._run(self._load_summaries_sync, run_scope, document_sha256s)
+        return await self._run(self._load_summaries_sync, document_sha256s)
+
+    async def load_by_sha256s(self, sha256s: list[str], document_type: type[_D], run_scope: str | None = None) -> dict[str, _D]:
+        """Batch-load documents by SHA256 and type. Verifies run membership when run_scope provided."""
+        return await self._run(self._load_by_sha256s_sync, sha256s, document_type, run_scope)
+
+    async def load_nodes_by_sha256s(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+        """Batch-load lightweight metadata by SHA256. No JOIN needed."""
+        return await self._run(self._load_nodes_by_sha256s_sync, sha256s)
+
+    async def load_scope_metadata(self, run_scope: str) -> list[DocumentNode]:
+        """Load lightweight metadata for all documents in a run scope."""
+        return await self._run(self._load_scope_metadata_sync, run_scope)
 
     def flush(self) -> None:
         """Block until all pending document summaries are processed."""
@@ -284,7 +312,7 @@ class ClickHouseDocumentStore:
             try:
                 self._insert_document(item.document, item.run_scope)
                 if self._summary_worker:
-                    self._summary_worker.schedule(item.run_scope, item.document)
+                    self._summary_worker.schedule(item.document)
             except Exception as e:
                 logger.warning(f"Failed to flush buffered document: {e}")
                 self._buffer.appendleft(item)
@@ -314,17 +342,17 @@ class ClickHouseDocumentStore:
         self._client.insert(
             TABLE_DOCUMENT_CONTENT,
             content_rows,
-            column_names=["content_sha256", "content", "created_at"],
+            column_names=["content_sha256", "content", "stored_at"],
         )
 
-        # Insert index entry
+        # Insert into document_index (global, keyed by document_sha256)
         self._client.command(
             f"INSERT INTO {TABLE_DOCUMENT_INDEX} "
-            "(document_sha256, run_scope, content_sha256, class_name, name, description, "
+            "(document_sha256, content_sha256, class_name, name, description, "
             "mime_type, sources, origins, "
             "attachment_names, attachment_descriptions, attachment_sha256s, stored_at, version) "
             "VALUES ("
-            "{doc_sha256:String}, {run_scope:String}, {content_sha256:String}, "
+            "{doc_sha256:String}, {content_sha256:String}, "
             "{class_name:String}, {name:String}, {description:String}, "
             "{mime_type:String}, "
             "{sources:Array(String)}, {origins:Array(String)}, "
@@ -332,7 +360,6 @@ class ClickHouseDocumentStore:
             "now64(3), 1)",
             parameters={
                 "doc_sha256": doc_sha256,
-                "run_scope": run_scope,
                 "content_sha256": content_sha256,
                 "class_name": document.__class__.__name__,
                 "name": document.name,
@@ -346,22 +373,35 @@ class ClickHouseDocumentStore:
             },
         )
 
+        # Insert into run_documents (run membership mapping)
+        self._client.command(
+            f"INSERT INTO {TABLE_RUN_DOCUMENTS} "
+            "(run_scope, document_sha256, class_name, stored_at) "
+            "VALUES ({run_scope:String}, {doc_sha256:String}, {class_name:String}, now64(3))",
+            parameters={
+                "run_scope": run_scope,
+                "doc_sha256": doc_sha256,
+                "class_name": document.__class__.__name__,
+            },
+        )
+
     def _load_sync(self, run_scope: str, document_types: list[type[Document]]) -> list[Document]:
-        """Two-query load: index JOIN content, then batch attachment fetch."""
+        """Three-table load: run_documents → document_index → document_content."""
         self._ensure_tables()
 
         type_by_name: dict[str, type[Document]] = {t.__name__: t for t in document_types}
         class_names = list(type_by_name.keys())
 
-        # Query 1: index JOIN content for document bodies
+        # Query: join run_documents → document_index → document_content
         rows = self._client.query(
             f"SELECT di.class_name, di.name, di.description, di.sources, di.origins, "
             f"di.attachment_names, di.attachment_descriptions, di.attachment_sha256s, "
             f"dc.content, length(dc.content) "
-            f"FROM {TABLE_DOCUMENT_INDEX} AS di FINAL "
+            f"FROM {TABLE_RUN_DOCUMENTS} AS rd FINAL "
+            f"JOIN {TABLE_DOCUMENT_INDEX} AS di FINAL ON rd.document_sha256 = di.document_sha256 "
             f"JOIN {TABLE_DOCUMENT_CONTENT} AS dc FINAL ON di.content_sha256 = dc.content_sha256 "
-            f"WHERE di.run_scope = {{run_scope:String}} "
-            f"AND di.class_name IN {{class_names:Array(String)}}",
+            f"WHERE rd.run_scope = {{run_scope:String}} "
+            f"AND rd.class_name IN {{class_names:Array(String)}}",
             parameters={"run_scope": run_scope, "class_names": class_names},
         )
 
@@ -391,7 +431,7 @@ class ClickHouseDocumentStore:
                 content,
             ))
 
-        # Query 2: batch fetch ALL attachment content in one query
+        # Batch fetch ALL attachment content in one query
         att_content_by_sha: dict[str, bytes] = {}
         if all_att_sha256s:
             att_rows = self._client.query(
@@ -409,7 +449,7 @@ class ClickHouseDocumentStore:
                 attachments: tuple[Attachment, ...] = ()
                 if att_sha256s:
                     att_list: list[Attachment] = []
-                    for a_name, a_desc, a_sha in zip(att_names, att_descs, att_sha256s, strict=False):
+                    for a_name, a_desc, a_sha in zip(att_names, att_descs, att_sha256s, strict=True):
                         a_content = att_content_by_sha.get(a_sha)
                         if a_content is None:
                             logger.warning(f"Attachment content {a_sha[:12]}... not found for document '{name}'")
@@ -438,7 +478,7 @@ class ClickHouseDocumentStore:
     def _has_documents_sync(self, run_scope: str, document_type: type[Document]) -> bool:
         self._ensure_tables()
         result = self._client.query(
-            f"SELECT 1 FROM {TABLE_DOCUMENT_INDEX} FINAL WHERE run_scope = {{run_scope:String}} AND class_name = {{class_name:String}} LIMIT 1",
+            f"SELECT 1 FROM {TABLE_RUN_DOCUMENTS} FINAL WHERE run_scope = {{run_scope:String}} AND class_name = {{class_name:String}} LIMIT 1",
             parameters={"run_scope": run_scope, "class_name": document_type.__name__},
         )
         return len(result.result_rows) > 0
@@ -453,35 +493,186 @@ class ClickHouseDocumentStore:
         )
         return {_decode(row[0]) for row in result.result_rows}
 
-    def _update_summary_sync(self, run_scope: str, document_sha256: str, summary: str) -> None:
-        """Update summary column via ALTER TABLE UPDATE mutation."""
+    def _update_summary_sync(self, document_sha256: str, summary: str) -> None:
+        """Update summary via INSERT with timestamp-based version (ReplacingMergeTree dedup).
+
+        Single-query INSERT...SELECT copies all fields from existing row, sets new summary
+        and uses millisecond timestamp as version to avoid read+increment race conditions.
+        """
         try:
             self._ensure_tables()
+            version = int(datetime.now(UTC).timestamp() * 1000)
             self._client.command(
-                f"ALTER TABLE {TABLE_DOCUMENT_INDEX} UPDATE summary = {{summary:String}} "
-                f"WHERE document_sha256 = {{sha256:String}} AND run_scope = {{run_scope:String}}",
-                parameters={"summary": summary, "sha256": document_sha256, "run_scope": run_scope},
+                f"INSERT INTO {TABLE_DOCUMENT_INDEX} "
+                "(document_sha256, content_sha256, class_name, name, description, mime_type, "
+                "sources, origins, attachment_names, attachment_descriptions, attachment_sha256s, "
+                "summary, stored_at, version) "
+                f"SELECT document_sha256, content_sha256, class_name, name, description, mime_type, "
+                f"sources, origins, attachment_names, attachment_descriptions, attachment_sha256s, "
+                f"{{summary:String}}, stored_at, {{version:UInt64}} "
+                f"FROM {TABLE_DOCUMENT_INDEX} FINAL "
+                f"WHERE document_sha256 = {{sha256:String}}",
+                parameters={
+                    "summary": summary,
+                    "sha256": document_sha256,
+                    "version": version,
+                },
             )
         except Exception as e:
             logger.warning(f"Failed to update summary for {document_sha256[:12]}...: {e}")
 
-    def _load_summaries_sync(self, run_scope: str, document_sha256s: list[str]) -> dict[str, str]:
-        """Query summaries from the document index."""
+    def _load_summaries_sync(self, document_sha256s: list[str]) -> dict[str, str]:
+        """Query summaries from the document index (global, no run_scope needed)."""
         if not document_sha256s:
             return {}
         try:
             self._ensure_tables()
             result = self._client.query(
-                f"SELECT document_sha256, summary FROM {TABLE_DOCUMENT_INDEX} FINAL "
-                f"WHERE run_scope = {{run_scope:String}} "
-                f"AND document_sha256 IN {{sha256s:Array(String)}} "
-                f"AND summary != ''",
-                parameters={"run_scope": run_scope, "sha256s": document_sha256s},
+                f"SELECT document_sha256, summary FROM {TABLE_DOCUMENT_INDEX} FINAL WHERE document_sha256 IN {{sha256s:Array(String)}} AND summary != ''",
+                parameters={"sha256s": document_sha256s},
             )
             return {_decode(row[0]): _decode(row[1]) for row in result.result_rows}
         except Exception as e:
             logger.warning(f"Failed to load summaries: {e}")
             return {}
+
+    def _load_by_sha256s_sync(self, sha256s: list[str], document_type: type[Document], run_scope: str | None) -> dict[str, Document]:
+        """Batch lookup by SHA256. class_name is not enforced — document_type is for construction only."""
+        if not sha256s:
+            return {}
+        self._ensure_tables()
+
+        if run_scope is not None:
+            # 3-table JOIN: run_documents → document_index → document_content
+            rows = self._client.query(
+                f"SELECT di.document_sha256, di.class_name, di.name, di.description, di.sources, di.origins, "
+                f"di.attachment_names, di.attachment_descriptions, di.attachment_sha256s, "
+                f"dc.content, length(dc.content) "
+                f"FROM {TABLE_RUN_DOCUMENTS} AS rd FINAL "
+                f"JOIN {TABLE_DOCUMENT_INDEX} AS di FINAL ON rd.document_sha256 = di.document_sha256 "
+                f"JOIN {TABLE_DOCUMENT_CONTENT} AS dc FINAL ON di.content_sha256 = dc.content_sha256 "
+                f"WHERE rd.run_scope = {{run_scope:String}} AND rd.document_sha256 IN {{sha256s:Array(String)}}",
+                parameters={"run_scope": run_scope, "sha256s": sha256s},
+            )
+        else:
+            # Cross-scope: document_index → document_content (no run membership check)
+            rows = self._client.query(
+                f"SELECT di.document_sha256, di.class_name, di.name, di.description, di.sources, di.origins, "
+                f"di.attachment_names, di.attachment_descriptions, di.attachment_sha256s, "
+                f"dc.content, length(dc.content) "
+                f"FROM {TABLE_DOCUMENT_INDEX} AS di FINAL "
+                f"JOIN {TABLE_DOCUMENT_CONTENT} AS dc FINAL ON di.content_sha256 = dc.content_sha256 "
+                f"WHERE di.document_sha256 IN {{sha256s:Array(String)}}",
+                parameters={"sha256s": sha256s},
+            )
+
+        if not rows.result_rows:
+            return {}
+
+        # Parse rows and collect all attachment SHA256s
+        parsed_rows: list[tuple[str, str, str | None, tuple[str, ...], tuple[str, ...], list[str], list[str], list[str], bytes]] = []
+        all_att_sha256s: set[str] = set()
+
+        for row in rows.result_rows:
+            att_sha256s = [_decode(s) for s in row[8]]
+            all_att_sha256s.update(att_sha256s)
+            content = _decode_content(row[9], row[10])
+            parsed_rows.append((
+                _decode(row[0]),  # document_sha256
+                _decode(row[2]),  # name
+                _decode(row[3]) or None,  # description
+                tuple(_decode(s) for s in row[4]),  # sources
+                tuple(_decode(o) for o in row[5]),  # origins
+                [_decode(n) for n in row[6]],  # att_names
+                [_decode(d) for d in row[7]],  # att_descs
+                att_sha256s,
+                content,
+            ))
+
+        # Batch fetch ALL attachment content in one query
+        att_content_by_sha: dict[str, bytes] = {}
+        if all_att_sha256s:
+            att_rows = self._client.query(
+                f"SELECT content_sha256, content, length(content) FROM {TABLE_DOCUMENT_CONTENT} FINAL WHERE content_sha256 IN {{sha256s:Array(String)}}",
+                parameters={"sha256s": list(all_att_sha256s)},
+            )
+            for att_row in att_rows.result_rows:
+                att_content_by_sha[_decode(att_row[0])] = _decode_content(att_row[1], att_row[2])
+
+        # Reconstruct documents
+        result: dict[str, Document] = {}
+        with suppress_registration():
+            for doc_sha256, name, description, sources, origins, att_names, att_descs, att_sha256s, content in parsed_rows:
+                attachments: tuple[Attachment, ...] = ()
+                if att_sha256s:
+                    att_list: list[Attachment] = []
+                    for a_name, a_desc, a_sha in zip(att_names, att_descs, att_sha256s, strict=True):
+                        a_content = att_content_by_sha.get(a_sha)
+                        if a_content is None:
+                            logger.warning(f"Attachment content {a_sha[:12]}... not found for document '{name}'")
+                            continue
+                        att_list.append(Attachment(name=a_name, content=a_content, description=a_desc or None))
+                    attachments = tuple(att_list)
+
+                result[doc_sha256] = document_type(
+                    name=name,
+                    content=content,
+                    description=description,
+                    sources=sources,
+                    origins=origins if origins else (),
+                    attachments=attachments if attachments else None,
+                )
+
+        return result
+
+    def _load_nodes_by_sha256s_sync(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+        """Batch metadata lookup by SHA256 from global document_index. No JOIN."""
+        if not sha256s:
+            return {}
+        self._ensure_tables()
+        result = self._client.query(
+            f"SELECT document_sha256, class_name, name, description, sources, origins, summary "
+            f"FROM {TABLE_DOCUMENT_INDEX} FINAL "
+            f"WHERE document_sha256 IN {{sha256s:Array(String)}}",
+            parameters={"sha256s": sha256s},
+        )
+        nodes: dict[str, DocumentNode] = {}
+        for row in result.result_rows:
+            sha256 = _decode(row[0])
+            nodes[sha256] = DocumentNode(
+                sha256=sha256,
+                class_name=_decode(row[1]),
+                name=_decode(row[2]),
+                description=_decode(row[3]) or "",
+                sources=tuple(_decode(s) for s in row[4]),
+                origins=tuple(_decode(o) for o in row[5]),
+                summary=_decode(row[6]) if row[6] else "",
+            )
+        return nodes
+
+    def _load_scope_metadata_sync(self, run_scope: str) -> list[DocumentNode]:
+        """Join run_documents → document_index for metadata in a run scope."""
+        self._ensure_tables()
+        result = self._client.query(
+            f"SELECT di.document_sha256, di.class_name, di.name, di.description, "
+            f"di.sources, di.origins, di.summary "
+            f"FROM {TABLE_RUN_DOCUMENTS} AS rd FINAL "
+            f"JOIN {TABLE_DOCUMENT_INDEX} AS di FINAL ON rd.document_sha256 = di.document_sha256 "
+            f"WHERE rd.run_scope = {{run_scope:String}}",
+            parameters={"run_scope": run_scope},
+        )
+        return [
+            DocumentNode(
+                sha256=_decode(row[0]),
+                class_name=_decode(row[1]),
+                name=_decode(row[2]),
+                description=_decode(row[3]) or "",
+                sources=tuple(_decode(s) for s in row[4]),
+                origins=tuple(_decode(o) for o in row[5]),
+                summary=_decode(row[6]) if row[6] else "",
+            )
+            for row in result.result_rows
+        ]
 
 
 def _decode(value: bytes | str) -> str:

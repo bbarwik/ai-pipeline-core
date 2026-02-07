@@ -4,9 +4,12 @@ Defines the DocumentStore protocol that all storage backends must implement,
 along with get/set helpers for the process-global singleton.
 """
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeVar, runtime_checkable
 
+from ai_pipeline_core.document_store._models import DocumentNode
 from ai_pipeline_core.documents.document import Document
+
+_D = TypeVar("_D", bound=Document)
 
 
 @runtime_checkable
@@ -37,12 +40,37 @@ class DocumentStore(Protocol):
         """Return the subset of sha256s that already exist in the store."""
         ...
 
-    async def update_summary(self, run_scope: str, document_sha256: str, summary: str) -> None:
+    async def update_summary(self, document_sha256: str, summary: str) -> None:
         """Update summary for a stored document. No-op if document doesn't exist."""
         ...
 
-    async def load_summaries(self, run_scope: str, document_sha256s: list[str]) -> dict[str, str]:
+    async def load_summaries(self, document_sha256s: list[str]) -> dict[str, str]:
         """Load summaries by SHA256. Returns {sha256: summary} for docs that have summaries."""
+        ...
+
+    async def load_by_sha256s(self, sha256s: list[str], document_type: type[_D], run_scope: str | None = None) -> dict[str, _D]:
+        """Batch-load full documents by SHA256.
+
+        document_type is used for construction only — class_name is not enforced as a filter.
+        When run_scope is provided, only returns documents belonging to that scope.
+        When run_scope is None, searches across all scopes (cross-pipeline lookups).
+        Returns {sha256: document} for found documents. Missing SHA256s are omitted.
+        """
+        ...
+
+    async def load_nodes_by_sha256s(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+        """Batch-load lightweight metadata for documents by SHA256, searching all scopes.
+
+        Returns {sha256: DocumentNode} for found documents. Missing SHA256s are omitted.
+        No content or attachments loaded. No document type required.
+        """
+        ...
+
+    async def load_scope_metadata(self, run_scope: str) -> list[DocumentNode]:
+        """Load lightweight metadata for ALL documents in a run scope.
+
+        No content or attachments loaded.
+        """
         ...
 
     def flush(self) -> None:

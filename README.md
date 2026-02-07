@@ -312,11 +312,14 @@ Documents are automatically persisted by `@pipeline_task` to a `DocumentStore`. 
 **Store protocol methods:**
 - `save(document, run_scope)` -- Save a single document (idempotent)
 - `save_batch(documents, run_scope)` -- Save multiple documents
-- `load(run_scope, document_types)` -- Load documents by type
-- `has_documents(run_scope, document_type)` -- Check if documents exist for a type
-- `check_existing(sha256s)` -- Check which SHA256 hashes exist in the store
-- `update_summary(run_scope, document_sha256, summary)` -- Update summary for a stored document
-- `load_summaries(run_scope, document_sha256s)` -- Load summaries by SHA256
+- `load(run_scope, document_types)` -- Load documents by type from a run scope
+- `has_documents(run_scope, document_type)` -- Check if documents of a type exist in a run scope
+- `check_existing(sha256s)` -- Check which SHA256 hashes exist globally
+- `update_summary(document_sha256, summary)` -- Update summary for a stored document (global, not scoped)
+- `load_summaries(document_sha256s)` -- Load summaries by SHA256 (global)
+- `load_by_sha256s(sha256s, document_type, run_scope=None)` -- Batch-load full documents by SHA256. `document_type` is for construction only (class_name not enforced). When `run_scope` is provided, verifies scope membership
+- `load_nodes_by_sha256s(sha256s)` -- Batch-load lightweight `DocumentNode` metadata by SHA256 (global, cross-scope)
+- `load_scope_metadata(run_scope)` -- Load `DocumentNode` metadata for all documents in a run scope
 - `flush()` -- Block until all pending background work (summaries) is processed
 - `shutdown()` -- Flush pending work and stop background workers
 

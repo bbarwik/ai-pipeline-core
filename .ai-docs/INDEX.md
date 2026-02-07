@@ -38,9 +38,9 @@ Auto-generated guide index. Do not edit manually.
 | ------ | ---- |
 | _llm_core | 16,717 bytes |
 | agents | 17,604 bytes |
-| deployment | 31,782 bytes |
-| document_store | 17,780 bytes |
-| documents | 40,789 bytes |
+| deployment | 31,883 bytes |
+| document_store | 22,556 bytes |
+| documents | 40,809 bytes |
 | exceptions | 1,461 bytes |
 | llm | 13,078 bytes |
 | logging | 14,785 bytes |
@@ -48,4 +48,4 @@ Auto-generated guide index. Do not edit manually.
 | pipeline | 28,189 bytes |
 | prompt_manager | 12,924 bytes |
 | settings | 7,620 bytes |
-| **Total** | **225,938 bytes** |
+| **Total** | **230,835 bytes** |

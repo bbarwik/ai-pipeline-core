@@ -173,6 +173,8 @@ def run_cli_for_deployment(
                     end_step=end_step,
                 )
             )
+            if trace_name:
+                Laminar.set_span_output(result.model_dump())
         finally:
             _shutdown_workers(debug_processor)
 

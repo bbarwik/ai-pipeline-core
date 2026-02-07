@@ -14,27 +14,43 @@ class _Hashable(Protocol):
 
     name: str
     content: bytes
+    sources: tuple[str, ...]
+    origins: tuple[str, ...]
     attachments: Any
 
 
 def compute_document_sha256(doc: _Hashable) -> str:
-    """Compute the document identity hash: hash(name + content + sorted_attachments).
+    """Compute the document identity hash including provenance.
 
+    Fields included: name, content, sources, origins, attachments.
     Uses length-prefixed fields with null-byte separators for collision resistance.
-    Attachments are sorted by name. Result is BASE32 encoded (uppercase, no padding),
-    consistent with Document.sha256.
+    Groups (sources, origins, attachments) are count-prefixed for unambiguous boundaries.
+    Result is BASE32 encoded (uppercase, no padding), consistent with Document.sha256.
 
-    Excluded from hash: description, sources, origins, class_name.
+    Excluded from hash: description, class_name.
     """
     h = hashlib.sha256()
 
-    name_bytes = doc.name.encode("utf-8")
-    _hash_field(h, name_bytes)
+    _hash_field(h, doc.name.encode("utf-8"))
     _hash_field(h, doc.content)
 
-    for att in sorted(doc.attachments, key=lambda a: a.name):
-        att_name_bytes = att.name.encode("utf-8")
-        _hash_field(h, att_name_bytes)
+    # Sources group (sorted for order-independence)
+    sorted_sources = sorted(doc.sources)
+    _hash_field(h, str(len(sorted_sources)).encode("ascii"))
+    for source in sorted_sources:
+        _hash_field(h, source.encode("utf-8"))
+
+    # Origins group (sorted for order-independence)
+    sorted_origins = sorted(doc.origins)
+    _hash_field(h, str(len(sorted_origins)).encode("ascii"))
+    for origin in sorted_origins:
+        _hash_field(h, origin.encode("utf-8"))
+
+    # Attachments group (sorted by name)
+    sorted_atts = sorted(doc.attachments, key=lambda a: a.name)
+    _hash_field(h, str(len(sorted_atts)).encode("ascii"))
+    for att in sorted_atts:
+        _hash_field(h, att.name.encode("utf-8"))
         _hash_field(h, att.content)
 
     return b32encode(h.digest()).decode("ascii").upper().rstrip("=")
