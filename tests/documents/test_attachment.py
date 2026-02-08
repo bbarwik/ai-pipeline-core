@@ -84,22 +84,22 @@ class TestAttachmentNameValidation:
 class TestAttachmentSerializeContent:
     """Test serialize_content field serializer."""
 
-    def test_text_content_returns_dict_with_utf8(self):
+    def test_text_content_returns_plain_string(self):
         att = Attachment(name="notes.txt", content=b"Hello world")
         dumped = att.model_dump()
-        assert dumped["content"] == {"v": "Hello world", "e": "utf-8"}
+        assert dumped["content"] == "Hello world"
 
-    def test_binary_content_returns_dict_with_base64(self):
+    def test_binary_content_returns_data_uri(self):
         att = Attachment(name="image.png", content=PNG_HEADER)
         dumped = att.model_dump()
         expected = base64.b64encode(PNG_HEADER).decode("ascii")
-        assert dumped["content"] == {"v": expected, "e": "base64"}
+        assert dumped["content"] == f"data:image/png;base64,{expected}"
 
-    def test_unicode_text_returns_dict_with_utf8(self):
+    def test_unicode_text_returns_plain_string(self):
         content = "Hello 世界".encode()
         att = Attachment(name="unicode.txt", content=content)
         dumped = att.model_dump()
-        assert dumped["content"] == {"v": "Hello 世界", "e": "utf-8"}
+        assert dumped["content"] == "Hello 世界"
 
 
 class TestAttachmentProperties:

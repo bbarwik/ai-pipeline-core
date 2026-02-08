@@ -28,7 +28,7 @@ _RULE_PREFIXES = ("cannot", "must", "never", "always", "critical")
 
 
 @dataclass(frozen=True)
-class TestExample:
+class ScoredExample:
     """Scored test function extracted for guide examples."""
 
     name: str
@@ -49,8 +49,8 @@ class GuideData:
     functions: list[FunctionInfo]
     rules: list[str]
     external_bases: set[str]
-    normal_examples: list[TestExample]
-    error_examples: list[TestExample]
+    normal_examples: list[ScoredExample]
+    error_examples: list[ScoredExample]
     internal_types: list[ClassInfo] = field(default_factory=list)
 
 
@@ -64,7 +64,7 @@ def discover_tests(
     tests_dir: Path,
     test_dir_overrides: dict[str, str] | None = None,
     repo_root: Path | None = None,
-) -> list[TestExample]:
+) -> list[ScoredExample]:
     """Find and extract test functions relevant to a module.
 
     Default mapping: ai_pipeline_core/<module>/ -> tests/<module>/
@@ -84,7 +84,7 @@ def discover_tests(
         if f not in test_files:
             test_files.append(f)
 
-    examples: list[TestExample] = []
+    examples: list[ScoredExample] = []
     for test_file in test_files:
         examples.extend(_extract_test_functions(test_file, repo_root))
     return examples
@@ -95,7 +95,7 @@ def discover_tests(
 # ---------------------------------------------------------------------------
 
 
-def score_test(test: TestExample, symbol_names: list[str]) -> int:
+def score_test(test: ScoredExample, symbol_names: list[str]) -> int:
     """Score a test's relevance to a set of module symbols.
 
     Returns the best score across all symbols.
@@ -148,10 +148,10 @@ def score_test(test: TestExample, symbol_names: list[str]) -> int:
 
 
 def select_examples(
-    tests: list[TestExample],
+    tests: list[ScoredExample],
     symbol_names: list[str],
     max_total: int = MAX_EXAMPLES,
-) -> tuple[list[TestExample], list[TestExample]]:
+) -> tuple[list[ScoredExample], list[ScoredExample]]:
     """Select top examples within budget.
 
     Marked tests (@pytest.mark.ai_docs) get priority slots.
@@ -480,7 +480,7 @@ def _get_source(source_lines: list[str], node: ast.AST) -> str:
     return "\n".join(source_lines[start:end])
 
 
-def _extract_test_functions(path: Path, repo_root: Path | None = None) -> list[TestExample]:
+def _extract_test_functions(path: Path, repo_root: Path | None = None) -> list[ScoredExample]:
     source = path.read_text(encoding="utf-8")
     source_lines = source.splitlines()
     tree = ast.parse(source)
@@ -493,7 +493,7 @@ def _extract_test_functions(path: Path, repo_root: Path | None = None) -> list[T
     else:
         source_file = str(path)
 
-    results: list[TestExample] = []
+    results: list[ScoredExample] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -504,7 +504,7 @@ def _extract_test_functions(path: Path, repo_root: Path | None = None) -> list[T
         code = "\n".join(line for line in code.splitlines() if "pytest.mark.ai_docs" not in line and "mark.ai_docs" not in line)
         code = "\n".join(_dedented_source(code))
         results.append(
-            TestExample(
+            ScoredExample(
                 name=node.name,
                 source_file=source_file,
                 line_number=node.lineno,
@@ -544,7 +544,7 @@ def _has_ai_docs_marker(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return False
 
 
-def _has_symbol_overlap(test: TestExample, symbol_names: list[str]) -> bool:
+def _has_symbol_overlap(test: ScoredExample, symbol_names: list[str]) -> bool:
     """Check if a test references any of the given symbol names."""
     return any(symbol.lower() in test.name.lower() or symbol in test.code for symbol in symbol_names)
 
@@ -639,6 +639,6 @@ def _dedented_source(source: str) -> list[str]:
     return [line[indent:] if line[:indent].isspace() else line for line in raw_lines]
 
 
-def _example_title(ex: TestExample) -> str:
+def _example_title(ex: ScoredExample) -> str:
     """Convert test function name to readable title."""
     return ex.name.removeprefix("test_").replace("_", " ").capitalize()

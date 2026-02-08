@@ -15,17 +15,7 @@ os.environ.setdefault("PREFECT_CLOUD_ENABLE_ORCHESTRATION_TELEMETRY", "false")
 if "prefect" in sys.modules and get_current_settings().cloud.enable_orchestration_telemetry:
     refresh_global_settings_context()
 
-from . import agents, llm
-from .agents import (
-    AgentOutputDocument,
-    AgentProvider,
-    AgentResult,
-    get_agent_provider,
-    register_agent_provider,
-    reset_agent_provider,
-    run_agent,
-    temporary_provider,
-)
+from . import llm
 from .deployment import DeploymentContext, DeploymentResult, PipelineDeployment, progress
 from .deployment.remote import RemoteDeployment, run_remote_deployment
 from .document_store import DocumentStore, SummaryGenerator, create_document_store, get_document_store, set_document_store
@@ -34,7 +24,6 @@ from .documents import (
     Document,
     RunContext,
     TaskDocumentContext,
-    canonical_name_key,
     get_run_context,
     is_document_sha256,
     reset_run_context,
@@ -73,12 +62,9 @@ from .prompt_manager import PromptManager
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
 
-__version__ = "0.7.2"
+__version__ = "0.8.0"
 
 __all__ = [
-    "AgentOutputDocument",
-    "AgentProvider",
-    "AgentResult",
     "Attachment",
     "Citation",
     "Conversation",
@@ -110,13 +96,10 @@ __all__ = [
     "TraceInfo",
     "TraceLevel",
     "URLSubstitutor",
-    "agents",
-    "canonical_name_key",
     "create_document_store",
     "disable_run_logger",
     "generate",
     "generate_structured",
-    "get_agent_provider",
     "get_document_store",
     "get_logger",
     "get_pipeline_logger",
@@ -128,16 +111,12 @@ __all__ = [
     "prefect_test_harness",
     "process_image",
     "progress",
-    "register_agent_provider",
-    "reset_agent_provider",
     "reset_run_context",
-    "run_agent",
     "run_remote_deployment",
     "sanitize_url",
     "set_document_store",
     "set_run_context",
     "set_trace_cost",
     "setup_logging",
-    "temporary_provider",
     "trace",
 ]

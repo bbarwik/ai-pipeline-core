@@ -35,7 +35,7 @@ from ruamel.yaml import YAML
 
 from ai_pipeline_core.documents._context_vars import get_task_context, is_registration_suppressed
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
-from ai_pipeline_core.documents.utils import canonical_name_key, is_document_sha256
+from ai_pipeline_core.documents.utils import DATA_URI_PATTERN, is_document_sha256
 from ai_pipeline_core.exceptions import DocumentNameError, DocumentSizeError
 
 from .attachment import Attachment
@@ -50,21 +50,18 @@ from .mime_type import (
 TModel = TypeVar("TModel", bound=BaseModel)
 TDocument = TypeVar("TDocument", bound="Document")
 
-# Registry of canonical_name -> Document subclass for collision detection.
+# Registry of class __name__ -> Document subclass for collision detection.
 # Only non-test classes are registered. Test modules (tests.*, conftest, etc.) are skipped.
-_canonical_name_registry: dict[str, type["Document"]] = {}  # nosemgrep: no-mutable-module-globals
+_class_name_registry: dict[str, type["Document"]] = {}  # nosemgrep: no-mutable-module-globals
 
 # Metadata keys added by serialize_model() that should be stripped before validation.
-# Also includes 'content_encoding' for backward compatibility with old serialized data.
 _DOCUMENT_SERIALIZE_METADATA_KEYS: frozenset[str] = frozenset({
     "id",
     "sha256",
     "content_sha256",
     "size",
     "mime_type",
-    "canonical_name",
     "class_name",
-    "content_encoding",  # Legacy format - now encoding is in content dict as "e" key
 })
 
 
@@ -154,18 +151,17 @@ class Document(BaseModel):
                 f"{', '.join(sorted(extras))}. Only {', '.join(sorted(allowed))} are allowed."
             )
 
-        # Canonical name collision detection (production classes only)
+        # Class name collision detection (production classes only)
         if not _is_test_module(cls):
-            canonical = canonical_name_key(cls)
-            existing = _canonical_name_registry.get(canonical)
+            name = cls.__name__
+            existing = _class_name_registry.get(name)
             if existing is not None and existing is not cls:
                 raise TypeError(
-                    f"Document subclass '{cls.__name__}' (in {cls.__module__}) produces "
-                    f"canonical_name '{canonical}' which collides with existing class "
-                    f"'{existing.__name__}' (in {existing.__module__}). "
-                    f"Rename one of the classes to avoid ambiguity."
+                    f"Document subclass '{name}' (in {cls.__module__}) collides with "
+                    f"existing class in {existing.__module__}. "
+                    f"Class names must be unique across the framework."
                 )
-            _canonical_name_registry[canonical] = cls
+            _class_name_registry[name] = cls
 
     @classmethod
     def create(
@@ -302,23 +298,26 @@ class Document(BaseModel):
     @field_validator("content", mode="before")
     @classmethod
     def validate_content(cls, v: Any, info: ValidationInfo) -> bytes:
-        """Convert content to bytes via `_convert_content` if not already bytes. Enforces MAX_CONTENT_SIZE.
+        """Convert content to bytes. Enforces MAX_CONTENT_SIZE.
 
-        Handles three input formats:
-        1. bytes - passed through directly
-        2. dict with {v: str, e: "utf-8"|"base64"} - new Pydantic serialization format
-        3. str - legacy format, treated as UTF-8 text
+        Handles:
+        1. bytes — passed through directly
+        2. str with data URI prefix — base64-decoded to bytes
+        3. str (plain text) — UTF-8 encoded to bytes
+        4. dict/list/BaseModel — serialized via _convert_content
         """
         if isinstance(v, bytes):
-            pass  # Already bytes, use as-is
-        elif isinstance(v, dict) and "v" in v and "e" in v:
-            # New format with encoding marker
-            if v["e"] == "base64":
-                v = base64.b64decode(v["v"])
+            pass
+        elif isinstance(v, str):
+            # Data URIs are produced by serialize_content() for binary content only (failed UTF-8 decode).
+            # Text content starting with "data:<mime>;base64," would be misinterpreted here, but this is
+            # accepted by design — real documents never start with a bare data URI on the first byte.
+            if DATA_URI_PATTERN.match(v):
+                _, payload = v.split(",", 1)
+                v = base64.b64decode(payload)
             else:
-                v = v["v"].encode("utf-8")
+                v = v.encode("utf-8")
         else:
-            # Legacy format or other types (str, dict without markers, BaseModel, list)
             name = info.data.get("name", "") if hasattr(info, "data") else ""
             v = _convert_content(name, v)
         if len(v) > cls.MAX_CONTENT_SIZE:
@@ -367,16 +366,13 @@ class Document(BaseModel):
         return self
 
     @field_serializer("content")
-    def serialize_content(self, v: bytes) -> dict[str, str]:  # noqa: PLR6301
-        """Serialize content with encoding marker for correct round-trip.
-
-        Returns dict with 'v' (value) and 'e' (encoding: "utf-8" or "base64").
-        Text content stays readable, binary is base64-encoded.
-        """
+    def serialize_content(self, v: bytes) -> str:
+        """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
         try:
-            return {"v": v.decode("utf-8"), "e": "utf-8"}
+            return v.decode("utf-8")
         except UnicodeDecodeError:
-            return {"v": base64.b64encode(v).decode("ascii"), "e": "base64"}
+            b64 = base64.b64encode(v).decode("ascii")
+            return f"data:{self.mime_type};base64,{b64}"
 
     @final
     @property
@@ -421,11 +417,6 @@ class Document(BaseModel):
     def is_image(self) -> bool:
         """True if MIME type starts with image/."""
         return is_image_mime_type(self.mime_type)
-
-    @classmethod
-    def canonical_name(cls) -> str:
-        """Snake_case name derived from class name, used for directory naming."""
-        return canonical_name_key(cls)
 
     @property
     def text(self) -> str:
@@ -545,7 +536,6 @@ class Document(BaseModel):
         result["content_sha256"] = self.content_sha256
         result["size"] = self.size
         result["mime_type"] = self.mime_type
-        result["canonical_name"] = canonical_name_key(self.__class__)
         result["class_name"] = self.__class__.__name__
 
         # Add metadata to attachments
@@ -567,9 +557,9 @@ class Document(BaseModel):
         # doesn't work with custom __init__ - Pydantic passes raw data to __init__ first)
         cleaned = {k: v for k, v in data.items() if k not in _DOCUMENT_SERIALIZE_METADATA_KEYS}
 
-        # Also strip attachment metadata (including content_encoding for backward compat)
+        # Strip attachment metadata added by serialize_model()
         if cleaned.get("attachments"):
-            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in {"mime_type", "size", "content_encoding"}} for att in cleaned["attachments"]]
+            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in {"mime_type", "size"}} for att in cleaned["attachments"]]
 
         return cls.model_validate(cleaned)
 

@@ -1,13 +1,14 @@
 """Utility functions for document handling.
 
 Provides helper functions for URL sanitization, naming conventions,
-canonical key generation, and hash validation used throughout the document system.
+hash validation, and shared constants used throughout the document system.
 """
 
 import re
-from collections.abc import Iterable
-from typing import Any
 from urllib.parse import urlparse
+
+# Regex for detecting data URIs (RFC 2397): data:<mime>;base64,<payload>
+DATA_URI_PATTERN = re.compile(r"^data:[a-zA-Z0-9.+/-]+;base64,")
 
 
 def sanitize_url(url: str) -> str:
@@ -59,59 +60,6 @@ def camel_to_snake(name: str) -> str:
     s1 = re.sub(r"(.)([A-Z][a-z0-9]+)", r"\1_\2", name)
     s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1)
     return s2.replace("__", "_").strip("_").lower()
-
-
-def canonical_name_key(
-    obj_or_name: type[Any] | str,
-    *,
-    max_parent_suffixes: int = 3,
-    extra_suffixes: Iterable[str] = (),
-) -> str:
-    """Produce a canonical snake_case key from a class or name.
-
-    Process:
-      1) Starting with the class name (or given string),
-      2) Stripping any trailing parent class names (up to `max_parent_suffixes` from the MRO),
-      3) Stripping any `extra_suffixes`,
-      4) Converting to snake_case.
-
-    Args:
-        obj_or_name: A class or string to convert.
-        max_parent_suffixes: Maximum number of parent classes to consider for suffix removal.
-        extra_suffixes: Additional suffixes to strip.
-
-    Returns:
-        The canonical snake_case name.
-
-    Examples:
-        FinalReportDocument(WorkflowDocument -> Document) -> 'final_report'
-        FooWorkflowDocument(WorkflowDocument -> Document) -> 'foo'
-        BarFlow(Config -> Base -> Flow) -> 'bar'
-    """
-    name = obj_or_name.__name__ if isinstance(obj_or_name, type) else str(obj_or_name)
-
-    # From MRO, collect up to N parent names to consider as removable suffixes
-    suffixes: list[str] = []
-    if isinstance(obj_or_name, type):
-        for base in obj_or_name.mro()[1 : 1 + max_parent_suffixes]:
-            if base is object:
-                continue
-            suffixes.append(base.__name__)
-
-    # Add any custom suffixes the caller wants to strip (e.g., 'Config')
-    suffixes.extend(extra_suffixes)
-
-    # Iteratively trim the longest matching suffix first
-    trimmed = True
-    while trimmed and suffixes:
-        trimmed = False
-        for sfx in sorted(set(suffixes), key=len, reverse=True):
-            if sfx and name.endswith(sfx):
-                name = name[: -len(sfx)]
-                trimmed = True
-                break
-
-    return camel_to_snake(name)
 
 
 def is_document_sha256(value: str) -> bool:

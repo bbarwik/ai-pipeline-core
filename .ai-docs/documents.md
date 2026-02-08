@@ -1,7 +1,7 @@
 # MODULE: documents
 # CLASSES: Attachment, TaskDocumentContext, Document
 # DEPENDS: BaseModel
-# SIZE: ~39KB
+# SIZE: ~37KB
 
 # === DEPENDENCIES (Resolved) ===
 
@@ -51,20 +51,21 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
     @field_validator("content", mode="before")
     @classmethod
     def validate_content(cls, v: Any) -> bytes:
-        """Convert content to bytes, handling encoding markers for correct round-trip.
+        """Convert content to bytes.
 
-        Handles three input formats:
-        1. bytes - passed through directly
-        2. dict with {v: str, e: "utf-8"|"base64"} - new Pydantic serialization format
-        3. str - legacy format, treated as UTF-8 text
+        Handles:
+        1. bytes — passed through directly
+        2. str with data URI prefix — base64-decoded to bytes
+        3. str (plain text) — UTF-8 encoded to bytes
         """
         if isinstance(v, bytes):
             return v
-        if isinstance(v, dict) and "v" in v and "e" in v:
-            if v["e"] == "base64":
-                return base64.b64decode(v["v"])
-            return v["v"].encode("utf-8")
         if isinstance(v, str):
+            # Data URIs are produced by serialize_content() for binary content only (failed UTF-8 decode).
+            # Text starting with "data:<mime>;base64," would be misinterpreted, accepted by design.
+            if DATA_URI_PATTERN.match(v):
+                _, payload = v.split(",", 1)
+                return base64.b64decode(payload)
             return v.encode("utf-8")
         raise ValueError(f"Invalid content type: {type(v)}")
 
@@ -90,15 +91,13 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
         return detect_mime_type(self.content, self.name)
 
     @field_serializer("content")
-    def serialize_content(self, v: bytes) -> dict[str, str]:  # noqa: PLR6301
-        """Serialize content with encoding marker for correct round-trip.
-
-        Returns dict with 'v' (value) and 'e' (encoding: "utf-8" or "base64").
-        """
+    def serialize_content(self, v: bytes) -> str:
+        """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
         try:
-            return {"v": v.decode("utf-8"), "e": "utf-8"}
+            return v.decode("utf-8")
         except UnicodeDecodeError:
-            return {"v": base64.b64encode(v).decode("ascii"), "e": "base64"}
+            b64 = base64.b64encode(v).decode("ascii")
+            return f"data:{self.mime_type};base64,{b64}"
 
 
 @dataclass
@@ -279,11 +278,6 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         return self.content.decode("utf-8")
 
     @classmethod
-    def canonical_name(cls) -> str:
-        """Snake_case name derived from class name, used for directory naming."""
-        return canonical_name_key(cls)
-
-    @classmethod
     def create(
         cls,
         *,
@@ -320,9 +314,9 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         # doesn't work with custom __init__ - Pydantic passes raw data to __init__ first)
         cleaned = {k: v for k, v in data.items() if k not in _DOCUMENT_SERIALIZE_METADATA_KEYS}
 
-        # Also strip attachment metadata (including content_encoding for backward compat)
+        # Strip attachment metadata added by serialize_model()
         if cleaned.get("attachments"):
-            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in {"mime_type", "size", "content_encoding"}} for att in cleaned["attachments"]]
+            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in {"mime_type", "size"}} for att in cleaned["attachments"]]
 
         return cls.model_validate(cleaned)
 
@@ -347,23 +341,26 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
     @field_validator("content", mode="before")
     @classmethod
     def validate_content(cls, v: Any, info: ValidationInfo) -> bytes:
-        """Convert content to bytes via `_convert_content` if not already bytes. Enforces MAX_CONTENT_SIZE.
+        """Convert content to bytes. Enforces MAX_CONTENT_SIZE.
 
-        Handles three input formats:
-        1. bytes - passed through directly
-        2. dict with {v: str, e: "utf-8"|"base64"} - new Pydantic serialization format
-        3. str - legacy format, treated as UTF-8 text
+        Handles:
+        1. bytes — passed through directly
+        2. str with data URI prefix — base64-decoded to bytes
+        3. str (plain text) — UTF-8 encoded to bytes
+        4. dict/list/BaseModel — serialized via _convert_content
         """
         if isinstance(v, bytes):
-            pass  # Already bytes, use as-is
-        elif isinstance(v, dict) and "v" in v and "e" in v:
-            # New format with encoding marker
-            if v["e"] == "base64":
-                v = base64.b64decode(v["v"])
+            pass
+        elif isinstance(v, str):
+            # Data URIs are produced by serialize_content() for binary content only (failed UTF-8 decode).
+            # Text content starting with "data:<mime>;base64," would be misinterpreted here, but this is
+            # accepted by design — real documents never start with a bare data URI on the first byte.
+            if DATA_URI_PATTERN.match(v):
+                _, payload = v.split(",", 1)
+                v = base64.b64decode(payload)
             else:
-                v = v["v"].encode("utf-8")
+                v = v.encode("utf-8")
         else:
-            # Legacy format or other types (str, dict without markers, BaseModel, list)
             name = info.data.get("name", "") if hasattr(info, "data") else ""
             v = _convert_content(name, v)
         if len(v) > cls.MAX_CONTENT_SIZE:
@@ -440,18 +437,17 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
                 f"{', '.join(sorted(extras))}. Only {', '.join(sorted(allowed))} are allowed."
             )
 
-        # Canonical name collision detection (production classes only)
+        # Class name collision detection (production classes only)
         if not _is_test_module(cls):
-            canonical = canonical_name_key(cls)
-            existing = _canonical_name_registry.get(canonical)
+            name = cls.__name__
+            existing = _class_name_registry.get(name)
             if existing is not None and existing is not cls:
                 raise TypeError(
-                    f"Document subclass '{cls.__name__}' (in {cls.__module__}) produces "
-                    f"canonical_name '{canonical}' which collides with existing class "
-                    f"'{existing.__name__}' (in {existing.__module__}). "
-                    f"Rename one of the classes to avoid ambiguity."
+                    f"Document subclass '{name}' (in {cls.__module__}) collides with "
+                    f"existing class in {existing.__module__}. "
+                    f"Class names must be unique across the framework."
                 )
-            _canonical_name_registry[canonical] = cls
+            _class_name_registry[name] = cls
 
     @cached_property
     def approximate_tokens_count(self) -> int:
@@ -558,16 +554,13 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         raise ValueError(f"Unsupported parse type: {type_}")
 
     @field_serializer("content")
-    def serialize_content(self, v: bytes) -> dict[str, str]:  # noqa: PLR6301
-        """Serialize content with encoding marker for correct round-trip.
-
-        Returns dict with 'v' (value) and 'e' (encoding: "utf-8" or "base64").
-        Text content stays readable, binary is base64-encoded.
-        """
+    def serialize_content(self, v: bytes) -> str:
+        """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
         try:
-            return {"v": v.decode("utf-8"), "e": "utf-8"}
+            return v.decode("utf-8")
         except UnicodeDecodeError:
-            return {"v": base64.b64encode(v).decode("ascii"), "e": "base64"}
+            b64 = base64.b64encode(v).decode("ascii")
+            return f"data:{self.mime_type};base64,{b64}"
 
     @final
     def serialize_model(self) -> dict[str, Any]:
@@ -584,7 +577,6 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         result["content_sha256"] = self.content_sha256
         result["size"] = self.size
         result["mime_type"] = self.mime_type
-        result["canonical_name"] = canonical_name_key(self.__class__)
         result["class_name"] = self.__class__.__name__
 
         # Add metadata to attachments
@@ -846,58 +838,6 @@ def camel_to_snake(name: str) -> str:
     s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1)
     return s2.replace("__", "_").strip("_").lower()
 
-def canonical_name_key(
-    obj_or_name: type[Any] | str,
-    *,
-    max_parent_suffixes: int = 3,
-    extra_suffixes: Iterable[str] = (),
-) -> str:
-    """Produce a canonical snake_case key from a class or name.
-
-    Process:
-      1) Starting with the class name (or given string),
-      2) Stripping any trailing parent class names (up to `max_parent_suffixes` from the MRO),
-      3) Stripping any `extra_suffixes`,
-      4) Converting to snake_case.
-
-    Args:
-        obj_or_name: A class or string to convert.
-        max_parent_suffixes: Maximum number of parent classes to consider for suffix removal.
-        extra_suffixes: Additional suffixes to strip.
-
-    Returns:
-        The canonical snake_case name.
-
-    Examples:
-        FinalReportDocument(WorkflowDocument -> Document) -> 'final_report'
-        FooWorkflowDocument(WorkflowDocument -> Document) -> 'foo'
-        BarFlow(Config -> Base -> Flow) -> 'bar'
-    """
-    name = obj_or_name.__name__ if isinstance(obj_or_name, type) else str(obj_or_name)
-
-    # From MRO, collect up to N parent names to consider as removable suffixes
-    suffixes: list[str] = []
-    if isinstance(obj_or_name, type):
-        for base in obj_or_name.mro()[1 : 1 + max_parent_suffixes]:
-            if base is object:
-                continue
-            suffixes.append(base.__name__)
-
-    # Add any custom suffixes the caller wants to strip (e.g., 'Config')
-    suffixes.extend(extra_suffixes)
-
-    # Iteratively trim the longest matching suffix first
-    trimmed = True
-    while trimmed and suffixes:
-        trimmed = False
-        for sfx in sorted(set(suffixes), key=len, reverse=True):
-            if sfx and name.endswith(sfx):
-                name = name[: -len(sfx)]
-                trimmed = True
-                break
-
-    return camel_to_snake(name)
-
 def is_document_sha256(value: str) -> bool:
     """Check if a string is a valid base32-encoded SHA256 hash with proper entropy.
 
@@ -958,14 +898,14 @@ def is_document_sha256(value: str) -> bool:
 # === EXAMPLES (from tests/) ===
 
 # Example: Attachment mime type
-# Source: tests/documents/test_document_core.py:956
+# Source: tests/documents/test_document_core.py:924
 def test_attachment_mime_type(self):
     """Attachment.mime_type returns detected MIME type."""
     att = Attachment(name="notes.txt", content=b"Hello")
     assert "text" in att.mime_type
 
 # Example: Attachment no detected mime type
-# Source: tests/documents/test_document_core.py:961
+# Source: tests/documents/test_document_core.py:929
 def test_attachment_no_detected_mime_type(self):
     """Attachment has no detected_mime_type attribute (renamed to mime_type)."""
     att = Attachment(name="notes.txt", content=b"Hello")
@@ -1022,7 +962,7 @@ def test_cannot_instantiate_document(self):
         Document(name="test.txt", content=b"test")
 
 # Error: Content plus attachments exceeding limit
-# Source: tests/documents/test_document_core.py:1049
+# Source: tests/documents/test_document_core.py:1017
 def test_content_plus_attachments_exceeding_limit(self):
     """Content + attachments exceeding MAX_CONTENT_SIZE is rejected by model_validator."""
     # Content is 7 bytes (under 10-byte limit), but total with attachment is 12

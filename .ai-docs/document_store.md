@@ -115,7 +115,7 @@ this executor via loop.run_in_executor()."""
 class LocalDocumentStore:
     """Filesystem-backed document store for local development and debugging.
 
-Documents are stored as browsable files organized by canonical type name.
+Documents are stored as browsable files organized by class name.
 Write order (content before meta) ensures crash safety — load() ignores
 content files without a valid .meta.json."""
     def __init__(
@@ -427,7 +427,7 @@ def set_document_store(store: DocumentStore | None) -> None:
 # === EXAMPLES (from tests/) ===
 
 # Example: Create document store returns local when no clickhouse
-# Source: tests/document_store/test_local.py:383
+# Source: tests/document_store/test_local.py:379
 def test_create_document_store_returns_local_when_no_clickhouse(self):
     from ai_pipeline_core.settings import Settings
 
@@ -462,7 +462,7 @@ def test_set_and_get_document_store():
 # === ERROR EXAMPLES (What NOT to Do) ===
 
 # Error: Create document store rejects non settings
-# Source: tests/document_store/test_local.py:390
+# Source: tests/document_store/test_local.py:386
 def test_create_document_store_rejects_non_settings(self):
     with pytest.raises(TypeError, match="Expected Settings"):
         create_document_store("not_settings")  # type: ignore[arg-type]

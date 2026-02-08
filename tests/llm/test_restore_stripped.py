@@ -1,7 +1,10 @@
-"""Tests for tilde-stripped restore in URLSubstitutor.
+"""Tests for LLM corruption resilience in URLSubstitutor.restore().
 
-When LLMs strip ~ delimiters from shortened forms (e.g., 0xfd61~585~1708 → 0xfd615851708),
-restore() should still recover the original via pre-computed stripped reverse mappings.
+LLMs may corrupt shortened forms in two ways:
+1. Unicode ellipsis: `...` → `…` (U+2026)
+2. Case change: `0xdAC17F95` → `0xdac17f95`
+
+restore() handles both via Unicode normalization and case-insensitive lookup.
 """
 
 from ai_pipeline_core.llm import URLSubstitutor
@@ -20,34 +23,34 @@ def _prepare(sub: URLSubstitutor, *texts: str) -> dict[str, str]:
     return sub.get_mappings()
 
 
-class TestBasicStrippedRestore:
-    """Category 1: Basic tilde-stripped restore."""
+class TestUnicodeEllipsisRestore:
+    """Category 1: Unicode ellipsis normalization."""
 
-    def test_string_tilde_stripped_restore(self):
-        """ETH address: stripped form (tildes removed) should restore to original."""
+    def test_unicode_ellipsis_restores_address(self):
+        """ETH address with `…` (Unicode ellipsis) should restore."""
         sub = URLSubstitutor()
         mappings = _prepare(sub, ETH_ADDRESS)
         shortened = mappings[ETH_ADDRESS]
 
-        # Simulate LLM stripping tildes
-        stripped = shortened.replace("~", "")
-        text = f"Contract: {stripped}"
+        # Simulate LLM converting ... to …
+        corrupted = shortened.replace("...", "\u2026")
+        text = f"Contract: {corrupted}"
         restored = sub.restore(text)
         assert restored == f"Contract: {ETH_ADDRESS}"
 
-    def test_url_hash_tilde_stripped_restore(self):
-        """URL shortened with hash: stripped form should restore."""
+    def test_unicode_ellipsis_restores_url(self):
+        """Long URL with `…` should restore."""
         sub = URLSubstitutor()
-        url = "https://example.com/very/long/path/to/resource/page"
+        url = "https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page"
         mappings = _prepare(sub, url)
         shortened = mappings[url]
 
-        stripped = shortened.replace("~", "")
-        restored = sub.restore(stripped)
+        corrupted = shortened.replace("...", "\u2026")
+        restored = sub.restore(corrupted)
         assert restored == url
 
-    def test_path_tilde_stripped_restore(self):
-        """Path shortened: stripped form should restore."""
+    def test_unicode_ellipsis_restores_path(self):
+        """Path with `…` should restore."""
         sub = URLSubstitutor()
         path = "/es/network/nodes/configure/telemetry"
         text = f"({path})"
@@ -55,19 +58,19 @@ class TestBasicStrippedRestore:
         mappings = sub.get_mappings()
         shortened = mappings[path]
 
-        stripped = shortened.replace("~", "")
-        result = sub.restore(f"({stripped})")
+        corrupted = shortened.replace("...", "\u2026")
+        result = sub.restore(f"({corrupted})")
         assert result == text
 
-    def test_multiple_stripped_patterns(self):
-        """Multiple different patterns all stripped should all restore."""
+    def test_unicode_ellipsis_multiple_patterns(self):
+        """Multiple patterns all with `…` should all restore."""
         sub = URLSubstitutor()
         mappings = _prepare(sub, ETH_ADDRESS, ETH_ADDRESS_2, SOL_ADDRESS)
 
         parts = []
         for orig in [ETH_ADDRESS, ETH_ADDRESS_2, SOL_ADDRESS]:
-            stripped = mappings[orig].replace("~", "")
-            parts.append(stripped)
+            corrupted = mappings[orig].replace("...", "\u2026")
+            parts.append(corrupted)
 
         text = " ".join(parts)
         restored = sub.restore(text)
@@ -75,48 +78,82 @@ class TestBasicStrippedRestore:
         assert ETH_ADDRESS_2 in restored
         assert SOL_ADDRESS in restored
 
-    def test_mixed_exact_and_stripped(self):
-        """One pattern with tildes intact, another stripped — both should restore."""
-        sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS, ETH_ADDRESS_2)
-        short_a = mappings[ETH_ADDRESS]  # kept intact
-        short_b = mappings[ETH_ADDRESS_2]
-        stripped_b = short_b.replace("~", "")  # stripped
 
-        text = f"{short_a} and {stripped_b}"
-        restored = sub.restore(text)
-        assert ETH_ADDRESS in restored
-        assert ETH_ADDRESS_2 in restored
+class TestCaseInsensitiveRestore:
+    """Category 2: Case-insensitive restoration."""
 
-    def test_stripped_roundtrip(self):
-        """strip → restore → substitute should produce original shortened form."""
+    def test_lowercase_address_restores(self):
+        """Lowercased shortened address should restore."""
         sub = URLSubstitutor()
         mappings = _prepare(sub, ETH_ADDRESS)
         shortened = mappings[ETH_ADDRESS]
 
-        stripped = shortened.replace("~", "")
-        restored = sub.restore(stripped)
+        lowered = shortened.lower()
+        restored = sub.restore(lowered)
         assert restored == ETH_ADDRESS
 
-        re_shortened = sub.substitute(restored)
-        assert re_shortened == shortened
+    def test_uppercase_address_restores(self):
+        """Uppercased shortened address should restore."""
+        sub = URLSubstitutor()
+        mappings = _prepare(sub, ETH_ADDRESS)
+        shortened = mappings[ETH_ADDRESS]
+
+        uppered = shortened.upper()
+        restored = sub.restore(uppered)
+        assert restored == ETH_ADDRESS
+
+    def test_case_change_url_restores(self):
+        """Case-changed shortened URL should restore."""
+        sub = URLSubstitutor()
+        url = "https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page"
+        mappings = _prepare(sub, url)
+        shortened = mappings[url]
+
+        lowered = shortened.lower()
+        restored = sub.restore(lowered)
+        assert restored == url
 
 
-class TestURLWithEmbeddedPatternsStripped:
-    """Category 2: URLs with embedded patterns, tildes stripped."""
+class TestCombinedCorruption:
+    """Category 3: Unicode ellipsis + case change combined."""
 
-    def test_url_embedded_eth_stripped(self):
-        """Etherscan URL with inner address tildes stripped should restore."""
+    def test_ellipsis_plus_lowercase(self):
+        """Lowercased AND ellipsis-corrupted address should restore."""
+        sub = URLSubstitutor()
+        mappings = _prepare(sub, ETH_ADDRESS)
+        shortened = mappings[ETH_ADDRESS]
+
+        corrupted = shortened.replace("...", "\u2026").lower()
+        restored = sub.restore(corrupted)
+        assert restored == ETH_ADDRESS
+
+    def test_ellipsis_plus_lowercase_url(self):
+        """Lowercased AND ellipsis-corrupted URL should restore."""
+        sub = URLSubstitutor()
+        url = "https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page"
+        mappings = _prepare(sub, url)
+        shortened = mappings[url]
+
+        corrupted = shortened.replace("...", "\u2026").lower()
+        restored = sub.restore(corrupted)
+        assert restored == url
+
+
+class TestURLWithEmbeddedPatternsCorrupted:
+    """Category 4: URLs with embedded patterns, corruption applied."""
+
+    def test_url_embedded_eth_ellipsis(self):
+        """Etherscan URL with inner address ellipsis-corrupted should restore."""
         sub = URLSubstitutor()
         mappings = _prepare(sub, LONG_URL)
         shortened_url = mappings[LONG_URL]
 
-        stripped = shortened_url.replace("~", "")
-        restored = sub.restore(stripped)
+        corrupted = shortened_url.replace("...", "\u2026")
+        restored = sub.restore(corrupted)
         assert restored == LONG_URL
 
-    def test_standalone_and_url_both_stripped(self):
-        """Same address stripped in text and in URL should both restore."""
+    def test_standalone_and_url_both_corrupted(self):
+        """Same address corrupted in text and in URL should both restore."""
         sub = URLSubstitutor()
         eth = "0xdac17f958d2ee523a2206206994597c13d831ec7"
         url = f"https://etherscan.io/address/{eth}"
@@ -125,72 +162,16 @@ class TestURLWithEmbeddedPatternsStripped:
 
         short_eth = mappings[eth]
         short_url = mappings[url]
-        stripped_eth = short_eth.replace("~", "")
-        stripped_url = short_url.replace("~", "")
+        corrupted_eth = short_eth.replace("...", "\u2026")
+        corrupted_url = short_url.replace("...", "\u2026")
 
-        result = sub.restore(f"Contract {stripped_eth} at {stripped_url}")
+        result = sub.restore(f"Contract {corrupted_eth} at {corrupted_url}")
         assert eth in result
         assert url in result
-
-    def test_url_stripped_standalone_intact(self):
-        """URL stripped but standalone exact — both should work."""
-        sub = URLSubstitutor()
-        eth = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/address/{eth}"
-        text = f"Contract {eth} at {url}"
-        mappings = _prepare(sub, text)
-
-        short_eth = mappings[eth]  # kept intact
-        short_url = mappings[url]
-        stripped_url = short_url.replace("~", "")
-
-        result = sub.restore(f"Contract {short_eth} at {stripped_url}")
-        assert eth in result
-        assert url in result
-
-    def test_longest_match_url_over_inner(self):
-        """URL-level stripped match should win over inner address stripped match."""
-        sub = URLSubstitutor()
-        eth = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/address/{eth}"
-        mappings = _prepare(sub, url)
-
-        # The URL shortened form contains the address shortened form
-        short_url = mappings[url]
-        stripped_url = short_url.replace("~", "")
-
-        # Restore should recover the full URL, not just the inner address
-        restored = sub.restore(stripped_url)
-        assert restored == url
-
-
-class TestCaseAndStripCombined:
-    """Category 3: Case changes + tilde stripping combined."""
-
-    def test_lowercase_plus_stripped(self):
-        """Lowercased AND stripped address should restore."""
-        sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        shortened = mappings[ETH_ADDRESS]
-
-        stripped_lower = shortened.replace("~", "").lower()
-        restored = sub.restore(stripped_lower)
-        assert restored == ETH_ADDRESS
-
-    def test_stripped_lowercase_url(self):
-        """Lowercased AND stripped URL should restore."""
-        sub = URLSubstitutor()
-        url = "https://example.com/very/long/path/to/resource/page"
-        mappings = _prepare(sub, url)
-        shortened = mappings[url]
-
-        stripped_lower = shortened.replace("~", "").lower()
-        restored = sub.restore(stripped_lower)
-        assert restored == url
 
 
 class TestFalsePositiveResistance:
-    """Category 4: False positive resistance — natural text should not be falsely restored."""
+    """Category 5: Natural text should not be falsely restored."""
 
     def test_natural_text_not_falsely_restored(self):
         """Random text with hex-like chars should not be replaced."""
@@ -199,152 +180,71 @@ class TestFalsePositiveResistance:
 
         innocent_text = "The value 0x7a25abc1488D is unrelated"
         restored = sub.restore(innocent_text)
-        # Should be unchanged (the text doesn't match any stripped form)
         assert restored == innocent_text
 
-    def test_similar_different_string_not_restored(self):
-        """Different hex at hash position should not match stripped form."""
+    def test_natural_ellipsis_not_falsely_matched(self):
+        """Natural `...` in prose should not be mistaken for a shortened form."""
         sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        shortened = mappings[ETH_ADDRESS]
+        _prepare(sub, ETH_ADDRESS)
 
-        # Create a string that looks similar but has different hash chars
-        # The stripped form is very specific due to SHA256 hash
-        fake = shortened.replace("~", "").replace("a", "b", 1)
-        restored = sub.restore(fake)
-        # Should NOT restore to ETH_ADDRESS
-        assert ETH_ADDRESS not in restored
-
-    def test_stripped_not_substring_of_original(self):
-        """Empirical: stripped form should not be a substring of the original value."""
-        sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS, ETH_ADDRESS_2, SOL_ADDRESS)
-        for original, shortened in mappings.items():
-            stripped = shortened.replace("~", "")
-            assert stripped not in original, f"Stripped form {stripped} found in original {original}"
-
-    def test_no_second_pass_corruption(self):
-        """Exact-restore of A should not be corrupted by stripped-B in pass 2."""
-        sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS, ETH_ADDRESS_2)
-        short_a = mappings[ETH_ADDRESS]
-        short_b = mappings[ETH_ADDRESS_2]
-
-        # Exact restore A, stripped restore B
-        stripped_b = short_b.replace("~", "")
-        text = f"{short_a} and {stripped_b}"
+        text = "Loading... please wait"
         restored = sub.restore(text)
+        assert restored == text
 
-        # A should be exactly restored
-        assert ETH_ADDRESS in restored
-        # B should be restored via stripped
-        assert ETH_ADDRESS_2 in restored
-
-
-class TestCollisionHandling:
-    """Category 5: Collision handling — first mapping wins."""
-
-    def test_collision_first_wins(self):
-        """If two shortened forms produce same stripped form, first should win."""
+    def test_natural_unicode_ellipsis_not_falsely_matched(self):
+        """Natural `…` in prose should not be mistaken for a shortened form."""
         sub = URLSubstitutor()
-        # Create two mappings manually that would collide when stripped
-        # This is astronomically unlikely with SHA256 but we test the guard
-        sub._add_mapping("original_A", "pre~abc~suf")
-        sub._add_mapping("original_B", "pre~abc~suf2")  # different shortened, different stripped
+        _prepare(sub, ETH_ADDRESS)
 
-        # Both stripped forms are different, so both should be registered
-        assert "preabcsuf" in sub._stripped_reverse
-        assert "preabcsuf2" in sub._stripped_reverse
-
-    def test_collision_doesnt_break_exact(self):
-        """Even with a stripped collision, exact restore of both should work."""
-        sub = URLSubstitutor()
-        sub._add_mapping("original_A", "x~1~y")
-        sub._add_mapping("original_B", "x~1~z")
-
-        assert sub.restore("x~1~y") == "original_A"
-        assert sub.restore("x~1~z") == "original_B"
-
-    def test_stripped_not_in_reverse_dict(self):
-        """Stripped forms should only be in _stripped_reverse, not _reverse."""
-        sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        shortened = mappings[ETH_ADDRESS]
-        stripped = shortened.replace("~", "")
-
-        assert stripped not in sub._reverse
-        assert stripped in sub._stripped_reverse
-
-
-class TestKnownLimitations:
-    """Category 6: Known limitations."""
-
-    def test_partial_strip_not_restored(self):
-        """One tilde kept, one stripped → not restored (known limitation)."""
-        sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        shortened = mappings[ETH_ADDRESS]
-
-        # Count tildes — there should be exactly 2
-        assert shortened.count("~") == 2
-
-        # Partially strip: remove only first tilde
-        idx = shortened.index("~")
-        partial = shortened[:idx] + shortened[idx + 1 :]  # remove first ~
-
-        # Neither exact nor fully-stripped match
-        assert partial != shortened  # not exact
-        assert partial != shortened.replace("~", "")  # not fully stripped
-
-        # Restore should not find it (known limitation)
-        result = sub.restore(partial)
-        assert result == partial  # unchanged
-
-    def test_no_stripped_entry_when_no_tildes(self):
-        """Shortened forms without tildes should not produce _stripped_reverse entries."""
-        sub = URLSubstitutor()
-        # Manually add a mapping without tildes
-        sub._add_mapping("original", "short_form")
-
-        # No tilde in shortened → stripped == shortened → guard prevents registration
-        assert "short_form" not in sub._stripped_reverse
+        text = "Loading\u2026 please wait"
+        restored = sub.restore(text)
+        # Unicode ellipsis gets normalized to ... but shouldn't match any pattern
+        assert "Loading" in restored
+        assert "please wait" in restored
 
 
 class TestIntegrationWithSubstitute:
-    """Category 7: Integration with substitute() — stripped forms should not interfere."""
+    """Category 6: Integration with substitute() — corrupted forms should not interfere."""
 
-    def test_stripped_form_passes_through_substitute(self):
-        """Stripped form is too short for pattern regexes — substitute should not touch it."""
+    def test_corrupted_form_passes_through_substitute(self):
+        """Corrupted shortened form is too short for pattern regexes — substitute should not touch it."""
         sub = URLSubstitutor()
         mappings = _prepare(sub, ETH_ADDRESS)
         shortened = mappings[ETH_ADDRESS]
-        stripped = shortened.replace("~", "")
+        corrupted = shortened.replace("...", "\u2026")
 
-        # Stripped form should pass through substitute unchanged
-        result = sub.substitute(stripped)
-        assert result == stripped
+        result = sub.substitute(corrupted)
+        # The corrupted form should pass through (it's not in _forward)
+        assert result == corrupted
 
-    def test_substitute_after_stripped_restore(self):
+    def test_substitute_after_corrupted_restore(self):
         """Restored original should re-shorten correctly."""
         sub = URLSubstitutor()
         mappings = _prepare(sub, ETH_ADDRESS)
         shortened = mappings[ETH_ADDRESS]
 
-        # Simulate: LLM strips tildes → restore → re-substitute
-        stripped = shortened.replace("~", "")
-        restored = sub.restore(stripped)
+        corrupted = shortened.replace("...", "\u2026")
+        restored = sub.restore(corrupted)
         assert restored == ETH_ADDRESS
 
         re_shortened = sub.substitute(restored)
         assert re_shortened == shortened
 
-    def test_substitute_idempotent_on_stripped(self):
-        """substitute() should not create spurious mappings for stripped forms."""
+    def test_roundtrip_through_corruption(self):
+        """Full cycle: substitute → corrupt address only → restore → re-substitute should be stable."""
         sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        count_before = sub.pattern_count
-        shortened = mappings[ETH_ADDRESS]
-        stripped = shortened.replace("~", "")
+        text = f"Contract {ETH_ADDRESS} deployed"
+        sub.prepare([text])
 
-        sub.substitute(stripped)
-        assert sub.pattern_count == count_before
+        shortened = sub.substitute(text)
+        addr_short = sub.get_mappings()[ETH_ADDRESS]
+
+        # Corrupt only the shortened address form (not the surrounding text)
+        corrupted_addr = addr_short.replace("...", "\u2026").lower()
+        corrupted = shortened.replace(addr_short, corrupted_addr)
+
+        restored = sub.restore(corrupted)
+        assert ETH_ADDRESS in restored
+
+        re_shortened = sub.substitute(restored)
+        assert re_shortened == shortened

@@ -14,8 +14,8 @@ from ai_pipeline_core.observability._debug import (
     TraceState,
     WriteJob,
     generate_summary,
+    reconstruct_span_content,
 )
-from ai_pipeline_core.observability._debug._content import reconstruct_span_content
 
 __all__ = [
     "ArtifactStore",

@@ -6,24 +6,12 @@ All validation happens in llm/ layer, not _llm_core/.
 
 from io import BytesIO
 
-from PIL import Image
 from pypdf import PdfReader
 
+from ai_pipeline_core._llm_core._validators import validate_image_content as validate_image  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
-
-
-def validate_image(data: bytes, name: str) -> str | None:
-    """Validate image. Returns error message or None if valid."""
-    if not data:
-        return f"empty image content in '{name}'"
-    try:
-        with Image.open(BytesIO(data)) as img:
-            img.verify()
-        return None
-    except (OSError, ValueError, Image.DecompressionBombError) as e:
-        return f"invalid image in '{name}': {e}"
 
 
 def validate_pdf(data: bytes, name: str) -> str | None:

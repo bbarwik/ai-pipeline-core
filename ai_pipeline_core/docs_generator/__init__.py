@@ -16,7 +16,7 @@ from ai_pipeline_core.docs_generator.extractor import (
 )
 from ai_pipeline_core.docs_generator.guide_builder import (
     GuideData,
-    TestExample,
+    ScoredExample,
     build_guide,
     discover_tests,
     select_examples,
@@ -37,8 +37,8 @@ __all__ = [
     "GuideData",
     "MethodInfo",
     "ModuleInfo",
+    "ScoredExample",
     "SymbolTable",
-    "TestExample",
     "ValidationResult",
     "build_guide",
     "compute_source_hash",

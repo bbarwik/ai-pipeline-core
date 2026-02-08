@@ -75,8 +75,6 @@ class TestDeploymentContext:
         assert ctx.progress_webhook_url == ""
         assert ctx.status_webhook_url == ""
         assert ctx.completion_webhook_url == ""
-        assert ctx.input_documents_urls == ()
-        assert ctx.output_documents_urls == {}
 
     def test_creation_with_urls(self):
         """Test context with webhook URLs."""

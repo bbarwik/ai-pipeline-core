@@ -22,8 +22,6 @@ Webhooks are optional - provide URLs to enable:
 - progress_webhook_url: Per-flow progress (started/completed/cached)
 - status_webhook_url: Prefect state transitions (RUNNING/FAILED/etc)
 - completion_webhook_url: Final result when deployment ends"""
-    input_documents_urls: tuple[str, ...] = Field(default_factory=tuple)
-    output_documents_urls: dict[str, str] = Field(default_factory=dict)
     progress_webhook_url: str = ''
     status_webhook_url: str = ''
     completion_webhook_url: str = ''
@@ -34,6 +32,7 @@ class DeploymentResult(BaseModel):
     """Base class for deployment results."""
     success: bool
     error: str | None = None
+    documents: tuple[OutputDocument, ...] = ()
     model_config = ConfigDict(frozen=True)
 
 
@@ -99,7 +98,7 @@ Features enabled by default:
 
         async def _deployment_flow(
             project_name: str,
-            documents: list[dict[str, Any]],
+            documents: list[DocumentInput],
             options: FlowOptions,
             context: DeploymentContext,
         ) -> DeploymentResult:
@@ -131,7 +130,13 @@ Features enabled by default:
                     input={"project_name": project_name, "options": options.model_dump()},
                     session_id=flow_run_id,
                 ):
-                    typed_docs = _reconstruct_documents(documents, deployment._all_document_types())
+                    # Resolve DocumentInput (inline + URL references) into typed Documents
+                    start_step_input_types: list[type[Document]] = getattr(deployment.flows[0], "input_document_types", [])
+                    typed_docs = await resolve_document_inputs(
+                        documents,
+                        deployment._all_document_types(),
+                        start_step_input_types=start_step_input_types,
+                    )
                     result = await deployment.run(project_name, typed_docs, cast(Any, options), context)
                     Laminar.set_span_output(result.model_dump())
                     return result
@@ -203,13 +208,7 @@ Features enabled by default:
             except Exception as e:
                 logger.warning("Identity label update failed: %s", e)
 
-        # Download additional input documents
         input_docs = list(documents)
-        if context.input_documents_urls:
-            downloaded = await download_documents(list(context.input_documents_urls))
-            input_docs.extend(downloaded)
-
-        # Compute run scope AFTER downloads so the fingerprint includes all inputs
         run_scope = _compute_run_scope(project_name, input_docs, options)
 
         if not store and total_steps > 1:
@@ -311,18 +310,9 @@ Features enabled by default:
                     try:
                         await active_flow(project_name, current_docs, options)
                     except Exception as e:
-                        # Upload partial results on failure
-                        if context.output_documents_urls and store:
-                            all_docs = await store.load(run_scope, self._all_document_types())
-                            await upload_documents(all_docs, context.output_documents_urls)
                         await self._send_completion(context, flow_run_id, project_name, result=None, error=str(e))
                         completion_sent = True
                         raise
-
-                # Per-flow upload (load from store since @pipeline_flow saves there)
-                if context.output_documents_urls and store and output_types:
-                    flow_docs = await store.load(run_scope, output_types)
-                    await upload_documents(flow_docs, context.output_documents_urls)
 
                 # Progress: completed
                 await self._send_progress(
@@ -345,6 +335,11 @@ Features enabled by default:
             else:
                 all_docs = input_docs
             result = self.build_result(project_name, all_docs, options)
+
+            # Populate output documents
+            output_docs = tuple(build_output_document(doc) for doc in all_docs)
+            result = result.model_copy(update={"documents": output_docs})
+
             await self._send_completion(context, flow_run_id, project_name, result=result, error=None)
             return result
 
@@ -733,7 +728,7 @@ async def run_remote_deployment(
 # === EXAMPLES (from tests/) ===
 
 # Example: Path format matches deployer
-# Source: tests/deployment/test_remote_deployment.py:213
+# Source: tests/deployment/test_remote_deployment.py:212
 def test_path_format_matches_deployer(self):
     class SamplePipeline(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
         trace_level: ClassVar[TraceLevel] = "off"
@@ -770,11 +765,9 @@ def test_default_creation(self):
     assert ctx.progress_webhook_url == ""
     assert ctx.status_webhook_url == ""
     assert ctx.completion_webhook_url == ""
-    assert ctx.input_documents_urls == ()
-    assert ctx.output_documents_urls == {}
 
 # Example: Deployment result data
-# Source: tests/deployment/test_deployment_base.py:195
+# Source: tests/deployment/test_deployment_base.py:193
 def test_deployment_result_data(self):
     """Test DeploymentResultData."""
     data = DeploymentResultData(success=True, error=None)
@@ -785,7 +778,7 @@ def test_deployment_result_data(self):
 # === ERROR EXAMPLES (What NOT to Do) ===
 
 # Error: Frozen
-# Source: tests/deployment/test_deployment_base.py:92
+# Source: tests/deployment/test_deployment_base.py:90
 def test_frozen(self):
     """Test context is immutable."""
     from pydantic import ValidationError
@@ -813,7 +806,7 @@ def test_frozen(self):
         ctx.step = 2  # type: ignore[misc]
 
 # Error: Rejects int
-# Source: tests/deployment/test_remote_deployment.py:151
+# Source: tests/deployment/test_remote_deployment.py:150
 def test_rejects_int(self):
     with pytest.raises(TypeError, match="Document subclass"):
 
@@ -821,7 +814,7 @@ def test_rejects_int(self):
             trace_level: ClassVar[TraceLevel] = "off"
 
 # Error: Rejects no generic params
-# Source: tests/deployment/test_remote_deployment.py:181
+# Source: tests/deployment/test_remote_deployment.py:180
 def test_rejects_no_generic_params(self):
     with pytest.raises(TypeError, match="must specify 3 Generic parameters"):
 

@@ -22,7 +22,7 @@ from uuid import UUID, uuid4
 import httpx
 from lmnr import Laminar
 from prefect import flow, get_client, runtime
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 from pydantic_settings import BaseSettings
 
 from ai_pipeline_core.document_store import SummaryGenerator, create_document_store, get_document_store, set_document_store
@@ -39,11 +39,10 @@ from ai_pipeline_core.testing import disable_run_logger, prefect_test_harness
 from ._helpers import (
     StatusPayload,
     class_name_to_deployment_name,
-    download_documents,
     extract_generic_params,
     send_webhook,
-    upload_documents,
 )
+from ._resolve import DocumentInput, OutputDocument, build_output_document, resolve_document_inputs
 from .contract import CompletedRun, DeploymentResultData, FailedRun, ProgressRun
 from .progress import _ZERO_UUID, _safe_uuid, flow_context
 
@@ -87,27 +86,6 @@ def _compute_run_scope(project_name: str, documents: list[Document], options: Fl
     return f"{project_name}:{fingerprint}"
 
 
-def _reconstruct_documents(
-    raw_docs: list[dict[str, Any]],
-    known_types: list[type[Document]],
-) -> list[Document]:
-    """Reconstruct typed Documents from serialized dicts using class_name lookup."""
-    if not raw_docs:
-        return []
-    type_map = {t.__name__: t for t in known_types}
-    result: list[Document] = []
-    for doc_dict in raw_docs:
-        class_name = doc_dict.get("class_name", "")
-        doc_type = type_map.get(class_name)
-        if doc_type is None:
-            if not known_types:
-                raise ValueError(f"Cannot reconstruct document: unknown class_name '{class_name}'")
-            doc_type = known_types[0]
-            logger.warning("Unknown document class_name '%s', using fallback %s", class_name, doc_type.__name__)
-        result.append(doc_type.from_dict(doc_dict))
-    return result
-
-
 class DeploymentContext(BaseModel):
     """Infrastructure configuration for deployments.
 
@@ -116,9 +94,6 @@ class DeploymentContext(BaseModel):
     - status_webhook_url: Prefect state transitions (RUNNING/FAILED/etc)
     - completion_webhook_url: Final result when deployment ends
     """
-
-    input_documents_urls: tuple[str, ...] = Field(default_factory=tuple)
-    output_documents_urls: dict[str, str] = Field(default_factory=dict)  # nosemgrep: mutable-field-on-frozen-pydantic-model
 
     progress_webhook_url: str = ""
     status_webhook_url: str = ""
@@ -132,6 +107,7 @@ class DeploymentResult(BaseModel):
 
     success: bool
     error: str | None = None
+    documents: tuple[OutputDocument, ...] = ()
 
     model_config = ConfigDict(frozen=True)
 
@@ -446,13 +422,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             except Exception as e:
                 logger.warning("Identity label update failed: %s", e)
 
-        # Download additional input documents
         input_docs = list(documents)
-        if context.input_documents_urls:
-            downloaded = await download_documents(list(context.input_documents_urls))
-            input_docs.extend(downloaded)
-
-        # Compute run scope AFTER downloads so the fingerprint includes all inputs
         run_scope = _compute_run_scope(project_name, input_docs, options)
 
         if not store and total_steps > 1:
@@ -554,18 +524,9 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     try:
                         await active_flow(project_name, current_docs, options)
                     except Exception as e:
-                        # Upload partial results on failure
-                        if context.output_documents_urls and store:
-                            all_docs = await store.load(run_scope, self._all_document_types())
-                            await upload_documents(all_docs, context.output_documents_urls)
                         await self._send_completion(context, flow_run_id, project_name, result=None, error=str(e))
                         completion_sent = True
                         raise
-
-                # Per-flow upload (load from store since @pipeline_flow saves there)
-                if context.output_documents_urls and store and output_types:
-                    flow_docs = await store.load(run_scope, output_types)
-                    await upload_documents(flow_docs, context.output_documents_urls)
 
                 # Progress: completed
                 await self._send_progress(
@@ -588,6 +549,11 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             else:
                 all_docs = input_docs
             result = self.build_result(project_name, all_docs, options)
+
+            # Populate output documents
+            output_docs = tuple(build_output_document(doc) for doc in all_docs)
+            result = result.model_copy(update={"documents": output_docs})
+
             await self._send_completion(context, flow_run_id, project_name, result=result, error=None)
             return result
 
@@ -681,7 +647,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
         async def _deployment_flow(
             project_name: str,
-            documents: list[dict[str, Any]],
+            documents: list[DocumentInput],
             options: FlowOptions,
             context: DeploymentContext,
         ) -> DeploymentResult:
@@ -713,7 +679,13 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     input={"project_name": project_name, "options": options.model_dump()},
                     session_id=flow_run_id,
                 ):
-                    typed_docs = _reconstruct_documents(documents, deployment._all_document_types())
+                    # Resolve DocumentInput (inline + URL references) into typed Documents
+                    start_step_input_types: list[type[Document]] = getattr(deployment.flows[0], "input_document_types", [])
+                    typed_docs = await resolve_document_inputs(
+                        documents,
+                        deployment._all_document_types(),
+                        start_step_input_types=start_step_input_types,
+                    )
                     result = await deployment.run(project_name, typed_docs, cast(Any, options), context)
                     Laminar.set_span_output(result.model_dump())
                     return result
@@ -736,5 +708,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 __all__ = [
     "DeploymentContext",
     "DeploymentResult",
+    "DocumentInput",
+    "OutputDocument",
     "PipelineDeployment",
 ]

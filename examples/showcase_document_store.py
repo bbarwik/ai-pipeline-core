@@ -122,8 +122,8 @@ async def demo_local_store(base_path: Path) -> None:
 
     scope_path = base_path / run_scope
     print(f"Saved 2 documents to {scope_path}")
-    print(f"  {raw.canonical_name()}/input.txt")
-    print(f"  {cleaned.canonical_name()}/output.txt")
+    print(f"  {raw.__class__.__name__}/input.txt")
+    print(f"  {cleaned.__class__.__name__}/output.txt")
 
     # Load specific types
     loaded_raw = await store.load(run_scope, [RawDataDocument])

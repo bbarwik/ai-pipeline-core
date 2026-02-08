@@ -218,10 +218,10 @@ class TestPydanticVsSerializeModelComparison:
     """Direct comparison showing the two paths now both work correctly."""
 
     def test_serialization_output_format(self):
-        """Verify both Pydantic and serialize_model use the same {v,e} format.
+        """Verify both Pydantic and serialize_model use data URI format for binary.
 
-        After Option E, serialize_model delegates to model_dump, so both use
-        the same {v: str, e: encoding} format for content.
+        Both paths use data URI format: "data:mime/type;base64,..." for binary content,
+        plain string for text content.
         """
         doc = ConcreteDocument(
             name="image.png",
@@ -232,20 +232,18 @@ class TestPydanticVsSerializeModelComparison:
         pydantic_dump = doc.model_dump(mode="json")
         pydantic_content = pydantic_dump["content"]
 
-        # New format: dict with v and e keys
-        assert isinstance(pydantic_content, dict), "Pydantic content should be dict"
-        assert "v" in pydantic_content, "Should have 'v' key for value"
-        assert "e" in pydantic_content, "Should have 'e' key for encoding"
-        assert pydantic_content["e"] == "base64", "Binary should be marked as base64"
+        # Data URI format for binary
+        assert isinstance(pydantic_content, str), "Pydantic content should be string"
+        assert pydantic_content.startswith("data:image/png;base64,"), "Binary should be data URI"
 
-        # serialize_model path - now uses same format (delegates to model_dump)
+        # serialize_model path - uses same format (delegates to model_dump)
         serialize_dump = doc.serialize_model()
         serialize_content = serialize_dump["content"]
 
-        # Both should use the same {v, e} format
-        assert isinstance(serialize_content, dict), "serialize_model content should be dict"
-        assert serialize_content["e"] == "base64", "serialize_model should mark as base64"
-        assert serialize_content["v"] == pydantic_content["v"], "Both should have same base64 value"
+        # Both should use data URI format
+        assert isinstance(serialize_content, str), "serialize_model content should be string"
+        assert serialize_content.startswith("data:image/png;base64,"), "serialize_model should use data URI"
+        assert serialize_content == pydantic_content, "Both should produce identical content"
 
         # serialize_model adds metadata
         assert "sha256" in serialize_dump, "serialize_model should add metadata"

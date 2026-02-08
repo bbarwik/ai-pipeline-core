@@ -1,10 +1,13 @@
 """Content shortener for URLs and high-entropy strings.
 
-Reduces LLM token usage by shortening long URLs and blockchain identifiers.
-Uses `~` as truncation marker. Round-trip: substitute() → LLM → restore().
+Two-tier substitution system:
+- Tier 1: Crypto/encoded values (hex, base58, base64) → prefix...suffix (10+10)
+- Tier 2: URLs > 80 chars after Tier 1 → prefix...suffix (50+15) with hard cap
 
-Generic entropy-based detection works across all chains without chain-specific patterns.
-Zero-width characters are normalized for detection but preserved for exact round-trip.
+Uses `...` (three dots) as truncation marker. LLMs preserve this format naturally
+because it matches standard truncation in block explorers and documentation.
+
+Round-trip: prepare() → substitute() → LLM → restore().
 """
 
 import hashlib
@@ -13,77 +16,57 @@ import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
 
-# Zero-width and invisible characters (normalized for detection, preserved in output)
+# ── Zero-width / invisible characters ──────────────────────────────────────────
 _INVISIBLE_CHARS = frozenset("\u200b\u200c\u200d\ufeff\u2060\u180e")
 
-# Generic detection patterns (order: more specific first)
-_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    # 0x-prefixed hex (ETH, Sui, Aptos, etc.) - 40+ hex chars after 0x
+# ── Tier 1 config ─────────────────────────────────────────────────────────────
+_T1_PREFIX = 10
+_T1_SUFFIX = 10
+_T1_STABLE_PREFIX = 8
+_T1_STABLE_SUFFIX = 8
+_T1_MIN_LENGTH = 32
+_T1_MAX_ATTEMPTS = 200
+
+# ── Tier 2 URL config ─────────────────────────────────────────────────────────
+_URL_THRESHOLD = 80
+_URL_PREFIX_LEN = 50
+_URL_SUFFIX_LEN = 15
+_URL_TARGET_LEN = _URL_PREFIX_LEN + 3 + _URL_SUFFIX_LEN  # 68
+_URL_MAX_COLLISION_ATTEMPTS = (_URL_THRESHOLD - _URL_TARGET_LEN) // 2  # 6
+
+# ── Tier 1 detection patterns (most specific → least specific) ─────────────────
+_T1_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("hex_prefixed", re.compile(r"\b0x[a-fA-F0-9]{40,}\b")),
-    # High-entropy alphanumeric (Solana, Stellar, Polkadot, Tron, Cardano, Cosmos, Base58, Base32)
-    ("high_entropy", re.compile(r"\b[A-Za-z0-9]{26,}\b")),
-    # Base64 with special chars (explicit +/= markers)
-    ("base64", re.compile(r"\b[A-Za-z0-9+/]{32,}={0,2}\b")),
-    # Plain hex string without 0x prefix (32+ chars for SHA256 etc)
     ("hex", re.compile(r"\b[a-fA-F0-9]{32,}\b")),
-    # Relative paths inside delimiters (markdown links, HTML attributes, XML tags)
-    ("path", re.compile(r"/[a-zA-Z0-9_\-\./]+")),
-    # URLs
-    ("url", re.compile(r"https?://[^\s<>\"'`\[\]{}|\\^]+", re.IGNORECASE)),
+    ("base64_padded", re.compile(r"\b[A-Za-z0-9+/]{32,}={1,2}\b")),
+    ("base64_unpadded", re.compile(r"\b[A-Za-z0-9+/]{40,}\b")),
+    ("base58", re.compile(r"\b[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{32,}\b")),
+    ("high_entropy", re.compile(r"\b[A-Za-z0-9]{32,}\b")),
 ]
 
-# Config per pattern: (prefix_len, suffix_len, min_entropy, min_diversity)
-_CONFIG: dict[str, tuple[int, int, float, int]] = {
-    "hex_prefixed": (6, 4, 3.0, 8),
-    "high_entropy": (4, 4, 3.5, 12),
-    "base64": (6, 4, 3.5, 10),
-    "hex": (6, 4, 3.0, 8),
+# Per-pattern entropy and diversity thresholds
+_T1_THRESHOLDS: dict[str, tuple[float, int]] = {
+    "hex_prefixed": (3.0, 8),
+    "hex": (3.0, 8),
+    "base64_padded": (3.5, 10),
+    "base64_unpadded": (3.5, 12),
+    "base58": (3.5, 12),
+    "high_entropy": (3.5, 12),
 }
 
-# JWT protection (base64-like but should not be shortened)
+# ── Other patterns ─────────────────────────────────────────────────────────────
+_URL_PATTERN = re.compile(r"https?://[^\s<>\"'`\[\]{}|\\^]+", re.IGNORECASE)
+_PATH_PATTERN = re.compile(r"/[a-zA-Z0-9_\-\./]+")
+_HEX_IN_BROADER = re.compile(r"0x[a-fA-F0-9]{40,}")
+
+# ── Protection patterns ───────────────────────────────────────────────────────
 _JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
-
-# Code context keywords (false positive prevention)
+_CONTENT_ADDRESSED_SCHEMES = ("ipfs://", "ipns://", "magnet:", "data:")
 _CODE_KEYWORDS = ("install ", "npm ", "yarn ", "pnpm ", "pip ", "require(", "import ")
-
-# Delimiter pairs for path shortening validation
 _DELIMITER_PAIRS: dict[str, str] = {"(": ")", "[": "]", '"': '"', "'": "'", ">": "<"}
 
-# Content-addressed URL schemes (hash IS the identifier - must not be shortened)
-_CONTENT_ADDRESSED_SCHEMES = ("ipfs://", "ipns://", "magnet:", "data:")
-
-# File extensions to preserve in shortened URLs
-FILE_EXTENSIONS = frozenset({
-    ".pdf",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".webp",
-    ".svg",
-    ".doc",
-    ".docx",
-    ".xls",
-    ".xlsx",
-    ".ppt",
-    ".pptx",
-    ".html",
-    ".htm",
-    ".json",
-    ".xml",
-    ".csv",
-    ".txt",
-    ".md",
-    ".zip",
-    ".tar",
-    ".gz",
-    ".mp3",
-    ".mp4",
-    ".wav",
-    ".avi",
-})
+# ── Helper functions ───────────────────────────────────────────────────────────
 
 
 def _normalize(s: str) -> str:
@@ -101,30 +84,23 @@ def _build_normalized_view(text: str) -> tuple[str, list[int] | None]:
     """
     if not any(c in text for c in _INVISIBLE_CHARS):
         return text, None
-
     chars: list[str] = []
     mapping: list[int] = []
-
     for i, c in enumerate(text):
         if c not in _INVISIBLE_CHARS:
             chars.append(c)
             mapping.append(i)
-
-    # Add sentinel for end-of-string mapping
     mapping.append(len(text))
-
     return "".join(chars), mapping
 
 
-def _map_span_to_original(index_map: list[int] | None, start: int, end: int) -> tuple[int, int]:
-    """Map normalized span back to original text positions."""
+def _map_span(index_map: list[int] | None, start: int, end: int) -> tuple[int, int]:
     if index_map is None:
         return start, end
     return index_map[start], index_map[end]
 
 
 def _entropy(s: str) -> float:
-    """Shannon entropy - high values indicate randomness."""
     if not s:
         return 0.0
     counts = Counter(s)
@@ -143,113 +119,90 @@ def _trim_url(url: str) -> str:
     return url
 
 
-def _rstrip_to_alnum(s: str) -> str:
-    """Strip trailing non-alphanumeric to avoid ugly junctions like -~ or =~."""
-    i = len(s)
-    while i > 0 and not s[i - 1].isalnum():
-        i -= 1
-    return s[:i]
-
-
-def _is_in_url(text: str, pos: int) -> bool:
-    """Check if position is inside a URL."""
-    before = text[max(0, pos - 200) : pos]
-    if "://" not in before:
-        return False
-    last = max(before.rfind("http://"), before.rfind("https://"))
-    return last != -1 and not any(c in before[last:] for c in " \t\n\r")
+def _overlaps_any(start: int, end: int, claimed: list[tuple[int, int]]) -> bool:
+    return any(start < ce and end > cs for cs, ce in claimed)
 
 
 def _is_in_content_addressed_url(context_before: str) -> bool:
-    """Check if position is inside a content-addressed URL (ipfs://, data:, etc.)."""
     lower = context_before.lower()
     for scheme in _CONTENT_ADDRESSED_SCHEMES:
         if scheme in lower:
-            # Check if scheme is the most recent URL-like thing
-            last_scheme_pos = lower.rfind(scheme)
-            # No whitespace between scheme and current position
-            after_scheme = context_before[last_scheme_pos:]
-            if not any(c in after_scheme for c in " \t\n\r"):
+            pos = lower.rfind(scheme)
+            if not any(c in context_before[pos:] for c in " \t\n\r"):
                 return True
     return False
 
 
-def _is_valid_path(value: str, context_before: str, context_after: str) -> bool:
-    """Validate a path pattern: must be long, multi-segment, and inside delimiters."""
+def _is_valid_path(value: str, ctx_before: str, ctx_after: str) -> bool:
     if value.startswith("//") or len(value) < 30 or value.count("/") < 3:
         return False
-    ctx = _normalize(context_before)
-    ctx_a = _normalize(context_after)
+    ctx = _normalize(ctx_before)
+    ctx_a = _normalize(ctx_after)
     if not ctx or not ctx_a:
         return False
     return ctx[-1] in _DELIMITER_PAIRS and _DELIMITER_PAIRS[ctx[-1]] == ctx_a[0]
 
 
-def _is_valid_high_entropy(value: str, ctx_before: str, ctx_after: str) -> bool:
-    """Extra validation for high-entropy alphanumeric patterns."""
-    if ctx_before.rstrip().endswith("@"):
+def _is_valid_t1_pattern(value: str, kind: str, ctx_before: str, ctx_after: str) -> bool:
+    """Validate a Tier 1 pattern using entropy, diversity, and context checks."""
+    if _is_in_content_addressed_url(ctx_before):
         return False
-    if any(kw in ctx_before.lower() for kw in _CODE_KEYWORDS):
-        return False
-    if ctx_before.endswith(".") or ctx_after.startswith("."):
-        return False
-    return not (value.isalpha() and len(value) < 40)
-
-
-def _is_valid_base64(value: str, ctx_before: str, ctx_after: str) -> bool:
-    """Extra validation for base64 patterns."""
-    if ctx_before.endswith(".") or ctx_after.startswith("."):
-        return False
-    # URL paths match base64 charset because '/' is valid Base64.
-    # Real Base64 with '/' also contains '+' or '=' padding — URL paths never do.
-    if "/" in value and "+" not in value and not value.endswith("="):
-        return False
-    has_base64_chars = "+" in value or "/" in value or value.endswith("=")
-    return has_base64_chars or len(value) >= 64
-
-
-def _is_valid_pattern(normalized_value: str, kind: str, context_before: str, context_after: str) -> bool:
-    """Validate pattern using entropy and diversity thresholds on normalized value."""
-    if _is_in_content_addressed_url(context_before):
-        return False
-
-    if kind == "path":
-        return _is_valid_path(normalized_value, context_before, context_after)
-
-    if kind not in _CONFIG:
+    if kind not in _T1_THRESHOLDS:
         return True
-
-    _, _, min_entropy, min_diversity = _CONFIG[kind]
-    if _entropy(normalized_value) < min_entropy or len(set(normalized_value)) < min_diversity:
+    min_ent, min_div = _T1_THRESHOLDS[kind]
+    if _entropy(value) < min_ent or len(set(value)) < min_div:
         return False
 
-    ctx_before = _normalize(context_before)
-    ctx_after = _normalize(context_after)
+    ctx_b = _normalize(ctx_before)
+    ctx_a = _normalize(ctx_after)
 
     if kind == "high_entropy":
-        return _is_valid_high_entropy(normalized_value, ctx_before, ctx_after)
-    return kind != "base64" or _is_valid_base64(normalized_value, ctx_before, ctx_after)
+        if ctx_b.rstrip().endswith("@"):
+            return False
+        if any(kw in ctx_b.lower() for kw in _CODE_KEYWORDS):
+            return False
+        if ctx_b.endswith(".") or ctx_a.startswith("."):
+            return False
+        if value.isalpha() and len(value) < 40:
+            return False
+    if kind == "base64_unpadded" and "/" in value and "+" not in value:
+        return False
+    if kind in {"base64_unpadded", "base64_padded", "base58"}:
+        hi = _HEX_IN_BROADER.search(value)
+        if hi and hi.group() != value:
+            return False
+    return not (kind == "base64_padded" and (ctx_b.endswith(".") or ctx_a.startswith(".")))
+
+
+# ── URLSubstitutor ─────────────────────────────────────────────────────────────
 
 
 @dataclass(slots=True)
 class URLSubstitutor:
-    """Bidirectional URL/address shortener for LLM context.
+    """Two-tier content shortener for LLM context.
 
-    Uses entropy-based detection to work across all blockchain chains
-    without chain-specific patterns. Zero-width characters are preserved
-    for exact round-trip while still being detected in patterns.
+    Tier 1: High-entropy strings (addresses, hashes, base64) → prefix...suffix
+    Tier 2: Long URLs (> 80 chars after Tier 1) → prefix...suffix with hard cap
 
     Usage:
-        >>> sub = URLSubstitutor()
-        >>> await sub.prepare(["Check https://example.com/long/path"])
-        >>> shortened = sub.substitute("Check https://example.com/long/path")
-        >>> original = sub.restore(shortened)
+        sub = URLSubstitutor()
+        sub.prepare(["Check https://etherscan.io/address/0xdAC17F958D2ee523..."])
+        shortened = sub.substitute(text)
+        original = sub.restore(shortened)
     """
 
+    # Unified forward/reverse for all mapping types
     _forward: dict[str, str] = field(default_factory=dict)
     _reverse: dict[str, str] = field(default_factory=dict)
-    _stripped_reverse: dict[str, str] = field(default_factory=dict)
-    _hashes: dict[str, str] = field(default_factory=dict)
+
+    # Tier 1 collision state
+    _t1_canonical: dict[str, str] = field(default_factory=dict)
+    _t1_pairs: set[tuple[str, str]] = field(default_factory=set)
+
+    # Tier 2 URL collision state
+    _url_prefixes: set[str] = field(default_factory=set)
+    _url_suffixes: set[str] = field(default_factory=set)
+
     _prepared: bool = False
 
     @property
@@ -261,159 +214,186 @@ class URLSubstitutor:
         return len(self._forward)
 
     def get_mappings(self) -> dict[str, str]:
-        """Return a copy of all original-to-shortened mappings."""
+        """Return a copy of all original → shortened mappings."""
         return dict(self._forward)
 
-    def _add_mapping(self, original: str, shortened: str) -> None:
-        """Add bidirectional mapping with lowercase and tilde-stripped variants for LLM resilience."""
-        self._forward[original] = shortened
-        self._reverse[shortened] = original
-        # Add lowercase variant for LLMs that lowercase output
-        lower = shortened.lower()
-        if lower != shortened and lower not in self._reverse:
-            self._reverse[lower] = original
-        # Add tilde-stripped variant for LLMs that strip ~ delimiters
-        stripped = shortened.replace("~", "")
-        if stripped != shortened and stripped not in self._reverse and stripped not in self._stripped_reverse:
-            self._stripped_reverse[stripped] = original
-            stripped_lower = stripped.lower()
-            if stripped_lower != stripped and stripped_lower not in self._reverse and stripped_lower not in self._stripped_reverse:
-                self._stripped_reverse[stripped_lower] = original
+    # ── Tier 1 ──────────────────────────────────────────────────────────────
 
-    def _generate_hash(self, value: str, start_length: int = 3) -> str:
-        """Generate unique hash suffix, extending on collision."""
-        # Use normalized value for consistent hashing
-        normalized = _normalize(value)
-        full = hashlib.sha256(normalized.encode()).hexdigest()
-        for length in range(start_length, len(full) + 1):
-            h = full[:length]
-            if h not in self._hashes or self._hashes[h] == normalized:
-                self._hashes[h] = normalized
-                return h
-        return full  # Full hash as fallback (never truncated)
+    def _t1_has_conflict(self, abbr: str) -> bool:
+        """Check if abbreviation collides with an existing one."""
+        parts = abbr.lower().split("...")
+        if len(parts) != 2:
+            return True
+        return abbr.lower() in self._reverse or tuple(parts) in self._t1_pairs
+
+    def _t1_register(self, canonical: str, original: str, abbr: str) -> None:
+        parts = abbr.lower().split("...")
+        self._t1_canonical[canonical] = abbr
+        self._t1_pairs.add((parts[0], parts[1]))
+        self._forward[original] = abbr
+        if abbr.lower() not in self._reverse:
+            self._reverse[abbr.lower()] = original
+
+    def _abbreviate_t1(self, original: str) -> str | None:
+        """Abbreviate a high-entropy value. Returns abbreviated form or None."""
+        normalized = _normalize(original)
+        if len(normalized) < _T1_MIN_LENGTH:
+            return None
+
+        canonical = normalized.lower()
+        if canonical in self._t1_canonical:
+            abbr = self._t1_canonical[canonical]
+            if original not in self._forward:
+                self._forward[original] = abbr
+            return abbr
+
+        abbr = f"{normalized[:_T1_PREFIX]}...{normalized[-_T1_SUFFIX:]}"
+        if not self._t1_has_conflict(abbr):
+            self._t1_register(canonical, original, abbr)
+            return abbr
+
+        # Mutation-based collision resolution
+        charset = sorted({c for c in normalized if c.isalnum()})
+        if len(charset) < 10:
+            charset = list("0123456789abcdefghijklmnopqrstuvwxyz")
+
+        for attempt in range(_T1_MAX_ATTEMPTS):
+            ps = _T1_STABLE_PREFIX if attempt < 50 else _T1_STABLE_PREFIX - 2
+            ss = _T1_STABLE_SUFFIX if attempt < 50 else _T1_STABLE_SUFFIX - 2
+            h = hashlib.sha256(f"{canonical}:{attempt}".encode()).digest()
+            pc = "".join(charset[h[i] % len(charset)] for i in range(_T1_PREFIX - ps))
+            sc = "".join(charset[h[i + 16] % len(charset)] for i in range(_T1_SUFFIX - ss))
+            mp = normalized[:ps] + pc
+            ms = sc + (normalized[-ss:] if ss > 0 else "")
+            abbr = f"{mp}...{ms}"
+            if not self._t1_has_conflict(abbr):
+                self._t1_register(canonical, original, abbr)
+                return abbr
+
+        return None
+
+    # ── Tier 2 (URLs) ──────────────────────────────────────────────────────
+
+    def _apply_tier1_to_url(self, url: str) -> str:
+        """Find Tier 1 patterns in URL, abbreviate them, return modified URL."""
+        found: list[tuple[str, str]] = []
+        for kind, pattern in _T1_PATTERNS:
+            for m in pattern.finditer(url):
+                value = m.group()
+                normalized = _normalize(value)
+                if len(normalized) < _T1_MIN_LENGTH:
+                    continue
+                canonical = normalized.lower()
+                if canonical not in self._t1_canonical:
+                    if kind in _T1_THRESHOLDS:
+                        min_ent, min_div = _T1_THRESHOLDS[kind]
+                        if _entropy(normalized) < min_ent or len(set(normalized)) < min_div:
+                            continue
+                    if kind == "base64_unpadded" and "/" in normalized and "+" not in normalized:
+                        continue
+                    if kind in {"base64_unpadded", "base64_padded", "base58"}:
+                        hi = _HEX_IN_BROADER.search(value)
+                        if hi and hi.group() != value:
+                            continue
+                    abbr = self._abbreviate_t1(value)
+                    if abbr:
+                        found.append((canonical, abbr))
+                else:
+                    found.append((canonical, self._t1_canonical[canonical]))
+
+        if not found:
+            return url
+
+        result = url
+        for canonical, abbr in sorted(found, key=lambda x: len(x[0]), reverse=True):
+            lower = result.lower()
+            idx = lower.find(canonical)
+            while idx >= 0:
+                result = result[:idx] + abbr + result[idx + len(canonical) :]
+                lower = result.lower()
+                idx = lower.find(canonical, idx + len(abbr))
+        return result
+
+    def _url_has_conflict(self, abbr: str) -> bool:
+        parts = abbr.lower().split("...")
+        if len(parts) != 2:
+            return True
+        p, s = parts
+        return abbr.lower() in self._reverse or (p in self._url_prefixes and s in self._url_suffixes)
+
+    def _shorten_url_tier2(self, url: str) -> str | None:
+        """Tier 2: prefix...suffix with hard cap at _URL_THRESHOLD."""
+        if len(url) <= _URL_TARGET_LEN:
+            return None
+
+        for attempt in range(_URL_MAX_COLLISION_ATTEMPTS + 1):
+            adj_prefix = _URL_PREFIX_LEN + attempt * 2
+            if adj_prefix + 3 + _URL_SUFFIX_LEN >= len(url):
+                return None
+
+            abbr = f"{url[:adj_prefix]}...{url[-_URL_SUFFIX_LEN:]}"
+            if not self._url_has_conflict(abbr):
+                parts = abbr.lower().split("...")
+                self._url_prefixes.add(parts[0])
+                self._url_suffixes.add(parts[1])
+                self._forward[url] = abbr
+                self._reverse[abbr.lower()] = url
+                return abbr
+
+        return None
 
     def _shorten_url(self, original: str) -> str:
-        """Shorten URL, reusing pattern shortenings for embedded high-entropy strings.
-
-        If the URL contains patterns that would be shortened on their own (e.g., ETH addresses),
-        those patterns are shortened first, preserving the URL structure. Only if no patterns
-        are found does the method fall back to hash-based URL shortening.
-        """
+        """Full URL pipeline: Tier 1 inside URL → threshold check → Tier 2."""
         if original in self._forward:
             return self._forward[original]
 
-        normalized = _normalize(original)
-        if len(normalized) < 40:
+        if len(_normalize(original)) < 40:
             return original
 
-        # Phase 1: Try to shorten embedded patterns within the URL
-        modified = self._shorten_patterns_in_url(original)
-        if modified != original and len(modified) <= 100:
-            self._add_mapping(original, modified)
+        # Apply Tier 1 abbreviations inside the URL
+        modified = self._apply_tier1_to_url(original)
+
+        if modified != original and len(modified) <= _URL_THRESHOLD:
+            self._forward[original] = modified
+            self._reverse[modified.lower()] = original
             return modified
 
-        # Phase 2: Fall back to hash-based URL shortening (no patterns found or still too long)
-        return self._shorten_url_with_hash(original, normalized)
+        # Still too long — Tier 2 on the ORIGINAL (avoids nested ... patterns)
+        result = self._shorten_url_tier2(original)
+        if result:
+            return result
 
-    def _shorten_patterns_in_url(self, url: str) -> str:
-        """Find and shorten high-entropy patterns within a URL.
+        # Tier 2 cap hit — fall back to Tier 1 form if it helped at all
+        if modified != original:
+            self._forward[original] = modified
+            self._reverse[modified.lower()] = original
+            return modified
 
-        Returns the URL with patterns replaced by their shortened forms,
-        or the original URL if no patterns were found.
-        """
-        normalized = _normalize(url)
-        result = url
-        found_any = False
+        return original
 
-        # Check each non-URL, non-path pattern
-        for kind, pattern in _PATTERNS:
-            if kind in {"url", "path"}:
-                continue
-
-            for m in pattern.finditer(normalized):
-                match_text = m.group()
-
-                # Validate the pattern
-                start, end = m.start(), m.end()
-                ctx_before = normalized[max(0, start - 30) : start]
-                ctx_after = normalized[end : min(len(normalized), end + 30)]
-
-                if not _is_valid_pattern(match_text, kind, ctx_before, ctx_after):
-                    continue
-
-                # Get or create shortened form
-                if match_text in self._forward:
-                    short = self._forward[match_text]
-                else:
-                    short = self._shorten_string(match_text, kind)
-
-                if short != match_text:
-                    result = result.replace(match_text, short)
-                    found_any = True
-
-        return result if found_any else url
-
-    def _shorten_url_with_hash(self, original: str, normalized: str) -> str:
-        """Shorten URL using hash-based approach (fallback when no patterns found)."""
-        parsed = urlparse(normalized)
-        domain = parsed.netloc.removeprefix("www.")
-        parts = [p for p in parsed.path.split("/") if p]
-
-        segment = _rstrip_to_alnum(parts[0][:10]) if parts else ""
-
-        ext = ""
-        if parts and "." in parts[-1]:
-            e = parts[-1][parts[-1].rfind(".") :]
-            if e.lower() in FILE_EXTENSIONS:
-                ext = e
-
-        h = self._generate_hash(original, 4)
-        scheme = f"{parsed.scheme}://"
-
-        if segment:
-            short = f"{scheme}{domain}/{segment}~{h}{ext}"
-        else:
-            short = f"{scheme}{domain}~{h}"
-
-        self._add_mapping(original, short)
-        return short
+    # ── Paths ──────────────────────────────────────────────────────────────
 
     def _shorten_path(self, original: str) -> str:
-        """Shorten relative path to /first/~hash/last format."""
         if original in self._forward:
             return self._forward[original]
 
         normalized = _normalize(original)
-        parts = [p for p in normalized.split("/") if p]
-
-        if len(parts) < 2:
+        segments = [s for s in normalized.split("/") if s]
+        if len(segments) < 2:
             return original
 
-        first = parts[0]
-        last = parts[-1]
-        h = self._generate_hash(original, 4)
-        short = f"/{first}/~{h}/{last}"
-        self._add_mapping(original, short)
-        return short
+        last = segments[-1]
+        for prefix_count in range(1, len(segments)):
+            prefix_segs = segments[:prefix_count]
+            short = f"/{'/'.join(prefix_segs)}/.../{last}"
+            if short.lower() not in self._reverse:
+                self._forward[original] = short
+                self._reverse[short.lower()] = original
+                return short
 
-    def _shorten_string(self, original: str, kind: str) -> str:
-        """Shorten high-entropy string to prefix~hash~suffix."""
-        if original in self._forward:
-            return self._forward[original]
+        return original
 
-        normalized = _normalize(original)
-        if len(normalized) < 20:
-            return original
-
-        prefix_len, suffix_len = 4, 4
-        if kind in _CONFIG:
-            prefix_len, suffix_len = _CONFIG[kind][0], _CONFIG[kind][1]
-
-        h = self._generate_hash(original)
-        # Use normalized value for prefix/suffix (clean visible output)
-        short = f"{normalized[:prefix_len]}~{h}~{normalized[-suffix_len:]}"
-        self._add_mapping(original, short)
-        return short
+    # ── Public API ─────────────────────────────────────────────────────────
 
     def prepare(self, texts: Sequence[str]) -> None:
         """Pre-process texts to build substitution mappings."""
@@ -423,69 +403,58 @@ class URLSubstitutor:
         self._prepared = True
 
     def _scan(self, text: str) -> None:
-        """Scan text and build mappings (preserves invisible chars in originals)."""
-        # Build normalized view for pattern detection
         normalized, index_map = _build_normalized_view(text)
-
-        # Find JWT spans in normalized text
         jwt_spans = [(m.start(), m.end()) for m in _JWT_PATTERN.finditer(normalized)]
 
-        for kind, pattern in _PATTERNS:
+        # Phase 1: URLs
+        url_spans: list[tuple[int, int]] = []
+        for m in _URL_PATTERN.finditer(normalized):
+            url_text = _trim_url(m.group())
+            url_start, url_end = m.start(), m.start() + len(url_text)
+            orig_start, orig_end = _map_span(index_map, url_start, url_end)
+            original_url = text[orig_start:orig_end]
+
+            if original_url not in self._forward:
+                self._shorten_url(original_url)
+            url_spans.append((url_start, url_end))
+
+        # Phase 2: Tier 1 patterns (span-deduplicated, skip inside URLs/JWTs)
+        claimed: list[tuple[int, int]] = list(url_spans)
+        for kind, pattern in _T1_PATTERNS:
             for m in pattern.finditer(normalized):
-                norm_value = m.group()
-                norm_start, norm_end = m.start(), m.end()
-
-                # Trim URL in normalized space
-                if kind == "url":
-                    norm_value = _trim_url(norm_value)
-                    norm_end = norm_start + len(norm_value)
-
-                # Map back to original positions
-                orig_start, orig_end = _map_span_to_original(index_map, norm_start, norm_end)
-                original_value = text[orig_start:orig_end]
-
-                if original_value in self._forward or norm_value in self._reverse:
+                s, e = m.start(), m.end()
+                if _overlaps_any(s, e, claimed):
+                    continue
+                if any(js <= s < je for js, je in jwt_spans):
                     continue
 
-                if kind == "url":
-                    self._shorten_url(original_value)
+                orig_s, orig_e = _map_span(index_map, s, e)
+                original = text[orig_s:orig_e]
+                if original in self._forward:
+                    claimed.append((s, e))
                     continue
 
-                # Skip patterns inside URLs (check in normalized text)
-                if _is_in_url(normalized, norm_start):
-                    continue
+                ctx_b = text[max(0, orig_s - 200) : orig_s]
+                ctx_a = text[orig_e : min(len(text), orig_e + 30)]
+                if _is_valid_t1_pattern(m.group(), kind, ctx_b, ctx_a) and self._abbreviate_t1(original):
+                    claimed.append((s, e))
 
-                # Skip inside JWT tokens
-                if any(s <= norm_start < e for s, e in jwt_spans):
-                    continue
-
-                # Validate using normalized value and context
-                ctx_before = text[max(0, orig_start - 30) : orig_start]
-                ctx_after = text[orig_end : min(len(text), orig_end + 30)]
-                if not _is_valid_pattern(norm_value, kind, ctx_before, ctx_after):
-                    continue
-
-                if kind == "path":
-                    self._shorten_path(original_value)
-                else:
-                    self._shorten_string(original_value, kind)
-
-    def _ensure_mapping(self, original_value: str, norm_value: str, kind: str, ctx_before: str, ctx_after: str) -> None:
-        """Create shortened mapping for a pattern if one doesn't exist yet."""
-        if original_value in self._forward:
-            return
-        if kind == "url":
-            self._shorten_url(original_value)
-            return
-        if not _is_valid_pattern(norm_value, kind, ctx_before, ctx_after):
-            return
-        if kind == "path":
-            self._shorten_path(original_value)
-        else:
-            self._shorten_string(original_value, kind)
+        # Phase 3: Paths (skip inside URLs)
+        for m in _PATH_PATTERN.finditer(normalized):
+            s, e = m.start(), m.end()
+            if _overlaps_any(s, e, url_spans):
+                continue
+            orig_s, orig_e = _map_span(index_map, s, e)
+            original = text[orig_s:orig_e]
+            if original in self._forward:
+                continue
+            ctx_b = text[max(0, orig_s - 30) : orig_s]
+            ctx_a = text[orig_e : min(len(text), orig_e + 30)]
+            if _is_valid_path(m.group(), ctx_b, ctx_a):
+                self._shorten_path(original)
 
     def substitute(self, text: str) -> str:
-        """Replace patterns with shortened forms (preserves unmatched text exactly)."""
+        """Replace patterns with shortened forms."""
         if not text:
             return text
 
@@ -493,74 +462,90 @@ class URLSubstitutor:
         jwt_spans = [(m.start(), m.end()) for m in _JWT_PATTERN.finditer(normalized)]
         replacements: list[tuple[int, int, str]] = []
 
-        for kind, pattern in _PATTERNS:
+        # Phase 1: URLs
+        url_spans: list[tuple[int, int]] = []
+        for m in _URL_PATTERN.finditer(normalized):
+            url_text = _trim_url(m.group())
+            url_start, url_end = m.start(), m.start() + len(url_text)
+            orig_s, orig_e = _map_span(index_map, url_start, url_end)
+            original = text[orig_s:orig_e]
+
+            if original not in self._forward:
+                self._shorten_url(original)
+            if original in self._forward and self._forward[original] != original:
+                replacements.append((orig_s, orig_e, self._forward[original]))
+                url_spans.append((url_start, url_end))
+
+        # Phase 2: Tier 1 patterns
+        claimed: list[tuple[int, int]] = list(url_spans)
+        for kind, pattern in _T1_PATTERNS:
             for m in pattern.finditer(normalized):
-                norm_value = m.group()
-                norm_start, norm_end = m.start(), m.end()
-
-                if kind == "url":
-                    norm_value = _trim_url(norm_value)
-                    norm_end = norm_start + len(norm_value)
-
-                orig_start, orig_end = _map_span_to_original(index_map, norm_start, norm_end)
-                original_value = text[orig_start:orig_end]
-
-                if norm_value in self._reverse:
+                s, e = m.start(), m.end()
+                if _overlaps_any(s, e, claimed):
                     continue
-                if any(s <= norm_start < e for s, e in jwt_spans):
-                    continue
-                if kind != "url" and _is_in_url(normalized, norm_start):
+                if any(js <= s < je for js, je in jwt_spans):
                     continue
 
-                ctx_before = text[max(0, orig_start - 30) : orig_start]
-                ctx_after = text[orig_end : min(len(text), orig_end + 30)]
-                self._ensure_mapping(original_value, norm_value, kind, ctx_before, ctx_after)
+                orig_s, orig_e = _map_span(index_map, s, e)
+                original = text[orig_s:orig_e]
 
-                if original_value in self._forward and self._forward[original_value] != original_value:
-                    replacements.append((orig_start, orig_end, self._forward[original_value]))
+                if original not in self._forward:
+                    ctx_b = text[max(0, orig_s - 200) : orig_s]
+                    ctx_a = text[orig_e : min(len(text), orig_e + 30)]
+                    if _is_valid_t1_pattern(m.group(), kind, ctx_b, ctx_a):
+                        self._abbreviate_t1(original)
+
+                if original in self._forward and self._forward[original] != original:
+                    replacements.append((orig_s, orig_e, self._forward[original]))
+                    claimed.append((s, e))
+
+        # Phase 3: Paths
+        for m in _PATH_PATTERN.finditer(normalized):
+            s, e = m.start(), m.end()
+            if _overlaps_any(s, e, url_spans):
+                continue
+            orig_s, orig_e = _map_span(index_map, s, e)
+            original = text[orig_s:orig_e]
+            if original not in self._forward:
+                ctx_b = text[max(0, orig_s - 30) : orig_s]
+                ctx_a = text[orig_e : min(len(text), orig_e + 30)]
+                if _is_valid_path(m.group(), ctx_b, ctx_a):
+                    self._shorten_path(original)
+            if original in self._forward and self._forward[original] != original:
+                replacements.append((orig_s, orig_e, self._forward[original]))
 
         return self._apply_replacements(text, replacements)
 
     @staticmethod
     def _apply_replacements(text: str, replacements: list[tuple[int, int, str]]) -> str:
-        """Apply non-overlapping replacements to text, longest-first at each position."""
         if not replacements:
             return text
-
         replacements.sort(key=lambda x: (x[0], -(x[1] - x[0])))
-
-        filtered = []
+        filtered: list[tuple[int, int, str]] = []
         last_end = 0
         for start, end, short in replacements:
             if start >= last_end:
                 filtered.append((start, end, short))
                 last_end = end
-
         result = text
         for start, end, short in reversed(filtered):
             result = result[:start] + short + result[end:]
         return result
 
     def restore(self, text: str) -> str:
-        """Restore shortened forms to originals.
-
-        Two-pass approach: exact matches first, then tilde-stripped fallback.
-        Both passes use longest-first ordering to prevent partial matches.
-        """
+        """Restore shortened forms to originals. Case-insensitive, handles ... and … ."""
         if not text or not self._reverse:
             return text
 
-        result = text
+        result = text.replace("\u2026", "...")  # Unicode ellipsis → three dots
 
-        # Pass 1: Exact match (longest first to avoid partial matches)
+        lower_result = result.lower()
         for short in sorted(self._reverse, key=len, reverse=True):
-            if short in result:
-                result = result.replace(short, self._reverse[short])
-
-        # Pass 2: Tilde-stripped fallback (longest first)
-        if self._stripped_reverse:
-            for stripped in sorted(self._stripped_reverse, key=len, reverse=True):
-                if stripped in result:
-                    result = result.replace(stripped, self._stripped_reverse[stripped])
+            if short not in lower_result:
+                continue
+            original = self._reverse[short]
+            escaped = re.escape(short)
+            result = re.sub(escaped, lambda _m, o=original: o, result, flags=re.IGNORECASE)
+            lower_result = result.lower()
 
         return result

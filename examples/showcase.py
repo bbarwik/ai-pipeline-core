@@ -44,7 +44,6 @@ from ai_pipeline_core import (
     PipelineDeployment,
     PromptManager,
     StructuredLoggerMixin,
-    canonical_name_key,
     get_pipeline_logger,
     is_document_sha256,
     llm,
@@ -275,7 +274,7 @@ async def compile_report(
         f"# {project_name} — Analysis Report",
         "",
         f"Documents analyzed: {len(insights)}",
-        f"Insight type: `{canonical_name_key(InsightDocument)}`",
+        f"Insight type: `{InsightDocument.__name__}`",
         "",
         "## Insights",
         "",
@@ -351,7 +350,7 @@ async def analysis_flow(
     """Stage 1: multi-turn LLM analysis of each input document."""
     results: list[AnalysisDocument] = []
     for doc in documents:
-        logger.info(f"Analyzing {doc.canonical_name()}: {doc.name} ({doc.mime_type}, is_text={doc.is_text})")
+        logger.info(f"Analyzing {doc.__class__.__name__}: {doc.name} ({doc.mime_type}, is_text={doc.is_text})")
         analysis = await analyze_document(
             doc,
             core_model=flow_options.core_model,

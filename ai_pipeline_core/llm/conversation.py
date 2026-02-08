@@ -35,9 +35,10 @@ from ._validation import validate_image, validate_pdf, validate_text
 
 # Default system prompt injected when substitutor is active with patterns and no user system prompt
 _DEFAULT_SUBSTITUTOR_PROMPT = (
-    "When you see ~text~ in text, address or url it means that original text was replaced and shortened."
-    " When reffering to test with ~text~, eg https://example.com/page~a7ae~ then preserve ~ markers,"
-    " as they will be replaced in your response to original text. Do not remove them in your repsonse."
+    "Text uses ... (three dots) to indicate shortened content. "
+    "For example, 0x7a250d56...c659F2488D is a shortened blockchain address, "
+    "and https://example.com/very/long/path/to/page...resource.pdf is a shortened URL. "
+    "When quoting or referencing such text, preserve the ... markers exactly as shown."
 )
 
 logger = get_pipeline_logger(__name__)
@@ -335,6 +336,12 @@ class Conversation(BaseModel, Generic[T]):
     def _ensure_substitutor(cls, data: Any) -> Any:
         """Auto-create substitutor if enabled and not provided."""
         if isinstance(data, dict):
+            # Auto-disable for search models unless explicitly overridden
+            explicitly_set = "enable_substitutor" in data
+            model_name = data.get("model", "")
+            if not explicitly_set and isinstance(model_name, str) and model_name.endswith("-search"):
+                data["enable_substitutor"] = False
+
             enabled = data.get("enable_substitutor", True)
             if enabled and data.get("substitutor") is None:
                 data["substitutor"] = URLSubstitutor()

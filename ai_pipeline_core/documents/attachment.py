@@ -14,6 +14,7 @@ from .mime_type import (
     is_pdf_mime_type,
     is_text_mime_type,
 )
+from .utils import DATA_URI_PATTERN
 
 
 class Attachment(BaseModel):
@@ -59,33 +60,32 @@ class Attachment(BaseModel):
     @field_validator("content", mode="before")
     @classmethod
     def validate_content(cls, v: Any) -> bytes:
-        """Convert content to bytes, handling encoding markers for correct round-trip.
+        """Convert content to bytes.
 
-        Handles three input formats:
-        1. bytes - passed through directly
-        2. dict with {v: str, e: "utf-8"|"base64"} - new Pydantic serialization format
-        3. str - legacy format, treated as UTF-8 text
+        Handles:
+        1. bytes — passed through directly
+        2. str with data URI prefix — base64-decoded to bytes
+        3. str (plain text) — UTF-8 encoded to bytes
         """
         if isinstance(v, bytes):
             return v
-        if isinstance(v, dict) and "v" in v and "e" in v:
-            if v["e"] == "base64":
-                return base64.b64decode(v["v"])
-            return v["v"].encode("utf-8")
         if isinstance(v, str):
+            # Data URIs are produced by serialize_content() for binary content only (failed UTF-8 decode).
+            # Text starting with "data:<mime>;base64," would be misinterpreted, accepted by design.
+            if DATA_URI_PATTERN.match(v):
+                _, payload = v.split(",", 1)
+                return base64.b64decode(payload)
             return v.encode("utf-8")
         raise ValueError(f"Invalid content type: {type(v)}")
 
     @field_serializer("content")
-    def serialize_content(self, v: bytes) -> dict[str, str]:  # noqa: PLR6301
-        """Serialize content with encoding marker for correct round-trip.
-
-        Returns dict with 'v' (value) and 'e' (encoding: "utf-8" or "base64").
-        """
+    def serialize_content(self, v: bytes) -> str:
+        """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
         try:
-            return {"v": v.decode("utf-8"), "e": "utf-8"}
+            return v.decode("utf-8")
         except UnicodeDecodeError:
-            return {"v": base64.b64encode(v).decode("ascii"), "e": "base64"}
+            b64 = base64.b64encode(v).decode("ascii")
+            return f"data:{self.mime_type};base64,{b64}"
 
     @cached_property
     def mime_type(self) -> str:

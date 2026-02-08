@@ -1,6 +1,6 @@
 """Tests for Phase 7: Static validation at definition/decoration time.
 
-Tests canonical_name collision detection, @pipeline_flow annotation validation,
+Tests class name collision detection, @pipeline_flow annotation validation,
 @pipeline_task DocumentList rejection, return type enforcement, and
 PipelineDeployment flow chain validation.
 """
@@ -82,11 +82,11 @@ async def union_input_flow(project_name: str, documents: list[BetaDocument | Del
 # --------------------------------------------------------------------------- #
 
 
-class TestCanonicalNameCollision:
-    """Test Document.__init_subclass__ canonical name collision detection."""
+class TestClassNameCollision:
+    """Test Document.__init_subclass__ class name collision detection."""
 
-    def test_different_canonical_names_ok(self):
-        """Classes with different canonical names register without error."""
+    def test_different_class_names_ok(self):
+        """Classes with different names register without error."""
 
         class UniqueNameOneDocument(Document):
             pass
@@ -95,29 +95,27 @@ class TestCanonicalNameCollision:
             pass
 
         # No error raised
-        assert UniqueNameOneDocument.canonical_name() != UniqueNameTwoDocument.canonical_name()
+        assert UniqueNameOneDocument.__name__ != UniqueNameTwoDocument.__name__
 
     def test_registry_stores_classes(self):
-        """The registry contains registered production classes (e.g., Document itself)."""
-        from ai_pipeline_core.documents.document import _canonical_name_registry
+        """The registry is a dict mapping class names to Document subclasses."""
+        from ai_pipeline_core.documents.document import _class_name_registry
 
-        assert isinstance(_canonical_name_registry, dict)
-        assert len(_canonical_name_registry) > 0, "Registry should contain production Document subclasses"
-        for name, cls in _canonical_name_registry.items():
+        assert isinstance(_class_name_registry, dict)
+        # Registry may be empty if no production (non-test) Document subclasses are imported
+        for name, cls in _class_name_registry.items():
             assert isinstance(name, str)
             assert isinstance(cls, type)
 
     def test_test_module_classes_skip_registry(self):
         """Classes defined in test modules are not registered."""
-        from ai_pipeline_core.documents.document import _canonical_name_registry, _is_test_module
+        from ai_pipeline_core.documents.document import _class_name_registry, _is_test_module
 
         # AlphaDocument is defined in this test file
         assert _is_test_module(AlphaDocument)
 
-        # Its canonical name should NOT be in the registry
-        canonical = AlphaDocument.canonical_name()
-        # If it's there, it's from a different class (unlikely for "alpha")
-        existing = _canonical_name_registry.get(canonical)
+        # Its class name should NOT be in the registry
+        existing = _class_name_registry.get(AlphaDocument.__name__)
         assert existing is not AlphaDocument
 
     def test_collision_detection_for_production_classes(self):

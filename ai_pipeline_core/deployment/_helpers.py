@@ -7,7 +7,6 @@ from typing import Any, Literal, TypedDict
 import httpx
 
 from ai_pipeline_core.deployment.contract import CompletedRun, FailedRun, ProgressRun
-from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
@@ -47,36 +46,6 @@ def extract_generic_params(cls: type, base_class: type) -> tuple[Any, ...]:
                 return args
 
     return (None, None)
-
-
-class _DownloadedDocument(Document):
-    """Document created from a downloaded URL."""
-
-
-async def download_documents(urls: list[str]) -> list[Document]:
-    """Download documents from URLs in parallel."""
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-
-        async def _download(url: str) -> Document:
-            response = await client.get(url)
-            response.raise_for_status()
-            filename = url.rsplit("/", maxsplit=1)[-1].split("?")[0] or "document"
-            return _DownloadedDocument(name=filename, content=response.content)
-
-        return list(await asyncio.gather(*[_download(url) for url in urls]))
-
-
-async def upload_documents(documents: list[Document], url_mapping: dict[str, str]) -> None:
-    """Upload documents to their mapped URLs."""
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        for doc in documents:
-            if doc.name in url_mapping:
-                response = await client.put(
-                    url_mapping[doc.name],
-                    content=doc.content,
-                    headers={"Content-Type": doc.mime_type},
-                )
-                response.raise_for_status()
 
 
 async def send_webhook(

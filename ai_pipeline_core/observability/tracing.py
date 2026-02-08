@@ -10,6 +10,7 @@ import contextlib
 import inspect
 import json
 import os
+import re
 import threading
 from collections.abc import Callable
 from functools import wraps
@@ -68,35 +69,28 @@ def _serialize_for_tracing(obj: Any) -> Any:
 # ---------------------------------------------------------------------------
 # Document trimming utilities
 # ---------------------------------------------------------------------------
-def _get_content_encoding(content: Any) -> str:
-    """Extract encoding from content field (handles both {v,e} dict and legacy flat format)."""
-    if isinstance(content, dict) and "e" in content:
-        return content["e"]
-    return "utf-8"  # Default for legacy string format
+_CONTENT_TRIM_THRESHOLD = 250
+_CONTENT_TRIM_KEEP = 100
 
 
-def _get_content_value(content: Any) -> str:
-    """Extract value from content field (handles both {v,e} dict and legacy flat format)."""
-    if isinstance(content, dict) and "v" in content:
-        return content["v"]
-    if isinstance(content, str):
+def _is_binary_content(content: Any) -> bool:
+    """Detect binary content by data URI prefix (RFC 2397 format with base64 encoding)."""
+    return isinstance(content, str) and bool(re.match(r"^data:[a-zA-Z0-9.+/-]+;base64,", content))
+
+
+def _trim_content_string(content: str) -> str:
+    """Trim a text content string if over threshold, keeping first/last chars."""
+    if len(content) <= _CONTENT_TRIM_THRESHOLD:
         return content
-    return ""
-
-
-def _make_content(value: str, encoding: str) -> dict[str, str]:
-    """Create content in {v,e} format."""
-    return {"v": value, "e": encoding}
+    trimmed_chars = len(content) - 2 * _CONTENT_TRIM_KEEP
+    return content[:_CONTENT_TRIM_KEEP] + f" ... [trimmed {trimmed_chars} chars] ... " + content[-_CONTENT_TRIM_KEEP:]
 
 
 def _trim_attachment_list(attachments: list[Any]) -> list[Any]:
     """Trim attachment content in a serialized attachment list.
 
-    Always trims regardless of parent document type:
-    - Binary (base64): replace content with placeholder
-    - Text > 250 chars: keep first 100 + last 100
-
-    Handles both {v,e} format and legacy flat format.
+    - Binary (data URI): replace content with placeholder
+    - Text > threshold: keep first/last chars
     """
     trimmed: list[Any] = []
     for raw_att in attachments:
@@ -105,26 +99,18 @@ def _trim_attachment_list(attachments: list[Any]) -> list[Any]:
             continue
         att: dict[str, Any] = cast(dict[str, Any], raw_att)
         content = att.get("content")
-        content_encoding = _get_content_encoding(content)
-        content_value = _get_content_value(content)
-
-        if content_encoding == "base64":
+        if _is_binary_content(content):
             att = att.copy()
-            att["content"] = _make_content("[binary content removed]", "utf-8")
-        elif len(content_value) > 250:
+            att["content"] = "[binary content removed]"
+        elif isinstance(content, str) and len(content) > _CONTENT_TRIM_THRESHOLD:
             att = att.copy()
-            trimmed_chars = len(content_value) - 200
-            trimmed_text = content_value[:100] + f" ... [trimmed {trimmed_chars} chars] ... " + content_value[-100:]
-            att["content"] = _make_content(trimmed_text, "utf-8")
+            att["content"] = _trim_content_string(content)
         trimmed.append(att)
     return trimmed
 
 
 def _trim_document_content(doc_dict: dict[str, Any]) -> dict[str, Any]:
-    """Trim document content for traces. All documents trimmed equally.
-
-    Handles both {v,e} format and legacy flat format.
-    """
+    """Trim document content for traces. Binary removed, text trimmed."""
     if not isinstance(doc_dict, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
         return doc_dict  # pyright: ignore[reportUnreachable]
 
@@ -133,23 +119,19 @@ def _trim_document_content(doc_dict: dict[str, Any]) -> dict[str, Any]:
 
     doc_dict = doc_dict.copy()
     content = doc_dict.get("content")
-    content_encoding = _get_content_encoding(content)
-    content_value = _get_content_value(content)
 
     # Trim attachments
     if "attachments" in doc_dict and isinstance(doc_dict["attachments"], list):
         doc_dict["attachments"] = _trim_attachment_list(cast(list[Any], doc_dict["attachments"]))
 
     # Binary: remove content
-    if content_encoding == "base64":
-        doc_dict["content"] = _make_content("[binary content removed]", "utf-8")
+    if _is_binary_content(content):
+        doc_dict["content"] = "[binary content removed]"
         return doc_dict
 
-    # Text: trim if > 250 chars
-    if len(content_value) > 250:
-        trimmed_chars = len(content_value) - 200
-        trimmed_text = content_value[:100] + f" ... [trimmed {trimmed_chars} chars] ... " + content_value[-100:]
-        doc_dict["content"] = _make_content(trimmed_text, "utf-8")
+    # Text: trim if over threshold
+    if isinstance(content, str):
+        doc_dict["content"] = _trim_content_string(content)
 
     return doc_dict
 

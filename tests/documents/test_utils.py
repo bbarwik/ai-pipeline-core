@@ -1,7 +1,6 @@
 """Tests for document utilities."""
 
-from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents.utils import camel_to_snake, canonical_name_key, sanitize_url
+from ai_pipeline_core.documents.utils import camel_to_snake, sanitize_url
 
 
 class TestSanitizeUrl:
@@ -95,67 +94,3 @@ class TestCamelToSnake:
         assert camel_to_snake("") == ""
         assert camel_to_snake("ABC") == "abc"
         assert camel_to_snake("aBC") == "a_bc"
-
-
-class TestCanonicalNameKey:
-    """Test canonical name key generation."""
-
-    def test_class_with_document_suffix(self):
-        """Test classes ending with Document."""
-
-        class SampleDocument(Document):
-            def get_type(self) -> str:
-                return "sample"
-
-        assert canonical_name_key(SampleDocument) == "sample"
-
-        class FinalReportDocument(Document):
-            def get_type(self) -> str:
-                return "final_report"
-
-        assert canonical_name_key(FinalReportDocument) == "final_report"
-
-    def test_class_with_document_suffix_simple(self):
-        """Test simple class ending with Document."""
-
-        class MyDocument(Document):
-            def get_type(self) -> str:
-                return "my"
-
-        assert canonical_name_key(MyDocument) == "my"
-
-    def test_string_input(self):
-        """Test with string input instead of class."""
-        assert canonical_name_key("TestDocument", extra_suffixes=["Document"]) == "test"
-        assert canonical_name_key("FinalReportDocument", extra_suffixes=["Document"]) == "final_report"
-        assert canonical_name_key("MyDocument", extra_suffixes=["Document"]) == "my"
-        assert canonical_name_key("SimpleClass") == "simple_class"
-
-    def test_extra_suffixes(self):
-        """Test with extra suffixes to strip."""
-        assert canonical_name_key("TestConfig", extra_suffixes=["Config"]) == "test"
-        assert canonical_name_key("FooBarBaz", extra_suffixes=["Baz", "Bar"]) == "foo"
-
-    def test_max_parent_suffixes(self):
-        """Test limiting parent suffix removal."""
-
-        class DeepDocument(Document):
-            def get_type(self) -> str:
-                return "deep"
-
-        # Default behavior (removes parent class names)
-        assert canonical_name_key(DeepDocument) == "deep"
-
-        # Limit parent suffix removal
-        assert canonical_name_key(DeepDocument, max_parent_suffixes=0) == "deep_document"
-
-    def test_complex_names(self):
-        """Test complex naming patterns."""
-        assert canonical_name_key("HTTPSConnectionDocument", extra_suffixes=["Document"]) == "https_connection"
-        assert canonical_name_key("PDFReaderDocument", extra_suffixes=["Document"]) == "pdf_reader"
-        assert canonical_name_key("XMLParserDocument", extra_suffixes=["Document"]) == "xml_parser"
-
-    def test_no_suffix_match(self):
-        """Test when no suffix matches."""
-        assert canonical_name_key("SimpleClass") == "simple_class"
-        assert canonical_name_key("MyCustomType") == "my_custom_type"

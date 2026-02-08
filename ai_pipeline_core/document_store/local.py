@@ -1,9 +1,9 @@
 """Local filesystem document store for CLI/debug mode.
 
 Layout:
-    {base_path}/{canonical_name}/{filename}           <- raw content
-    {base_path}/{canonical_name}/{filename}.meta.json  <- metadata
-    {base_path}/{canonical_name}/{filename}.att/        <- attachments directory
+    {base_path}/{ClassName}/{filename}           <- raw content
+    {base_path}/{ClassName}/{filename}.meta.json  <- metadata
+    {base_path}/{ClassName}/{filename}.att/        <- attachments directory
 """
 
 import asyncio
@@ -36,7 +36,7 @@ def _safe_filename(name: str, doc_sha256: str) -> str:
 class LocalDocumentStore:
     """Filesystem-backed document store for local development and debugging.
 
-    Documents are stored as browsable files organized by canonical type name.
+    Documents are stored as browsable files organized by class name.
     Write order (content before meta) ensures crash safety — load() ignores
     content files without a valid .meta.json.
     """
@@ -127,7 +127,7 @@ class LocalDocumentStore:
             paths.append(meta_path)
 
     def _save_sync(self, document: Document, run_scope: str) -> bool:
-        canonical = document.canonical_name()
+        canonical = document.__class__.__name__
         doc_dir = self._scope_path(run_scope) / canonical
         doc_dir.mkdir(parents=True, exist_ok=True)
 
@@ -199,17 +199,16 @@ class LocalDocumentStore:
         if not scope_path.exists():
             return []
 
-        # Build reverse map: canonical_name -> document type
-        type_by_canonical: dict[str, type[Document]] = {}
+        # Build reverse map: class_name -> document type
+        type_by_name: dict[str, type[Document]] = {}
         for doc_type in document_types:
-            cn = doc_type.canonical_name()
-            type_by_canonical[cn] = doc_type
+            type_by_name[doc_type.__name__] = doc_type
 
         documents: list[Document] = []
 
         with suppress_registration():
-            for canonical, doc_type in type_by_canonical.items():
-                type_dir = scope_path / canonical
+            for class_name, doc_type in type_by_name.items():
+                type_dir = scope_path / class_name
                 if not type_dir.is_dir():
                     continue
                 self._load_type_dir(type_dir, doc_type, documents)
@@ -269,7 +268,7 @@ class LocalDocumentStore:
     def _has_documents_sync(self, run_scope: str, document_type: type[Document]) -> bool:
         """Check for meta files in the type's directory without loading content."""
         scope_path = self._scope_path(run_scope)
-        canonical = document_type.canonical_name()
+        canonical = document_type.__name__
         type_dir = scope_path / canonical
         if not type_dir.is_dir():
             return False

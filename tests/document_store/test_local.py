@@ -136,8 +136,7 @@ class TestCrashRecovery:
     async def test_content_without_meta_is_ignored(self, store: LocalDocumentStore, tmp_path: Path):
         """Content file without meta.json should be skipped during load."""
         # Create a content file without corresponding meta
-        canonical = ReportDoc.canonical_name()
-        doc_dir = tmp_path / "run1" / canonical
+        doc_dir = tmp_path / "run1" / ReportDoc.__name__
         doc_dir.mkdir(parents=True)
         (doc_dir / "orphan.md").write_text("orphaned content")
 
@@ -147,8 +146,7 @@ class TestCrashRecovery:
     @pytest.mark.asyncio
     async def test_meta_without_content_is_skipped(self, store: LocalDocumentStore, tmp_path: Path):
         """Meta file without content file should be skipped with warning."""
-        canonical = ReportDoc.canonical_name()
-        doc_dir = tmp_path / "run1" / canonical
+        doc_dir = tmp_path / "run1" / ReportDoc.__name__
         doc_dir.mkdir(parents=True)
         meta = {"document_sha256": "X" * 52, "content_sha256": "Y" * 52, "class_name": "ReportDoc"}
         (doc_dir / "missing.md.meta.json").write_text(json.dumps(meta))
@@ -159,8 +157,7 @@ class TestCrashRecovery:
     @pytest.mark.asyncio
     async def test_corrupted_meta_is_skipped(self, store: LocalDocumentStore, tmp_path: Path):
         """Invalid JSON in meta file should be skipped."""
-        canonical = ReportDoc.canonical_name()
-        doc_dir = tmp_path / "run1" / canonical
+        doc_dir = tmp_path / "run1" / ReportDoc.__name__
         doc_dir.mkdir(parents=True)
         (doc_dir / "bad.md").write_text("content")
         (doc_dir / "bad.md.meta.json").write_text("not valid json{{{")
@@ -232,9 +229,9 @@ class TestFileLayout:
         safe_name = _safe_filename("report.md", sha)
         await store.save(doc, "run1")
 
-        canonical = ReportDoc.canonical_name()
-        assert (tmp_path / "run1" / canonical / safe_name).exists()
-        assert (tmp_path / "run1" / canonical / f"{safe_name}.meta.json").exists()
+        class_name = ReportDoc.__name__
+        assert (tmp_path / "run1" / class_name / safe_name).exists()
+        assert (tmp_path / "run1" / class_name / f"{safe_name}.meta.json").exists()
 
     @pytest.mark.asyncio
     async def test_meta_json_content(self, store: LocalDocumentStore, tmp_path: Path):
@@ -243,8 +240,8 @@ class TestFileLayout:
         safe_name = _safe_filename("report.md", sha)
         await store.save(doc, "run1")
 
-        canonical = ReportDoc.canonical_name()
-        meta_path = tmp_path / "run1" / canonical / f"{safe_name}.meta.json"
+        class_name = ReportDoc.__name__
+        meta_path = tmp_path / "run1" / class_name / f"{safe_name}.meta.json"
         meta = json.loads(meta_path.read_text())
 
         assert meta["name"] == "report.md"
@@ -263,8 +260,8 @@ class TestFileLayout:
         safe_name = _safe_filename("report.md", sha)
         await store.save(doc, "run1")
 
-        canonical = ReportDoc.canonical_name()
-        att_dir = tmp_path / "run1" / canonical / f"{safe_name}.att"
+        class_name = ReportDoc.__name__
+        att_dir = tmp_path / "run1" / class_name / f"{safe_name}.att"
         assert att_dir.is_dir()
         assert (att_dir / "img.png").exists()
 
@@ -345,8 +342,7 @@ class TestCollisionSafeFilenames:
     @pytest.mark.asyncio
     async def test_backward_compat_load_without_name_in_meta(self, store: LocalDocumentStore, tmp_path: Path):
         """Old meta.json files without 'name' field should fall back to filesystem name."""
-        canonical = ReportDoc.canonical_name()
-        doc_dir = tmp_path / "run1" / canonical
+        doc_dir = tmp_path / "run1" / ReportDoc.__name__
         doc_dir.mkdir(parents=True)
         (doc_dir / "old_doc.md").write_bytes(b"old content")
         meta = {

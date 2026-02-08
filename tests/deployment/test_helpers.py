@@ -19,10 +19,8 @@ from ai_pipeline_core.deployment import DeploymentResult
 from ai_pipeline_core.deployment.contract import ProgressRun
 from ai_pipeline_core.deployment._helpers import (
     class_name_to_deployment_name,
-    download_documents,
     extract_generic_params,
     send_webhook,
-    upload_documents,
 )
 
 
@@ -125,54 +123,6 @@ class TestSendWebhook:
                 await send_webhook("http://example.com/hook", payload, max_retries=2, retry_delay=0)
 
             assert mock_client.post.call_count == 2
-
-
-class TestDownloadDocuments:
-    """Test document downloading from URLs."""
-
-    async def test_downloads_and_creates_documents(self):
-        """Test successful document download."""
-        mock_response = AsyncMock()
-        mock_response.content = b"test content"
-        mock_response.raise_for_status = lambda: None
-
-        with patch("ai_pipeline_core.deployment._helpers.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
-            mock_client.get.return_value = mock_response
-            mock_client_cls.return_value = mock_client
-
-            docs = await download_documents(["http://example.com/file.txt"])
-            assert len(docs) == 1
-            assert docs[0].name == "file.txt"
-
-
-class TestUploadDocuments:
-    """Test document uploading to URLs."""
-
-    async def test_uploads_matching_documents(self):
-        """Test upload with URL mapping."""
-
-        class UploadDoc(Document):
-            """Document to upload."""
-
-        doc = UploadDoc(name="output.txt", content=b"result data")
-        docs = [doc]
-        url_mapping = {"output.txt": "http://example.com/upload/output.txt"}
-
-        mock_response = AsyncMock()
-        mock_response.raise_for_status = lambda: None
-
-        with patch("ai_pipeline_core.deployment._helpers.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
-            mock_client.put.return_value = mock_response
-            mock_client_cls.return_value = mock_client
-
-            await upload_documents(docs, url_mapping)
-            mock_client.put.assert_called_once()
 
 
 # --- Module-level test infrastructure ---

@@ -72,6 +72,16 @@ rules:
     severity: ERROR
     languages: [python]
 
+  - id: no-document-subclass-in-framework
+    pattern: |
+      class $NAME(Document):
+          ...
+    message: "Document subclasses must not be defined inside ai_pipeline_core — Document is a base class for applications to subclass"
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+
   - id: no-deprecation-warnings
     pattern-either:
       - pattern: warnings.warn(..., DeprecationWarning, ...)

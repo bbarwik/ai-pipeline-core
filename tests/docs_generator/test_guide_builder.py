@@ -9,7 +9,7 @@ from ai_pipeline_core.docs_generator.extractor import (
 )
 from ai_pipeline_core.docs_generator.guide_builder import (
     GuideData,
-    TestExample,
+    ScoredExample,
     build_guide,
     discover_tests,
     extract_rules,
@@ -101,8 +101,8 @@ def _make_test_example(
     score: int = 0,
     is_error: bool = False,
     is_marked: bool = False,
-) -> TestExample:
-    return TestExample(
+) -> ScoredExample:
+    return ScoredExample(
         name=name,
         source_file="tests/test_mod.py",
         line_number=1,

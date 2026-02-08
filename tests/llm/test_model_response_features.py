@@ -130,13 +130,13 @@ class TestModelResponseUsage:
 class TestStructuredModelResponse:
     """Test ModelResponse with structured output."""
 
-    class TestModel(BaseModel):
+    class SampleModel(BaseModel):
         field: str
         value: int
 
     def test_structured_response_creation(self):
         """Test creating a structured response."""
-        parsed = self.TestModel(field="test", value=42)
+        parsed = self.SampleModel(field="test", value=42)
         response = create_test_structured_model_response(parsed=parsed)
 
         assert response.parsed.field == "test"
@@ -144,7 +144,7 @@ class TestStructuredModelResponse:
 
     def test_structured_response_content_is_json(self):
         """Test that content is JSON string."""
-        parsed = self.TestModel(field="test", value=42)
+        parsed = self.SampleModel(field="test", value=42)
         response = create_test_structured_model_response(parsed=parsed)
 
         # Content should be valid JSON

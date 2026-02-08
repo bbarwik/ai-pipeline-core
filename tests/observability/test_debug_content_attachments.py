@@ -45,13 +45,11 @@ class TestStructureDocumentsWithAttachments:
                 "class_name": "SampleTaskDocument",
                 "name": "doc.txt",
                 "content": "text content",
-                "content_encoding": "utf-8",
                 "attachments": [
                     {
                         "name": "screenshot.png",
                         "description": "A screenshot",
-                        "content": b64_content,
-                        "content_encoding": "base64",
+                        "content": f"data:image/png;base64,{b64_content}",
                         "mime_type": "image/png",
                     },
                 ],
@@ -67,12 +65,12 @@ class TestStructureDocumentsWithAttachments:
         att = doc_entry["attachments"][0]
         assert att["name"] == "screenshot.png"
         assert att["description"] == "A screenshot"
-        assert att["encoding"] == "base64"
+        assert att["encoding"] == "binary"
         assert att["size_bytes"] == len(binary_data)
         assert "content_ref" in att
         assert "content" not in att
         assert att["content_ref"]["mime_type"] == "image/png"
-        assert att["preview"] == f"[Binary attachment, {len(binary_data)} bytes]"
+        assert att["preview"] == f"[Binary content, {len(binary_data)} bytes]"
 
     def test_text_attachment_inline(self, writer_with_store: ContentWriter, tmp_path: Path) -> None:
         """Small text attachment kept inline."""
@@ -81,12 +79,10 @@ class TestStructureDocumentsWithAttachments:
                 "class_name": "SampleTaskDocument",
                 "name": "doc.txt",
                 "content": "text content",
-                "content_encoding": "utf-8",
                 "attachments": [
                     {
                         "name": "notes.txt",
                         "content": "Short notes here",
-                        "content_encoding": "utf-8",
                     },
                 ],
             },
@@ -104,21 +100,20 @@ class TestStructureDocumentsWithAttachments:
         assert att["size_bytes"] == len(b"Short notes here")
 
     def test_small_binary_attachment_inline(self, writer_with_store: ContentWriter, tmp_path: Path) -> None:
-        """Binary attachment below max_element_bytes kept inline as base64."""
+        """Binary attachment below max_element_bytes kept inline as data URI."""
         small_binary = b"\x01\x02\x03"  # 3 bytes, well under 100
         b64_content = base64.b64encode(small_binary).decode("ascii")
+        data_uri = f"data:application/octet-stream;base64,{b64_content}"
 
         docs = [
             {
                 "class_name": "SampleTaskDocument",
                 "name": "doc.txt",
                 "content": "text",
-                "content_encoding": "utf-8",
                 "attachments": [
                     {
                         "name": "tiny.bin",
-                        "content": b64_content,
-                        "content_encoding": "base64",
+                        "content": data_uri,
                     },
                 ],
             },
@@ -129,7 +124,7 @@ class TestStructureDocumentsWithAttachments:
 
         content = yaml.safe_load((tmp_path / "output.yaml").read_text())
         att = content["documents"][0]["attachments"][0]
-        assert att["content"] == b64_content  # inline
+        assert att["content"] == data_uri  # inline
         assert "content_ref" not in att
         assert att["size_bytes"] == len(small_binary)
 
@@ -140,7 +135,6 @@ class TestStructureDocumentsWithAttachments:
                 "class_name": "SampleFlowDocument",
                 "name": "report.md",
                 "content": "Report text",
-                "content_encoding": "utf-8",
             },
         ]
 
@@ -159,11 +153,10 @@ class TestStructureDocumentsWithAttachments:
                 "class_name": "SampleTaskDocument",
                 "name": "doc.txt",
                 "content": "text",
-                "content_encoding": "utf-8",
                 "attachments": [
-                    {"name": "a.txt", "content": "aaa", "content_encoding": "utf-8"},
-                    {"name": "b.txt", "content": "bbb", "content_encoding": "utf-8"},
-                    {"name": "c.txt", "content": "ccc", "content_encoding": "utf-8"},
+                    {"name": "a.txt", "content": "aaa"},
+                    {"name": "b.txt", "content": "bbb"},
+                    {"name": "c.txt", "content": "ccc"},
                 ],
             },
         ]
@@ -187,12 +180,10 @@ class TestStructureDocumentsWithAttachments:
                 "class_name": "SampleTaskDocument",
                 "name": "doc.txt",
                 "content": "text",
-                "content_encoding": "utf-8",
                 "attachments": [
                     {
                         "name": "large.bin",
-                        "content": b64_content,
-                        "content_encoding": "base64",
+                        "content": f"data:application/octet-stream;base64,{b64_content}",
                         "mime_type": "application/octet-stream",
                     },
                 ],
@@ -225,12 +216,10 @@ class TestStructureDocumentsWithAttachments:
                 "class_name": "SampleTaskDocument",
                 "name": "doc.txt",
                 "content": "text",
-                "content_encoding": "utf-8",
                 "attachments": [
                     {
                         "name": "essay.txt",
                         "content": long_text,
-                        "content_encoding": "utf-8",
                     },
                 ],
             },

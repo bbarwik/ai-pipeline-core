@@ -18,7 +18,6 @@ AI Pipeline Core is a production-ready framework that combines document processi
 - **Conversation Class**: Immutable, stateful multi-turn LLM conversations with context caching, automatic URL/address shortening, and eager response restoration
 - **LLM Integration**: Unified interface to any model via LiteLLM proxy (OpenRouter compatible) with context caching (default 300s TTL)
 - **Structured Output**: Type-safe generation with Pydantic model validation via `generate_structured()` and `Conversation.send_structured()`
-- **Agent Framework**: Provider-agnostic interface for running agents with thread-safe registry, lazy validation, and document wrapping for provenance tracking
 - **Workflow Orchestration**: Prefect-based flows and tasks with annotation-driven document types
 - **Auto-Persistence**: `@pipeline_task` saves returned documents to `DocumentStore` automatically (configurable via `persist` parameter)
 - **Image Processing**: Automatic image tiling/splitting for LLM vision models with model-specific presets
@@ -462,62 +461,6 @@ Available presets: `GEMINI` (3000px, 9M pixels), `CLAUDE` (1568px, 1.15M pixels)
 
 The `Conversation` class automatically splits oversized images when documents are added to context — you typically don't need to call `process_image` directly.
 
-### Agent Framework
-
-The agents module provides a provider-agnostic interface for running agents. Install a provider package and register it, then use `run_agent()` in your tasks:
-
-```python
-from ai_pipeline_core.agents import (
-    AgentProvider,
-    AgentResult,
-    AgentOutputDocument,
-    register_agent_provider,
-    run_agent,
-)
-
-# Register your provider at startup (typically in __init__.py)
-register_agent_provider(YourAgentProvider())
-
-# Run an agent in a pipeline task
-@pipeline_task
-async def research_task(context_doc: ContextDocument) -> AgentOutputDocument:
-    result = await run_agent(
-        agent_name="researcher",
-        inputs={"query": "market analysis"},
-        backend="codex",
-        timeout_seconds=300,
-    )
-    return AgentOutputDocument.from_result(
-        result,
-        artifact_name="report.md",
-        origins=(context_doc.sha256,),  # Provenance tracking
-    )
-```
-
-**Key components:**
-
-- `AgentProvider`: Abstract base class for agent execution providers
-- `AgentResult`: Immutable dataclass containing agent output, artifacts, and metadata
-- `run_agent()`: Main entry point that delegates to the registered provider
-- `AgentOutputDocument`: Document wrapper for agent results with provenance tracking
-- `register_agent_provider()` / `get_agent_provider()`: Thread-safe singleton registry
-
-**`AgentResult` fields:**
-- `success`: Whether the agent completed successfully
-- `output`: Structured output data dict
-- `artifacts`: Binary files produced by the agent `{name: bytes}`
-- `error`, `traceback`, `stderr`: Error information if failed
-- `duration_seconds`, `exit_code`, `agent_name`, `agent_version`: Metadata
-
-**`run_agent()` parameters:**
-- `agent_name`: Identifier for the agent (e.g., `"researcher"`)
-- `inputs`: Input parameters dict
-- `files`: Additional files `{name: content}` (optional)
-- `target_worker`: Which worker to run on (provider-specific)
-- `backend`: Which backend to use (e.g., `"codex"`)
-- `timeout_seconds`: Maximum execution time (default 3600)
-- `env_vars`: Environment variables dict (optional)
-
 ### Pipeline Decorators
 
 #### `@pipeline_task`
@@ -840,7 +783,6 @@ python examples/showcase_document_store.py
 ai-pipeline-core/
 |-- ai_pipeline_core/
 |   |-- _llm_core/        # Internal LLM client, model types, and response handling
-|   |-- agents/            # Agent framework (AgentProvider, run_agent, AgentOutputDocument)
 |   |-- deployment/        # Pipeline deployment, deploy script, CLI bootstrap, progress, remote
 |   |-- docs_generator/    # AI-focused documentation generator
 |   |-- document_store/    # Store protocol and backends (ClickHouse, local, memory)

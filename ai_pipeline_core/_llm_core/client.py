@@ -11,14 +11,12 @@ import base64
 import hashlib
 import json
 import time
-from io import BytesIO
 from typing import Any, TypeVar
 
 from lmnr import Laminar
 from openai import AsyncOpenAI
 from openai.lib.streaming.chat import ChunkEvent, ContentDeltaEvent, ContentDoneEvent
 from openai.types.chat import ChatCompletionMessageParam
-from PIL import Image
 from pydantic import BaseModel, ValidationError
 
 from ai_pipeline_core.exceptions import LLMError
@@ -45,16 +43,7 @@ T = TypeVar("T", bound=BaseModel)
 _VALID_FINISH_REASONS = frozenset({"stop", "length", "tool_calls", "content_filter", "function_call"})
 
 
-def _validate_image(data: bytes, name: str = "image") -> str | None:
-    """Validate image content. Returns error message or None if valid."""
-    if not data:
-        return f"empty image content in '{name}'"
-    try:
-        with Image.open(BytesIO(data)) as img:
-            img.verify()
-        return None
-    except (OSError, ValueError, Image.DecompressionBombError) as e:
-        return f"invalid image in '{name}': {e}"
+from ai_pipeline_core._llm_core._validators import validate_image_content as _validate_image  # noqa: E402
 
 
 def _validate_pdf(data: bytes, name: str = "pdf") -> str | None:

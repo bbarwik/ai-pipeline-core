@@ -17,7 +17,11 @@ from uuid import UUID
 import yaml
 from pydantic import BaseModel, ConfigDict, SecretStr
 
+from ai_pipeline_core.logging import get_pipeline_logger
+
 from ._config import TraceDebugConfig
+
+logger = get_pipeline_logger(__name__)
 
 
 class ContentRef(BaseModel):
@@ -478,7 +482,50 @@ class ContentWriter:
 
         return entry
 
-    def _structure_documents(self, docs: list[Any]) -> dict[str, Any]:  # noqa: PLR0914
+    def _externalize_content(self, content: str, name: str, mime_type: str) -> dict[str, Any]:
+        """Externalize a single content value (text or data URI binary).
+
+        Returns a dict with size_bytes plus either content, content_ref+excerpt, or content_ref+preview.
+        """
+        entry: dict[str, Any] = {}
+        is_data_uri = isinstance(content, str) and content.startswith("data:")
+
+        if is_data_uri:
+            # Binary content encoded as data URI
+            try:
+                _, payload = content.split(",", 1)
+                binary_data = base64.b64decode(payload)
+                size = len(binary_data)
+                entry["size_bytes"] = size
+                entry["encoding"] = "binary"
+
+                if size > self._config.max_element_bytes and self._artifact_store:
+                    ref = self._artifact_store.store_binary(binary_data, mime_type)
+                    entry["content_ref"] = {"hash": ref.hash, "path": ref.path, "mime_type": ref.mime_type, "encoding": ref.encoding}
+                    entry["preview"] = f"[Binary content, {size} bytes]"
+                else:
+                    entry["content"] = content
+            except Exception:
+                logger.debug("Failed to decode data URI for %s: %s", name, mime_type, exc_info=True)
+                entry["content"] = "[binary content - decode failed]"
+                entry["size_bytes"] = 0
+        else:
+            # Text content
+            text = self._redact(str(content))
+            text_bytes = len(text.encode("utf-8"))
+            entry["size_bytes"] = text_bytes
+
+            if text_bytes > self._config.max_element_bytes and self._artifact_store:
+                ref = self._artifact_store.store_text(text)
+                excerpt_len = self._config.element_excerpt_bytes
+                entry["content_ref"] = {"hash": ref.hash, "path": ref.path, "mime_type": ref.mime_type, "encoding": ref.encoding}
+                entry["excerpt"] = text[:excerpt_len] + "\n[TRUNCATED - see artifact for full content]"
+            else:
+                entry["content"] = text
+
+        return entry
+
+    def _structure_documents(self, docs: list[Any]) -> dict[str, Any]:
         """Structure document list with attachment externalization."""
         doc_entries: list[dict[str, Any]] = []
 
@@ -486,56 +533,14 @@ class ContentWriter:
             doc_name = doc.get("name", f"doc_{i}")
             class_name = doc.get("class_name", "Document")
             content = doc.get("content", "")
-            content_encoding = doc.get("content_encoding", "utf-8")
+            mime_type = doc.get("mime_type", "application/octet-stream")
 
             doc_entry: dict[str, Any] = {
                 "index": i,
                 "name": doc_name,
                 "class_name": class_name,
+                **self._externalize_content(content, doc_name, mime_type),
             }
-
-            if content_encoding == "base64":
-                # Binary content
-                try:
-                    binary_data = base64.b64decode(content)
-                    size = len(binary_data)
-                    doc_entry["size_bytes"] = size
-                    doc_entry["encoding"] = "base64"
-
-                    if size > self._config.max_element_bytes and self._artifact_store:
-                        # Externalize binary
-                        mime_type = doc.get("mime_type", "application/octet-stream")
-                        ref = self._artifact_store.store_binary(binary_data, mime_type)
-                        doc_entry["content_ref"] = {
-                            "hash": ref.hash,
-                            "path": ref.path,
-                            "mime_type": ref.mime_type,
-                            "encoding": ref.encoding,
-                        }
-                        doc_entry["preview"] = f"[Binary content, {size} bytes]"
-                    else:
-                        doc_entry["content"] = content  # Keep base64 inline
-                except Exception:
-                    doc_entry["content"] = "[binary content - decode failed]"
-                    doc_entry["size_bytes"] = 0
-            else:
-                # Text content
-                text = self._redact(str(content))
-                text_bytes = len(text.encode("utf-8"))
-                doc_entry["size_bytes"] = text_bytes
-
-                if text_bytes > self._config.max_element_bytes and self._artifact_store:
-                    ref = self._artifact_store.store_text(text)
-                    excerpt_len = self._config.element_excerpt_bytes
-                    doc_entry["content_ref"] = {
-                        "hash": ref.hash,
-                        "path": ref.path,
-                        "mime_type": ref.mime_type,
-                        "encoding": ref.encoding,
-                    }
-                    doc_entry["excerpt"] = text[:excerpt_len] + "\n[TRUNCATED - see artifact for full content]"
-                else:
-                    doc_entry["content"] = text
 
             # Structure attachments if present
             raw_attachments = doc.get("attachments")
@@ -547,56 +552,13 @@ class ContentWriter:
                         continue
                     att_dict = cast(dict[str, Any], att)
                     att_name = att_dict.get("name", f"attachment_{j}")
-                    att_encoding = att_dict.get("content_encoding", "utf-8")
                     att_content = att_dict.get("content", "")
+                    att_mime = att_dict.get("mime_type", "application/octet-stream")
 
-                    att_entry: dict[str, Any] = {
-                        "index": j,
-                        "name": att_name,
-                    }
+                    att_entry: dict[str, Any] = {"index": j, "name": att_name}
                     if att_dict.get("description"):
                         att_entry["description"] = att_dict["description"]
-
-                    if att_encoding == "base64":
-                        try:
-                            binary_data = base64.b64decode(att_content)
-                            size = len(binary_data)
-                            att_entry["size_bytes"] = size
-                            att_entry["encoding"] = "base64"
-                            mime_type = att_dict.get("mime_type", "application/octet-stream")
-
-                            if size > self._config.max_element_bytes and self._artifact_store:
-                                ref = self._artifact_store.store_binary(binary_data, mime_type)
-                                att_entry["content_ref"] = {
-                                    "hash": ref.hash,
-                                    "path": ref.path,
-                                    "mime_type": ref.mime_type,
-                                    "encoding": ref.encoding,
-                                }
-                                att_entry["preview"] = f"[Binary attachment, {size} bytes]"
-                            else:
-                                att_entry["content"] = att_content
-                        except Exception:
-                            att_entry["content"] = "[binary content - decode failed]"
-                            att_entry["size_bytes"] = 0
-                    else:
-                        text = self._redact(str(att_content))
-                        text_bytes = len(text.encode("utf-8"))
-                        att_entry["size_bytes"] = text_bytes
-
-                        if text_bytes > self._config.max_element_bytes and self._artifact_store:
-                            ref = self._artifact_store.store_text(text)
-                            excerpt_len = self._config.element_excerpt_bytes
-                            att_entry["content_ref"] = {
-                                "hash": ref.hash,
-                                "path": ref.path,
-                                "mime_type": ref.mime_type,
-                                "encoding": ref.encoding,
-                            }
-                            att_entry["excerpt"] = text[:excerpt_len] + "\n[TRUNCATED - see artifact for full content]"
-                        else:
-                            att_entry["content"] = text
-
+                    att_entry.update(self._externalize_content(att_content, att_name, att_mime))
                     att_entries.append(att_entry)
 
                 doc_entry["attachment_count"] = len(att_entries)

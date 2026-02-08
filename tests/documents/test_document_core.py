@@ -261,22 +261,22 @@ class TestDocumentProperties:
         assert serialized["id"] == doc.id
         assert serialized["sha256"] == doc.sha256
         assert "mime_type" in serialized
-        # New format: content is {v: value, e: encoding}
-        assert serialized["content"] == {"v": "Hello, world!", "e": "utf-8"}
+        # Text content serialized as plain string
+        assert serialized["content"] == "Hello, world!"
 
-        # Binary content should be base64 encoded (use bytes that can't be decoded as UTF-8)
+        # Binary content should be data URI
         binary_content = b"\x89PNG\r\n\x1a\n"  # PNG header - contains invalid UTF-8 sequences
         doc_binary = ConcreteTestDocument(name="test.bin", content=binary_content)
         serialized_binary = doc_binary.serialize_model()
         expected_b64 = base64.b64encode(binary_content).decode()
-        assert serialized_binary["content"] == {"v": expected_b64, "e": "base64"}
+        assert serialized_binary["content"] == f"data:{doc_binary.mime_type};base64,{expected_b64}"
 
     def test_from_dict(self):
         """Test from_dict deserialization."""
-        # UTF-8 content - new format with {v, e}
+        # Plain string content (text)
         data = {
             "name": "test.txt",
-            "content": {"v": "Hello, world!", "e": "utf-8"},
+            "content": "Hello, world!",
             "description": "Test doc",
         }
         doc = ConcreteTestDocument.from_dict(data)
@@ -284,22 +284,14 @@ class TestDocumentProperties:
         assert doc.content == b"Hello, world!"
         assert doc.description == "Test doc"
 
-        # Base64 content - new format with {v, e}
-        data_base64 = {
+        # Data URI content (binary)
+        b64 = base64.b64encode(b"\x00\x01\x02\x03").decode()
+        data_binary = {
             "name": "test.bin",
-            "content": {"v": base64.b64encode(b"\x00\x01\x02\x03").decode(), "e": "base64"},
+            "content": f"data:application/octet-stream;base64,{b64}",
         }
-        doc_binary = ConcreteTestDocument.from_dict(data_base64)
+        doc_binary = ConcreteTestDocument.from_dict(data_binary)
         assert doc_binary.content == b"\x00\x01\x02\x03"
-
-        # Legacy format with content_encoding should also work (backward compat)
-        data_legacy = {
-            "name": "test.txt",
-            "content": "Legacy format",
-            "content_encoding": "utf-8",  # Will be stripped by from_dict
-        }
-        doc_legacy = ConcreteTestDocument.from_dict(data_legacy)
-        assert doc_legacy.content == b"Legacy format"
 
     def test_document_type_name(self):
         """Test document class name is accessible."""
@@ -308,30 +300,6 @@ class TestDocumentProperties:
 
         task_doc = ConcreteTestTaskDoc(name="test.txt", content=b"test")
         assert type(task_doc).__name__ == "ConcreteTestTaskDoc"
-
-    def test_canonical_name(self):
-        """Test canonical_name method."""
-
-        # Simple case - removes Document suffix
-        class SampleDocument(Document):
-            def get_type(self) -> str:
-                return "sample"
-
-        assert SampleDocument.canonical_name() == "sample"
-
-        # Removes Document suffix
-        class MyDocument(Document):
-            def get_type(self) -> str:
-                return "my"
-
-        assert MyDocument.canonical_name() == "my"
-
-        # Complex name with multiple words
-        class FinalReportDocument(Document):
-            def get_type(self) -> str:
-                return "final_report"
-
-        assert FinalReportDocument.canonical_name() == "final_report"
 
 
 class TestDocumentConstructor:

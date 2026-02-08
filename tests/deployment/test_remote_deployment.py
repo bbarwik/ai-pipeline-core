@@ -14,7 +14,6 @@ import pytest
 from pydantic import BaseModel
 
 from ai_pipeline_core import DeploymentContext, DeploymentResult, Document, FlowOptions
-from ai_pipeline_core.deployment.base import _reconstruct_documents
 from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
 from ai_pipeline_core.deployment.remote import RemoteDeployment
 from ai_pipeline_core.observability.tracing import TraceLevel
@@ -511,19 +510,17 @@ class TestSerializationRoundTrip:
         assert isinstance(restored, AlphaDoc)
         assert restored.sha256 == doc.sha256
 
-    def test_reconstruct_documents_with_known_types(self):
+    def test_from_dict_round_trip_with_known_types(self):
         alpha = AlphaDoc.create(name="a.txt", content="alpha content")
         beta = BetaDoc.create(name="b.txt", content="beta content")
-        serialized = [alpha.serialize_model(), beta.serialize_model()]
 
-        restored = _reconstruct_documents(serialized, [AlphaDoc, BetaDoc])
-
-        assert len(restored) == 2
-        assert isinstance(restored[0], AlphaDoc)
-        assert isinstance(restored[1], BetaDoc)
-
-    def test_reconstruct_documents_empty_list(self):
-        assert _reconstruct_documents([], [AlphaDoc]) == []
+        type_map = {cls.__name__: cls for cls in [AlphaDoc, BetaDoc]}
+        for original in [alpha, beta]:
+            serialized = original.serialize_model()
+            cls = type_map[serialized["class_name"]]
+            restored = cls.from_dict(serialized)
+            assert type(restored) is type(original)
+            assert restored.sha256 == original.sha256
 
     async def test_full_run_serialization_path(self):
         class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
@@ -541,7 +538,8 @@ class TestSerializationRoundTrip:
         params = mock_run.call_args[0][1]
         raw_docs = params["documents"]
 
-        restored = _reconstruct_documents(raw_docs, [AlphaDoc, BetaDoc])
+        type_map = {cls.__name__: cls for cls in [AlphaDoc, BetaDoc]}
+        restored = [type_map[d["class_name"]].from_dict(d) for d in raw_docs]
         assert len(restored) == 2
         assert isinstance(restored[0], AlphaDoc)
         assert isinstance(restored[1], BetaDoc)
