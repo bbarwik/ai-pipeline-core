@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Generic, Literal, cast
 
+from lmnr import Laminar
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import TypeVar
@@ -495,33 +496,39 @@ class Conversation(BaseModel, Generic[T]):
         core_messages = context_core + messages_core
         context_count = len(context_core)
 
-        # Apply substitution if enabled
-        if self.substitutor:
-            core_messages = self._apply_substitution(core_messages)
+        # Trace the full send operation — input captures pre-substitution content
+        span_name = purpose or f"conversation.{'send_structured' if response_format else 'send'}"
+        with Laminar.start_as_current_span(span_name, input=core_messages) as span:
+            # Apply substitution if enabled
+            if self.substitutor:
+                core_messages = self._apply_substitution(core_messages)
 
-        if response_format is not None:
-            response: ModelResponse[Any] = await core_generate_structured(
-                core_messages,
-                response_format,
-                model=self.model,
-                model_options=effective_options,
-                purpose=purpose,
-                expected_cost=expected_cost,
-                context_count=context_count,
-            )
-            response = self._restore_response(response, response_format)
-        else:
-            response = await core_generate(
-                core_messages,
-                model=self.model,
-                model_options=effective_options,
-                purpose=purpose,
-                expected_cost=expected_cost,
-                context_count=context_count,
-            )
-            response = self._restore_response(response)
+            if response_format is not None:
+                response: ModelResponse[Any] = await core_generate_structured(
+                    core_messages,
+                    response_format,
+                    model=self.model,
+                    model_options=effective_options,
+                    purpose=purpose,
+                    expected_cost=expected_cost,
+                    context_count=context_count,
+                )
+                response = self._restore_response(response, response_format)
+            else:
+                response = await core_generate(
+                    core_messages,
+                    model=self.model,
+                    model_options=effective_options,
+                    purpose=purpose,
+                    expected_cost=expected_cost,
+                    context_count=context_count,
+                )
+                response = self._restore_response(response)
 
-        return new_messages, response
+            Laminar.set_span_output(response.content)
+            span.set_attributes(response.get_laminar_metadata())  # pyright: ignore[reportArgumentType]
+
+            return new_messages, response
 
     async def send(
         self,

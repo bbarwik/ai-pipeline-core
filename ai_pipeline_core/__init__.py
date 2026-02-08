@@ -62,7 +62,7 @@ from .prompt_manager import PromptManager
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 __all__ = [
     "Attachment",

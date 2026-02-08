@@ -278,7 +278,10 @@ class TestRunDocumentSerialization:
         assert len(params["documents"]) == 1
         serialized = params["documents"][0]
         assert serialized["class_name"] == "AlphaDoc"
-        assert serialized["sha256"] == doc.sha256
+        assert serialized["content"] == "hello world"
+        # Metadata keys must be stripped for Prefect JSON schema validation
+        for key in ("id", "sha256", "content_sha256", "size", "mime_type"):
+            assert key not in serialized
 
     async def test_multiple_union_docs_serialized(self):
         class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):

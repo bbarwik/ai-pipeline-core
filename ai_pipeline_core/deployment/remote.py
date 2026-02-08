@@ -15,6 +15,7 @@ from prefect.exceptions import ObjectNotFound
 
 from ai_pipeline_core.deployment import DeploymentContext, DeploymentResult
 from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
+from ai_pipeline_core.deployment._resolve import AttachmentInput, DocumentInput
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
@@ -29,6 +30,18 @@ TResult = TypeVar("TResult", bound=DeploymentResult)
 
 ProgressCallback = Callable[[float, str], Awaitable[None]]
 """Signature for remote deployment progress callbacks: (fraction, message) -> None."""
+
+
+def _strip_for_prefect(serialized: dict[str, Any]) -> dict[str, Any]:
+    """Strip serialize_model() metadata for Prefect parameter validation.
+
+    Prefect validates parameters against JSON schema server-side (additionalProperties: false)
+    before DocumentInput._strip_serialize_metadata can run on the Python side.
+    """
+    d = {k: v for k, v in serialized.items() if k not in DocumentInput._STRIP_KEYS}
+    if d.get("attachments"):
+        d["attachments"] = [{k: v for k, v in att.items() if k not in AttachmentInput._STRIP_KEYS} for att in d["attachments"]]
+    return d
 
 
 def _is_already_traced(func: Callable[..., Any]) -> bool:
@@ -230,7 +243,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         """Serialize, call Prefect, deserialize. Wrapped with @trace in __init_subclass__."""
         parameters: dict[str, Any] = {
             "project_name": project_name,
-            "documents": [doc.serialize_model() for doc in documents],
+            "documents": [_strip_for_prefect(doc.serialize_model()) for doc in documents],
             "options": options,
             "context": context,
         }
