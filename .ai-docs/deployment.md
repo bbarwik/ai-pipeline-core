@@ -1,6 +1,6 @@
 # MODULE: deployment
-# CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, ProgressContext, RemoteDeployment
-# DEPENDS: BaseModel, Generic
+# CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, ProgressContext, RemoteDeployment
+# DEPENDS: BaseModel, Generic, StrEnum
 # SIZE: ~31KB
 
 # === DEPENDENCIES (Resolved) ===
@@ -11,6 +11,10 @@ class BaseModel:
 
 class Generic:
     """Python generic base class for parameterized types."""
+    ...
+
+class StrEnum:
+    """String enumeration base class."""
     ...
 
 # === PUBLIC API ===
@@ -257,7 +261,7 @@ Features enabled by default:
                             step,
                             total_steps,
                             flow_name,
-                            "cached",
+                            FlowStatus.CACHED,
                             step_progress=1.0,
                             message=f"Resumed from store: {flow_name}",
                         )
@@ -278,7 +282,7 @@ Features enabled by default:
                     step,
                     total_steps,
                     flow_name,
-                    "started",
+                    FlowStatus.STARTED,
                     step_progress=0.0,
                     message=f"Starting: {flow_name}",
                 )
@@ -322,7 +326,7 @@ Features enabled by default:
                     step,
                     total_steps,
                     flow_name,
-                    "completed",
+                    FlowStatus.COMPLETED,
                     step_progress=1.0,
                     message=f"Completed: {flow_name}",
                 )
@@ -423,6 +427,24 @@ Features enabled by default:
         return result
 
 
+class RunState(StrEnum):
+    """Pipeline run lifecycle state."""
+    PENDING = 'PENDING'
+    RUNNING = 'RUNNING'
+    COMPLETED = 'COMPLETED'
+    FAILED = 'FAILED'
+    CRASHED = 'CRASHED'
+    CANCELLED = 'CANCELLED'
+
+
+class FlowStatus(StrEnum):
+    """Individual flow step status within a pipeline run."""
+    STARTED = 'started'
+    COMPLETED = 'completed'
+    CACHED = 'cached'
+    PROGRESS = 'progress'
+
+
 class PendingRun(_RunBase):
     """Pipeline queued or running but no progress reported yet."""
     type: Literal['pending'] = 'pending'
@@ -434,7 +456,7 @@ class ProgressRun(_RunBase):
     step: int
     total_steps: int
     flow_name: str
-    status: str
+    status: FlowStatus
     progress: float
     step_progress: float
     message: str
@@ -611,15 +633,17 @@ async def update(fraction: float, message: str = "") -> None:
     run_uuid = _safe_uuid(ctx.flow_run_id) if ctx.flow_run_id else None
 
     if ctx.webhook_url:
+        if run_uuid is None:
+            logger.warning("Invalid or missing flow_run_id, using zero UUID for progress webhook")
         payload = ProgressRun(
             flow_run_id=run_uuid or _ZERO_UUID,
             project_name=ctx.project_name,
-            state="RUNNING",
+            state=RunState.RUNNING,
             timestamp=datetime.now(UTC),
             step=ctx.step,
             total_steps=ctx.total_steps,
             flow_name=ctx.flow_name,
-            status="progress",
+            status=FlowStatus.PROGRESS,
             progress=overall,
             step_progress=step_progress,
             message=message,
@@ -638,7 +662,7 @@ async def update(fraction: float, message: str = "") -> None:
                         "progress.step": ctx.step,
                         "progress.total_steps": ctx.total_steps,
                         "progress.flow_name": ctx.flow_name,
-                        "progress.status": "progress",
+                        "progress.status": FlowStatus.PROGRESS,
                         "progress.progress": overall,
                         "progress.step_progress": step_progress,
                         "progress.message": message,

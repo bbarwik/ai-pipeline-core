@@ -29,13 +29,3 @@ def run_context():
     token = set_run_context(ctx)
     yield ctx
     reset_run_context(token)
-
-
-@pytest.fixture
-def pipeline_context(memory_store, run_context):
-    """Provide both a MemoryDocumentStore singleton and RunContext.
-
-    Convenience fixture combining memory_store and run_context for
-    integration-style tests that need the full document lifecycle.
-    """
-    return memory_store, run_context

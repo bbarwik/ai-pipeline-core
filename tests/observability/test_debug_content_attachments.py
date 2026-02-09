@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ai_pipeline_core.observability import ArtifactStore, ContentWriter, TraceDebugConfig, reconstruct_span_content
+from ai_pipeline_core.observability import ArtifactStore, ContentWriter, TraceDebugConfig
+
+from tests.observability.test_helpers import reconstruct_span_content
 
 
 @pytest.fixture
@@ -22,13 +24,6 @@ def writer_with_store(config_with_store: tuple[TraceDebugConfig, ArtifactStore])
     """Create a ContentWriter with an artifact store."""
     config, store = config_with_store
     return ContentWriter(config, artifact_store=store)
-
-
-@pytest.fixture
-def writer_no_store(tmp_path: Path) -> ContentWriter:
-    """Create a ContentWriter without an artifact store."""
-    config = TraceDebugConfig(path=tmp_path, max_element_bytes=100)
-    return ContentWriter(config)
 
 
 class TestStructureDocumentsWithAttachments:

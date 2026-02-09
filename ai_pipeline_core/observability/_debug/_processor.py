@@ -67,10 +67,9 @@ class LocalDebugSpanProcessor(SpanProcessor):
         """Shutdown the processor and writer."""
         self._writer.shutdown()
 
-    def force_flush(self, timeout_millis: int = 30000) -> bool:  # noqa: PLR6301
-        """Force flush is not needed for this processor."""
-        _ = timeout_millis
-        return True
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        """Flush all queued spans to disk, blocking until complete or timeout."""
+        return self._writer.flush(timeout=timeout_millis / 1000)
 
     @staticmethod
     def _get_parent_span_id(span: Span) -> str | None:

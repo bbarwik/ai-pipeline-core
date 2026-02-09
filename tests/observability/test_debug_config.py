@@ -14,11 +14,9 @@ class TestTraceDebugConfig:
         """Test default configuration values."""
         config = TraceDebugConfig(path=tmp_path)
 
-        assert config.enabled is True
-        assert config.max_file_bytes == 50_000
+        assert config.max_file_bytes == 500_000
         assert config.max_element_bytes == 10_000
         assert config.element_excerpt_bytes == 2_000
-        assert config.max_content_bytes == 10_000_000
         assert config.extract_base64_images is True
         assert config.merge_wrapper_spans is True
         assert config.include_llm_index is True

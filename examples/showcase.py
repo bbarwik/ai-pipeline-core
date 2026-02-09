@@ -9,7 +9,7 @@ every framework capability:
   - Deployment: PipelineDeployment with CLI, resume/skip, progress tracking
   - Observability: @trace, set_trace_cost, Laminar integration
   - PromptManager: Jinja2 templates with smart path resolution
-  - Logging: setup_logging, get_pipeline_logger, StructuredLoggerMixin
+  - Logging: setup_logging, get_pipeline_logger
   - Settings: FlowOptions with env-based configuration
   - Images: process_image, process_image_to_documents, ImagePreset
   - Document Store: auto-configured (Local for CLI, ClickHouse if configured)
@@ -43,7 +43,6 @@ from ai_pipeline_core import (
     ModelResponse,
     PipelineDeployment,
     PromptManager,
-    StructuredLoggerMixin,
     get_pipeline_logger,
     is_document_sha256,
     llm,
@@ -58,25 +57,6 @@ from ai_pipeline_core import (
 )
 
 logger = get_pipeline_logger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# StructuredLoggerMixin: structured logging on a utility class
-# ---------------------------------------------------------------------------
-
-
-class AnalysisTracker(StructuredLoggerMixin):
-    """Tracks analysis operations with structured events, metrics, and spans."""
-
-    def on_start(self, doc_name: str, size: int) -> None:
-        self.log_event("analysis_started", document=doc_name, size_bytes=size)
-        self.log_metric("input_size", size, "bytes", source="showcase")
-
-    def on_complete(self, doc_name: str, duration_ms: float) -> None:
-        self.log_span("document_analysis", duration_ms, document=doc_name, status="success")
-
-
-tracker = AnalysisTracker()
 
 
 # ---------------------------------------------------------------------------
@@ -169,59 +149,58 @@ async def analyze_document(
     """Multi-turn LLM analysis of a single document."""
     prompts = PromptManager(__file__, prompts_dir="templates")
 
-    # log_operation: context manager with automatic timing and exception logging
-    with tracker.log_operation("full_analysis", document=document.name, size=document.size):
-        t0 = time.perf_counter()
-        tracker.on_start(document.name, document.size)
+    t0 = time.perf_counter()
+    logger.info(f"Starting analysis: document={document.name}, size={document.size}")
 
-        # Context: static, cacheable prefix — the document itself
-        context = AIMessages([document])
-        context.freeze()
-        logger.info(f"Context: ~{context.approximate_tokens_count} tokens, cache key: {context.get_prompt_cache_key()[:16]}...")
+    # Context: static, cacheable prefix — the document itself
+    context = AIMessages([document])
+    context.freeze()
+    logger.info(f"Context: ~{context.approximate_tokens_count} tokens, cache key: {context.get_prompt_cache_key()[:16]}...")
 
-        # Messages: dynamic conversation history
-        messages = AIMessages()
+    # Messages: dynamic conversation history
+    messages = AIMessages()
 
-        # Turn 1: initial analysis via Jinja2 template (current_date auto-available)
-        prompt = prompts.get("analyze", document_name=document.name)
-        messages.append(prompt)
+    # Turn 1: initial analysis via Jinja2 template (current_date auto-available)
+    prompt = prompts.get("analyze", document_name=document.name)
+    messages.append(prompt)
 
+    response = await llm.generate(
+        core_model,
+        context=context,
+        messages=messages,
+        purpose="document_analysis",
+    )
+    response.validate_output()
+    messages.append(response)
+
+    # Log model reasoning and usage if available
+    if response.reasoning_content:
+        logger.debug(f"Model reasoning: {response.reasoning_content[:100]}...")
+    if response.usage:
+        logger.info(f"Tokens: {response.usage.prompt_tokens} in / {response.usage.completion_tokens} out")
+
+    # Follow-up turns for deeper analysis
+    for turn in range(1, max_turns):
+        messages.append(f"What are the most important implications and connections you see? (Turn {turn + 1}/{max_turns})")
         response = await llm.generate(
             core_model,
             context=context,
             messages=messages,
-            purpose="document_analysis",
+            purpose="analysis_followup",
         )
-        response.validate_output()
         messages.append(response)
 
-        # Log model reasoning and usage if available
-        if response.reasoning_content:
-            logger.debug(f"Model reasoning: {response.reasoning_content[:100]}...")
-        if response.usage:
-            logger.info(f"Tokens: {response.usage.prompt_tokens} in / {response.usage.completion_tokens} out")
+    # Deep copy messages before extracting content
+    messages_snapshot = messages.copy()
 
-        # Follow-up turns for deeper analysis
-        for turn in range(1, max_turns):
-            messages.append(f"What are the most important implications and connections you see? (Turn {turn + 1}/{max_turns})")
-            response = await llm.generate(
-                core_model,
-                context=context,
-                messages=messages,
-                purpose="analysis_followup",
-            )
-            messages.append(response)
+    # Combine all assistant responses
+    combined = "\n\n---\n\n".join(msg.content for msg in messages_snapshot if isinstance(msg, ModelResponse))
 
-        # Deep copy messages before extracting content
-        messages_snapshot = messages.copy()
+    set_trace_cost(0.01)
+    validate_provenance(document)
 
-        # Combine all assistant responses
-        combined = "\n\n---\n\n".join(msg.content for msg in messages_snapshot if isinstance(msg, ModelResponse))
-
-        set_trace_cost(0.01)
-        validate_provenance(document)
-
-        tracker.on_complete(document.name, (time.perf_counter() - t0) * 1000)
+    duration_ms = (time.perf_counter() - t0) * 1000
+    logger.info(f"Completed analysis: document={document.name}, duration_ms={duration_ms:.1f}")
 
     return AnalysisDocument.create(
         name=f"analysis_{document.sha256[:12]}.md",

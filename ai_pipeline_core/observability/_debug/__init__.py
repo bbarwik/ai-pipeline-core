@@ -9,7 +9,7 @@ Disable with ``--no-trace``.
 """
 
 from ._config import TraceDebugConfig
-from ._content import ArtifactStore, ContentRef, ContentWriter, reconstruct_span_content
+from ._content import ArtifactStore, ContentRef, ContentWriter
 from ._processor import LocalDebugSpanProcessor
 from ._summary import generate_summary
 from ._types import SpanInfo, TraceState, WriteJob
@@ -26,5 +26,4 @@ __all__ = [
     "TraceState",
     "WriteJob",
     "generate_summary",
-    "reconstruct_span_content",
 ]

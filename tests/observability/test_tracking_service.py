@@ -41,9 +41,8 @@ class TestRunContext:
 
     def test_clear_clears_caches(self):
         service, _ = _make_service()
-        service._versions["key"] = 5
         service.clear_run_context()
-        assert len(service._versions) == 0
+        assert service._project_name == ""
 
 
 class TestRunTracking:
@@ -114,8 +113,8 @@ class TestSpanTracking:
         assert not mock_writer.write.called
 
 
-class TestSummaryRowBuilder:
-    """Test SummaryRowBuilder protocol implementation."""
+class TestSpanSummaryUpdate:
+    """Test build_span_summary_update method."""
 
     def test_build_span_summary_update(self):
         service, _ = _make_service()

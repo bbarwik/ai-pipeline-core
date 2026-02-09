@@ -5,10 +5,31 @@ webhook push (ai-pipeline-core) and polling pull (unified-middleware).
 """
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Discriminator
+
+
+class RunState(StrEnum):
+    """Pipeline run lifecycle state."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CRASHED = "CRASHED"
+    CANCELLED = "CANCELLED"
+
+
+class FlowStatus(StrEnum):
+    """Individual flow step status within a pipeline run."""
+
+    STARTED = "started"
+    COMPLETED = "completed"
+    CACHED = "cached"
+    PROGRESS = "progress"
 
 
 class _RunBase(BaseModel):
@@ -16,7 +37,7 @@ class _RunBase(BaseModel):
 
     flow_run_id: UUID
     project_name: str
-    state: str  # PENDING, RUNNING, COMPLETED, FAILED, CRASHED, CANCELLED
+    state: RunState
     timestamp: datetime
 
     model_config = ConfigDict(frozen=True)
@@ -35,7 +56,7 @@ class ProgressRun(_RunBase):
     step: int
     total_steps: int
     flow_name: str
-    status: str  # "started", "completed", "cached"
+    status: FlowStatus
     progress: float  # overall 0.0-1.0
     step_progress: float  # within step 0.0-1.0
     message: str
@@ -74,7 +95,9 @@ __all__ = [
     "CompletedRun",
     "DeploymentResultData",
     "FailedRun",
+    "FlowStatus",
     "PendingRun",
     "ProgressRun",
     "RunResponse",
+    "RunState",
 ]

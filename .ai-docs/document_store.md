@@ -55,7 +55,7 @@ this executor via loop.run_in_executor()."""
             )
             self._summary_worker.start()
 
-    async def check_existing(self, sha256s: list[str]) -> set[str]:
+    async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Return the subset of sha256s that exist in the document index."""
         return await self._run(self._check_existing_sync, sha256s)
 
@@ -64,37 +64,37 @@ this executor via loop.run_in_executor()."""
         if self._summary_worker:
             self._summary_worker.flush()
 
-    async def has_documents(self, run_scope: str, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
         """Check if any documents of this type exist in the run scope."""
         return await self._run(self._has_documents_sync, run_scope, document_type)
 
-    async def load(self, run_scope: str, document_types: list[type[Document]]) -> list[Document]:
+    async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Load documents via run_documents + index JOIN content, then batch-fetch attachments."""
         return await self._run(self._load_sync, run_scope, document_types)
 
-    async def load_by_sha256s(self, sha256s: list[str], document_type: type[_D], run_scope: str | None = None) -> dict[str, _D]:
+    async def load_by_sha256s(self, sha256s: list[DocumentSha256], document_type: type[_D], run_scope: RunScope | None = None) -> dict[DocumentSha256, _D]:
         """Batch-load documents by SHA256 and type. Verifies run membership when run_scope provided."""
         return await self._run(self._load_by_sha256s_sync, sha256s, document_type, run_scope)
 
-    async def load_nodes_by_sha256s(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+    async def load_nodes_by_sha256s(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentNode]:
         """Batch-load lightweight metadata by SHA256. No JOIN needed."""
         return await self._run(self._load_nodes_by_sha256s_sync, sha256s)
 
-    async def load_scope_metadata(self, run_scope: str) -> list[DocumentNode]:
+    async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         """Load lightweight metadata for all documents in a run scope."""
         return await self._run(self._load_scope_metadata_sync, run_scope)
 
-    async def load_summaries(self, document_sha256s: list[str]) -> dict[str, str]:
+    async def load_summaries(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         """Load summaries by SHA256 from the document index."""
         return await self._run(self._load_summaries_sync, document_sha256s)
 
-    async def save(self, document: Document, run_scope: str) -> None:
+    async def save(self, document: Document, run_scope: RunScope) -> None:
         """Save a document. Buffers writes when circuit breaker is open."""
         await self._run(self._save_sync, document, run_scope)
         if self._summary_worker and not self._circuit_open:
             self._summary_worker.schedule(document)
 
-    async def save_batch(self, documents: list[Document], run_scope: str) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
         """Save multiple documents. Remaining docs are buffered on failure."""
         await self._run(self._save_batch_sync, documents, run_scope)
         if self._summary_worker and not self._circuit_open:
@@ -107,7 +107,7 @@ this executor via loop.run_in_executor()."""
             self._summary_worker.shutdown()
         self._executor.shutdown(wait=True)
 
-    async def update_summary(self, document_sha256: str, summary: str) -> None:
+    async def update_summary(self, document_sha256: DocumentSha256, summary: str) -> None:
         """Update summary via INSERT with incremented version (ReplacingMergeTree dedup)."""
         await self._run(self._update_summary_sync, document_sha256, summary)
 
@@ -126,6 +126,7 @@ content files without a valid .meta.json."""
     ) -> None:
         self._base_path = base_path or Path.cwd()
         self._meta_path_cache: dict[str, list[Path]] = {}  # sha256 -> list of meta file paths
+        self._cache_lock = threading.Lock()
         self._summary_worker: SummaryWorker | None = None
         if summary_generator:
             self._summary_worker = SummaryWorker(
@@ -139,7 +140,7 @@ content files without a valid .meta.json."""
         """Root directory for all stored documents."""
         return self._base_path
 
-    async def check_existing(self, sha256s: list[str]) -> set[str]:
+    async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Scan all meta files to find matching document_sha256 values."""
         return await asyncio.to_thread(self._check_existing_sync, sha256s)
 
@@ -148,37 +149,37 @@ content files without a valid .meta.json."""
         if self._summary_worker:
             self._summary_worker.flush()
 
-    async def has_documents(self, run_scope: str, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
         """Check for meta files in the type's directory without loading content."""
         return await asyncio.to_thread(self._has_documents_sync, run_scope, document_type)
 
-    async def load(self, run_scope: str, document_types: list[type[Document]]) -> list[Document]:
+    async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Load documents by type from the run scope directory."""
         return await asyncio.to_thread(self._load_sync, run_scope, document_types)
 
-    async def load_by_sha256s(self, sha256s: list[str], document_type: type[_D], run_scope: str | None = None) -> dict[str, _D]:
+    async def load_by_sha256s(self, sha256s: list[DocumentSha256], document_type: type[_D], run_scope: RunScope | None = None) -> dict[DocumentSha256, _D]:
         """Batch-load documents by SHA256. Searches all directories — class_name is not enforced."""
         return await asyncio.to_thread(self._load_by_sha256s_sync, sha256s, document_type, run_scope)  # pyright: ignore[reportReturnType]
 
-    async def load_nodes_by_sha256s(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+    async def load_nodes_by_sha256s(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentNode]:
         """Batch-load lightweight metadata by SHA256, searching all scopes."""
         return await asyncio.to_thread(self._load_nodes_by_sha256s_sync, sha256s)
 
-    async def load_scope_metadata(self, run_scope: str) -> list[DocumentNode]:
+    async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         """Load lightweight metadata for all documents in a run scope."""
         return await asyncio.to_thread(self._load_scope_metadata_sync, run_scope)
 
-    async def load_summaries(self, document_sha256s: list[str]) -> dict[str, str]:
+    async def load_summaries(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         """Load summaries from .meta.json files across all scopes."""
         return await asyncio.to_thread(self._load_summaries_sync, document_sha256s)
 
-    async def save(self, document: Document, run_scope: str) -> None:
+    async def save(self, document: Document, run_scope: RunScope) -> None:
         """Save a document to disk. Idempotent — same SHA256 is a no-op."""
         written = await asyncio.to_thread(self._save_sync, document, run_scope)
         if written and self._summary_worker:
             self._summary_worker.schedule(document)
 
-    async def save_batch(self, documents: list[Document], run_scope: str) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
         """Save multiple documents sequentially."""
         for doc in documents:
             await self.save(doc, run_scope)
@@ -188,7 +189,7 @@ content files without a valid .meta.json."""
         if self._summary_worker:
             self._summary_worker.shutdown()
 
-    async def update_summary(self, document_sha256: str, summary: str) -> None:
+    async def update_summary(self, document_sha256: DocumentSha256, summary: str) -> None:
         """Update summary in all .meta.json files for this document across all scopes."""
         await asyncio.to_thread(self._update_summary_sync, document_sha256, summary)
 
@@ -213,32 +214,32 @@ Storage layout: global documents dict + per-run membership sets + global summari
             )
             self._summary_worker.start()
 
-    async def check_existing(self, sha256s: list[str]) -> set[str]:
+    async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Return the subset of sha256s that exist in global documents."""
-        return self._documents.keys() & set(sha256s)
+        return {sha for sha in sha256s if sha in self._documents}
 
     def flush(self) -> None:
         """Block until all pending document summaries are processed."""
         if self._summary_worker:
             self._summary_worker.flush()
 
-    async def has_documents(self, run_scope: str, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
         """Check if any documents of this type exist in the run scope."""
         sha256s = self._run_docs.get(run_scope, set())
         return any(sha in self._documents and isinstance(self._documents[sha], document_type) for sha in sha256s)
 
-    async def load(self, run_scope: str, document_types: list[type[Document]]) -> list[Document]:
+    async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Return all documents matching the given types from a run scope."""
         sha256s = self._run_docs.get(run_scope, set())
         type_tuple = tuple(document_types)
         return [self._documents[sha] for sha in sha256s if sha in self._documents and isinstance(self._documents[sha], type_tuple)]
 
-    async def load_by_sha256s(self, sha256s: list[str], document_type: type[_D], run_scope: str | None = None) -> dict[str, _D]:
+    async def load_by_sha256s(self, sha256s: list[DocumentSha256], document_type: type[_D], run_scope: RunScope | None = None) -> dict[DocumentSha256, _D]:
         """Batch-load documents by SHA256. document_type is for construction hint only, not enforced."""
         if not sha256s:
             return {}
         scope_members = self._run_docs.get(run_scope, set()) if run_scope is not None else None
-        result: dict[str, _D] = {}
+        result: dict[DocumentSha256, _D] = {}
         for sha256 in sha256s:
             if scope_members is not None and sha256 not in scope_members:
                 continue
@@ -247,16 +248,16 @@ Storage layout: global documents dict + per-run membership sets + global summari
                 result[sha256] = doc  # type: ignore[assignment]
         return result
 
-    async def load_nodes_by_sha256s(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+    async def load_nodes_by_sha256s(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentNode]:
         """Batch-load lightweight metadata by SHA256 from global documents."""
         if not sha256s:
             return {}
-        result: dict[str, DocumentNode] = {}
+        result: dict[DocumentSha256, DocumentNode] = {}
         for sha256 in sha256s:
             doc = self._documents.get(sha256)
             if doc is not None:
                 result[sha256] = DocumentNode(
-                    sha256=doc.sha256,
+                    sha256=sha256,
                     class_name=doc.__class__.__name__,
                     name=doc.name,
                     description=doc.description or "",
@@ -266,12 +267,12 @@ Storage layout: global documents dict + per-run membership sets + global summari
                 )
         return result
 
-    async def load_scope_metadata(self, run_scope: str) -> list[DocumentNode]:
+    async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         """Load lightweight metadata for all documents in a run scope."""
         sha256s = self._run_docs.get(run_scope, set())
         return [
             DocumentNode(
-                sha256=doc.sha256,
+                sha256=DocumentSha256(doc.sha256),
                 class_name=doc.__class__.__name__,
                 name=doc.name,
                 description=doc.description or "",
@@ -283,11 +284,11 @@ Storage layout: global documents dict + per-run membership sets + global summari
             if (doc := self._documents.get(sha)) is not None
         ]
 
-    async def load_summaries(self, document_sha256s: list[str]) -> dict[str, str]:
+    async def load_summaries(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         """Load summaries by SHA256."""
         return {sha: self._summaries[sha] for sha in document_sha256s if sha in self._summaries}
 
-    async def save(self, document: Document, run_scope: str) -> None:
+    async def save(self, document: Document, run_scope: RunScope) -> None:
         """Store document in memory, keyed by SHA256."""
         is_new = document.sha256 not in self._documents
         if is_new:
@@ -296,7 +297,7 @@ Storage layout: global documents dict + per-run membership sets + global summari
         if is_new and self._summary_worker:
             self._summary_worker.schedule(document)
 
-    async def save_batch(self, documents: list[Document], run_scope: str) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
         """Save multiple documents sequentially."""
         for doc in documents:
             await self.save(doc, run_scope)
@@ -306,7 +307,7 @@ Storage layout: global documents dict + per-run membership sets + global summari
         if self._summary_worker:
             self._summary_worker.shutdown()
 
-    async def update_summary(self, document_sha256: str, summary: str) -> None:
+    async def update_summary(self, document_sha256: DocumentSha256, summary: str) -> None:
         """Update summary for a stored document. No-op if document doesn't exist."""
         if document_sha256 not in self._documents:
             return
@@ -319,7 +320,7 @@ class DocumentStore(Protocol):
 
 Implementations: ClickHouseDocumentStore (production), LocalDocumentStore (CLI/debug),
 MemoryDocumentStore (testing)."""
-    async def check_existing(self, sha256s: list[str]) -> set[str]:
+    async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Return the subset of sha256s that already exist in the store."""
         ...
 
@@ -327,15 +328,15 @@ MemoryDocumentStore (testing)."""
         """Block until all pending background work (summaries) is processed."""
         ...
 
-    async def has_documents(self, run_scope: str, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
         """Check if any documents of this type exist in the run scope."""
         ...
 
-    async def load(self, run_scope: str, document_types: list[type[Document]]) -> list[Document]:
+    async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Load all documents of the given types from a run scope."""
         ...
 
-    async def load_by_sha256s(self, sha256s: list[str], document_type: type[_D], run_scope: str | None = None) -> dict[str, _D]:
+    async def load_by_sha256s(self, sha256s: list[DocumentSha256], document_type: type[_D], run_scope: RunScope | None = None) -> dict[DocumentSha256, _D]:
         """Batch-load full documents by SHA256.
 
         document_type is used for construction only — class_name is not enforced as a filter.
@@ -345,7 +346,7 @@ MemoryDocumentStore (testing)."""
         """
         ...
 
-    async def load_nodes_by_sha256s(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+    async def load_nodes_by_sha256s(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentNode]:
         """Batch-load lightweight metadata for documents by SHA256, searching all scopes.
 
         Returns {sha256: DocumentNode} for found documents. Missing SHA256s are omitted.
@@ -353,22 +354,22 @@ MemoryDocumentStore (testing)."""
         """
         ...
 
-    async def load_scope_metadata(self, run_scope: str) -> list[DocumentNode]:
+    async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         """Load lightweight metadata for ALL documents in a run scope.
 
         No content or attachments loaded.
         """
         ...
 
-    async def load_summaries(self, document_sha256s: list[str]) -> dict[str, str]:
+    async def load_summaries(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         """Load summaries by SHA256. Returns {sha256: summary} for docs that have summaries."""
         ...
 
-    async def save(self, document: Document, run_scope: str) -> None:
+    async def save(self, document: Document, run_scope: RunScope) -> None:
         """Save a single document to the store. Idempotent — same SHA256 is a no-op."""
         ...
 
-    async def save_batch(self, documents: list[Document], run_scope: str) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
         """Save multiple documents. Dependencies must be sorted (caller's responsibility)."""
         ...
 
@@ -376,7 +377,7 @@ MemoryDocumentStore (testing)."""
         """Flush pending work and stop background workers."""
         ...
 
-    async def update_summary(self, document_sha256: str, summary: str) -> None:
+    async def update_summary(self, document_sha256: DocumentSha256, summary: str) -> None:
         """Update summary for a stored document. No-op if document doesn't exist."""
         ...
 
@@ -395,9 +396,6 @@ def create_document_store(
 
     Backends are imported lazily to avoid circular imports.
     """
-    if not isinstance(settings, Settings):  # pyright: ignore[reportUnnecessaryIsInstance]
-        raise TypeError(f"Expected Settings instance, got {type(settings).__name__}")  # pyright: ignore[reportUnreachable]
-
     if settings.clickhouse_host:
         from ai_pipeline_core.document_store.clickhouse import ClickHouseDocumentStore
 
@@ -427,7 +425,7 @@ def set_document_store(store: DocumentStore | None) -> None:
 # === EXAMPLES (from tests/) ===
 
 # Example: Create document store returns local when no clickhouse
-# Source: tests/document_store/test_local.py:379
+# Source: tests/document_store/test_local.py:380
 def test_create_document_store_returns_local_when_no_clickhouse(self):
     from ai_pipeline_core.settings import Settings
 
@@ -436,13 +434,13 @@ def test_create_document_store_returns_local_when_no_clickhouse(self):
     assert isinstance(store, LocalDocumentStore)
 
 # Example: Get document store returns none by default
-# Source: tests/document_store/test_protocol.py:80
+# Source: tests/document_store/test_protocol.py:83
 def test_get_document_store_returns_none_by_default():
     """Before any set call, the store is None."""
     assert get_document_store() is None
 
 # Example: Set document store to none
-# Source: tests/document_store/test_protocol.py:92
+# Source: tests/document_store/test_protocol.py:95
 def test_set_document_store_to_none():
     """Store can be reset to None."""
     store = _DummyStore()
@@ -452,7 +450,7 @@ def test_set_document_store_to_none():
     assert get_document_store() is None
 
 # Example: Set and get document store
-# Source: tests/document_store/test_protocol.py:85
+# Source: tests/document_store/test_protocol.py:88
 def test_set_and_get_document_store():
     """Setting a store makes it retrievable."""
     store = _DummyStore()
@@ -462,13 +460,13 @@ def test_set_and_get_document_store():
 # === ERROR EXAMPLES (What NOT to Do) ===
 
 # Error: Create document store rejects non settings
-# Source: tests/document_store/test_local.py:386
+# Source: tests/document_store/test_local.py:387
 def test_create_document_store_rejects_non_settings(self):
-    with pytest.raises(TypeError, match="Expected Settings"):
+    with pytest.raises(AttributeError):
         create_document_store("not_settings")  # type: ignore[arg-type]
 
 # Error: Primary flush failure still attempts secondary
-# Source: tests/document_store/test_dual_store.py:180
+# Source: tests/document_store/test_dual_store.py:181
 def test_primary_flush_failure_still_attempts_secondary(self):
     flushed = []
 
@@ -486,7 +484,7 @@ def test_primary_flush_failure_still_attempts_secondary(self):
     assert flushed == [True]
 
 # Error: Primary save failure propagates
-# Source: tests/document_store/test_dual_store.py:151
+# Source: tests/document_store/test_dual_store.py:152
 @pytest.mark.asyncio
 async def test_primary_save_failure_propagates(self):
     class FailingSave(MemoryDocumentStore):
@@ -497,12 +495,12 @@ async def test_primary_save_failure_propagates(self):
     dual = DualDocumentStore(primary=FailingSave(), secondary=secondary)
     doc = _make("a.md", "content")
     with pytest.raises(RuntimeError, match="primary down"):
-        await dual.save(doc, "run1")
+        await dual.save(doc, RunScope("run1"))
     # Secondary should NOT have been called since primary failed first
-    assert not await secondary.has_documents("run1", DualReportDoc)
+    assert not await secondary.has_documents(RunScope("run1"), DualReportDoc)
 
 # Error: Primary update summary failure still attempts secondary
-# Source: tests/document_store/test_dual_store.py:165
+# Source: tests/document_store/test_dual_store.py:166
 @pytest.mark.asyncio
 async def test_primary_update_summary_failure_still_attempts_secondary(self):
     class FailingSummary(MemoryDocumentStore):
@@ -513,7 +511,7 @@ async def test_primary_update_summary_failure_still_attempts_secondary(self):
     dual = DualDocumentStore(primary=FailingSummary(), secondary=secondary)
     doc = _make("a.md", "content")
     sha = compute_document_sha256(doc)
-    await secondary.save(doc, "run1")
+    await secondary.save(doc, RunScope("run1"))
     with pytest.raises(RuntimeError, match="primary down"):
         await dual.update_summary(sha, "summary")
     # Secondary should still have been updated

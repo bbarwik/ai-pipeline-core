@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
+from ai_pipeline_core.documents._types import RunScope
+
 # --- Run context ---
 
 
@@ -17,7 +19,7 @@ from dataclasses import dataclass
 class RunContext:
     """Immutable context for a pipeline run, carried via ContextVar."""
 
-    run_scope: str
+    run_scope: RunScope
 
 
 _run_context: ContextVar[RunContext | None] = ContextVar("_run_context", default=None)

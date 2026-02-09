@@ -17,9 +17,6 @@ def create_document_store(
 
     Backends are imported lazily to avoid circular imports.
     """
-    if not isinstance(settings, Settings):  # pyright: ignore[reportUnnecessaryIsInstance]
-        raise TypeError(f"Expected Settings instance, got {type(settings).__name__}")  # pyright: ignore[reportUnreachable]
-
     if settings.clickhouse_host:
         from ai_pipeline_core.document_store.clickhouse import ClickHouseDocumentStore
 

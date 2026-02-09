@@ -8,6 +8,7 @@ from ai_pipeline_core.document_store import (
     get_document_store,
     set_document_store,
 )
+from ai_pipeline_core.documents._types import DocumentSha256, RunScope
 from ai_pipeline_core.documents.document import Document
 
 
@@ -21,34 +22,36 @@ def _reset_store():
 class _DummyStore:
     """Minimal class implementing the DocumentStore protocol."""
 
-    async def save(self, document: Document, run_scope: str) -> None:
+    async def save(self, document: Document, run_scope: RunScope) -> None:
         pass
 
-    async def save_batch(self, documents: list[Document], run_scope: str) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
         pass
 
-    async def load(self, run_scope: str, document_types: list[type[Document]]) -> list[Document]:
+    async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         return []
 
-    async def has_documents(self, run_scope: str, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
         return False
 
-    async def check_existing(self, sha256s: list[str]) -> set[str]:
+    async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         return set()
 
-    async def update_summary(self, document_sha256: str, summary: str) -> None:
+    async def update_summary(self, document_sha256: DocumentSha256, summary: str) -> None:
         pass
 
-    async def load_summaries(self, document_sha256s: list[str]) -> dict[str, str]:
+    async def load_summaries(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         return {}
 
-    async def load_by_sha256s(self, sha256s: list[str], document_type: type[Document], run_scope: str | None = None) -> dict[str, Document]:
+    async def load_by_sha256s(
+        self, sha256s: list[DocumentSha256], document_type: type[Document], run_scope: RunScope | None = None
+    ) -> dict[DocumentSha256, Document]:
         return {}
 
-    async def load_nodes_by_sha256s(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+    async def load_nodes_by_sha256s(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentNode]:
         return {}
 
-    async def load_scope_metadata(self, run_scope: str) -> list[DocumentNode]:
+    async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         return []
 
     def flush(self) -> None:
@@ -61,7 +64,7 @@ class _DummyStore:
 class _IncompleteStore:
     """Class missing required protocol methods."""
 
-    async def save(self, document: Document, run_scope: str) -> None:
+    async def save(self, document: Document, run_scope: RunScope) -> None:
         pass
 
 

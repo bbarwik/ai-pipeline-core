@@ -14,7 +14,6 @@ from ai_pipeline_core.observability._debug import (
     TraceState,
     WriteJob,
     generate_summary,
-    reconstruct_span_content,
 )
 
 __all__ = [
@@ -28,5 +27,4 @@ __all__ = [
     "TraceState",
     "WriteJob",
     "generate_summary",
-    "reconstruct_span_content",
 ]

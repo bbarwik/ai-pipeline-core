@@ -158,9 +158,6 @@ class PromptManager:
             autoescape=False,  # Important for prompt engineering
         )
 
-        # Add current_date as a global string (format: "03 January 2025")
-        self.env.globals["current_date"] = datetime.now().strftime("%d %B %Y")  # type: ignore[assignment]
-
     def get(self, prompt_path: str, **kwargs: Any) -> str:
         """Load and render a Jinja2 template with the given context.
 
@@ -206,22 +203,22 @@ class PromptManager:
         All Jinja2 features are available: loops, conditionals,
         filters, macros, inheritance, etc.
         """
-        try:
-            template = self.env.get_template(prompt_path)
-            return template.render(**kwargs)
-        except jinja2.TemplateNotFound:
-            # If the template wasn't found and doesn't end with .jinja2, try adding the extension
-            for extension in [".jinja2", ".jinja", ".j2"]:
-                try:
-                    template = self.env.get_template(prompt_path + extension)
-                    return template.render(**kwargs)
-                except jinja2.TemplateNotFound:
-                    pass  # Fall through to the original error
-            raise PromptNotFoundError(f"Prompt template '{prompt_path}' not found (searched in {self.search_paths}).") from None
-        except jinja2.TemplateError as e:
-            raise PromptRenderError(f"Template error in '{prompt_path}': {e}") from e
-        except PromptNotFoundError:
-            raise  # Re-raise our custom exception
-        except (OSError, KeyError, TypeError, AttributeError, ValueError) as e:
-            logger.error(f"Unexpected error rendering '{prompt_path}'", exc_info=True)
-            raise PromptRenderError(f"Failed to render prompt '{prompt_path}': {e}") from e
+        kwargs.setdefault("current_date", datetime.now().strftime("%d %B %Y"))
+
+        # Build candidate list
+        candidates = [prompt_path, *(prompt_path + ext for ext in (".jinja2", ".jinja", ".j2"))]
+
+        # Try each candidate
+        for name in candidates:
+            try:
+                template = self.env.get_template(name)
+                return template.render(**kwargs)
+            except jinja2.TemplateNotFound:
+                continue
+            except jinja2.TemplateError as e:
+                raise PromptRenderError(f"Template error in '{prompt_path}': {e}") from e
+            except (OSError, KeyError, TypeError, AttributeError, ValueError) as e:
+                logger.error(f"Unexpected error rendering '{prompt_path}'", exc_info=True)
+                raise PromptRenderError(f"Failed to render prompt '{prompt_path}': {e}") from e
+
+        raise PromptNotFoundError(f"Prompt template '{prompt_path}' not found (searched in {self.search_paths}).")

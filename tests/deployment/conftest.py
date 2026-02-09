@@ -9,7 +9,8 @@ import warnings
 
 import pytest
 
-from ai_pipeline_core import disable_run_logger, prefect_test_harness
+from prefect.logging import disable_run_logger
+from prefect.testing.utilities import prefect_test_harness
 
 
 class _SQLAlchemyConnectionFilter(logging.Filter):

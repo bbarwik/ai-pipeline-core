@@ -212,7 +212,7 @@ def pipeline_task(  # noqa: UP047
                 try:
                     Laminar.set_span_attributes(attrs)  # pyright: ignore[reportArgumentType]
                 except Exception:
-                    pass
+                    logger.debug("Failed to set span attributes", exc_info=True)
 
             # Set up TaskDocumentContext BEFORE calling fn() so Document.__init__ can register
             ctx: TaskDocumentContext | None = None
@@ -232,9 +232,9 @@ def pipeline_task(  # noqa: UP047
 
             # Track task I/O and schedule summaries
             try:
-                track_task_io(fname, args, kwargs, result)
+                track_task_io(args, kwargs, result)
             except Exception:
-                pass
+                logger.debug("Failed to track task IO", exc_info=True)
 
             if user_summary:
                 try:
@@ -246,7 +246,7 @@ def pipeline_task(  # noqa: UP047
                             output_hint = _build_output_hint(result)
                             service.schedule_summary(span_id, label, output_hint)
                 except Exception:
-                    pass
+                    logger.debug("Failed to schedule user summary", exc_info=True)
 
             # Document auto-save
             if persist and ctx is not None:
@@ -448,13 +448,13 @@ def pipeline_flow(
                 try:
                     Laminar.set_span_attributes(attrs)  # pyright: ignore[reportArgumentType]
                 except Exception:
-                    pass
+                    logger.debug("Failed to set span attributes", exc_info=True)
 
             # Set RunContext for nested tasks (only if not already set by deployment)
             existing_ctx = get_run_context()
             run_token = None
             if existing_ctx is None:
-                run_scope = f"{project_name}/{name or fname}"
+                run_scope = RunScope(f"{project_name}/{name or fname}")
                 run_token = set_run_context(RunContext(run_scope=run_scope))
 
             # Set up TaskDocumentContext for flow-level document lifecycle
@@ -479,9 +479,9 @@ def pipeline_flow(
 
             # Track flow I/O
             try:
-                track_flow_io(fname, documents, result)
+                track_flow_io(documents, result)
             except Exception:
-                pass
+                logger.debug("Failed to track flow IO", exc_info=True)
 
             if user_summary:
                 try:
@@ -493,7 +493,7 @@ def pipeline_flow(
                             output_hint = _build_output_hint(result)
                             service.schedule_summary(span_id, label, output_hint)
                 except Exception:
-                    pass
+                    logger.debug("Failed to schedule user summary", exc_info=True)
 
             # Document auto-save
             if ctx is not None:

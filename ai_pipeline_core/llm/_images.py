@@ -24,7 +24,8 @@ __all__ = [
     "process_image",
 ]
 
-PIL_MAX_PIXELS = 100_000_000  # 100MP security limit
+PIL_MAX_PIXELS = 500_000_000  # 500MP security limit
+Image.MAX_IMAGE_PIXELS = PIL_MAX_PIXELS
 
 
 class ImagePreset(StrEnum):

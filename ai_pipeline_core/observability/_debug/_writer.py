@@ -9,6 +9,8 @@ import os
 import re
 import shutil
 import socket
+import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from queue import Empty, Queue
 from threading import Lock, Thread
@@ -26,6 +28,13 @@ from ._types import SpanInfo, TraceState, WriteJob
 logger = get_pipeline_logger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class _FlushRequest:
+    """Sentinel queued to force the writer to drain all preceding jobs."""
+
+    done: threading.Event
+
+
 class LocalTraceWriter:
     """Writes trace spans to local filesystem via background thread.
 
@@ -39,7 +48,7 @@ class LocalTraceWriter:
     def __init__(self, config: TraceDebugConfig):
         """Initialize trace writer with config."""
         self._config = config
-        self._queue: Queue[WriteJob | None] = Queue()
+        self._queue: Queue[WriteJob | _FlushRequest | None] = Queue()
         self._traces: dict[str, TraceState] = {}
         self._artifact_stores: dict[str, ArtifactStore] = {}  # One per trace for deduplication
         self._lock = Lock()
@@ -131,6 +140,17 @@ class LocalTraceWriter:
         if not self._shutdown:
             self._queue.put(job)
 
+    def flush(self, timeout: float = 30.0) -> bool:
+        """Block until all queued jobs are processed.
+
+        Returns True if the flush completed within the timeout, False otherwise.
+        """
+        if self._shutdown:
+            return True
+        request = _FlushRequest(done=threading.Event())
+        self._queue.put(request)
+        return request.done.wait(timeout=timeout)
+
     def shutdown(self, timeout: float = 30.0) -> None:
         """Flush queue and stop writer thread."""
         if self._shutdown:
@@ -147,7 +167,9 @@ class LocalTraceWriter:
         while True:
             try:
                 job = self._queue.get_nowait()
-                if job is not None:
+                if isinstance(job, _FlushRequest):
+                    job.done.set()
+                elif job is not None:
                     self._process_job(job)
             except Empty:
                 break
@@ -202,6 +224,10 @@ class LocalTraceWriter:
             if job is None:
                 # Shutdown signal
                 break
+
+            if isinstance(job, _FlushRequest):
+                job.done.set()
+                continue
 
             try:
                 self._process_job(job)
@@ -796,7 +822,7 @@ class LocalTraceWriter:
         if self._config.auto_summary_enabled and not has_running_loop and summary is not None:
             try:
                 auto_mod = importlib.import_module("ai_pipeline_core.observability._debug._auto_summary")
-                auto_summary_text = asyncio.run(auto_mod.generate_auto_summary(trace, summary, self._config.auto_summary_model))
+                auto_summary_text = asyncio.run(auto_mod.generate_auto_summary(summary, self._config.auto_summary_model))
                 if auto_summary_text:
                     auto_summary_path = trace.path / "_auto_summary.md"
                     auto_summary_path.write_text(auto_summary_text, encoding="utf-8")

@@ -8,8 +8,9 @@ from ai_pipeline_core.observability import (
     ArtifactStore,
     ContentWriter,
     TraceDebugConfig,
-    reconstruct_span_content,
 )
+
+from tests.observability.test_helpers import reconstruct_span_content
 
 
 class TestArtifactStore:
@@ -60,7 +61,7 @@ class TestArtifactStore:
         assert ref1.path == ref2.path
 
         # Only one physical file
-        artifact_files = list((tmp_path / "artifacts" / "sha256").rglob("*.txt"))
+        artifact_files = list((tmp_path / "artifacts" / "sha256").glob("*.txt"))
         assert len(artifact_files) == 1
 
     def test_different_content_different_files(self, tmp_path: Path) -> None:
@@ -75,21 +76,20 @@ class TestArtifactStore:
         assert ref1.path != ref2.path
 
         # Two physical files
-        artifact_files = list((tmp_path / "artifacts" / "sha256").rglob("*.txt"))
+        artifact_files = list((tmp_path / "artifacts" / "sha256").glob("*.txt"))
         assert len(artifact_files) == 2
 
-    def test_sharded_directory_structure(self, tmp_path: Path) -> None:
-        """Test artifacts are stored in sharded directories."""
+    def test_flat_directory_structure(self, tmp_path: Path) -> None:
+        """Test artifacts are stored in flat directory."""
         store = ArtifactStore(tmp_path)
         ref = store.store_text("Test content")
 
-        # Path should follow pattern: artifacts/sha256/ab/cd/abcdef...txt
+        # Path should follow pattern: artifacts/sha256/<hash>.txt
         parts = Path(ref.path).parts
         assert parts[0] == "artifacts"
         assert parts[1] == "sha256"
-        assert len(parts[2]) == 2  # First 2 chars of hash
-        assert len(parts[3]) == 2  # Next 2 chars of hash
-        assert parts[4].endswith(".txt")
+        assert len(parts) == 3
+        assert parts[2].endswith(".txt")
 
     def test_get_stats(self, tmp_path: Path) -> None:
         """Test getting deduplication statistics."""

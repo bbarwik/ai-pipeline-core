@@ -14,7 +14,9 @@ import pytest
 import yaml
 
 from ai_pipeline_core.observability._debug._config import TraceDebugConfig
-from ai_pipeline_core.observability._debug._content import ArtifactStore, ContentWriter, reconstruct_span_content
+from ai_pipeline_core.observability._debug._content import ArtifactStore, ContentWriter
+
+from tests.observability.test_helpers import reconstruct_span_content
 from ai_pipeline_core.observability._debug._summary import generate_summary
 from ai_pipeline_core.observability._debug._types import SpanInfo, TraceState, WriteJob
 from ai_pipeline_core.observability._debug._writer import LocalTraceWriter
@@ -284,16 +286,16 @@ class TestArtifactStoreIntegration:
         assert artifact_path.exists()
         assert artifact_path.read_bytes() == data
 
-    def test_sharded_directory_structure(self, tmp_path):
+    def test_flat_directory_structure(self, tmp_path):
         store = ArtifactStore(tmp_path)
         ref = store.store_text("test content for sharding")
 
-        # Path should have format: artifacts/sha256/XX/YY/full_hash.txt
+        # Path should have format: artifacts/sha256/<hash>.txt
         parts = Path(ref.path).parts
         assert parts[0] == "artifacts"
         assert parts[1] == "sha256"
-        assert len(parts[2]) == 2  # first 2 hex chars
-        assert len(parts[3]) == 2  # next 2 hex chars
+        assert len(parts) == 3
+        assert parts[2].endswith(".txt")
 
 
 class TestContentWriterExternalization:

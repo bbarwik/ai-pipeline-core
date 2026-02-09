@@ -74,7 +74,7 @@ class Attachment(BaseModel):
             # Text starting with "data:<mime>;base64," would be misinterpreted, accepted by design.
             if DATA_URI_PATTERN.match(v):
                 _, payload = v.split(",", 1)
-                return base64.b64decode(payload)
+                return base64.b64decode(payload, validate=True)
             return v.encode("utf-8")
         raise ValueError(f"Invalid content type: {type(v)}")
 

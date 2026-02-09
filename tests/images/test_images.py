@@ -178,6 +178,29 @@ class TestProcessImageTall:
         for i in range(1, len(result)):
             assert result[i].source_y >= result[i - 1].source_y
 
+    @pytest.mark.parametrize(
+        ("width", "height"),
+        [
+            (500, 30000),  # very tall, narrow — one dimension far exceeds WebP 16383 limit
+            (30000, 500),  # very wide, short — same, but horizontal
+            (2000, 20000),  # tall screenshot — common real-world case
+        ],
+        ids=["tall_30k", "wide_30k", "tall_screenshot"],
+    )
+    def test_extreme_dimensions_stay_under_webp_limit(self, width, height):
+        """Images exceeding WebP's 16383px limit are split/trimmed so all tiles fit."""
+        WEBP_MAX_DIMENSION = 16383
+        raw = make_image_bytes(width, height)
+        for preset in ImagePreset:
+            result = process_image(raw, preset=preset)
+            assert len(result) >= 1
+            for part in result:
+                assert part.width <= WEBP_MAX_DIMENSION, f"{preset}: tile width {part.width} exceeds WebP limit"
+                assert part.height <= WEBP_MAX_DIMENSION, f"{preset}: tile height {part.height} exceeds WebP limit"
+                # verify each tile is valid WebP
+                img = Image.open(BytesIO(part.data))
+                assert img.format == "WEBP"
+
 
 # ---------------------------------------------------------------------------
 # process_image — wide images (trimming)

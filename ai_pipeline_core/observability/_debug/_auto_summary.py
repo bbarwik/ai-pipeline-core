@@ -7,8 +7,6 @@ from pydantic import BaseModel, ConfigDict
 
 from ai_pipeline_core._llm_core import CoreMessage, ModelOptions, Role, generate_structured
 
-from ._types import TraceState
-
 
 class AutoTraceSummary(BaseModel):
     """LLM-generated trace analysis."""
@@ -24,14 +22,12 @@ class AutoTraceSummary(BaseModel):
 
 
 async def generate_auto_summary(
-    trace: TraceState,  # noqa: ARG001
     static_summary: str,
     model: str,
 ) -> str | None:
     """Generate LLM-powered auto-summary of the trace.
 
     Args:
-        trace: Completed trace state with all span data.
         static_summary: Pre-generated static summary text used as LLM input context.
         model: LLM model name for summary generation.
 

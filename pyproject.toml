@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.8.1"
+version = "0.8.2"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -151,7 +151,7 @@ convention = "google"
 "ai_pipeline_core/deployment/progress.py" = ["RUF029", "BLE001"]
 "ai_pipeline_core/documents/document.py" = ["PLR0904"]
 "ai_pipeline_core/document_store/factory.py" = ["F821", "PLC0415"]
-"ai_pipeline_core/document_store/clickhouse.py" = ["S608", "BLE001"]
+"ai_pipeline_core/document_store/clickhouse.py" = ["S608", "BLE001", "PLR0914"]
 "ai_pipeline_core/document_store/protocol.py" = ["PLW0603"]
 "ai_pipeline_core/_llm_core/client.py" = ["PLR0911", "C901", "PLR0912", "PLR0915", "PLR0914", "PLR1702", "RUF005", "PLC2801", "UP047", "BLE001"]
 "ai_pipeline_core/_llm_core/model_response.py" = ["UP046", "PLR6301", "PERF403", "BLE001"]
@@ -253,7 +253,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.8.1"
+current_version = "0.8.2"
 commit = true
 tag = true
 tag_name = "v{new_version}"

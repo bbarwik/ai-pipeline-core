@@ -36,8 +36,8 @@ class TestModelResponseMetadata:
         )
 
         metadata = response.get_laminar_metadata()
-        assert metadata["gen_ai.usage.prompt_tokens"] == 100
-        assert metadata["gen_ai.usage.completion_tokens"] == 50
+        assert metadata["gen_ai.usage.input_tokens"] == 100
+        assert metadata["gen_ai.usage.output_tokens"] == 50
         assert metadata["gen_ai.usage.total_tokens"] == 150
 
 
@@ -105,7 +105,7 @@ class TestModelResponseUsage:
 
         assert response.usage.cached_tokens == 80
         metadata = response.get_laminar_metadata()
-        assert metadata["gen_ai.usage.cached_tokens"] == 80
+        assert metadata["gen_ai.usage.cache_read_input_tokens"] == 80
 
     def test_usage_with_reasoning_tokens(self):
         """Test usage with reasoning tokens."""
@@ -252,12 +252,12 @@ class TestModelResponseLaminarMetadata:
         assert metadata["gen_ai.system"] == "litellm"
 
         # Usage fields
-        assert metadata["gen_ai.usage.prompt_tokens"] == 100
-        assert metadata["gen_ai.usage.completion_tokens"] == 50
+        assert metadata["gen_ai.usage.input_tokens"] == 100
+        assert metadata["gen_ai.usage.output_tokens"] == 50
         assert metadata["gen_ai.usage.total_tokens"] == 150
 
         # Cost fields
-        assert metadata["gen_ai.cost"] == 0.01
+        assert metadata["gen_ai.usage.cost"] == 0.01
 
         # Timing metadata
         assert metadata["time_taken"] == 2.5

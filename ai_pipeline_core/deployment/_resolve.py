@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
+from ai_pipeline_core.documents._types import DocumentSha256
 from ai_pipeline_core.documents.attachment import Attachment
 from ai_pipeline_core.logging import get_pipeline_logger
 
@@ -120,7 +121,7 @@ class OutputAttachment(BaseModel):
 class OutputDocument(BaseModel):
     """Document metadata in deployment results. Binary content is None."""
 
-    sha256: str
+    sha256: DocumentSha256
     name: str
     class_name: str
     mime_type: str

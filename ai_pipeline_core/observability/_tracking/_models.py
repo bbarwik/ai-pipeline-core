@@ -2,10 +2,11 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from ai_pipeline_core.documents._types import DocumentSha256
 
 
 class RunStatus(StrEnum):
@@ -94,8 +95,8 @@ class TrackedSpanRow(BaseModel):
     user_summary: str | None = None
     user_visible: bool = False
     user_label: str | None = None
-    input_document_sha256s: tuple[str, ...] = Field(default_factory=tuple)
-    output_document_sha256s: tuple[str, ...] = Field(default_factory=tuple)
+    input_document_sha256s: tuple[DocumentSha256, ...] = Field(default_factory=tuple)
+    output_document_sha256s: tuple[DocumentSha256, ...] = Field(default_factory=tuple)
     version: int = 1
 
 
@@ -106,7 +107,7 @@ class DocumentEventRow(BaseModel):
 
     event_id: UUID
     run_id: UUID
-    document_sha256: str
+    document_sha256: DocumentSha256
     span_id: str
     event_type: DocumentEventType
     timestamp: datetime
@@ -125,14 +126,3 @@ class SpanEventRow(BaseModel):
     timestamp: datetime
     attributes: str = "{}"
     level: str | None = None
-
-
-# --- Protocol for circular import resolution ---
-
-
-class SummaryRowBuilder(Protocol):
-    """Protocol satisfied by TrackingService for writer callback."""
-
-    def build_span_summary_update(self, span_id: str, summary: str) -> TrackedSpanRow | None:
-        """Build a replacement row with summary filled."""
-        ...

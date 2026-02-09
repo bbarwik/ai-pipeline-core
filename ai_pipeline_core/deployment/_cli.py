@@ -14,6 +14,8 @@ from typing import Any, TypeVar, cast
 
 from lmnr import Laminar
 from opentelemetry import trace as otel_trace
+from prefect.logging import disable_run_logger
+from prefect.testing.utilities import prefect_test_harness
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
 from ai_pipeline_core.document_store import create_document_store, get_document_store, set_document_store
@@ -27,7 +29,6 @@ from ai_pipeline_core.observability._debug import LocalDebugSpanProcessor, Local
 from ai_pipeline_core.observability._initialization import get_tracking_service, initialize_observability
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
-from ai_pipeline_core.testing import disable_run_logger, prefect_test_harness
 
 from .base import DeploymentContext, DeploymentResult, PipelineDeployment, _build_summary_generator
 

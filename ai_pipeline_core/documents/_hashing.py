@@ -8,6 +8,8 @@ import hashlib
 from base64 import b32encode
 from typing import Any, Protocol
 
+from ai_pipeline_core.documents._types import DocumentSha256
+
 
 class _Hashable(Protocol):
     """Protocol for objects whose identity hash can be computed."""
@@ -19,7 +21,7 @@ class _Hashable(Protocol):
     attachments: Any
 
 
-def compute_document_sha256(doc: _Hashable) -> str:
+def compute_document_sha256(doc: _Hashable) -> DocumentSha256:
     """Compute the document identity hash including provenance.
 
     Fields included: name, content, sources, origins, attachments.
@@ -53,7 +55,7 @@ def compute_document_sha256(doc: _Hashable) -> str:
         _hash_field(h, att.name.encode("utf-8"))
         _hash_field(h, att.content)
 
-    return b32encode(h.digest()).decode("ascii").upper().rstrip("=")
+    return DocumentSha256(b32encode(h.digest()).decode("ascii").upper().rstrip("="))
 
 
 def compute_content_sha256(content: bytes) -> str:

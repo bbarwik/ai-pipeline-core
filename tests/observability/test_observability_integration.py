@@ -211,11 +211,11 @@ class TestProtocolUnification:
         assert hasattr(service, "schedule_summary")
 
     def test_get_tracking_service_returns_protocol_compatible(self):
-        """Verify _get_tracking_service returns without type: ignore."""
-        from ai_pipeline_core.observability._document_tracking import _get_tracking_service
+        """Verify get_tracking_service returns without type: ignore."""
+        from ai_pipeline_core.observability._initialization import get_tracking_service
 
         # When no service is initialized, returns None
-        result = _get_tracking_service()
+        result = get_tracking_service()
         assert result is None
 
 

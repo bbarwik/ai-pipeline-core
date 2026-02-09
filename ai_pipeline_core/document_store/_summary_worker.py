@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from threading import Event, Thread
 
@@ -10,7 +9,8 @@ from lmnr.opentelemetry_lib.tracing import context as laminar_context
 from opentelemetry import context as otel_context
 from opentelemetry.context import Context
 
-from ai_pipeline_core.document_store._summary import SUMMARY_EXCERPT_CHARS, SummaryGenerator
+from ai_pipeline_core.document_store._summary import SUMMARY_EXCERPT_CHARS, SummaryGenerator, SummaryUpdateFn
+from ai_pipeline_core.documents._types import DocumentSha256
 from ai_pipeline_core.documents.document import Document
 from ai_pipeline_core.logging import get_pipeline_logger
 
@@ -21,7 +21,7 @@ _SENTINEL = object()
 
 @dataclass(frozen=True, slots=True)
 class _SummaryItem:
-    sha256: str
+    sha256: DocumentSha256
     name: str
     excerpt: str
     parent_otel_context: Context | None = field(default=None, hash=False, compare=False)
@@ -39,11 +39,11 @@ class SummaryWorker:
         self,
         *,
         generator: SummaryGenerator,
-        update_fn: Callable[[str, str], Coroutine[None, None, None]],
+        update_fn: SummaryUpdateFn,
     ) -> None:
         self._generator = generator
         self._update_fn = update_fn
-        self._inflight: set[str] = set()  # sha256 only — one summary per document globally
+        self._inflight: set[DocumentSha256] = set()  # sha256 only — one summary per document globally
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[_SummaryItem | object] | None = None
         self._thread: Thread | None = None

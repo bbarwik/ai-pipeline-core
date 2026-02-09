@@ -3,6 +3,7 @@
 import pytest
 
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._types import RunScope
 from ai_pipeline_core.documents.context import (
     RunContext,
     TaskDocumentContext,
@@ -34,11 +35,11 @@ def _make_doc(
 
 class TestRunContext:
     def test_creation(self):
-        ctx = RunContext(run_scope="project/flow/run123")
+        ctx = RunContext(run_scope=RunScope("project/flow/run123"))
         assert ctx.run_scope == "project/flow/run123"
 
     def test_frozen(self):
-        ctx = RunContext(run_scope="test")
+        ctx = RunContext(run_scope=RunScope("test"))
         with pytest.raises(AttributeError):
             ctx.run_scope = "changed"  # type: ignore[misc]
 
@@ -46,7 +47,7 @@ class TestRunContext:
         assert get_run_context() is None
 
     def test_set_and_get(self):
-        ctx = RunContext(run_scope="my-run")
+        ctx = RunContext(run_scope=RunScope("my-run"))
         token = set_run_context(ctx)
         try:
             assert get_run_context() is ctx
@@ -56,8 +57,8 @@ class TestRunContext:
             _run_context.reset(token)
 
     def test_token_restores_previous(self):
-        ctx1 = RunContext(run_scope="first")
-        ctx2 = RunContext(run_scope="second")
+        ctx1 = RunContext(run_scope=RunScope("first"))
+        ctx2 = RunContext(run_scope=RunScope("second"))
         token1 = set_run_context(ctx1)
         token2 = set_run_context(ctx2)
         assert get_run_context() is ctx2

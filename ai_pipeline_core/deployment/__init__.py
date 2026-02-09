@@ -13,9 +13,11 @@ from .contract import (
     CompletedRun,
     DeploymentResultData,
     FailedRun,
+    FlowStatus,
     PendingRun,
     ProgressRun,
     RunResponse,
+    RunState,
 )
 from .progress import update as progress_update
 from .remote import ProgressCallback, RemoteDeployment
@@ -28,6 +30,7 @@ __all__ = [
     "DeploymentResultData",
     "DocumentInput",
     "FailedRun",
+    "FlowStatus",
     "OutputAttachment",
     "OutputDocument",
     "PendingRun",
@@ -36,6 +39,7 @@ __all__ = [
     "ProgressRun",
     "RemoteDeployment",
     "RunResponse",
+    "RunState",
     "build_output_document",
     "progress_update",
     "resolve_document_inputs",

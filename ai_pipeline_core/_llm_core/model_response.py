@@ -106,18 +106,23 @@ class ModelResponse(BaseModel, Generic[T]):
     def get_laminar_metadata(self) -> dict[str, str | int | float]:
         """Extract metadata for LMNR (Laminar) observability.
 
-        Returns dictionary with token usage, cost, and timing information.
+        Attribute names match Laminar's span_attributes.rs constants:
+        - gen_ai.usage.input_tokens / output_tokens (not prompt/completion)
+        - gen_ai.usage.cache_read_input_tokens (not cached_tokens)
+        - gen_ai.usage.cost / input_cost / output_cost
+        - gen_ai.request_model for model identification
         """
         result: dict[str, str | int | float] = {
             "gen_ai.response.id": self.response_id,
             "gen_ai.system": "litellm",
-            "gen_ai.usage.prompt_tokens": self.usage.prompt_tokens,
-            "gen_ai.usage.completion_tokens": self.usage.completion_tokens,
+            "gen_ai.request_model": self.model,
+            "gen_ai.usage.input_tokens": self.usage.prompt_tokens,
+            "gen_ai.usage.output_tokens": self.usage.completion_tokens,
             "gen_ai.usage.total_tokens": self.usage.total_tokens,
         }
 
         if self.usage.cached_tokens:
-            result["gen_ai.usage.cached_tokens"] = self.usage.cached_tokens
+            result["gen_ai.usage.cache_read_input_tokens"] = self.usage.cached_tokens
 
         if self.usage.reasoning_tokens:
             result["gen_ai.usage.reasoning_tokens"] = self.usage.reasoning_tokens
@@ -125,7 +130,6 @@ class ModelResponse(BaseModel, Generic[T]):
         if self.cost is not None:
             result["gen_ai.usage.output_cost"] = self.cost
             result["gen_ai.usage.cost"] = self.cost
-            result["gen_ai.cost"] = self.cost
 
         # Include timing metadata
         for key, value in self.metadata.items():

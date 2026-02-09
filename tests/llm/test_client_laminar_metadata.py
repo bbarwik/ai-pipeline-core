@@ -90,15 +90,17 @@ class TestGenerateLaminarMetadata:
     """Verify that generate() sends complete metadata to Laminar spans."""
 
     async def test_cost_fields_sent_to_span(self, mock_openai_and_laminar):
-        """All three cost fields must be present on the Laminar span."""
+        """Cost must use Laminar-recognized attribute names."""
         captured_attrs, _ = mock_openai_and_laminar
 
         messages = [CoreMessage(role=Role.USER, content="Hello")]
         await generate(messages, model="test-model")
 
-        assert captured_attrs["gen_ai.cost"] == 0.003
+        # gen_ai.usage.cost is the total cost recognized by Laminar backend
         assert captured_attrs["gen_ai.usage.cost"] == 0.003
         assert captured_attrs["gen_ai.usage.output_cost"] == 0.003
+        # gen_ai.cost (without .usage.) is NOT recognized by Laminar — must not be set
+        assert "gen_ai.cost" not in captured_attrs
 
     async def test_system_identifier_sent_to_span(self, mock_openai_and_laminar):
         """gen_ai.system and gen_ai.response.id must be present."""
@@ -111,15 +113,18 @@ class TestGenerateLaminarMetadata:
         assert captured_attrs["gen_ai.response.id"] == "chatcmpl-test"
 
     async def test_usage_tokens_sent_to_span(self, mock_openai_and_laminar):
-        """Token usage fields must be present."""
+        """Token usage must use Laminar-preferred attribute names (input/output, not prompt/completion)."""
         captured_attrs, _ = mock_openai_and_laminar
 
         messages = [CoreMessage(role=Role.USER, content="Hello")]
         await generate(messages, model="test-model")
 
-        assert captured_attrs["gen_ai.usage.prompt_tokens"] == 100
-        assert captured_attrs["gen_ai.usage.completion_tokens"] == 50
+        assert captured_attrs["gen_ai.usage.input_tokens"] == 100
+        assert captured_attrs["gen_ai.usage.output_tokens"] == 50
         assert captured_attrs["gen_ai.usage.total_tokens"] == 150
+        # Legacy names must not be set — use canonical names only
+        assert "gen_ai.usage.prompt_tokens" not in captured_attrs
+        assert "gen_ai.usage.completion_tokens" not in captured_attrs
 
     async def test_purpose_and_expected_cost_sent_to_span(self, mock_openai_and_laminar):
         """Purpose and expected_cost are appended to metadata."""
@@ -142,9 +147,32 @@ class TestGenerateLaminarMetadata:
         messages = [CoreMessage(role=Role.USER, content="Hello")]
         await generate(messages, model="test-model")
 
-        assert "gen_ai.cost" not in captured_attrs
         assert "gen_ai.usage.cost" not in captured_attrs
         assert "gen_ai.usage.output_cost" not in captured_attrs
+        assert "gen_ai.usage.input_cost" not in captured_attrs
+
+    async def test_cached_tokens_use_laminar_attribute_name(self, mock_openai_and_laminar):
+        """Cached tokens must use gen_ai.usage.cache_read_input_tokens (Laminar's attribute name)."""
+        captured_attrs, mock_client = mock_openai_and_laminar
+
+        completion = _make_chat_completion(content="Test", cached_tokens=80)
+        mock_client.chat.completions.create = AsyncMock(return_value=completion)
+
+        messages = [CoreMessage(role=Role.USER, content="Hello")]
+        await generate(messages, model="test-model")
+
+        assert captured_attrs["gen_ai.usage.cache_read_input_tokens"] == 80
+        # gen_ai.usage.cached_tokens is NOT recognized by Laminar
+        assert "gen_ai.usage.cached_tokens" not in captured_attrs
+
+    async def test_request_model_sent_to_span(self, mock_openai_and_laminar):
+        """gen_ai.request_model must be set for Laminar model identification."""
+        captured_attrs, _ = mock_openai_and_laminar
+
+        messages = [CoreMessage(role=Role.USER, content="Hello")]
+        await generate(messages, model="gpt-5.1")
+
+        assert captured_attrs["gen_ai.request_model"] == "gpt-5.1"
 
     async def test_metadata_matches_get_laminar_metadata(self, mock_openai_and_laminar):
         """Span attributes must be a superset of what get_laminar_metadata() returns."""

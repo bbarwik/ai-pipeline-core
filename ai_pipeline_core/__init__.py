@@ -22,7 +22,9 @@ from .document_store import DocumentStore, SummaryGenerator, create_document_sto
 from .documents import (
     Attachment,
     Document,
+    DocumentSha256,
     RunContext,
+    RunScope,
     TaskDocumentContext,
     get_run_context,
     is_document_sha256,
@@ -49,9 +51,7 @@ from .llm import (
     process_image,
 )
 from .logging import (
-    LoggerMixin,
     LoggingConfig,
-    StructuredLoggerMixin,
     get_pipeline_logger,
     setup_logging,
 )
@@ -60,9 +60,8 @@ from .observability.tracing import TraceInfo, TraceLevel, set_trace_cost, trace
 from .pipeline import FlowOptions, pipeline_flow, pipeline_task
 from .prompt_manager import PromptManager
 from .settings import Settings
-from .testing import disable_run_logger, prefect_test_harness
 
-__version__ = "0.8.1"
+__version__ = "0.8.2"
 
 __all__ = [
     "Attachment",
@@ -72,13 +71,13 @@ __all__ = [
     "DeploymentContext",
     "DeploymentResult",
     "Document",
+    "DocumentSha256",
     "DocumentStore",
     "FlowOptions",
     "ImagePart",
     "ImagePreset",
     "ImageProcessingConfig",
     "ImageProcessingError",
-    "LoggerMixin",
     "LoggingConfig",
     "ModelName",
     "ModelOptions",
@@ -88,8 +87,8 @@ __all__ = [
     "PromptManager",
     "RemoteDeployment",
     "RunContext",
+    "RunScope",
     "Settings",
-    "StructuredLoggerMixin",
     "SummaryGenerator",
     "TaskDocumentContext",
     "TokenUsage",
@@ -97,7 +96,6 @@ __all__ = [
     "TraceLevel",
     "URLSubstitutor",
     "create_document_store",
-    "disable_run_logger",
     "generate",
     "generate_structured",
     "get_document_store",
@@ -108,7 +106,6 @@ __all__ = [
     "llm",
     "pipeline_flow",
     "pipeline_task",
-    "prefect_test_harness",
     "process_image",
     "progress",
     "reset_run_context",

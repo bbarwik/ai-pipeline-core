@@ -8,6 +8,7 @@ import pytest
 from ai_pipeline_core.document_store.local import LocalDocumentStore
 from ai_pipeline_core.document_store.memory import MemoryDocumentStore
 from ai_pipeline_core.documents.document import Document
+from ai_pipeline_core.documents._types import RunScope
 
 
 class SummaryTestDocument(Document):
@@ -38,7 +39,7 @@ class TestMemoryStoreSummary:
     async def test_update_and_load_summary(self):
         store = MemoryDocumentStore()
         doc = SummaryTestDocument(name="test.txt", content=b"Hello world", description="test")
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         await store.update_summary(doc.sha256, "A greeting document")
         summaries = await store.load_summaries([doc.sha256])
         assert summaries[doc.sha256] == "A greeting document"
@@ -47,7 +48,7 @@ class TestMemoryStoreSummary:
     async def test_summary_not_returned_when_absent(self):
         store = MemoryDocumentStore()
         doc = SummaryTestDocument(name="test.txt", content=b"Hello world", description="test")
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         summaries = await store.load_summaries([doc.sha256])
         assert summaries == {}
 
@@ -56,7 +57,7 @@ class TestMemoryStoreSummary:
         store = MemoryDocumentStore(summary_generator=_mock_generator)
         try:
             doc = SummaryTestDocument(name="report.txt", content=b"some content", description="test")
-            await store.save(doc, "run1")
+            await store.save(doc, RunScope("run1"))
             summary = await _wait_for_summary(store, doc.sha256)
             assert summary == "Summary of report.txt"
         finally:
@@ -67,7 +68,7 @@ class TestMemoryStoreSummary:
         store = MemoryDocumentStore(summary_generator=_mock_generator)
         try:
             doc = SummaryTestDocument(name="empty.txt", content=b"", description="test")
-            await store.save(doc, "run1")
+            await store.save(doc, RunScope("run1"))
             summary = await _wait_for_summary(store, doc.sha256)
             assert summary == "Summary of empty.txt"
         finally:
@@ -78,7 +79,7 @@ class TestMemoryStoreSummary:
         store = MemoryDocumentStore(summary_generator=_mock_generator)
         try:
             doc = SummaryTestDocument(name="image.bin", content=b"\x00\xff" * 100, description="test")
-            await store.save(doc, "run1")
+            await store.save(doc, RunScope("run1"))
             summary = await _wait_for_summary(store, doc.sha256)
             assert summary == "Summary of image.bin"
         finally:
@@ -89,7 +90,7 @@ class TestMemoryStoreSummary:
         store = MemoryDocumentStore(summary_generator=_failing_generator)
         try:
             doc = SummaryTestDocument(name="fail.txt", content=b"some content", description="test")
-            await store.save(doc, "run1")
+            await store.save(doc, RunScope("run1"))
             await asyncio.sleep(1.0)
             summaries = await store.load_summaries([doc.sha256])
             assert summaries == {}
@@ -108,8 +109,8 @@ class TestMemoryStoreSummary:
         store = MemoryDocumentStore(summary_generator=counting_generator)
         try:
             doc = SummaryTestDocument(name="repeat.txt", content=b"some content", description="test")
-            await store.save(doc, "run1")
-            await store.save(doc, "run1")  # second save, same doc
+            await store.save(doc, RunScope("run1"))
+            await store.save(doc, RunScope("run1"))  # second save, same doc
             await asyncio.sleep(1.0)
             assert call_count == 1
         finally:
@@ -122,7 +123,7 @@ class TestLocalStoreSummary:
         store = LocalDocumentStore(base_path=tmp_path)
         content = "Hello world content for testing"
         doc = SummaryTestDocument(name="test.txt", content=content.encode(), description="test")
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         await store.update_summary(doc.sha256, "A greeting document")
         summaries = await store.load_summaries([doc.sha256])
         assert summaries[doc.sha256] == "A greeting document"
@@ -134,7 +135,7 @@ class TestLocalStoreSummary:
         store = LocalDocumentStore(base_path=tmp_path)
         content = "Some content for summary test"
         doc = SummaryTestDocument(name="data.txt", content=content.encode(), description="test")
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         await store.update_summary(doc.sha256, "Data summary")
 
         # Verify in meta.json on disk
@@ -148,7 +149,7 @@ class TestLocalStoreSummary:
         store = LocalDocumentStore(base_path=tmp_path, summary_generator=_mock_generator)
         try:
             doc = SummaryTestDocument(name="report.txt", content=b"some content", description="test")
-            await store.save(doc, "run1")
+            await store.save(doc, RunScope("run1"))
             summary = await _wait_for_summary(store, doc.sha256)
             assert summary == "Summary of report.txt"
         finally:

@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from ai_pipeline_core.logging import get_pipeline_logger
 
 from ._client import ClickHouseClient
-from ._models import SummaryRowBuilder
+from ._models import TrackedSpanRow
 
 type SpanSummaryFn = Callable[[str, str, str], Coroutine[None, None, str]]
 
@@ -57,7 +57,7 @@ class ClickHouseWriter:
         self,
         client: ClickHouseClient,
         *,
-        summary_row_builder: SummaryRowBuilder | None = None,
+        summary_row_builder: Callable[[str, str], TrackedSpanRow | None] | None = None,
         span_summary_fn: SpanSummaryFn | None = None,
         batch_size: int = 100,
         flush_interval_seconds: float = 2.0,
@@ -185,7 +185,7 @@ class ClickHouseWriter:
                     if otel_token is not None:
                         otel_context.detach(otel_token)
                 if summary and self._summary_row_builder:
-                    row = self._summary_row_builder.build_span_summary_update(job.span_id, summary)
+                    row = self._summary_row_builder(job.span_id, summary)
                     if row:
                         self._client.update_span(row)
         except Exception as e:

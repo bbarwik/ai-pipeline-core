@@ -71,8 +71,8 @@ class TestModelResponse:
 
         metadata = response.get_laminar_metadata()
 
-        assert metadata["gen_ai.usage.prompt_tokens"] == 100
-        assert metadata["gen_ai.usage.completion_tokens"] == 50
+        assert metadata["gen_ai.usage.input_tokens"] == 100
+        assert metadata["gen_ai.usage.output_tokens"] == 50
         assert metadata["gen_ai.usage.total_tokens"] == 150
 
     def test_get_laminar_metadata_with_cost(self):
@@ -80,7 +80,7 @@ class TestModelResponse:
         response = create_test_model_response(content="test", cost=0.05)
 
         metadata = response.get_laminar_metadata()
-        assert metadata["gen_ai.cost"] == 0.05
+        assert metadata["gen_ai.usage.cost"] == 0.05
         assert metadata["gen_ai.usage.cost"] == 0.05
 
     def test_usage_property(self):
@@ -251,4 +251,4 @@ class TestStructuredModelResponse:
 
         metadata = response.get_laminar_metadata()
         assert metadata["gen_ai.response.id"] == "test-id"
-        assert metadata["gen_ai.cost"] == 0.02
+        assert metadata["gen_ai.usage.cost"] == 0.02

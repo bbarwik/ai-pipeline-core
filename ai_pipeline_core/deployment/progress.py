@@ -12,7 +12,7 @@ from prefect import get_client
 from ai_pipeline_core.logging import get_pipeline_logger
 
 from ._helpers import send_webhook
-from .contract import ProgressRun
+from .contract import FlowStatus, ProgressRun, RunState
 
 logger = get_pipeline_logger(__name__)
 
@@ -71,15 +71,17 @@ async def update(fraction: float, message: str = "") -> None:
     run_uuid = _safe_uuid(ctx.flow_run_id) if ctx.flow_run_id else None
 
     if ctx.webhook_url:
+        if run_uuid is None:
+            logger.warning("Invalid or missing flow_run_id, using zero UUID for progress webhook")
         payload = ProgressRun(
             flow_run_id=run_uuid or _ZERO_UUID,
             project_name=ctx.project_name,
-            state="RUNNING",
+            state=RunState.RUNNING,
             timestamp=datetime.now(UTC),
             step=ctx.step,
             total_steps=ctx.total_steps,
             flow_name=ctx.flow_name,
-            status="progress",
+            status=FlowStatus.PROGRESS,
             progress=overall,
             step_progress=step_progress,
             message=message,
@@ -98,7 +100,7 @@ async def update(fraction: float, message: str = "") -> None:
                         "progress.step": ctx.step,
                         "progress.total_steps": ctx.total_steps,
                         "progress.flow_name": ctx.flow_name,
-                        "progress.status": "progress",
+                        "progress.status": FlowStatus.PROGRESS,
                         "progress.progress": overall,
                         "progress.step_progress": step_progress,
                         "progress.message": message,

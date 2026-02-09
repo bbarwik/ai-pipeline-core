@@ -18,6 +18,7 @@ from ai_pipeline_core.documents._context_vars import (
     set_task_context,
     suppress_registration,
 )
+from ai_pipeline_core.documents._types import DocumentSha256
 from ai_pipeline_core.documents.document import Document
 from ai_pipeline_core.documents.utils import is_document_sha256
 
@@ -48,7 +49,7 @@ class TaskDocumentContext:
     - Deduplicate returned documents by SHA256
     """
 
-    created: set[str] = field(default_factory=set)
+    created: set[DocumentSha256] = field(default_factory=set)
 
     def register_created(self, doc: Document) -> None:
         """Register a document as created in this task/flow context."""
@@ -57,7 +58,7 @@ class TaskDocumentContext:
     def validate_provenance(
         self,
         documents: list[Document],
-        existing_sha256s: set[str],
+        existing_sha256s: set[DocumentSha256],
         *,
         check_created: bool = False,
     ) -> list[str]:
@@ -121,7 +122,7 @@ class TaskDocumentContext:
     @staticmethod
     def deduplicate(documents: list[Document]) -> list[Document]:
         """Deduplicate documents by SHA256, preserving first occurrence order."""
-        seen: dict[str, Document] = {}
+        seen: dict[DocumentSha256, Document] = {}
         for doc in documents:
             if doc.sha256 not in seen:
                 seen[doc.sha256] = doc

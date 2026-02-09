@@ -4,6 +4,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from ai_pipeline_core.documents._types import DocumentSha256
 from ai_pipeline_core.documents.utils import is_document_sha256
 
 __all__ = [
@@ -20,7 +21,7 @@ MAX_PROVENANCE_GRAPH_NODES = 5000
 class DocumentNode:
     """Lightweight document metadata without content or attachments."""
 
-    sha256: str
+    sha256: DocumentSha256
     class_name: str
     name: str
     description: str = ""
@@ -30,23 +31,23 @@ class DocumentNode:
 
 
 def build_provenance_graph(
-    root_sha256: str,
+    root_sha256: DocumentSha256,
     nodes: list[DocumentNode],
-) -> dict[str, DocumentNode]:
+) -> dict[DocumentSha256, DocumentNode]:
     """BFS from root following sources + origins. Returns reachable ancestors keyed by SHA256.
 
     Traverses up to MAX_PROVENANCE_GRAPH_NODES nodes. Uses is_document_sha256() to
     distinguish document SHA256 references from URL strings in sources.
     """
-    index: dict[str, DocumentNode] = {node.sha256: node for node in nodes}
+    index: dict[DocumentSha256, DocumentNode] = {node.sha256: node for node in nodes}
 
     root = index.get(root_sha256)
     if root is None:
         return {}
 
-    visited: dict[str, DocumentNode] = {}
-    enqueued: set[str] = {root_sha256}
-    queue: deque[str] = deque([root_sha256])
+    visited: dict[DocumentSha256, DocumentNode] = {}
+    enqueued: set[DocumentSha256] = {root_sha256}
+    queue: deque[DocumentSha256] = deque([root_sha256])
 
     while queue and len(visited) < MAX_PROVENANCE_GRAPH_NODES:
         sha256 = queue.popleft()
@@ -59,16 +60,17 @@ def build_provenance_graph(
 
         for ref in (*node.sources, *node.origins):
             if ref not in enqueued and is_document_sha256(ref):
-                enqueued.add(ref)
-                queue.append(ref)
+                ref_sha = DocumentSha256(ref)
+                enqueued.add(ref_sha)
+                queue.append(ref_sha)
 
     return visited
 
 
 async def walk_provenance(
-    root_sha256: str,
-    load_nodes: Callable[[list[str]], Awaitable[dict[str, DocumentNode]]],
-) -> dict[str, DocumentNode]:
+    root_sha256: DocumentSha256,
+    load_nodes: Callable[[list[DocumentSha256]], Awaitable[dict[DocumentSha256, DocumentNode]]],
+) -> dict[DocumentSha256, DocumentNode]:
     """BFS walk of provenance chain using batch lookups per level.
 
     Loads root node, then iteratively loads all referenced sources/origins in batches
@@ -80,9 +82,9 @@ async def walk_provenance(
         load_nodes: Async callable that batch-loads DocumentNodes by SHA256 list.
             Typically ``store.load_nodes_by_sha256s``.
     """
-    visited: dict[str, DocumentNode] = {}
+    visited: dict[DocumentSha256, DocumentNode] = {}
     # dict preserves insertion order for deterministic BFS traversal
-    pending: dict[str, None] = {root_sha256: None}
+    pending: dict[DocumentSha256, None] = {root_sha256: None}
 
     while pending and len(visited) < MAX_PROVENANCE_GRAPH_NODES:
         batch = list(pending)[: MAX_PROVENANCE_GRAPH_NODES - len(visited)]
@@ -98,7 +100,7 @@ async def walk_provenance(
             visited[sha256] = node
             for ref in (*node.sources, *node.origins):
                 if ref not in visited and ref not in pending and is_document_sha256(ref):
-                    pending[ref] = None
+                    pending[DocumentSha256(ref)] = None
 
         # If none of the batch was found, stop (all remaining are dangling)
         if not nodes:

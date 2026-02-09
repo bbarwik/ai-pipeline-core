@@ -27,6 +27,7 @@ from ai_pipeline_core.document_store.clickhouse import (
 )
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
+from ai_pipeline_core.documents._types import DocumentSha256, RunScope
 from ai_pipeline_core.settings import settings
 
 pytestmark = pytest.mark.clickhouse
@@ -99,7 +100,7 @@ class TestDDL:
     async def test_tables_created_in_clickhouse(self, store: ClickHouseDocumentStore):
         """Verify DDL actually creates tables with correct engines."""
         # Trigger table creation
-        await store.load("__ddl_test__", [CHDocA])
+        await store.load(RunScope("__ddl_test__"), [CHDocA])
 
         for table in [TABLE_DOCUMENT_CONTENT, TABLE_DOCUMENT_INDEX, TABLE_RUN_DOCUMENTS]:
             result = await store._run(lambda t=table: store._client.query(f"SELECT engine FROM system.tables WHERE name = '{t}'").result_rows)
@@ -126,42 +127,42 @@ class TestInit:
 class TestSaveAndLoad:
     async def test_save_and_load_single(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "report.txt", "hello world")
-        await store.save(doc, "test-save-load")
-        loaded = await store.load("test-save-load", [CHDocA])
+        await store.save(doc, RunScope("test-save-load"))
+        loaded = await store.load(RunScope("test-save-load"), [CHDocA])
         assert len(loaded) == 1
         assert loaded[0].name == "report.txt"
         assert loaded[0].content == b"hello world"
 
     async def test_save_batch_and_load(self, store: ClickHouseDocumentStore):
         docs = [_make(CHDocA, "a.txt", "aaa"), _make(CHDocA, "b.txt", "bbb")]
-        await store.save_batch(docs, "test-batch")
-        loaded = await store.load("test-batch", [CHDocA])
+        await store.save_batch(docs, RunScope("test-batch"))
+        loaded = await store.load(RunScope("test-batch"), [CHDocA])
         assert len(loaded) == 2
         assert {d.name for d in loaded} == {"a.txt", "b.txt"}
 
     async def test_load_filters_by_type(self, store: ClickHouseDocumentStore):
-        await store.save(_make(CHDocA, "a.txt", "aaa"), "test-filter")
-        await store.save(_make(CHDocB, "b.txt", "bbb"), "test-filter")
+        await store.save(_make(CHDocA, "a.txt", "aaa"), RunScope("test-filter"))
+        await store.save(_make(CHDocB, "b.txt", "bbb"), RunScope("test-filter"))
 
-        assert len(await store.load("test-filter", [CHDocA])) == 1
-        assert len(await store.load("test-filter", [CHDocB])) == 1
-        assert len(await store.load("test-filter", [CHDocA, CHDocB])) == 2
+        assert len(await store.load(RunScope("test-filter"), [CHDocA])) == 1
+        assert len(await store.load(RunScope("test-filter"), [CHDocB])) == 1
+        assert len(await store.load(RunScope("test-filter"), [CHDocA, CHDocB])) == 2
 
     async def test_save_idempotent(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "dup.txt", "same content")
-        await store.save(doc, "test-idempotent")
-        await store.save(doc, "test-idempotent")
-        loaded = await store.load("test-idempotent", [CHDocA])
+        await store.save(doc, RunScope("test-idempotent"))
+        await store.save(doc, RunScope("test-idempotent"))
+        loaded = await store.load(RunScope("test-idempotent"), [CHDocA])
         assert len(loaded) == 1
 
     async def test_scopes_are_isolated(self, store: ClickHouseDocumentStore):
-        await store.save(_make(CHDocA, "s1.txt", "scope1"), "scope-1")
-        await store.save(_make(CHDocA, "s2.txt", "scope2"), "scope-2")
-        assert len(await store.load("scope-1", [CHDocA])) == 1
-        assert len(await store.load("scope-2", [CHDocA])) == 1
+        await store.save(_make(CHDocA, "s1.txt", "scope1"), RunScope("scope-1"))
+        await store.save(_make(CHDocA, "s2.txt", "scope2"), RunScope("scope-2"))
+        assert len(await store.load(RunScope("scope-1"), [CHDocA])) == 1
+        assert len(await store.load(RunScope("scope-2"), [CHDocA])) == 1
 
     async def test_load_empty_scope(self, store: ClickHouseDocumentStore):
-        assert await store.load("nonexistent-scope", [CHDocA]) == []
+        assert await store.load(RunScope("nonexistent-scope"), [CHDocA]) == []
 
     async def test_save_and_load_preserves_metadata(self, store: ClickHouseDocumentStore):
         """Verify description, sources, and origins round-trip through ClickHouse."""
@@ -175,8 +176,8 @@ class TestSaveAndLoad:
             sources=("https://example.com",),
             origins=(origin_doc.sha256,),
         )
-        await store.save(doc, "test-metadata")
-        loaded = await store.load("test-metadata", [CHDocA])
+        await store.save(doc, RunScope("test-metadata"))
+        loaded = await store.load(RunScope("test-metadata"), [CHDocA])
         assert len(loaded) == 1
         assert loaded[0].description == "A test document"
         assert "https://example.com" in loaded[0].sources
@@ -184,15 +185,15 @@ class TestSaveAndLoad:
 
     async def test_save_and_load_empty_content(self, store: ClickHouseDocumentStore):
         doc = CHDocA(name="empty.txt", content=b"")
-        await store.save(doc, "test-empty-content")
-        loaded = await store.load("test-empty-content", [CHDocA])
+        await store.save(doc, RunScope("test-empty-content"))
+        loaded = await store.load(RunScope("test-empty-content"), [CHDocA])
         assert len(loaded) == 1
         assert loaded[0].content == b""
 
     async def test_save_and_load_special_characters(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "résumé — final (2).txt", "Ünïcödé content: 日本語 🎉")
-        await store.save(doc, "test-special-chars")
-        loaded = await store.load("test-special-chars", [CHDocA])
+        await store.save(doc, RunScope("test-special-chars"))
+        loaded = await store.load(RunScope("test-special-chars"), [CHDocA])
         assert len(loaded) == 1
         assert loaded[0].name == "résumé — final (2).txt"
         assert "日本語" in loaded[0].content.decode()
@@ -201,23 +202,23 @@ class TestSaveAndLoad:
         """Verify ZSTD compression handles large content correctly."""
         large_content = "x" * 1_000_000  # 1MB
         doc = _make(CHDocA, "large.bin", large_content)
-        await store.save(doc, "test-large-doc")
-        loaded = await store.load("test-large-doc", [CHDocA])
+        await store.save(doc, RunScope("test-large-doc"))
+        loaded = await store.load(RunScope("test-large-doc"), [CHDocA])
         assert len(loaded) == 1
         assert len(loaded[0].content) == 1_000_000
 
     async def test_load_no_matching_types_in_populated_scope(self, store: ClickHouseDocumentStore):
         """Save CHDocA but load CHDocB — should return empty."""
-        await store.save(_make(CHDocA, "only-a.txt", "aaa"), "test-type-mismatch")
-        loaded = await store.load("test-type-mismatch", [CHDocB])
+        await store.save(_make(CHDocA, "only-a.txt", "aaa"), RunScope("test-type-mismatch"))
+        loaded = await store.load(RunScope("test-type-mismatch"), [CHDocB])
         assert loaded == []
 
     async def test_save_batch_mixed_types(self, store: ClickHouseDocumentStore):
         docs = [_make(CHDocA, "batch-a.txt", "aaa"), _make(CHDocB, "batch-b.txt", "bbb")]
-        await store.save_batch(docs, "test-batch-mixed")
-        assert len(await store.load("test-batch-mixed", [CHDocA])) == 1
-        assert len(await store.load("test-batch-mixed", [CHDocB])) == 1
-        assert len(await store.load("test-batch-mixed", [CHDocA, CHDocB])) == 2
+        await store.save_batch(docs, RunScope("test-batch-mixed"))
+        assert len(await store.load(RunScope("test-batch-mixed"), [CHDocA])) == 1
+        assert len(await store.load(RunScope("test-batch-mixed"), [CHDocB])) == 1
+        assert len(await store.load(RunScope("test-batch-mixed"), [CHDocA, CHDocB])) == 2
 
 
 # --- Has Documents ---
@@ -225,19 +226,19 @@ class TestSaveAndLoad:
 
 class TestHasDocuments:
     async def test_returns_false_when_empty(self, store: ClickHouseDocumentStore):
-        assert await store.has_documents("empty-scope", CHDocA) is False
+        assert await store.has_documents(RunScope("empty-scope"), CHDocA) is False
 
     async def test_returns_true_when_present(self, store: ClickHouseDocumentStore):
-        await store.save(_make(CHDocA, "exists.txt"), "test-has")
-        assert await store.has_documents("test-has", CHDocA) is True
+        await store.save(_make(CHDocA, "exists.txt"), RunScope("test-has"))
+        assert await store.has_documents(RunScope("test-has"), CHDocA) is True
 
     async def test_returns_false_for_wrong_type(self, store: ClickHouseDocumentStore):
-        await store.save(_make(CHDocA, "wrong.txt"), "test-has-type")
-        assert await store.has_documents("test-has-type", CHDocB) is False
+        await store.save(_make(CHDocA, "wrong.txt"), RunScope("test-has-type"))
+        assert await store.has_documents(RunScope("test-has-type"), CHDocB) is False
 
     async def test_returns_false_for_wrong_scope(self, store: ClickHouseDocumentStore):
-        await store.save(_make(CHDocA, "scoped.txt"), "test-has-scope-a")
-        assert await store.has_documents("test-has-scope-b", CHDocA) is False
+        await store.save(_make(CHDocA, "scoped.txt"), RunScope("test-has-scope-a"))
+        assert await store.has_documents(RunScope("test-has-scope-b"), CHDocA) is False
 
 
 # --- Check Existing ---
@@ -246,13 +247,13 @@ class TestHasDocuments:
 class TestCheckExisting:
     async def test_returns_matching_hashes(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "hash.txt", "hash content")
-        await store.save(doc, "test-check")
-        result = await store.check_existing([doc.sha256, "0" * 64])
+        await store.save(doc, RunScope("test-check"))
+        result = await store.check_existing([doc.sha256, DocumentSha256("0" * 64)])
         assert doc.sha256 in result
-        assert "0" * 64 not in result
+        assert DocumentSha256("0" * 64) not in result
 
     async def test_returns_empty_for_no_matches(self, store: ClickHouseDocumentStore):
-        assert await store.check_existing(["0" * 64]) == set()
+        assert await store.check_existing([DocumentSha256("0" * 64)]) == set()
 
     async def test_returns_empty_for_empty_input(self, store: ClickHouseDocumentStore):
         """Exercises the early-return guard in _check_existing_sync."""
@@ -272,8 +273,8 @@ class TestAttachments:
                 Attachment(name="att2.txt", content=b"attachment 2", description="second"),
             ),
         )
-        await store.save(doc, "test-attachments")
-        loaded = await store.load("test-attachments", [CHDocA])
+        await store.save(doc, RunScope("test-attachments"))
+        loaded = await store.load(RunScope("test-attachments"), [CHDocA])
         assert len(loaded) == 1
         assert len(loaded[0].attachments) == 2
         assert {a.name for a in loaded[0].attachments} == {"att1.txt", "att2.txt"}
@@ -288,8 +289,8 @@ class TestAttachments:
                 Attachment(name="with-desc.txt", content=b"bbb", description="has description"),
             ),
         )
-        await store.save(doc, "test-att-desc")
-        loaded = await store.load("test-att-desc", [CHDocA])
+        await store.save(doc, RunScope("test-att-desc"))
+        loaded = await store.load(RunScope("test-att-desc"), [CHDocA])
         atts = {a.name: a for a in loaded[0].attachments}
         assert atts["no-desc.txt"].description is None
         assert atts["with-desc.txt"].description == "has description"
@@ -304,8 +305,8 @@ class TestAttachments:
                 Attachment(name="text.txt", content=b"hello attachment"),
             ),
         )
-        await store.save(doc, "test-att-content")
-        loaded = await store.load("test-att-content", [CHDocA])
+        await store.save(doc, RunScope("test-att-content"))
+        loaded = await store.load(RunScope("test-att-content"), [CHDocA])
         atts = {a.name: a for a in loaded[0].attachments}
         assert atts["data.csv"].content == b"col1,col2\n1,2\n3,4"
         assert atts["text.txt"].content == b"hello attachment"
@@ -318,9 +319,9 @@ class TestAttachments:
             attachments=(Attachment(name="a.txt", content=b"att"),),
         )
         doc_without = CHDocA(name="no-att.txt", content=b"without att")
-        await store.save(doc_with, "test-mixed-att")
-        await store.save(doc_without, "test-mixed-att")
-        loaded = await store.load("test-mixed-att", [CHDocA])
+        await store.save(doc_with, RunScope("test-mixed-att"))
+        await store.save(doc_without, RunScope("test-mixed-att"))
+        loaded = await store.load(RunScope("test-mixed-att"), [CHDocA])
         assert len(loaded) == 2
         by_name = {d.name: d for d in loaded}
         assert len(by_name["has-att.txt"].attachments) == 1
@@ -333,7 +334,7 @@ class TestAttachments:
 class TestSummaries:
     async def test_update_and_load_summary(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "summary-doc.txt", "content for summary test")
-        await store.save(doc, "test-summary")
+        await store.save(doc, RunScope("test-summary"))
         await store.update_summary(doc.sha256, "A test document about summary functionality.")
         await _optimize_tables(store)
         summaries = await store.load_summaries([doc.sha256])
@@ -342,14 +343,14 @@ class TestSummaries:
 
     async def test_load_summaries_returns_empty_for_no_summary(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "no-summary.txt", "no summary here")
-        await store.save(doc, "test-no-summary")
+        await store.save(doc, RunScope("test-no-summary"))
         assert await store.load_summaries([doc.sha256]) == {}
 
     async def test_load_summaries_multiple_documents(self, store: ClickHouseDocumentStore):
         doc1 = _make(CHDocA, "multi1.txt", "first document for multi test")
         doc2 = _make(CHDocA, "multi2.txt", "second document for multi test")
         doc3 = _make(CHDocA, "multi3.txt", "third document for multi test")
-        await store.save_batch([doc1, doc2, doc3], "test-multi-summary")
+        await store.save_batch([doc1, doc2, doc3], RunScope("test-multi-summary"))
         await store.update_summary(doc1.sha256, "Summary of first document.")
         await store.update_summary(doc3.sha256, "Summary of third document.")
         await _optimize_tables(store)
@@ -362,7 +363,7 @@ class TestSummaries:
     async def test_summary_overwrite(self, store: ClickHouseDocumentStore):
         """Second update_summary replaces the first."""
         doc = _make(CHDocA, "overwrite.txt", "content for overwrite test")
-        await store.save(doc, "test-summary-overwrite")
+        await store.save(doc, RunScope("test-summary-overwrite"))
         await store.update_summary(doc.sha256, "First summary.")
         await _optimize_tables(store)
         await store.update_summary(doc.sha256, "Second summary.")
@@ -371,7 +372,7 @@ class TestSummaries:
         assert summaries[doc.sha256] == "Second summary."
 
     async def test_load_summaries_nonexistent_sha256s(self, store: ClickHouseDocumentStore):
-        assert await store.load_summaries(["0" * 64, "1" * 64]) == {}
+        assert await store.load_summaries([DocumentSha256("0" * 64), DocumentSha256("1" * 64)]) == {}
 
     async def test_load_summaries_empty_list(self, store: ClickHouseDocumentStore):
         """Exercises the early-return guard in _load_summaries_sync."""
@@ -396,8 +397,8 @@ class TestBinaryContentRoundtrip:
         )
         doc = CHDocA(name="test.pdf", content=pdf_content)
 
-        await store.save(doc, "test-pdf-binary")
-        loaded = await store.load("test-pdf-binary", [CHDocA])
+        await store.save(doc, RunScope("test-pdf-binary"))
+        loaded = await store.load(RunScope("test-pdf-binary"), [CHDocA])
 
         assert len(loaded) == 1
         assert loaded[0].content == pdf_content, f"PDF content mismatch: expected {len(pdf_content)} bytes, got {len(loaded[0].content)} bytes"
@@ -476,8 +477,8 @@ class TestBinaryContentRoundtrip:
         ])
         doc = CHDocA(name="test.png", content=png_content)
 
-        await store.save(doc, "test-png-binary")
-        loaded = await store.load("test-png-binary", [CHDocA])
+        await store.save(doc, RunScope("test-png-binary"))
+        loaded = await store.load(RunScope("test-png-binary"), [CHDocA])
 
         assert len(loaded) == 1
         assert loaded[0].content == png_content, f"PNG content mismatch: expected {len(png_content)} bytes, got {len(loaded[0].content)} bytes"
@@ -488,8 +489,8 @@ class TestBinaryContentRoundtrip:
         binary_content = bytes(range(256)) * 10
         doc = CHDocA(name="binary.bin", content=binary_content)
 
-        await store.save(doc, "test-arbitrary-binary")
-        loaded = await store.load("test-arbitrary-binary", [CHDocA])
+        await store.save(doc, RunScope("test-arbitrary-binary"))
+        loaded = await store.load(RunScope("test-arbitrary-binary"), [CHDocA])
 
         assert len(loaded) == 1
         assert loaded[0].content == binary_content, f"Binary content mismatch: expected {len(binary_content)} bytes, got {len(loaded[0].content)} bytes"
@@ -571,8 +572,8 @@ class TestBinaryContentRoundtrip:
             attachments=(Attachment(name="screenshot.png", content=png_attachment),),
         )
 
-        await store.save(doc, "test-binary-attachment")
-        loaded = await store.load("test-binary-attachment", [CHDocA])
+        await store.save(doc, RunScope("test-binary-attachment"))
+        loaded = await store.load(RunScope("test-binary-attachment"), [CHDocA])
 
         assert len(loaded) == 1
         assert len(loaded[0].attachments) == 1
@@ -592,8 +593,8 @@ class TestBinaryContentRoundtrip:
             ),
         )
 
-        await store.save(doc, "test-mixed-attachments")
-        loaded = await store.load("test-mixed-attachments", [CHDocA])
+        await store.save(doc, RunScope("test-mixed-attachments"))
+        loaded = await store.load(RunScope("test-mixed-attachments"), [CHDocA])
 
         assert len(loaded) == 1
         atts = {a.name: a for a in loaded[0].attachments}
@@ -611,8 +612,8 @@ class TestBinaryContentRoundtrip:
             attachments=(Attachment(name="figure.png", content=png_attachment),),
         )
 
-        await store.save(doc, "test-all-binary")
-        loaded = await store.load("test-all-binary", [CHDocA])
+        await store.save(doc, RunScope("test-all-binary"))
+        loaded = await store.load(RunScope("test-all-binary"), [CHDocA])
 
         assert len(loaded) == 1
         assert loaded[0].content == pdf_content, f"PDF content mismatch: {loaded[0].content[:50]}..."
@@ -625,14 +626,14 @@ class TestContentDeduplication:
         content = "deduplicated content body"
         doc1 = _make(CHDocA, "dedup-1.txt", content)
         doc2 = _make(CHDocA, "dedup-2.txt", content)
-        await store.save(doc1, "test-dedup")
-        await store.save(doc2, "test-dedup")
+        await store.save(doc1, RunScope("test-dedup"))
+        await store.save(doc2, RunScope("test-dedup"))
 
         content_sha = compute_content_sha256(content.encode())
         count = await _query_count(store, TABLE_DOCUMENT_CONTENT, f"content_sha256 = '{content_sha}'")
         assert count == 1
 
-        loaded = await store.load("test-dedup", [CHDocA])
+        loaded = await store.load(RunScope("test-dedup"), [CHDocA])
         assert len(loaded) == 2
         assert {d.name for d in loaded} == {"dedup-1.txt", "dedup-2.txt"}
 
@@ -641,29 +642,29 @@ class TestContentDeduplication:
         content = "shared across scopes"
         doc1 = _make(CHDocA, "cross-1.txt", content)
         doc2 = _make(CHDocA, "cross-2.txt", content)
-        await store.save(doc1, "test-dedup-scope-a")
-        await store.save(doc2, "test-dedup-scope-b")
+        await store.save(doc1, RunScope("test-dedup-scope-a"))
+        await store.save(doc2, RunScope("test-dedup-scope-b"))
 
         content_sha = compute_content_sha256(content.encode())
         count = await _query_count(store, TABLE_DOCUMENT_CONTENT, f"content_sha256 = '{content_sha}'")
         assert count == 1
 
-        assert len(await store.load("test-dedup-scope-a", [CHDocA])) == 1
-        assert len(await store.load("test-dedup-scope-b", [CHDocA])) == 1
+        assert len(await store.load(RunScope("test-dedup-scope-a"), [CHDocA])) == 1
+        assert len(await store.load(RunScope("test-dedup-scope-b"), [CHDocA])) == 1
 
     async def test_shared_attachment_content_deduplication(self, store: ClickHouseDocumentStore):
         """Two documents sharing the same attachment content produce one content row for that attachment."""
         shared_att_content = b"shared attachment body"
         doc1 = CHDocA(name="att-dedup-1.txt", content=b"body1", attachments=(Attachment(name="shared.txt", content=shared_att_content),))
         doc2 = CHDocA(name="att-dedup-2.txt", content=b"body2", attachments=(Attachment(name="shared.txt", content=shared_att_content),))
-        await store.save(doc1, "test-att-dedup")
-        await store.save(doc2, "test-att-dedup")
+        await store.save(doc1, RunScope("test-att-dedup"))
+        await store.save(doc2, RunScope("test-att-dedup"))
 
         att_sha = compute_content_sha256(shared_att_content)
         count = await _query_count(store, TABLE_DOCUMENT_CONTENT, f"content_sha256 = '{att_sha}'")
         assert count == 1
 
-        loaded = await store.load("test-att-dedup", [CHDocA])
+        loaded = await store.load(RunScope("test-att-dedup"), [CHDocA])
         assert len(loaded) == 2
         for doc in loaded:
             assert len(doc.attachments) == 1
@@ -678,7 +679,7 @@ class TestReplacingMergeTree:
         """Save same document 5 times, OPTIMIZE, verify single physical row in index."""
         doc = _make(CHDocA, "rmt.txt", "replacing merge tree test")
         for _ in range(5):
-            await store.save(doc, "test-rmt")
+            await store.save(doc, RunScope("test-rmt"))
 
         await store._run(lambda: store._client.command(f"OPTIMIZE TABLE {TABLE_DOCUMENT_INDEX} FINAL"))
 
@@ -694,7 +695,7 @@ class TestCircuitBreaker:
         """Save to an unreachable store should buffer, not raise."""
         bad_store = ClickHouseDocumentStore(host="127.0.0.1", port=1, secure=False)
         doc = _make(CHDocA, "buffered.txt", "will be buffered")
-        await bad_store.save(doc, "test-buffer")
+        await bad_store.save(doc, RunScope("test-buffer"))
         assert len(bad_store._buffer) == 1
         assert bad_store._buffer[0].document.name == "buffered.txt"
 
@@ -702,7 +703,7 @@ class TestCircuitBreaker:
         """Circuit breaker opens after _FAILURE_THRESHOLD consecutive failures."""
         bad_store = ClickHouseDocumentStore(host="127.0.0.1", port=1, secure=False)
         for i in range(_FAILURE_THRESHOLD):
-            await bad_store.save(_make(CHDocA, f"fail-{i}.txt", "fail"), "test-cb")
+            await bad_store.save(_make(CHDocA, f"fail-{i}.txt", "fail"), RunScope("test-cb"))
         assert bad_store._circuit_open is True
         assert bad_store._consecutive_failures >= _FAILURE_THRESHOLD
 
@@ -716,7 +717,7 @@ class TestCircuitBreaker:
         for i in range(_MAX_BUFFER_SIZE + 100):
             bad_store._buffer.append(
                 __import__("ai_pipeline_core.document_store.clickhouse", fromlist=["_BufferedWrite"])._BufferedWrite(
-                    document=_make(CHDocA, f"buf-{i}.txt"), run_scope="test"
+                    document=_make(CHDocA, f"buf-{i}.txt"), run_scope=RunScope("test")
                 )
             )
         assert len(bad_store._buffer) == _MAX_BUFFER_SIZE
@@ -727,12 +728,12 @@ class TestCircuitBreaker:
         doc2 = _make(CHDocA, "during-outage.txt", "during outage")
 
         # Save first document normally
-        await store.save(doc1, "test-flush")
+        await store.save(doc1, RunScope("test-flush"))
 
         # Manually buffer a write (simulating outage)
         from ai_pipeline_core.document_store.clickhouse import _BufferedWrite
 
-        store._buffer.append(_BufferedWrite(document=doc2, run_scope="test-flush"))
+        store._buffer.append(_BufferedWrite(document=doc2, run_scope=RunScope("test-flush")))
         store._circuit_open = True
 
         # Trigger reconnect by resetting state and saving
@@ -740,7 +741,7 @@ class TestCircuitBreaker:
         store._consecutive_failures = 0
         await store._run(store._flush_buffer)
 
-        loaded = await store.load("test-flush", [CHDocA])
+        loaded = await store.load(RunScope("test-flush"), [CHDocA])
         names = {d.name for d in loaded}
         assert "pre-outage.txt" in names
         assert "during-outage.txt" in names
@@ -752,8 +753,8 @@ class TestCircuitBreaker:
 class TestLoadBySha256s:
     async def test_batch_lookup_text(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "lookup.txt", "point lookup content")
-        await store.save(doc, "test-load-sha")
-        result = await store.load_by_sha256s([doc.sha256], CHDocA, "test-load-sha")
+        await store.save(doc, RunScope("test-load-sha"))
+        result = await store.load_by_sha256s([doc.sha256], CHDocA, RunScope("test-load-sha"))
         assert doc.sha256 in result
         loaded = result[doc.sha256]
         assert loaded.name == "lookup.txt"
@@ -764,8 +765,8 @@ class TestLoadBySha256s:
         binary_content = bytes(range(256))
         att = Attachment(name="data.bin", content=b"\x89PNG" + b"\x00" * 50, description="binary att")
         doc = CHDocA(name="binary.bin", content=binary_content, attachments=(att,))
-        await store.save(doc, "test-load-sha-binary")
-        result = await store.load_by_sha256s([doc.sha256], CHDocA, "test-load-sha-binary")
+        await store.save(doc, RunScope("test-load-sha-binary"))
+        result = await store.load_by_sha256s([doc.sha256], CHDocA, RunScope("test-load-sha-binary"))
         assert doc.sha256 in result
         loaded = result[doc.sha256]
         assert loaded.content == binary_content
@@ -773,20 +774,20 @@ class TestLoadBySha256s:
         assert loaded.attachments[0].content == att.content
 
     async def test_returns_empty_for_not_found(self, store: ClickHouseDocumentStore):
-        assert await store.load_by_sha256s(["NONEXISTENT" * 4 + "AAAA"], CHDocA, "test-load-sha-none") == {}
+        assert await store.load_by_sha256s([DocumentSha256("NONEXISTENT" * 4 + "AAAA")], CHDocA, RunScope("test-load-sha-none")) == {}
 
     async def test_class_name_not_enforced(self, store: ClickHouseDocumentStore):
         """document_type is a construction hint, not a filter — doc is found regardless of stored type."""
         doc = _make(CHDocA, "typed.txt", "typed content")
-        await store.save(doc, "test-load-sha-type")
-        result = await store.load_by_sha256s([doc.sha256], CHDocB, "test-load-sha-type")
+        await store.save(doc, RunScope("test-load-sha-type"))
+        result = await store.load_by_sha256s([doc.sha256], CHDocB, RunScope("test-load-sha-type"))
         assert doc.sha256 in result
         assert isinstance(result[doc.sha256], CHDocB)
 
     async def test_returns_empty_for_wrong_scope(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "scoped.txt", "scoped content")
-        await store.save(doc, "test-load-sha-scope-a")
-        assert await store.load_by_sha256s([doc.sha256], CHDocA, "test-load-sha-scope-b") == {}
+        await store.save(doc, RunScope("test-load-sha-scope-a"))
+        assert await store.load_by_sha256s([doc.sha256], CHDocA, RunScope("test-load-sha-scope-b")) == {}
 
     async def test_preserves_metadata(self, store: ClickHouseDocumentStore):
         origin = _make(CHDocA, "origin.txt", "origin")
@@ -798,8 +799,8 @@ class TestLoadBySha256s:
             sources=("https://example.com",),
             origins=(origin.sha256,),
         )
-        await store.save(doc, "test-load-sha-meta")
-        result = await store.load_by_sha256s([doc.sha256], CHDocA, "test-load-sha-meta")
+        await store.save(doc, RunScope("test-load-sha-meta"))
+        result = await store.load_by_sha256s([doc.sha256], CHDocA, RunScope("test-load-sha-meta"))
         assert doc.sha256 in result
         loaded = result[doc.sha256]
         assert loaded.description == "A doc"
@@ -809,7 +810,7 @@ class TestLoadBySha256s:
     async def test_cross_scope_lookup_without_run_scope(self, store: ClickHouseDocumentStore):
         """When run_scope=None, searches across all scopes."""
         doc = _make(CHDocA, "cross-scope.txt", "cross scope lookup content")
-        await store.save(doc, "test-load-sha-cross")
+        await store.save(doc, RunScope("test-load-sha-cross"))
         result = await store.load_by_sha256s([doc.sha256], CHDocA)
         assert doc.sha256 in result
         loaded = result[doc.sha256]
@@ -819,9 +820,9 @@ class TestLoadBySha256s:
     async def test_multiple_sha256s(self, store: ClickHouseDocumentStore):
         doc1 = _make(CHDocA, "batch1.txt", "batch content 1")
         doc2 = _make(CHDocA, "batch2.txt", "batch content 2")
-        await store.save(doc1, "test-load-sha-batch")
-        await store.save(doc2, "test-load-sha-batch")
-        result = await store.load_by_sha256s([doc1.sha256, doc2.sha256], CHDocA, "test-load-sha-batch")
+        await store.save(doc1, RunScope("test-load-sha-batch"))
+        await store.save(doc2, RunScope("test-load-sha-batch"))
+        result = await store.load_by_sha256s([doc1.sha256, doc2.sha256], CHDocA, RunScope("test-load-sha-batch"))
         assert len(result) == 2
         assert doc1.sha256 in result
         assert doc2.sha256 in result
@@ -831,8 +832,8 @@ class TestLoadBySha256s:
 
     async def test_partial_match(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "partial.txt", "partial content")
-        await store.save(doc, "test-load-sha-partial")
-        result = await store.load_by_sha256s([doc.sha256, "NONEXISTENT" * 4 + "AAAA"], CHDocA, "test-load-sha-partial")
+        await store.save(doc, RunScope("test-load-sha-partial"))
+        result = await store.load_by_sha256s([doc.sha256, DocumentSha256("NONEXISTENT" * 4 + "AAAA")], CHDocA, RunScope("test-load-sha-partial"))
         assert len(result) == 1
         assert doc.sha256 in result
 
@@ -844,9 +845,9 @@ class TestLoadScopeMetadata:
     async def test_returns_all_docs_metadata(self, store: ClickHouseDocumentStore):
         doc1 = _make(CHDocA, "meta-a.txt", "content a for metadata")
         doc2 = _make(CHDocB, "meta-b.txt", "content b for metadata")
-        await store.save(doc1, "test-scope-meta")
-        await store.save(doc2, "test-scope-meta")
-        metadata = await store.load_scope_metadata("test-scope-meta")
+        await store.save(doc1, RunScope("test-scope-meta"))
+        await store.save(doc2, RunScope("test-scope-meta"))
+        metadata = await store.load_scope_metadata(RunScope("test-scope-meta"))
         assert len(metadata) >= 2
         shas = {m.sha256 for m in metadata}
         assert doc1.sha256 in shas
@@ -855,23 +856,23 @@ class TestLoadScopeMetadata:
             assert isinstance(node, DocumentNode)
 
     async def test_returns_empty_for_empty_scope(self, store: ClickHouseDocumentStore):
-        metadata = await store.load_scope_metadata("nonexistent-scope-meta")
+        metadata = await store.load_scope_metadata(RunScope("nonexistent-scope-meta"))
         assert metadata == []
 
     async def test_includes_summaries(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "summary-meta.txt", "content for summary meta")
-        await store.save(doc, "test-scope-meta-summary")
+        await store.save(doc, RunScope("test-scope-meta-summary"))
         await store.update_summary(doc.sha256, "A test summary.")
         await _optimize_tables(store)
-        metadata = await store.load_scope_metadata("test-scope-meta-summary")
+        metadata = await store.load_scope_metadata(RunScope("test-scope-meta-summary"))
         matching = [m for m in metadata if m.sha256 == doc.sha256]
         assert len(matching) == 1
         assert matching[0].summary == "A test summary."
 
     async def test_metadata_class_names(self, store: ClickHouseDocumentStore):
-        await store.save(_make(CHDocA, "class-a.txt", "aaa class meta"), "test-scope-meta-class")
-        await store.save(_make(CHDocB, "class-b.txt", "bbb class meta"), "test-scope-meta-class")
-        metadata = await store.load_scope_metadata("test-scope-meta-class")
+        await store.save(_make(CHDocA, "class-a.txt", "aaa class meta"), RunScope("test-scope-meta-class"))
+        await store.save(_make(CHDocB, "class-b.txt", "bbb class meta"), RunScope("test-scope-meta-class"))
+        metadata = await store.load_scope_metadata(RunScope("test-scope-meta-class"))
         class_names = {m.class_name for m in metadata}
         assert "CHDocA" in class_names
         assert "CHDocB" in class_names
@@ -884,8 +885,8 @@ class TestLoadNodesBySha256s:
     async def test_batch_lookup(self, store: ClickHouseDocumentStore):
         doc1 = _make(CHDocA, "batch-a.txt", "batch a content for nodes lookup")
         doc2 = _make(CHDocB, "batch-b.txt", "batch b content for nodes lookup")
-        await store.save(doc1, "test-nodes-batch")
-        await store.save(doc2, "test-nodes-batch")
+        await store.save(doc1, RunScope("test-nodes-batch"))
+        await store.save(doc2, RunScope("test-nodes-batch"))
         result = await store.load_nodes_by_sha256s([doc1.sha256, doc2.sha256])
         assert len(result) == 2
         assert result[doc1.sha256].name == "batch-a.txt"
@@ -893,8 +894,8 @@ class TestLoadNodesBySha256s:
 
     async def test_missing_sha256s_omitted(self, store: ClickHouseDocumentStore):
         doc = _make(CHDocA, "single.txt", "single content for nodes")
-        await store.save(doc, "test-nodes-missing")
-        result = await store.load_nodes_by_sha256s([doc.sha256, "NONEXISTENT" * 4 + "AAAA"])
+        await store.save(doc, RunScope("test-nodes-missing"))
+        result = await store.load_nodes_by_sha256s([doc.sha256, DocumentSha256("NONEXISTENT" * 4 + "AAAA")])
         assert len(result) == 1
         assert doc.sha256 in result
 
@@ -904,8 +905,8 @@ class TestLoadNodesBySha256s:
     async def test_cross_scope_lookup(self, store: ClickHouseDocumentStore):
         doc1 = _make(CHDocA, "scope-a.txt", "scope a content for nodes")
         doc2 = _make(CHDocB, "scope-b.txt", "scope b content for nodes")
-        await store.save(doc1, "test-nodes-scope-a")
-        await store.save(doc2, "test-nodes-scope-b")
+        await store.save(doc1, RunScope("test-nodes-scope-a"))
+        await store.save(doc2, RunScope("test-nodes-scope-b"))
         result = await store.load_nodes_by_sha256s([doc1.sha256, doc2.sha256])
         assert len(result) == 2
 
@@ -918,7 +919,7 @@ class TestLoadNodesBySha256s:
             sources=("https://example.com",),
             origins=(origin.sha256,),
         )
-        await store.save(doc, "test-nodes-meta")
+        await store.save(doc, RunScope("test-nodes-meta"))
         result = await store.load_nodes_by_sha256s([doc.sha256])
         node = result[doc.sha256]
         assert isinstance(node, DocumentNode)
@@ -932,7 +933,7 @@ class TestCrossPipelineProvenance:
 
     async def test_walk_provenance_full_chain(self, store: ClickHouseDocumentStore):
         """Simulate ai_research → credora pipeline handoff with walk_provenance."""
-        scope = "test-provenance-chain"
+        scope = RunScope("test-provenance-chain")
         task = _make(CHDocA, "research_task.md", "Research Ethereum provenance chain")
         source_a = CHDocB.create(
             name="source_a.md",
@@ -967,7 +968,7 @@ class TestCrossPipelineProvenance:
 
     async def test_provenance_graph_with_url_and_sha256_sources(self, store: ClickHouseDocumentStore):
         """Provenance graph correctly follows SHA256 refs and ignores URL refs."""
-        scope = "test-provenance-mixed"
+        scope = RunScope("test-provenance-mixed")
         parent = _make(CHDocA, "parent.md", "parent content for mixed provenance")
         child = CHDocA.create(
             name="child.md",
@@ -1006,7 +1007,7 @@ class TestSummariesWithLLM:
                 "Germany and France lead adoption with 34% and 29% growth respectively."
             ),
         )
-        await store.save(doc, "test-llm-summary")
+        await store.save(doc, RunScope("test-llm-summary"))
 
         summary = await generate_document_summary(name=doc.name, excerpt=doc.content.decode())
         assert summary, "LLM should produce a non-empty summary"
@@ -1027,7 +1028,7 @@ class TestSummariesWithLLM:
             _make(CHDocA, "code_review.md", "Python function for sorting a list of dictionaries by multiple keys."),
             _make(CHDocA, "meeting_notes.txt", "Discussed Q4 roadmap. Agreed to prioritize mobile app launch."),
         ]
-        await store.save_batch(docs, "test-llm-multi")
+        await store.save_batch(docs, RunScope("test-llm-multi"))
 
         summaries: dict[str, str] = {}
         for doc in docs:

@@ -21,6 +21,7 @@ from ai_pipeline_core.document_store._summary import SummaryGenerator
 from ai_pipeline_core.document_store._summary_worker import SummaryWorker
 from ai_pipeline_core.documents._context_vars import suppress_registration
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
+from ai_pipeline_core.documents._types import DocumentSha256, RunScope
 from ai_pipeline_core.documents.attachment import Attachment
 from ai_pipeline_core.documents.document import Document
 from ai_pipeline_core.logging import get_pipeline_logger
@@ -91,7 +92,7 @@ class _BufferedWrite:
     """A pending write operation buffered during circuit breaker open state."""
 
     document: Document
-    run_scope: str
+    run_scope: RunScope
 
 
 class ClickHouseDocumentStore:
@@ -204,48 +205,48 @@ class ClickHouseDocumentStore:
 
     # --- Async public API ---
 
-    async def save(self, document: Document, run_scope: str) -> None:
+    async def save(self, document: Document, run_scope: RunScope) -> None:
         """Save a document. Buffers writes when circuit breaker is open."""
         await self._run(self._save_sync, document, run_scope)
         if self._summary_worker and not self._circuit_open:
             self._summary_worker.schedule(document)
 
-    async def save_batch(self, documents: list[Document], run_scope: str) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
         """Save multiple documents. Remaining docs are buffered on failure."""
         await self._run(self._save_batch_sync, documents, run_scope)
         if self._summary_worker and not self._circuit_open:
             for doc in documents:
                 self._summary_worker.schedule(doc)
 
-    async def load(self, run_scope: str, document_types: list[type[Document]]) -> list[Document]:
+    async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Load documents via run_documents + index JOIN content, then batch-fetch attachments."""
         return await self._run(self._load_sync, run_scope, document_types)
 
-    async def has_documents(self, run_scope: str, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
         """Check if any documents of this type exist in the run scope."""
         return await self._run(self._has_documents_sync, run_scope, document_type)
 
-    async def check_existing(self, sha256s: list[str]) -> set[str]:
+    async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Return the subset of sha256s that exist in the document index."""
         return await self._run(self._check_existing_sync, sha256s)
 
-    async def update_summary(self, document_sha256: str, summary: str) -> None:
+    async def update_summary(self, document_sha256: DocumentSha256, summary: str) -> None:
         """Update summary via INSERT with incremented version (ReplacingMergeTree dedup)."""
         await self._run(self._update_summary_sync, document_sha256, summary)
 
-    async def load_summaries(self, document_sha256s: list[str]) -> dict[str, str]:
+    async def load_summaries(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         """Load summaries by SHA256 from the document index."""
         return await self._run(self._load_summaries_sync, document_sha256s)
 
-    async def load_by_sha256s(self, sha256s: list[str], document_type: type[_D], run_scope: str | None = None) -> dict[str, _D]:
+    async def load_by_sha256s(self, sha256s: list[DocumentSha256], document_type: type[_D], run_scope: RunScope | None = None) -> dict[DocumentSha256, _D]:
         """Batch-load documents by SHA256 and type. Verifies run membership when run_scope provided."""
         return await self._run(self._load_by_sha256s_sync, sha256s, document_type, run_scope)
 
-    async def load_nodes_by_sha256s(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+    async def load_nodes_by_sha256s(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentNode]:
         """Batch-load lightweight metadata by SHA256. No JOIN needed."""
         return await self._run(self._load_nodes_by_sha256s_sync, sha256s)
 
-    async def load_scope_metadata(self, run_scope: str) -> list[DocumentNode]:
+    async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         """Load lightweight metadata for all documents in a run scope."""
         return await self._run(self._load_scope_metadata_sync, run_scope)
 
@@ -262,7 +263,7 @@ class ClickHouseDocumentStore:
 
     # --- Sync implementations (executor thread only) ---
 
-    def _save_sync(self, document: Document, run_scope: str) -> None:
+    def _save_sync(self, document: Document, run_scope: RunScope) -> None:
         if self._circuit_open:
             if not self._try_reconnect():
                 self._buffer.append(_BufferedWrite(document=document, run_scope=run_scope))
@@ -278,7 +279,7 @@ class ClickHouseDocumentStore:
             self._record_failure()
             self._buffer.append(_BufferedWrite(document=document, run_scope=run_scope))
 
-    def _save_batch_sync(self, documents: list[Document], run_scope: str) -> None:
+    def _save_batch_sync(self, documents: list[Document], run_scope: RunScope) -> None:
         if self._circuit_open:
             if not self._try_reconnect():
                 for doc in documents:
@@ -318,7 +319,7 @@ class ClickHouseDocumentStore:
                 self._buffer.appendleft(item)
                 break
 
-    def _insert_document(self, document: Document, run_scope: str) -> None:
+    def _insert_document(self, document: Document, run_scope: RunScope) -> None:
         doc_sha256 = compute_document_sha256(document)
         content_sha256 = compute_content_sha256(document.content)
 
@@ -338,6 +339,10 @@ class ClickHouseDocumentStore:
             att_descriptions.append(att.description or "")
             att_sha256s.append(att_sha)
             content_rows.append([att_sha, att.content, now])
+
+        assert len(att_names) == len(att_descriptions) == len(att_sha256s), (
+            f"Attachment array length mismatch: names={len(att_names)}, descriptions={len(att_descriptions)}, sha256s={len(att_sha256s)}"
+        )
 
         self._client.insert(
             TABLE_DOCUMENT_CONTENT,
@@ -385,7 +390,7 @@ class ClickHouseDocumentStore:
             },
         )
 
-    def _load_sync(self, run_scope: str, document_types: list[type[Document]]) -> list[Document]:
+    def _load_sync(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Three-table load: run_documents → document_index → document_content."""
         self._ensure_tables()
 
@@ -410,23 +415,36 @@ class ClickHouseDocumentStore:
         all_att_sha256s: set[str] = set()
 
         for row in rows.result_rows:
-            class_name = _decode(row[0])
+            (
+                class_name_raw,
+                name_raw,
+                description_raw,
+                sources_raw,
+                origins_raw,
+                att_names_raw,
+                att_descs_raw,
+                att_sha256s_raw,
+                content_raw,
+                content_length,
+            ) = row
+            class_name = _decode(class_name_raw)
             doc_type = type_by_name.get(class_name)
             if doc_type is None:
+                logger.warning("Unknown document class_name '%s' in run_scope '%s', skipping row", class_name, run_scope)
                 continue
 
-            att_sha256s = [_decode(s) for s in row[7]]
+            att_sha256s = [_decode(s) for s in att_sha256s_raw]
             all_att_sha256s.update(att_sha256s)
-            content = _decode_content(row[8], row[9])
+            content = _decode_content(content_raw, content_length)
 
             parsed_rows.append((
                 doc_type,
-                _decode(row[1]),  # name
-                _decode(row[2]) or None,  # description
-                tuple(_decode(s) for s in row[3]),  # sources
-                tuple(_decode(o) for o in row[4]),  # origins
-                [_decode(n) for n in row[5]],  # att_names
-                [_decode(d) for d in row[6]],  # att_descs
+                _decode(name_raw),
+                _decode(description_raw) or None,
+                tuple(_decode(s) for s in sources_raw),
+                tuple(_decode(o) for o in origins_raw),
+                [_decode(n) for n in att_names_raw],
+                [_decode(d) for d in att_descs_raw],
                 att_sha256s,
                 content,
             ))
@@ -439,8 +457,8 @@ class ClickHouseDocumentStore:
                 parameters={"sha256s": list(all_att_sha256s)},
             )
             for att_row in att_rows.result_rows:
-                sha = _decode(att_row[0])
-                att_content_by_sha[sha] = _decode_content(att_row[1], att_row[2])
+                att_content_sha256, att_content_raw, att_content_length = att_row
+                att_content_by_sha[_decode(att_content_sha256)] = _decode_content(att_content_raw, att_content_length)
 
         # Reconstruct documents (suppress registration to avoid polluting TaskDocumentContext)
         documents: list[Document] = []
@@ -475,7 +493,7 @@ class ClickHouseDocumentStore:
 
         return documents
 
-    def _has_documents_sync(self, run_scope: str, document_type: type[Document]) -> bool:
+    def _has_documents_sync(self, run_scope: RunScope, document_type: type[Document]) -> bool:
         self._ensure_tables()
         result = self._client.query(
             f"SELECT 1 FROM {TABLE_RUN_DOCUMENTS} FINAL WHERE run_scope = {{run_scope:String}} AND class_name = {{class_name:String}} LIMIT 1",
@@ -483,7 +501,7 @@ class ClickHouseDocumentStore:
         )
         return len(result.result_rows) > 0
 
-    def _check_existing_sync(self, sha256s: list[str]) -> set[str]:
+    def _check_existing_sync(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         if not sha256s:
             return set()
         self._ensure_tables()
@@ -491,9 +509,9 @@ class ClickHouseDocumentStore:
             f"SELECT document_sha256 FROM {TABLE_DOCUMENT_INDEX} FINAL WHERE document_sha256 IN {{sha256s:Array(String)}}",
             parameters={"sha256s": sha256s},
         )
-        return {_decode(row[0]) for row in result.result_rows}
+        return {DocumentSha256(_decode(row[0])) for row in result.result_rows}
 
-    def _update_summary_sync(self, document_sha256: str, summary: str) -> None:
+    def _update_summary_sync(self, document_sha256: DocumentSha256, summary: str) -> None:
         """Update summary via INSERT with timestamp-based version (ReplacingMergeTree dedup).
 
         Single-query INSERT...SELECT copies all fields from existing row, sets new summary
@@ -521,7 +539,7 @@ class ClickHouseDocumentStore:
         except Exception as e:
             logger.warning(f"Failed to update summary for {document_sha256[:12]}...: {e}")
 
-    def _load_summaries_sync(self, document_sha256s: list[str]) -> dict[str, str]:
+    def _load_summaries_sync(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         """Query summaries from the document index (global, no run_scope needed)."""
         if not document_sha256s:
             return {}
@@ -531,12 +549,12 @@ class ClickHouseDocumentStore:
                 f"SELECT document_sha256, summary FROM {TABLE_DOCUMENT_INDEX} FINAL WHERE document_sha256 IN {{sha256s:Array(String)}} AND summary != ''",
                 parameters={"sha256s": document_sha256s},
             )
-            return {_decode(row[0]): _decode(row[1]) for row in result.result_rows}
+            return {DocumentSha256(_decode(row[0])): _decode(row[1]) for row in result.result_rows}
         except Exception as e:
             logger.warning(f"Failed to load summaries: {e}")
             return {}
 
-    def _load_by_sha256s_sync(self, sha256s: list[str], document_type: type[Document], run_scope: str | None) -> dict[str, Document]:
+    def _load_by_sha256s_sync(self, sha256s: list[DocumentSha256], document_type: type[Document], run_scope: RunScope | None) -> dict[DocumentSha256, Document]:
         """Batch lookup by SHA256. class_name is not enforced — document_type is for construction only."""
         if not sha256s:
             return {}
@@ -570,21 +588,34 @@ class ClickHouseDocumentStore:
             return {}
 
         # Parse rows and collect all attachment SHA256s
-        parsed_rows: list[tuple[str, str, str | None, tuple[str, ...], tuple[str, ...], list[str], list[str], list[str], bytes]] = []
+        parsed_rows: list[tuple[DocumentSha256, str, str | None, tuple[str, ...], tuple[str, ...], list[str], list[str], list[str], bytes]] = []
         all_att_sha256s: set[str] = set()
 
         for row in rows.result_rows:
-            att_sha256s = [_decode(s) for s in row[8]]
+            (
+                doc_sha256_raw,
+                _class_name,
+                name_raw,
+                description_raw,
+                sources_raw,
+                origins_raw,
+                att_names_raw,
+                att_descs_raw,
+                att_sha256s_raw,
+                content_raw,
+                content_length,
+            ) = row
+            att_sha256s = [_decode(s) for s in att_sha256s_raw]
             all_att_sha256s.update(att_sha256s)
-            content = _decode_content(row[9], row[10])
+            content = _decode_content(content_raw, content_length)
             parsed_rows.append((
-                _decode(row[0]),  # document_sha256
-                _decode(row[2]),  # name
-                _decode(row[3]) or None,  # description
-                tuple(_decode(s) for s in row[4]),  # sources
-                tuple(_decode(o) for o in row[5]),  # origins
-                [_decode(n) for n in row[6]],  # att_names
-                [_decode(d) for d in row[7]],  # att_descs
+                DocumentSha256(_decode(doc_sha256_raw)),
+                _decode(name_raw),
+                _decode(description_raw) or None,
+                tuple(_decode(s) for s in sources_raw),
+                tuple(_decode(o) for o in origins_raw),
+                [_decode(n) for n in att_names_raw],
+                [_decode(d) for d in att_descs_raw],
                 att_sha256s,
                 content,
             ))
@@ -597,10 +628,11 @@ class ClickHouseDocumentStore:
                 parameters={"sha256s": list(all_att_sha256s)},
             )
             for att_row in att_rows.result_rows:
-                att_content_by_sha[_decode(att_row[0])] = _decode_content(att_row[1], att_row[2])
+                att_content_sha256, att_content_raw, att_content_length = att_row
+                att_content_by_sha[_decode(att_content_sha256)] = _decode_content(att_content_raw, att_content_length)
 
         # Reconstruct documents
-        result: dict[str, Document] = {}
+        result: dict[DocumentSha256, Document] = {}
         with suppress_registration():
             for doc_sha256, name, description, sources, origins, att_names, att_descs, att_sha256s, content in parsed_rows:
                 attachments: tuple[Attachment, ...] = ()
@@ -625,7 +657,7 @@ class ClickHouseDocumentStore:
 
         return result
 
-    def _load_nodes_by_sha256s_sync(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+    def _load_nodes_by_sha256s_sync(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentNode]:
         """Batch metadata lookup by SHA256 from global document_index. No JOIN."""
         if not sha256s:
             return {}
@@ -636,21 +668,22 @@ class ClickHouseDocumentStore:
             f"WHERE document_sha256 IN {{sha256s:Array(String)}}",
             parameters={"sha256s": sha256s},
         )
-        nodes: dict[str, DocumentNode] = {}
+        nodes: dict[DocumentSha256, DocumentNode] = {}
         for row in result.result_rows:
-            sha256 = _decode(row[0])
-            nodes[sha256] = DocumentNode(
-                sha256=sha256,
-                class_name=_decode(row[1]),
-                name=_decode(row[2]),
-                description=_decode(row[3]) or "",
-                sources=tuple(_decode(s) for s in row[4]),
-                origins=tuple(_decode(o) for o in row[5]),
-                summary=_decode(row[6]) if row[6] else "",
+            doc_sha256_raw, class_name_raw, name_raw, description_raw, sources_raw, origins_raw, summary_raw = row
+            doc_sha = DocumentSha256(_decode(doc_sha256_raw))
+            nodes[doc_sha] = DocumentNode(
+                sha256=doc_sha,
+                class_name=_decode(class_name_raw),
+                name=_decode(name_raw),
+                description=_decode(description_raw) or "",
+                sources=tuple(_decode(s) for s in sources_raw),
+                origins=tuple(_decode(o) for o in origins_raw),
+                summary=_decode(summary_raw) if summary_raw else "",
             )
         return nodes
 
-    def _load_scope_metadata_sync(self, run_scope: str) -> list[DocumentNode]:
+    def _load_scope_metadata_sync(self, run_scope: RunScope) -> list[DocumentNode]:
         """Join run_documents → document_index for metadata in a run scope."""
         self._ensure_tables()
         result = self._client.query(
@@ -661,18 +694,21 @@ class ClickHouseDocumentStore:
             f"WHERE rd.run_scope = {{run_scope:String}}",
             parameters={"run_scope": run_scope},
         )
-        return [
-            DocumentNode(
-                sha256=_decode(row[0]),
-                class_name=_decode(row[1]),
-                name=_decode(row[2]),
-                description=_decode(row[3]) or "",
-                sources=tuple(_decode(s) for s in row[4]),
-                origins=tuple(_decode(o) for o in row[5]),
-                summary=_decode(row[6]) if row[6] else "",
+        nodes: list[DocumentNode] = []
+        for row in result.result_rows:
+            doc_sha256_raw, class_name_raw, name_raw, description_raw, sources_raw, origins_raw, summary_raw = row
+            nodes.append(
+                DocumentNode(
+                    sha256=DocumentSha256(_decode(doc_sha256_raw)),
+                    class_name=_decode(class_name_raw),
+                    name=_decode(name_raw),
+                    description=_decode(description_raw) or "",
+                    sources=tuple(_decode(s) for s in sources_raw),
+                    origins=tuple(_decode(o) for o in origins_raw),
+                    summary=_decode(summary_raw) if summary_raw else "",
+                )
             )
-            for row in result.result_rows
-        ]
+        return nodes
 
 
 def _decode(value: bytes | str) -> str:

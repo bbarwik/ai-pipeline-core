@@ -65,7 +65,7 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
             # Text starting with "data:<mime>;base64," would be misinterpreted, accepted by design.
             if DATA_URI_PATTERN.match(v):
                 _, payload = v.split(",", 1)
-                return base64.b64decode(payload)
+                return base64.b64decode(payload, validate=True)
             return v.encode("utf-8")
         raise ValueError(f"Invalid content type: {type(v)}")
 
@@ -110,12 +110,12 @@ Used by @pipeline_task and @pipeline_flow decorators to:
 - Warn about documents with no provenance (no sources and no origins)
 - Detect documents created but not returned (orphaned)
 - Deduplicate returned documents by SHA256"""
-    created: set[str] = field(default_factory=set)
+    created: set[DocumentSha256] = field(default_factory=set)
 
     @staticmethod
     def deduplicate(documents: list[Document]) -> list[Document]:
         """Deduplicate documents by SHA256, preserving first occurrence order."""
-        seen: dict[str, Document] = {}
+        seen: dict[DocumentSha256, Document] = {}
         for doc in documents:
             if doc.sha256 not in seen:
                 seen[doc.sha256] = doc
@@ -138,7 +138,7 @@ Used by @pipeline_task and @pipeline_flow decorators to:
     def validate_provenance(
         self,
         documents: list[Document],
-        existing_sha256s: set[str],
+        existing_sha256s: set[DocumentSha256],
         *,
         check_created: bool = False,
     ) -> list[str]:
@@ -316,7 +316,7 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
 
         # Strip attachment metadata added by serialize_model()
         if cleaned.get("attachments"):
-            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in {"mime_type", "size"}} for att in cleaned["attachments"]]
+            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in Attachment._SERIALIZE_METADATA_KEYS} for att in cleaned["attachments"]]
 
         return cls.model_validate(cleaned)
 
@@ -357,7 +357,7 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
             # accepted by design — real documents never start with a bare data URI on the first byte.
             if DATA_URI_PATTERN.match(v):
                 _, payload = v.split(",", 1)
-                v = base64.b64decode(payload)
+                v = base64.b64decode(payload, validate=True)
             else:
                 v = v.encode("utf-8")
         else:
@@ -571,7 +571,7 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         # Get base serialization from Pydantic (uses field_serializer for content)
         result = self.model_dump(mode="json")
 
-        # Add metadata not present in standard model_dump
+        # Add metadata not present in standard model_dump (keys must match _DOCUMENT_SERIALIZE_METADATA_KEYS, used by from_dict() to strip them)
         result["id"] = self.id
         result["sha256"] = self.sha256
         result["content_sha256"] = self.content_sha256
@@ -588,7 +588,7 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
 
     @final
     @cached_property
-    def sha256(self) -> str:
+    def sha256(self) -> DocumentSha256:
         """Full SHA256 identity hash (name + content + sources + origins + attachments). BASE32 encoded, cached."""
         return compute_document_sha256(self)
 
@@ -874,19 +874,11 @@ def is_document_sha256(value: str) -> bool:
         >>> is_document_sha256("a" * 52)  # lowercase
         False
     """
-    # Check basic format: exactly 52 uppercase base32 characters
-    try:
-        if not value or len(value) != 52:
-            return False
-    except (TypeError, AttributeError):
+    if not isinstance(value, str) or len(value) != 52:  # pyright: ignore[reportUnnecessaryIsInstance]
         return False
 
     # Check if all characters are valid base32 (A-Z, 2-7)
-    try:
-        if not re.match(r"^[A-Z2-7]{52}$", value):
-            return False
-    except TypeError:
-        # re.match raises TypeError for non-string types like bytes
+    if not re.match(r"^[A-Z2-7]{52}$", value):
         return False
 
     # Check entropy: real SHA256 hashes have high entropy

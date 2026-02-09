@@ -22,19 +22,21 @@ from uuid import UUID, uuid4
 import httpx
 from lmnr import Laminar
 from prefect import flow, get_client, runtime
+from prefect.logging import disable_run_logger
+from prefect.testing.utilities import prefect_test_harness
 from pydantic import BaseModel, ConfigDict
 from pydantic_settings import BaseSettings
 
 from ai_pipeline_core.document_store import SummaryGenerator, create_document_store, get_document_store, set_document_store
 from ai_pipeline_core.document_store.memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._types import RunScope
 from ai_pipeline_core.documents.context import RunContext, reset_run_context, set_run_context
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._initialization import get_tracking_service, initialize_observability
 from ai_pipeline_core.observability._tracking._models import RunStatus
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
-from ai_pipeline_core.testing import disable_run_logger, prefect_test_harness
 
 from ._helpers import (
     StatusPayload,
@@ -43,7 +45,7 @@ from ._helpers import (
     send_webhook,
 )
 from ._resolve import DocumentInput, OutputDocument, build_output_document, resolve_document_inputs
-from .contract import CompletedRun, DeploymentResultData, FailedRun, ProgressRun
+from .contract import CompletedRun, DeploymentResultData, FailedRun, FlowStatus, ProgressRun, RunState
 from .progress import _ZERO_UUID, _safe_uuid, flow_context
 
 logger = get_pipeline_logger(__name__)
@@ -68,7 +70,7 @@ def _build_summary_generator() -> SummaryGenerator | None:
 _CLI_FIELDS: frozenset[str] = frozenset({"working_directory", "project_name", "start", "end", "no_trace"})
 
 
-def _compute_run_scope(project_name: str, documents: list[Document], options: FlowOptions) -> str:
+def _compute_run_scope(project_name: str, documents: list[Document], options: FlowOptions) -> RunScope:
     """Compute a run scope that fingerprints inputs and options.
 
     Different inputs or options produce a different scope, preventing
@@ -79,11 +81,11 @@ def _compute_run_scope(project_name: str, documents: list[Document], options: Fl
 
     if not documents:
         fingerprint = hashlib.sha256(options_json.encode()).hexdigest()[:16]
-        return f"{project_name}:{fingerprint}"
+        return RunScope(f"{project_name}:{fingerprint}")
 
     sha256s = sorted(doc.sha256 for doc in documents)
     fingerprint = hashlib.sha256(f"{':'.join(sha256s)}|{options_json}".encode()).hexdigest()[:16]
-    return f"{project_name}:{fingerprint}"
+    return RunScope(f"{project_name}:{fingerprint}")
 
 
 class DeploymentContext(BaseModel):
@@ -289,7 +291,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         step: int,
         total_steps: int,
         flow_name: str,
-        status: str,
+        status: FlowStatus,
         step_progress: float = 0.0,
         message: str = "",
     ) -> None:
@@ -304,10 +306,12 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         run_uuid = _safe_uuid(flow_run_id) if flow_run_id else None
 
         if context.progress_webhook_url:
+            if run_uuid is None:
+                logger.warning("Invalid or missing flow_run_id, using zero UUID for progress webhook")
             payload = ProgressRun(
                 flow_run_id=run_uuid or _ZERO_UUID,
                 project_name=project_name,
-                state="RUNNING",
+                state=RunState.RUNNING,
                 timestamp=datetime.now(UTC),
                 step=step,
                 total_steps=total_steps,
@@ -353,14 +357,17 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             return
         try:
             now = datetime.now(UTC)
-            frid = (_safe_uuid(flow_run_id) if flow_run_id else None) or _ZERO_UUID
+            frid = _safe_uuid(flow_run_id) if flow_run_id else None
+            if frid is None:
+                logger.warning("Invalid or missing flow_run_id, using zero UUID for completion webhook")
+                frid = _ZERO_UUID
             payload: CompletedRun | FailedRun
             if result is not None:
                 payload = CompletedRun(
                     flow_run_id=frid,
                     project_name=project_name,
                     timestamp=now,
-                    state="COMPLETED",
+                    state=RunState.COMPLETED,
                     result=DeploymentResultData.model_validate(result.model_dump()),
                 )
             else:
@@ -368,7 +375,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     flow_run_id=frid,
                     project_name=project_name,
                     timestamp=now,
-                    state="FAILED",
+                    state=RunState.FAILED,
                     error=error or "Unknown error",
                 )
             await send_webhook(context.completion_webhook_url, payload)
@@ -471,7 +478,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                             step,
                             total_steps,
                             flow_name,
-                            "cached",
+                            FlowStatus.CACHED,
                             step_progress=1.0,
                             message=f"Resumed from store: {flow_name}",
                         )
@@ -492,7 +499,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     step,
                     total_steps,
                     flow_name,
-                    "started",
+                    FlowStatus.STARTED,
                     step_progress=0.0,
                     message=f"Starting: {flow_name}",
                 )
@@ -536,7 +543,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     step,
                     total_steps,
                     flow_name,
-                    "completed",
+                    FlowStatus.COMPLETED,
                     step_progress=1.0,
                     message=f"Completed: {flow_name}",
                 )

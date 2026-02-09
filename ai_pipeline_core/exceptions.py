@@ -9,11 +9,7 @@ class PipelineCoreError(Exception):
     """Base exception for all AI Pipeline Core errors."""
 
 
-class DocumentError(PipelineCoreError):
-    """Base exception for document-related errors."""
-
-
-class DocumentValidationError(DocumentError):
+class DocumentValidationError(PipelineCoreError):
     """Raised when document validation fails."""
 
 
@@ -39,7 +35,3 @@ class PromptRenderError(PromptError):
 
 class PromptNotFoundError(PromptError):
     """Raised when prompt template file is not found in search paths."""
-
-
-class MimeTypeError(DocumentError):
-    """Raised when MIME type detection or validation fails."""

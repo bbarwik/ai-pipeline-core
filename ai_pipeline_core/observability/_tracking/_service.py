@@ -5,6 +5,7 @@ and coordinates the ClickHouse writer thread.
 """
 
 import json
+import time
 from datetime import UTC, datetime
 from threading import Lock
 from uuid import UUID, uuid4
@@ -12,6 +13,7 @@ from uuid import UUID, uuid4
 from lmnr.opentelemetry_lib.tracing import context as laminar_context
 from opentelemetry import context as otel_context
 
+from ai_pipeline_core.documents._types import DocumentSha256
 from ai_pipeline_core.logging import get_pipeline_logger
 
 from ._client import ClickHouseClient
@@ -52,7 +54,7 @@ class TrackingService:
 
         self._writer = ClickHouseWriter(
             client,
-            summary_row_builder=self,
+            summary_row_builder=self.build_span_summary_update,
             span_summary_fn=span_summary_fn,
         )
         self._writer.start()
@@ -64,8 +66,8 @@ class TrackingService:
         self._run_scope: str = ""
         self._run_start_time: datetime | None = None
 
-        # Version counters
-        self._versions: dict[str, int] = {}
+        # Monotonic version counter
+        self._last_version: int = 0
         self._lock = Lock()
 
         # Row caches for summary updates
@@ -89,16 +91,17 @@ class TrackingService:
             self._flow_name = ""
             self._run_scope = ""
             self._run_start_time = None
-            self._versions.clear()
             self._span_cache.clear()
 
     # --- Version management ---
 
-    def _next_version(self, key: str) -> int:
-        """Increment and return version counter. Must be called under _lock."""
-        v = self._versions.get(key, 0) + 1
-        self._versions[key] = v
-        return v
+    def _next_version(self) -> int:
+        """Generate a monotonically increasing version using nanosecond timestamps."""
+        now = time.time_ns()
+        if now <= self._last_version:
+            now = self._last_version + 1
+        self._last_version = now
+        return now
 
     # --- Run tracking ---
 
@@ -107,7 +110,7 @@ class TrackingService:
         now = datetime.now(UTC)
         with self._lock:
             self._run_start_time = now
-            version = self._next_version(f"run:{run_id}")
+            version = self._next_version()
         row = PipelineRunRow(
             run_id=run_id,
             project_name=project_name,
@@ -131,7 +134,7 @@ class TrackingService:
         """Record pipeline run completion or failure."""
         now = datetime.now(UTC)
         with self._lock:
-            version = self._next_version(f"run:{run_id}")
+            version = self._next_version()
             start_time = self._run_start_time or now
         row = PipelineRunRow(
             run_id=run_id,
@@ -156,7 +159,7 @@ class TrackingService:
             return
         now = datetime.now(UTC)
         with self._lock:
-            version = self._next_version(f"span:{span_id}")
+            version = self._next_version()
         row = TrackedSpanRow(
             span_id=span_id,
             trace_id=trace_id,
@@ -189,14 +192,14 @@ class TrackingService:
         user_summary: str | None = None,
         user_visible: bool = False,
         user_label: str | None = None,
-        input_document_sha256s: list[str] | None = None,
-        output_document_sha256s: list[str] | None = None,
+        input_document_sha256s: list[DocumentSha256] | None = None,
+        output_document_sha256s: list[DocumentSha256] | None = None,
     ) -> None:
         """Record span completion with full details."""
         if self._run_id is None:
             return
         with self._lock:
-            version = self._next_version(f"span:{span_id}")
+            version = self._next_version()
         row = TrackedSpanRow(
             span_id=span_id,
             trace_id=trace_id,
@@ -246,7 +249,7 @@ class TrackingService:
     def track_document_event(
         self,
         *,
-        document_sha256: str,
+        document_sha256: DocumentSha256,
         span_id: str,
         event_type: DocumentEventType,
         metadata: dict[str, str] | None = None,
@@ -280,7 +283,7 @@ class TrackingService:
             )
         )
 
-    # --- Summary row builders (SummaryRowBuilder protocol) ---
+    # --- Summary row builders ---
 
     def build_span_summary_update(self, span_id: str, summary: str) -> TrackedSpanRow | None:
         """Build a replacement row with summary filled. Called from writer thread."""
@@ -288,7 +291,7 @@ class TrackingService:
             cached = self._span_cache.get(span_id)
             if cached is None:
                 return None
-            version = self._next_version(f"span:{span_id}")
+            version = self._next_version()
         return cached.model_copy(update={"user_summary": summary, "version": version})
 
     # --- Lifecycle ---

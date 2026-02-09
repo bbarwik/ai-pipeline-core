@@ -86,7 +86,6 @@ Check for empty values before using service-specific settings."""
     tracking_summary_model: str = 'gemini-3-flash'
     doc_summary_enabled: bool = True
     doc_summary_model: str = 'gemini-3-flash'
-    substitutor_enabled: bool = False
 
 
 # === EXAMPLES (from tests/) ===

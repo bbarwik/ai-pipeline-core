@@ -49,7 +49,7 @@ class TestTrackTaskIoOutputTypes:
             patch("ai_pipeline_core.observability._document_tracking.otel_trace") as mock_otel,
         ):
             mock_otel.get_current_span.return_value = mock_span
-            track_task_io("test_task", (), {}, doc)
+            track_task_io((), {}, doc)
 
         # Output document event should be emitted
         output_calls = [c for c in mock_service.track_document_event.call_args_list if c[1]["event_type"] == DocumentEventType.TASK_OUTPUT]
@@ -73,7 +73,7 @@ class TestTrackTaskIoOutputTypes:
             patch("ai_pipeline_core.observability._document_tracking.otel_trace") as mock_otel,
         ):
             mock_otel.get_current_span.return_value = mock_span
-            track_task_io("test_task", (), {}, docs)
+            track_task_io((), {}, docs)
 
         output_calls = [c for c in mock_service.track_document_event.call_args_list if c[1]["event_type"] == DocumentEventType.TASK_OUTPUT]
         assert len(output_calls) == 2
@@ -95,7 +95,7 @@ class TestTrackTaskIoOutputTypes:
             patch("ai_pipeline_core.observability._document_tracking.otel_trace") as mock_otel,
         ):
             mock_otel.get_current_span.return_value = mock_span
-            track_task_io("test_task", (), {}, result)
+            track_task_io((), {}, result)
 
         output_calls = [c for c in mock_service.track_document_event.call_args_list if c[1]["event_type"] == DocumentEventType.TASK_OUTPUT]
         assert len(output_calls) == 2, (
@@ -119,7 +119,7 @@ class TestTrackTaskIoOutputTypes:
             patch("ai_pipeline_core.observability._document_tracking.otel_trace") as mock_otel,
         ):
             mock_otel.get_current_span.return_value = mock_span
-            track_task_io("test_task", (), {}, result)
+            track_task_io((), {}, result)
 
         output_calls = [c for c in mock_service.track_document_event.call_args_list if c[1]["event_type"] == DocumentEventType.TASK_OUTPUT]
         assert len(output_calls) == 3, (
@@ -139,7 +139,7 @@ class TestTrackTaskIoOutputTypes:
             patch("ai_pipeline_core.observability._document_tracking.otel_trace") as mock_otel,
         ):
             mock_otel.get_current_span.return_value = mock_span
-            track_task_io("test_task", (), {}, None)
+            track_task_io((), {}, None)
 
         output_calls = [c for c in mock_service.track_document_event.call_args_list if c[1]["event_type"] == DocumentEventType.TASK_OUTPUT]
         assert len(output_calls) == 0
@@ -155,7 +155,7 @@ class TestTrackTaskIoOutputTypes:
             patch("ai_pipeline_core.observability._document_tracking.otel_trace") as mock_otel,
         ):
             mock_otel.get_current_span.return_value = mock_span
-            track_task_io("test_task", (input_doc,), {}, None)
+            track_task_io((input_doc,), {}, None)
 
         input_calls = [c for c in mock_service.track_document_event.call_args_list if c[1]["event_type"] == DocumentEventType.TASK_INPUT]
         assert len(input_calls) == 1
@@ -175,7 +175,7 @@ class TestTrackTaskIoOutputTypes:
             patch("ai_pipeline_core.observability._document_tracking.otel_trace") as mock_otel,
         ):
             mock_otel.get_current_span.return_value = mock_span
-            track_task_io("test_task", (input_docs,), {}, None)
+            track_task_io((input_docs,), {}, None)
 
         input_calls = [c for c in mock_service.track_document_event.call_args_list if c[1]["event_type"] == DocumentEventType.TASK_INPUT]
         assert len(input_calls) == 2

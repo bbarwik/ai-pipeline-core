@@ -98,19 +98,11 @@ def is_document_sha256(value: str) -> bool:
         >>> is_document_sha256("a" * 52)  # lowercase
         False
     """
-    # Check basic format: exactly 52 uppercase base32 characters
-    try:
-        if not value or len(value) != 52:
-            return False
-    except (TypeError, AttributeError):
+    if not isinstance(value, str) or len(value) != 52:  # pyright: ignore[reportUnnecessaryIsInstance]
         return False
 
     # Check if all characters are valid base32 (A-Z, 2-7)
-    try:
-        if not re.match(r"^[A-Z2-7]{52}$", value):
-            return False
-    except TypeError:
-        # re.match raises TypeError for non-string types like bytes
+    if not re.match(r"^[A-Z2-7]{52}$", value):
         return False
 
     # Check entropy: real SHA256 hashes have high entropy

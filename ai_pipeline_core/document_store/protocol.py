@@ -7,6 +7,7 @@ along with get/set helpers for the process-global singleton.
 from typing import Protocol, TypeVar, runtime_checkable
 
 from ai_pipeline_core.document_store._models import DocumentNode
+from ai_pipeline_core.documents._types import DocumentSha256, RunScope
 from ai_pipeline_core.documents.document import Document
 
 _D = TypeVar("_D", bound=Document)
@@ -20,35 +21,35 @@ class DocumentStore(Protocol):
     MemoryDocumentStore (testing).
     """
 
-    async def save(self, document: Document, run_scope: str) -> None:
+    async def save(self, document: Document, run_scope: RunScope) -> None:
         """Save a single document to the store. Idempotent — same SHA256 is a no-op."""
         ...
 
-    async def save_batch(self, documents: list[Document], run_scope: str) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
         """Save multiple documents. Dependencies must be sorted (caller's responsibility)."""
         ...
 
-    async def load(self, run_scope: str, document_types: list[type[Document]]) -> list[Document]:
+    async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Load all documents of the given types from a run scope."""
         ...
 
-    async def has_documents(self, run_scope: str, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
         """Check if any documents of this type exist in the run scope."""
         ...
 
-    async def check_existing(self, sha256s: list[str]) -> set[str]:
+    async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Return the subset of sha256s that already exist in the store."""
         ...
 
-    async def update_summary(self, document_sha256: str, summary: str) -> None:
+    async def update_summary(self, document_sha256: DocumentSha256, summary: str) -> None:
         """Update summary for a stored document. No-op if document doesn't exist."""
         ...
 
-    async def load_summaries(self, document_sha256s: list[str]) -> dict[str, str]:
+    async def load_summaries(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         """Load summaries by SHA256. Returns {sha256: summary} for docs that have summaries."""
         ...
 
-    async def load_by_sha256s(self, sha256s: list[str], document_type: type[_D], run_scope: str | None = None) -> dict[str, _D]:
+    async def load_by_sha256s(self, sha256s: list[DocumentSha256], document_type: type[_D], run_scope: RunScope | None = None) -> dict[DocumentSha256, _D]:
         """Batch-load full documents by SHA256.
 
         document_type is used for construction only — class_name is not enforced as a filter.
@@ -58,7 +59,7 @@ class DocumentStore(Protocol):
         """
         ...
 
-    async def load_nodes_by_sha256s(self, sha256s: list[str]) -> dict[str, DocumentNode]:
+    async def load_nodes_by_sha256s(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentNode]:
         """Batch-load lightweight metadata for documents by SHA256, searching all scopes.
 
         Returns {sha256: DocumentNode} for found documents. Missing SHA256s are omitted.
@@ -66,7 +67,7 @@ class DocumentStore(Protocol):
         """
         ...
 
-    async def load_scope_metadata(self, run_scope: str) -> list[DocumentNode]:
+    async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         """Load lightweight metadata for ALL documents in a run scope.
 
         No content or attachments loaded.

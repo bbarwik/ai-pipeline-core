@@ -457,6 +457,34 @@ class Conversation(BaseModel, Generic[T]):
 
         return core_messages
 
+    @staticmethod
+    def _core_messages_to_span_input(messages: list[CoreMessage]) -> list[dict[str, str | list[dict[str, str]]]]:
+        """Convert CoreMessages to Laminar-compatible chat format for span input.
+
+        Returns list of {"role": str, "content": str | list} dicts that Laminar
+        renders as a chat view with user/assistant/system messages.
+        Binary content (images, PDFs) is replaced with type placeholders to avoid
+        bloating trace payloads with base64 data.
+        """
+        result: list[dict[str, str | list[dict[str, str]]]] = []
+        for msg in messages:
+            role = msg.role.value
+            if isinstance(msg.content, str):
+                result.append({"role": role, "content": msg.content})
+            elif isinstance(msg.content, tuple):
+                parts: list[dict[str, str]] = []
+                for part in msg.content:
+                    if isinstance(part, TextContent):
+                        parts.append({"type": "text", "text": part.text})
+                    elif isinstance(part, ImageContent):
+                        parts.append({"type": "text", "text": "[image]"})
+                    elif isinstance(part, PDFContent):
+                        parts.append({"type": "text", "text": "[pdf]"})
+                result.append({"role": role, "content": parts})
+            else:
+                result.append({"role": role, "content": str(msg.content)})
+        return result
+
     def _collect_text_for_substitutor(self, items: tuple[Document | _UserMessage, ...]) -> list[str]:
         """Collect text content from documents and user messages for substitutor preparation."""
         texts: list[str] = []
@@ -498,7 +526,8 @@ class Conversation(BaseModel, Generic[T]):
 
         # Trace the full send operation — input captures pre-substitution content
         span_name = purpose or f"conversation.{'send_structured' if response_format else 'send'}"
-        with Laminar.start_as_current_span(span_name, input=core_messages) as span:
+        span_input = self._core_messages_to_span_input(core_messages)
+        with Laminar.start_as_current_span(span_name, input=span_input) as span:
             # Apply substitution if enabled
             if self.substitutor:
                 core_messages = self._apply_substitution(core_messages)

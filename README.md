@@ -793,7 +793,6 @@ ai-pipeline-core/
 |   |-- pipeline/          # Pipeline decorators and FlowOptions
 |   |-- prompt_manager.py  # Jinja2 template management
 |   |-- settings.py        # Configuration management (Pydantic BaseSettings)
-|   |-- testing.py         # Prefect test harness re-exports
 |   +-- exceptions.py      # Framework exceptions (LLMError, DocumentNameError, etc.)
 |-- tests/                 # Comprehensive test suite
 |-- examples/              # Usage examples

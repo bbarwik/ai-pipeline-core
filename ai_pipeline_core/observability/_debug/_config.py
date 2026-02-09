@@ -15,11 +15,9 @@ class TraceDebugConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     path: Path = Field(description="Directory for debug traces")
-    enabled: bool = Field(default=True, description="Whether debug tracing is enabled")
-
-    # Content size limits (Issue #2)
+    # Content size limits
     max_file_bytes: int = Field(
-        default=50_000,
+        default=500_000,
         description="Max bytes for input.yaml or output.yaml. Elements externalized to stay under.",
     )
     max_element_bytes: int = Field(
@@ -30,24 +28,19 @@ class TraceDebugConfig(BaseModel):
         default=2_000,
         description="Bytes of content to keep inline when element exceeds max_element_bytes.",
     )
-    max_content_bytes: int = Field(
-        default=10_000_000,
-        description="Max bytes for any single artifact. Above this, truncate.",
-    )
-
-    # Image handling (Issue #7 - no changes per user)
+    # Image handling
     extract_base64_images: bool = Field(
         default=True,
         description="Extract base64 images to artifact files",
     )
 
-    # Span optimization (Issue #4)
+    # Span optimization
     merge_wrapper_spans: bool = Field(
         default=True,
         description="Merge Prefect wrapper spans with inner traced function spans",
     )
 
-    # Indexes (Issue #1)
+    # Indexes
     include_llm_index: bool = Field(
         default=True,
         description="Generate _llm_calls.yaml with LLM-specific details",

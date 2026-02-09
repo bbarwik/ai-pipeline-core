@@ -19,7 +19,7 @@ class TestDocumentTrimming:
 
     def test_trim_document_content_text(self):
         """Test trimming text content for documents."""
-        from ai_pipeline_core.observability.tracing import (
+        from ai_pipeline_core.observability._trimming import (
             _trim_document_content,
         )
 
@@ -41,7 +41,7 @@ class TestDocumentTrimming:
 
     def test_trim_document_content_all_documents_trimmed_equally(self):
         """Test that all documents are trimmed equally (no flow/task distinction)."""
-        from ai_pipeline_core.observability.tracing import (
+        from ai_pipeline_core.observability._trimming import (
             _trim_document_content,
         )
 
@@ -61,7 +61,7 @@ class TestDocumentTrimming:
 
     def test_trim_document_content_short_text(self):
         """Test that short text content is not trimmed."""
-        from ai_pipeline_core.observability.tracing import (
+        from ai_pipeline_core.observability._trimming import (
             _trim_document_content,
         )
 
@@ -78,7 +78,7 @@ class TestDocumentTrimming:
 
     def test_trim_document_content_binary(self):
         """Test that binary content is removed."""
-        from ai_pipeline_core.observability.tracing import (
+        from ai_pipeline_core.observability._trimming import (
             _trim_document_content,
         )
 
@@ -93,7 +93,7 @@ class TestDocumentTrimming:
 
     def test_trim_document_content_binary_all_types(self):
         """Test that binary content is removed for all document types."""
-        from ai_pipeline_core.observability.tracing import (
+        from ai_pipeline_core.observability._trimming import (
             _trim_document_content,
         )
 
@@ -232,7 +232,7 @@ class TestDocumentTrimming:
 
     def test_trimming_preserves_document_metadata(self):
         """Test that trimming preserves all document metadata except content."""
-        from ai_pipeline_core.observability.tracing import (
+        from ai_pipeline_core.observability._trimming import (
             _trim_document_content,
         )
 
@@ -277,7 +277,7 @@ class TestDocumentTrimming:
 
     def test_document_trimming_any_subclass(self):
         """Test that any Document subclass content is trimmed."""
-        from ai_pipeline_core.observability.tracing import (
+        from ai_pipeline_core.observability._trimming import (
             _trim_document_content,
         )
 
@@ -297,7 +297,7 @@ class TestDocumentTrimming:
 
     def test_edge_case_exactly_250_chars(self):
         """Test edge case with exactly 250 characters."""
-        from ai_pipeline_core.observability.tracing import (
+        from ai_pipeline_core.observability._trimming import (
             _trim_document_content,
         )
 
@@ -314,7 +314,7 @@ class TestDocumentTrimming:
 
     def test_edge_case_251_chars(self):
         """Test edge case with 251 characters (just over threshold)."""
-        from ai_pipeline_core.observability.tracing import (
+        from ai_pipeline_core.observability._trimming import (
             _trim_document_content,
         )
 

@@ -5,15 +5,13 @@ setting up Laminar and ClickHouse tracking.
 """
 
 import importlib
-from typing import Any, Protocol
-from uuid import UUID
+from typing import Any
 
 from opentelemetry import trace as otel_trace
 from pydantic import BaseModel, ConfigDict
 
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._tracking._client import ClickHouseClient
-from ai_pipeline_core.observability._tracking._models import DocumentEventType, RunStatus
 from ai_pipeline_core.observability._tracking._processor import TrackingSpanProcessor
 from ai_pipeline_core.observability._tracking._service import TrackingService
 from ai_pipeline_core.settings import settings
@@ -21,65 +19,10 @@ from ai_pipeline_core.settings import settings
 logger = get_pipeline_logger(__name__)
 
 
-class TrackingServiceProtocol(Protocol):
-    """Protocol for the tracking service methods used by deployment, decorators, and document tracking."""
-
-    # Run lifecycle
-    def set_run_context(self, *, run_id: UUID, project_name: str, flow_name: str, run_scope: str = "") -> None:
-        """Store run metadata in context vars for downstream span attribution."""
-        ...
-
-    def track_run_start(self, *, run_id: UUID, project_name: str, flow_name: str, run_scope: str = "") -> None:
-        """Record a pipeline run start event to ClickHouse."""
-        ...
-
-    def track_run_end(
-        self,
-        *,
-        run_id: UUID,
-        status: RunStatus,
-        total_cost: float = ...,
-        total_tokens: int = ...,
-        metadata: dict[str, object] | None = ...,
-    ) -> None:
-        """Record a pipeline run completion event with final metrics."""
-        ...
-
-    def clear_run_context(self) -> None:
-        """Reset run-scoped context vars after a run finishes."""
-        ...
-
-    # Document tracking
-    def track_document_event(
-        self,
-        *,
-        document_sha256: str,
-        span_id: str,
-        event_type: DocumentEventType,
-        metadata: dict[str, str] | None = ...,
-    ) -> None:
-        """Record a document lifecycle event (created, read, transformed)."""
-        ...
-
-    # Summaries
-    def schedule_summary(self, span_id: str, label: str, output_hint: str) -> None:
-        """Queue an LLM-generated summary for a span's output."""
-        ...
-
-    # Lifecycle
-    def flush(self, timeout: float = 30.0) -> None:
-        """Flush all pending tracking events to ClickHouse."""
-        ...
-
-    def shutdown(self, timeout: float = 30.0) -> None:
-        """Flush pending events and release tracking resources."""
-        ...
+_tracking_service: TrackingService | None = None
 
 
-_tracking_service: TrackingServiceProtocol | None = None
-
-
-def get_tracking_service() -> TrackingServiceProtocol | None:
+def get_tracking_service() -> TrackingService | None:
     """Return the global TrackingService instance, or None if not initialized."""
     return _tracking_service
 
@@ -132,7 +75,7 @@ def _build_config_from_settings() -> ObservabilityConfig:
     )
 
 
-def _setup_tracking(config: ObservabilityConfig) -> TrackingServiceProtocol | None:
+def _setup_tracking(config: ObservabilityConfig) -> TrackingService | None:
     """Set up ClickHouse tracking if configured. Returns TrackingService or None."""
     if not config.has_clickhouse or not config.tracking_enabled:
         return None

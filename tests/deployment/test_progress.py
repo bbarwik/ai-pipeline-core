@@ -12,7 +12,7 @@ from ai_pipeline_core.deployment.progress import ProgressContext, flow_context, 
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.pipeline import pipeline_flow
 from ai_pipeline_core.pipeline.options import FlowOptions
-from ai_pipeline_core.testing import prefect_test_harness
+from prefect.testing.utilities import prefect_test_harness
 
 
 class _ProgressTestDoc(Document):

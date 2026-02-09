@@ -155,7 +155,10 @@ class ClickHouseClient:
         client = self._client
         if not rows or client is None:
             return
-        column_names = list(type(rows[0]).model_fields.keys())
+        row_type = type(rows[0])
+        if not all(type(r) is row_type for r in rows):
+            raise ValueError(f"Mixed row types in batch for table {table}")
+        column_names = list(row_type.model_fields.keys())
         data = [[getattr(row, col) for row in rows] for col in column_names]
         client.insert(table, data, column_names=column_names, column_oriented=True)  # pyright: ignore[reportAttributeAccessIssue]
 

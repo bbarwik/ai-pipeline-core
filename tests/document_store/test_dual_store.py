@@ -7,6 +7,7 @@ from ai_pipeline_core.document_store._dual_store import DualDocumentStore
 from ai_pipeline_core.document_store.memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_document_sha256
+from ai_pipeline_core.documents._types import RunScope
 
 
 class DualReportDoc(Document):
@@ -35,18 +36,18 @@ class TestSaveFanOut:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
-        await dual.save(doc, "run1")
-        assert await primary.has_documents("run1", DualReportDoc)
-        assert await secondary.has_documents("run1", DualReportDoc)
+        await dual.save(doc, RunScope("run1"))
+        assert await primary.has_documents(RunScope("run1"), DualReportDoc)
+        assert await secondary.has_documents(RunScope("run1"), DualReportDoc)
 
     @pytest.mark.asyncio
     async def test_save_batch_writes_to_both_stores(self):
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         docs = [_make("a.md", "aaa"), _make("b.md", "bbb")]
-        await dual.save_batch(docs, "run1")
-        assert len(await primary.load("run1", [DualReportDoc])) == 2
-        assert len(await secondary.load("run1", [DualReportDoc])) == 2
+        await dual.save_batch(docs, RunScope("run1"))
+        assert len(await primary.load(RunScope("run1"), [DualReportDoc])) == 2
+        assert len(await secondary.load(RunScope("run1"), [DualReportDoc])) == 2
 
 
 class TestReadDelegation:
@@ -55,8 +56,8 @@ class TestReadDelegation:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
-        await secondary.save(doc, "run1")
-        loaded = await dual.load("run1", [DualReportDoc])
+        await secondary.save(doc, RunScope("run1"))
+        loaded = await dual.load(RunScope("run1"), [DualReportDoc])
         assert loaded == []
 
     @pytest.mark.asyncio
@@ -64,8 +65,8 @@ class TestReadDelegation:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
-        await primary.save(doc, "run1")
-        assert await dual.has_documents("run1", DualReportDoc)
+        await primary.save(doc, RunScope("run1"))
+        assert await dual.has_documents(RunScope("run1"), DualReportDoc)
 
     @pytest.mark.asyncio
     async def test_check_existing_reads_primary(self):
@@ -73,7 +74,7 @@ class TestReadDelegation:
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
         sha = compute_document_sha256(doc)
-        await primary.save(doc, "run1")
+        await primary.save(doc, RunScope("run1"))
         assert sha in await dual.check_existing([sha])
 
     @pytest.mark.asyncio
@@ -82,7 +83,7 @@ class TestReadDelegation:
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
         sha = compute_document_sha256(doc)
-        await primary.save(doc, "run1")
+        await primary.save(doc, RunScope("run1"))
         await primary.update_summary(sha, "test summary")
         result = await dual.load_summaries([sha])
         assert result[sha] == "test summary"
@@ -98,8 +99,8 @@ class TestSecondaryFailure:
         primary = MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=FailingSave())
         doc = _make("a.md", "content")
-        await dual.save(doc, "run1")  # Should not raise
-        assert await primary.has_documents("run1", DualReportDoc)
+        await dual.save(doc, RunScope("run1"))  # Should not raise
+        assert await primary.has_documents(RunScope("run1"), DualReportDoc)
 
     @pytest.mark.asyncio
     async def test_secondary_save_batch_failure_does_not_propagate(self):
@@ -110,8 +111,8 @@ class TestSecondaryFailure:
         primary = MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=FailingBatch())
         docs = [_make("a.md", "content")]
-        await dual.save_batch(docs, "run1")  # Should not raise
-        assert len(await primary.load("run1", [DualReportDoc])) == 1
+        await dual.save_batch(docs, RunScope("run1"))  # Should not raise
+        assert len(await primary.load(RunScope("run1"), [DualReportDoc])) == 1
 
     @pytest.mark.asyncio
     async def test_secondary_update_summary_failure_does_not_propagate(self):
@@ -123,7 +124,7 @@ class TestSecondaryFailure:
         dual = DualDocumentStore(primary=primary, secondary=FailingSummary())
         doc = _make("a.md", "content")
         sha = compute_document_sha256(doc)
-        await primary.save(doc, "run1")
+        await primary.save(doc, RunScope("run1"))
         await dual.update_summary(sha, "summary")  # Should not raise
         assert (await primary.load_summaries([sha]))[sha] == "summary"
 
@@ -157,9 +158,9 @@ class TestPrimaryFailure:
         dual = DualDocumentStore(primary=FailingSave(), secondary=secondary)
         doc = _make("a.md", "content")
         with pytest.raises(RuntimeError, match="primary down"):
-            await dual.save(doc, "run1")
+            await dual.save(doc, RunScope("run1"))
         # Secondary should NOT have been called since primary failed first
-        assert not await secondary.has_documents("run1", DualReportDoc)
+        assert not await secondary.has_documents(RunScope("run1"), DualReportDoc)
 
     @pytest.mark.asyncio
     async def test_primary_update_summary_failure_still_attempts_secondary(self):
@@ -171,7 +172,7 @@ class TestPrimaryFailure:
         dual = DualDocumentStore(primary=FailingSummary(), secondary=secondary)
         doc = _make("a.md", "content")
         sha = compute_document_sha256(doc)
-        await secondary.save(doc, "run1")
+        await secondary.save(doc, RunScope("run1"))
         with pytest.raises(RuntimeError, match="primary down"):
             await dual.update_summary(sha, "summary")
         # Secondary should still have been updated
@@ -201,8 +202,8 @@ class TestUpdateSummaryFanOut:
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
         sha = compute_document_sha256(doc)
-        await primary.save(doc, "run1")
-        await secondary.save(doc, "run1")
+        await primary.save(doc, RunScope("run1"))
+        await secondary.save(doc, RunScope("run1"))
         await dual.update_summary(sha, "summary text")
         assert (await primary.load_summaries([sha]))[sha] == "summary text"
         assert (await secondary.load_summaries([sha]))[sha] == "summary text"
@@ -214,8 +215,8 @@ class TestLoadBySha256sDelegation:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
-        await primary.save(doc, "run1")
-        result = await dual.load_by_sha256s([doc.sha256], DualReportDoc, "run1")
+        await primary.save(doc, RunScope("run1"))
+        result = await dual.load_by_sha256s([doc.sha256], DualReportDoc, RunScope("run1"))
         assert doc.sha256 in result
         assert result[doc.sha256].sha256 == doc.sha256
 
@@ -224,15 +225,15 @@ class TestLoadBySha256sDelegation:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
-        await secondary.save(doc, "run1")
-        assert await dual.load_by_sha256s([doc.sha256], DualReportDoc, "run1") == {}
+        await secondary.save(doc, RunScope("run1"))
+        assert await dual.load_by_sha256s([doc.sha256], DualReportDoc, RunScope("run1")) == {}
 
     @pytest.mark.asyncio
     async def test_cross_scope_delegates_to_primary(self):
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "cross scope dual")
-        await primary.save(doc, "run1")
+        await primary.save(doc, RunScope("run1"))
         result = await dual.load_by_sha256s([doc.sha256], DualReportDoc)
         assert doc.sha256 in result
         assert result[doc.sha256].sha256 == doc.sha256
@@ -244,8 +245,8 @@ class TestLoadScopeMetadataDelegation:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
-        await primary.save(doc, "run1")
-        metadata = await dual.load_scope_metadata("run1")
+        await primary.save(doc, RunScope("run1"))
+        metadata = await dual.load_scope_metadata(RunScope("run1"))
         assert len(metadata) == 1
         assert isinstance(metadata[0], DocumentNode)
         assert metadata[0].sha256 == doc.sha256
@@ -255,8 +256,8 @@ class TestLoadScopeMetadataDelegation:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
-        await secondary.save(doc, "run1")
-        assert await dual.load_scope_metadata("run1") == []
+        await secondary.save(doc, RunScope("run1"))
+        assert await dual.load_scope_metadata(RunScope("run1")) == []
 
 
 class TestLoadNodesBySha256sDelegation:
@@ -265,7 +266,7 @@ class TestLoadNodesBySha256sDelegation:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
-        await primary.save(doc, "run1")
+        await primary.save(doc, RunScope("run1"))
         result = await dual.load_nodes_by_sha256s([doc.sha256])
         assert len(result) == 1
         assert doc.sha256 in result
@@ -275,7 +276,7 @@ class TestLoadNodesBySha256sDelegation:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         doc = _make("a.md", "content")
-        await secondary.save(doc, "run1")
+        await secondary.save(doc, RunScope("run1"))
         assert await dual.load_nodes_by_sha256s([doc.sha256]) == {}
 
     @pytest.mark.asyncio
@@ -285,8 +286,8 @@ class TestLoadNodesBySha256sDelegation:
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         parent = _make("parent.md", "parent content")
         child = DualReportDoc.create(name="child.md", content="child", sources=(parent.sha256,))
-        await dual.save(parent, "run1")
-        await dual.save(child, "run1")
+        await dual.save(parent, RunScope("run1"))
+        await dual.save(child, RunScope("run1"))
         graph = await walk_provenance(child.sha256, dual.load_nodes_by_sha256s)
         assert len(graph) == 2
         assert child.sha256 in graph

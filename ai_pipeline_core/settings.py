@@ -133,8 +133,5 @@ class Settings(BaseSettings):
     doc_summary_enabled: bool = True
     doc_summary_model: str = "gemini-3-flash"
 
-    # URL/address substitution for LLM calls (deterministic labels only)
-    substitutor_enabled: bool = False
-
 
 settings = Settings()

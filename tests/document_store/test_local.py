@@ -9,6 +9,7 @@ from ai_pipeline_core.document_store import DocumentNode, DocumentStore, create_
 from ai_pipeline_core.document_store.local import LocalDocumentStore, _safe_filename
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._hashing import compute_document_sha256
+from ai_pipeline_core.documents._types import DocumentSha256, RunScope
 
 
 class ReportDoc(Document):
@@ -44,8 +45,8 @@ class TestSaveLoadRoundTrip:
     @pytest.mark.asyncio
     async def test_basic_round_trip(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "report.md", "# Hello\nWorld")
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert len(loaded) == 1
         assert loaded[0].name == "report.md"
         assert loaded[0].content == b"# Hello\nWorld"
@@ -54,31 +55,31 @@ class TestSaveLoadRoundTrip:
     @pytest.mark.asyncio
     async def test_round_trip_preserves_description(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "report.md", "content", description="Important report")
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded[0].description == "Important report"
 
     @pytest.mark.asyncio
     async def test_round_trip_preserves_sources(self, store: LocalDocumentStore):
         source_doc = _make(ReportDoc, "source.txt", "original")
         doc = _make(ReportDoc, "derived.txt", "derived", sources=(source_doc.sha256, "https://example.com"))
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded[0].sources == (source_doc.sha256, "https://example.com")
 
     @pytest.mark.asyncio
     async def test_round_trip_preserves_origins(self, store: LocalDocumentStore):
         parent = _make(ReportDoc, "parent.txt", "parent")
         doc = ReportDoc.create(name="child.txt", content="child", origins=(parent.sha256,))
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded[0].origins == (parent.sha256,)
 
     @pytest.mark.asyncio
     async def test_save_batch(self, store: LocalDocumentStore):
         docs = [_make(ReportDoc, "a.md", "aaa"), _make(ReportDoc, "b.md", "bbb")]
-        await store.save_batch(docs, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save_batch(docs, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert len(loaded) == 2
         names = {d.name for d in loaded}
         assert names == {"a.md", "b.md"}
@@ -87,12 +88,12 @@ class TestSaveLoadRoundTrip:
 class TestMultipleTypes:
     @pytest.mark.asyncio
     async def test_load_filters_by_type(self, store: LocalDocumentStore):
-        await store.save(_make(ReportDoc, "report.md", "report"), "run1")
-        await store.save(_make(DataDoc, "data.json", '{"key": "val"}'), "run1")
+        await store.save(_make(ReportDoc, "report.md", "report"), RunScope("run1"))
+        await store.save(_make(DataDoc, "data.json", '{"key": "val"}'), RunScope("run1"))
 
-        reports = await store.load("run1", [ReportDoc])
-        data = await store.load("run1", [DataDoc])
-        both = await store.load("run1", [ReportDoc, DataDoc])
+        reports = await store.load(RunScope("run1"), [ReportDoc])
+        data = await store.load(RunScope("run1"), [DataDoc])
+        both = await store.load(RunScope("run1"), [ReportDoc, DataDoc])
 
         assert len(reports) == 1
         assert len(data) == 1
@@ -100,7 +101,7 @@ class TestMultipleTypes:
 
     @pytest.mark.asyncio
     async def test_load_empty_scope_returns_empty(self, store: LocalDocumentStore):
-        loaded = await store.load("nonexistent", [ReportDoc])
+        loaded = await store.load(RunScope("nonexistent"), [ReportDoc])
         assert loaded == []
 
 
@@ -109,8 +110,8 @@ class TestAttachments:
     async def test_round_trip_with_attachments(self, store: LocalDocumentStore):
         att = Attachment(name="screenshot.png", content=b"\x89PNG\r\n\x1a\n" + b"\x00" * 100, description="A screenshot")
         doc = ReportDoc.create(name="report.md", content="# Report", attachments=(att,))
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
 
         assert len(loaded) == 1
         assert len(loaded[0].attachments) == 1
@@ -123,8 +124,8 @@ class TestAttachments:
         att1 = Attachment(name="a.txt", content=b"attachment A")
         att2 = Attachment(name="b.txt", content=b"attachment B")
         doc = ReportDoc.create(name="report.md", content="# Report", attachments=(att1, att2))
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
 
         assert len(loaded[0].attachments) == 2
         att_names = {a.name for a in loaded[0].attachments}
@@ -140,7 +141,7 @@ class TestCrashRecovery:
         doc_dir.mkdir(parents=True)
         (doc_dir / "orphan.md").write_text("orphaned content")
 
-        loaded = await store.load("run1", [ReportDoc])
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded == []
 
     @pytest.mark.asyncio
@@ -151,7 +152,7 @@ class TestCrashRecovery:
         meta = {"document_sha256": "X" * 52, "content_sha256": "Y" * 52, "class_name": "ReportDoc"}
         (doc_dir / "missing.md.meta.json").write_text(json.dumps(meta))
 
-        loaded = await store.load("run1", [ReportDoc])
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded == []
 
     @pytest.mark.asyncio
@@ -162,7 +163,7 @@ class TestCrashRecovery:
         (doc_dir / "bad.md").write_text("content")
         (doc_dir / "bad.md.meta.json").write_text("not valid json{{{")
 
-        loaded = await store.load("run1", [ReportDoc])
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded == []
 
 
@@ -171,9 +172,9 @@ class TestConcurrentAccess:
     async def test_idempotent_save(self, store: LocalDocumentStore):
         """Saving the same document twice is a no-op."""
         doc = _make(ReportDoc, "report.md", "content")
-        await store.save(doc, "run1")
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert len(loaded) == 1
 
     @pytest.mark.asyncio
@@ -181,10 +182,10 @@ class TestConcurrentAccess:
         """Documents with same name but different content get separate files."""
         doc1 = _make(ReportDoc, "report.md", "version 1")
         doc2 = _make(ReportDoc, "report.md", "version 2")
-        await store.save(doc1, "run1")
-        await store.save(doc2, "run1")
+        await store.save(doc1, RunScope("run1"))
+        await store.save(doc2, RunScope("run1"))
 
-        loaded = await store.load("run1", [ReportDoc])
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert len(loaded) == 2
         contents = {d.content for d in loaded}
         assert contents == {b"version 1", b"version 2"}
@@ -193,17 +194,17 @@ class TestConcurrentAccess:
 class TestHasDocuments:
     @pytest.mark.asyncio
     async def test_returns_false_when_empty(self, store: LocalDocumentStore):
-        assert await store.has_documents("run1", ReportDoc) is False
+        assert await store.has_documents(RunScope("run1"), ReportDoc) is False
 
     @pytest.mark.asyncio
     async def test_returns_true_when_present(self, store: LocalDocumentStore):
-        await store.save(_make(ReportDoc, "a.md"), "run1")
-        assert await store.has_documents("run1", ReportDoc) is True
+        await store.save(_make(ReportDoc, "a.md"), RunScope("run1"))
+        assert await store.has_documents(RunScope("run1"), ReportDoc) is True
 
     @pytest.mark.asyncio
     async def test_returns_false_for_wrong_type(self, store: LocalDocumentStore):
-        await store.save(_make(ReportDoc, "a.md"), "run1")
-        assert await store.has_documents("run1", DataDoc) is False
+        await store.save(_make(ReportDoc, "a.md"), RunScope("run1"))
+        assert await store.has_documents(RunScope("run1"), DataDoc) is False
 
 
 class TestCheckExisting:
@@ -211,13 +212,13 @@ class TestCheckExisting:
     async def test_finds_saved_document(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "a.md", "content")
         doc_sha = compute_document_sha256(doc)
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         result = await store.check_existing([doc_sha])
         assert doc_sha in result
 
     @pytest.mark.asyncio
     async def test_returns_empty_for_unknown(self, store: LocalDocumentStore):
-        result = await store.check_existing(["NONEXISTENT" * 4 + "AAAA"])
+        result = await store.check_existing([DocumentSha256("NONEXISTENT" * 4 + "AAAA")])
         assert result == set()
 
 
@@ -227,7 +228,7 @@ class TestFileLayout:
         doc = _make(ReportDoc, "report.md", "# Hello")
         sha = compute_document_sha256(doc)
         safe_name = _safe_filename("report.md", sha)
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
 
         class_name = ReportDoc.__name__
         assert (tmp_path / "run1" / class_name / safe_name).exists()
@@ -238,7 +239,7 @@ class TestFileLayout:
         doc = _make(ReportDoc, "report.md", "content", description="desc")
         sha = compute_document_sha256(doc)
         safe_name = _safe_filename("report.md", sha)
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
 
         class_name = ReportDoc.__name__
         meta_path = tmp_path / "run1" / class_name / f"{safe_name}.meta.json"
@@ -258,7 +259,7 @@ class TestFileLayout:
         doc = ReportDoc.create(name="report.md", content="text", attachments=(att,))
         sha = compute_document_sha256(doc)
         safe_name = _safe_filename("report.md", sha)
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
 
         class_name = ReportDoc.__name__
         att_dir = tmp_path / "run1" / class_name / f"{safe_name}.att"
@@ -272,16 +273,16 @@ class TestEdgeCases:
         """Binary content (non-UTF-8) should survive save/load."""
         binary = bytes(range(256))  # All byte values 0-255
         doc = ReportDoc(name="binary.bin", content=binary)
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert len(loaded) == 1
         assert loaded[0].content == binary
 
     @pytest.mark.asyncio
     async def test_empty_content_round_trip(self, store: LocalDocumentStore):
         doc = ReportDoc(name="empty.txt", content=b"")
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert len(loaded) == 1
         assert loaded[0].content == b""
 
@@ -290,8 +291,8 @@ class TestEdgeCases:
         """Origins=() should survive round-trip as (), not become None."""
         doc = ReportDoc.create(name="a.txt", content="test")
         assert doc.origins == ()
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded[0].origins == ()
 
 
@@ -300,8 +301,8 @@ class TestCollisionSafeFilenames:
     async def test_loaded_name_is_original(self, store: LocalDocumentStore):
         """Loaded document.name must be the original, not the suffixed filesystem name."""
         doc = _make(ReportDoc, "report.md", "content")
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded[0].name == "report.md"
 
     @pytest.mark.asyncio
@@ -309,29 +310,29 @@ class TestCollisionSafeFilenames:
         """Document SHA256 must be identical after save/load (name round-trips correctly)."""
         doc = _make(ReportDoc, "report.md", "content")
         original_sha = compute_document_sha256(doc)
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert compute_document_sha256(loaded[0]) == original_sha
 
     @pytest.mark.asyncio
     async def test_no_extension(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "README", "content")
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded[0].name == "README"
 
     @pytest.mark.asyncio
     async def test_multiple_dots_in_name(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "archive.tar.gz", "content")
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded[0].name == "archive.tar.gz"
 
     @pytest.mark.asyncio
     async def test_dotfile_name(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, ".gitignore", "content")
-        await store.save(doc, "run1")
-        loaded = await store.load("run1", [ReportDoc])
+        await store.save(doc, RunScope("run1"))
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert loaded[0].name == ".gitignore"
 
     def test_path_traversal_rejected_at_document_level(self):
@@ -356,7 +357,7 @@ class TestCollisionSafeFilenames:
             "attachments": [],
         }
         (doc_dir / "old_doc.md.meta.json").write_text(json.dumps(meta))
-        loaded = await store.load("run1", [ReportDoc])
+        loaded = await store.load(RunScope("run1"), [ReportDoc])
         assert len(loaded) == 1
         assert loaded[0].name == "old_doc.md"
 
@@ -384,7 +385,7 @@ class TestFactory:
         assert isinstance(store, LocalDocumentStore)
 
     def test_create_document_store_rejects_non_settings(self):
-        with pytest.raises(TypeError, match="Expected Settings"):
+        with pytest.raises(AttributeError):
             create_document_store("not_settings")  # type: ignore[arg-type]
 
 
@@ -392,8 +393,8 @@ class TestLoadBySha256s:
     @pytest.mark.asyncio
     async def test_returns_correct_doc(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "report.md", "content")
-        await store.save(doc, "run1")
-        result = await store.load_by_sha256s([doc.sha256], ReportDoc, "run1")
+        await store.save(doc, RunScope("run1"))
+        result = await store.load_by_sha256s([doc.sha256], ReportDoc, RunScope("run1"))
         assert doc.sha256 in result
         assert result[doc.sha256].sha256 == doc.sha256
         assert result[doc.sha256].name == "report.md"
@@ -403,9 +404,9 @@ class TestLoadBySha256s:
     async def test_cache_hit_path(self, store: LocalDocumentStore):
         """Second load_by_sha256s call uses the meta path cache."""
         doc = _make(ReportDoc, "report.md", "content")
-        await store.save(doc, "run1")
-        result1 = await store.load_by_sha256s([doc.sha256], ReportDoc, "run1")
-        result2 = await store.load_by_sha256s([doc.sha256], ReportDoc, "run1")
+        await store.save(doc, RunScope("run1"))
+        result1 = await store.load_by_sha256s([doc.sha256], ReportDoc, RunScope("run1"))
+        result2 = await store.load_by_sha256s([doc.sha256], ReportDoc, RunScope("run1"))
         assert doc.sha256 in result1
         assert doc.sha256 in result2
         assert result1[doc.sha256].sha256 == result2[doc.sha256].sha256
@@ -414,30 +415,30 @@ class TestLoadBySha256s:
     async def test_cache_miss_scans_type_dir(self, store: LocalDocumentStore):
         """When cache is empty, scan type directory for the document."""
         doc = _make(ReportDoc, "report.md", "content")
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         store._meta_path_cache.clear()
-        result = await store.load_by_sha256s([doc.sha256], ReportDoc, "run1")
+        result = await store.load_by_sha256s([doc.sha256], ReportDoc, RunScope("run1"))
         assert doc.sha256 in result
         assert result[doc.sha256].sha256 == doc.sha256
 
     @pytest.mark.asyncio
     async def test_returns_empty_for_unknown_sha(self, store: LocalDocumentStore):
-        assert await store.load_by_sha256s(["NONEXISTENT" * 4 + "AAAA"], ReportDoc, "run1") == {}
+        assert await store.load_by_sha256s([DocumentSha256("NONEXISTENT" * 4 + "AAAA")], ReportDoc, RunScope("run1")) == {}
 
     @pytest.mark.asyncio
     async def test_class_name_not_enforced(self, store: LocalDocumentStore):
         """document_type is a construction hint, not a filter — doc is found regardless of stored type."""
         doc = _make(ReportDoc, "report.md", "content")
-        await store.save(doc, "run1")
-        result = await store.load_by_sha256s([doc.sha256], DataDoc, "run1")
+        await store.save(doc, RunScope("run1"))
+        result = await store.load_by_sha256s([doc.sha256], DataDoc, RunScope("run1"))
         assert doc.sha256 in result
 
     @pytest.mark.asyncio
     async def test_with_attachments(self, store: LocalDocumentStore):
         att = Attachment(name="screenshot.png", content=b"\x89PNG" + b"\x00" * 50, description="A screenshot")
         doc = ReportDoc.create(name="report.md", content="# Report", attachments=(att,))
-        await store.save(doc, "run1")
-        result = await store.load_by_sha256s([doc.sha256], ReportDoc, "run1")
+        await store.save(doc, RunScope("run1"))
+        result = await store.load_by_sha256s([doc.sha256], ReportDoc, RunScope("run1"))
         assert doc.sha256 in result
         loaded = result[doc.sha256]
         assert len(loaded.attachments) == 1
@@ -447,14 +448,14 @@ class TestLoadBySha256s:
     @pytest.mark.asyncio
     async def test_returns_empty_for_nonexistent_scope(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "report.md", "content")
-        await store.save(doc, "run1")
-        assert await store.load_by_sha256s([doc.sha256], ReportDoc, "run2") == {}
+        await store.save(doc, RunScope("run1"))
+        assert await store.load_by_sha256s([doc.sha256], ReportDoc, RunScope("run2")) == {}
 
     @pytest.mark.asyncio
     async def test_cross_scope_lookup_without_run_scope(self, store: LocalDocumentStore):
         """When run_scope=None, searches across all scope directories."""
         doc = _make(ReportDoc, "report.md", "cross scope content")
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         result = await store.load_by_sha256s([doc.sha256], ReportDoc)
         assert doc.sha256 in result
         assert result[doc.sha256].sha256 == doc.sha256
@@ -463,7 +464,7 @@ class TestLoadBySha256s:
     async def test_cross_scope_class_name_not_enforced(self, store: LocalDocumentStore):
         """Cross-scope: document_type is a construction hint, not a filter."""
         doc = _make(ReportDoc, "report.md", "content")
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         result = await store.load_by_sha256s([doc.sha256], DataDoc)
         assert doc.sha256 in result
 
@@ -471,9 +472,9 @@ class TestLoadBySha256s:
     async def test_multiple_sha256s(self, store: LocalDocumentStore):
         doc1 = _make(ReportDoc, "a.md", "content1")
         doc2 = _make(ReportDoc, "b.md", "content2")
-        await store.save(doc1, "run1")
-        await store.save(doc2, "run1")
-        result = await store.load_by_sha256s([doc1.sha256, doc2.sha256], ReportDoc, "run1")
+        await store.save(doc1, RunScope("run1"))
+        await store.save(doc2, RunScope("run1"))
+        result = await store.load_by_sha256s([doc1.sha256, doc2.sha256], ReportDoc, RunScope("run1"))
         assert len(result) == 2
         assert doc1.sha256 in result
         assert doc2.sha256 in result
@@ -485,8 +486,8 @@ class TestLoadBySha256s:
     @pytest.mark.asyncio
     async def test_partial_match(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "a.md", "content")
-        await store.save(doc, "run1")
-        result = await store.load_by_sha256s([doc.sha256, "NONEXISTENT" * 4 + "AAAA"], ReportDoc, "run1")
+        await store.save(doc, RunScope("run1"))
+        result = await store.load_by_sha256s([doc.sha256, DocumentSha256("NONEXISTENT" * 4 + "AAAA")], ReportDoc, RunScope("run1"))
         assert len(result) == 1
         assert doc.sha256 in result
 
@@ -496,9 +497,9 @@ class TestLoadScopeMetadata:
     async def test_returns_all_docs_metadata(self, store: LocalDocumentStore):
         doc1 = _make(ReportDoc, "a.md", "aaa")
         doc2 = _make(DataDoc, "b.json", '{"key": "val"}')
-        await store.save(doc1, "run1")
-        await store.save(doc2, "run1")
-        metadata = await store.load_scope_metadata("run1")
+        await store.save(doc1, RunScope("run1"))
+        await store.save(doc2, RunScope("run1"))
+        metadata = await store.load_scope_metadata(RunScope("run1"))
         assert len(metadata) == 2
         shas = {m.sha256 for m in metadata}
         assert doc1.sha256 in shas
@@ -506,13 +507,13 @@ class TestLoadScopeMetadata:
 
     @pytest.mark.asyncio
     async def test_returns_empty_for_nonexistent_scope(self, store: LocalDocumentStore):
-        assert await store.load_scope_metadata("nonexistent") == []
+        assert await store.load_scope_metadata(RunScope("nonexistent")) == []
 
     @pytest.mark.asyncio
     async def test_returns_document_node_instances(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "report.md", "content", description="desc")
-        await store.save(doc, "run1")
-        metadata = await store.load_scope_metadata("run1")
+        await store.save(doc, RunScope("run1"))
+        metadata = await store.load_scope_metadata(RunScope("run1"))
         assert len(metadata) == 1
         node = metadata[0]
         assert isinstance(node, DocumentNode)
@@ -524,9 +525,9 @@ class TestLoadScopeMetadata:
     @pytest.mark.asyncio
     async def test_includes_summaries(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "report.md", "content")
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         await store.update_summary(doc.sha256, "test summary")
-        metadata = await store.load_scope_metadata("run1")
+        metadata = await store.load_scope_metadata(RunScope("run1"))
         assert len(metadata) == 1
         assert metadata[0].summary == "test summary"
 
@@ -539,8 +540,8 @@ class TestLoadScopeMetadata:
             sources=("https://example.com",),
             origins=(origin_doc.sha256,),
         )
-        await store.save(doc, "run1")
-        metadata = await store.load_scope_metadata("run1")
+        await store.save(doc, RunScope("run1"))
+        metadata = await store.load_scope_metadata(RunScope("run1"))
         # Filter for the child doc
         child_nodes = [m for m in metadata if m.sha256 == doc.sha256]
         assert len(child_nodes) == 1
@@ -553,8 +554,8 @@ class TestLoadNodesBySha256s:
     async def test_returns_found_nodes(self, store: LocalDocumentStore):
         doc1 = _make(ReportDoc, "a.md", "aaa")
         doc2 = _make(DataDoc, "b.json", '{"key": "val"}')
-        await store.save(doc1, "run1")
-        await store.save(doc2, "run1")
+        await store.save(doc1, RunScope("run1"))
+        await store.save(doc2, RunScope("run1"))
         result = await store.load_nodes_by_sha256s([doc1.sha256, doc2.sha256])
         assert len(result) == 2
         assert result[doc1.sha256].name == "a.md"
@@ -563,8 +564,8 @@ class TestLoadNodesBySha256s:
     @pytest.mark.asyncio
     async def test_missing_sha256s_omitted(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "a.md", "content")
-        await store.save(doc, "run1")
-        result = await store.load_nodes_by_sha256s([doc.sha256, "NONEXISTENT" * 4 + "AAAA"])
+        await store.save(doc, RunScope("run1"))
+        result = await store.load_nodes_by_sha256s([doc.sha256, DocumentSha256("NONEXISTENT" * 4 + "AAAA")])
         assert len(result) == 1
         assert doc.sha256 in result
 
@@ -576,8 +577,8 @@ class TestLoadNodesBySha256s:
     async def test_cross_scope_lookup(self, store: LocalDocumentStore):
         doc1 = _make(ReportDoc, "a.md", "scope1 content")
         doc2 = _make(DataDoc, "b.json", '{"scope": 2}')
-        await store.save(doc1, "scope_a")
-        await store.save(doc2, "scope_b")
+        await store.save(doc1, RunScope("scope_a"))
+        await store.save(doc2, RunScope("scope_b"))
         result = await store.load_nodes_by_sha256s([doc1.sha256, doc2.sha256])
         assert len(result) == 2
 
@@ -591,7 +592,7 @@ class TestLoadNodesBySha256s:
             sources=("https://example.com",),
             origins=(origin.sha256,),
         )
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         result = await store.load_nodes_by_sha256s([doc.sha256])
         node = result[doc.sha256]
         assert isinstance(node, DocumentNode)
@@ -603,7 +604,7 @@ class TestLoadNodesBySha256s:
     @pytest.mark.asyncio
     async def test_includes_summaries(self, store: LocalDocumentStore):
         doc = _make(ReportDoc, "a.md", "content")
-        await store.save(doc, "run1")
+        await store.save(doc, RunScope("run1"))
         await store.update_summary(doc.sha256, "test summary")
         result = await store.load_nodes_by_sha256s([doc.sha256])
         assert result[doc.sha256].summary == "test summary"
@@ -634,7 +635,7 @@ class TestCrossPipelineProvenanceGraph:
             sources=(source_a.sha256, source_b.sha256),
             origins=(task.sha256,),
         )
-        scope = "research/btc/run1"
+        scope = RunScope("research/btc/run1")
         for doc in [task, source_a, source_b, report]:
             await store.save(doc, scope)
 
@@ -653,8 +654,8 @@ class TestCrossPipelineProvenanceGraph:
         """Documents in different scopes are found by cross-scope lookup."""
         doc1 = _make(ReportDoc, "doc1.md", "scope1 content")
         doc2 = _make(DataDoc, "doc2.json", '{"scope": 2}')
-        await store.save(doc1, "scope_a")
-        await store.save(doc2, "scope_b")
+        await store.save(doc1, RunScope("scope_a"))
+        await store.save(doc2, RunScope("scope_b"))
 
         # Find both without scope
         assert doc1.sha256 in await store.load_by_sha256s([doc1.sha256], ReportDoc)
@@ -671,8 +672,8 @@ class TestLocalStoreSummaryAcrossScopes:
         import json
 
         doc = _make(ReportDoc, "shared.md", "shared content")
-        await store.save(doc, "scope_a")
-        await store.save(doc, "scope_b")
+        await store.save(doc, RunScope("scope_a"))
+        await store.save(doc, RunScope("scope_b"))
         await store.update_summary(doc.sha256, "global summary")
 
         # Verify both meta files have the summary
@@ -686,7 +687,7 @@ class TestLocalStoreSummaryAcrossScopes:
     async def test_summary_visible_from_load_summaries(self, store: LocalDocumentStore):
         """load_summaries returns summary for docs across all scopes."""
         doc = _make(ReportDoc, "shared.md", "shared content")
-        await store.save(doc, "scope_a")
+        await store.save(doc, RunScope("scope_a"))
         await store.update_summary(doc.sha256, "test summary")
         summaries = await store.load_summaries([doc.sha256])
         assert summaries[doc.sha256] == "test summary"

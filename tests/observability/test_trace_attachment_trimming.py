@@ -1,6 +1,6 @@
 """Tests for attachment trimming in tracing."""
 
-from ai_pipeline_core.observability.tracing import (
+from ai_pipeline_core.observability._trimming import (
     _trim_attachment_list,
     _trim_document_content,
     _trim_documents_in_data,

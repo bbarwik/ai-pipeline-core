@@ -35,6 +35,7 @@ from ruamel.yaml import YAML
 
 from ai_pipeline_core.documents._context_vars import get_task_context, is_registration_suppressed
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
+from ai_pipeline_core.documents._types import DocumentSha256
 from ai_pipeline_core.documents.utils import DATA_URI_PATTERN, is_document_sha256
 from ai_pipeline_core.exceptions import DocumentNameError, DocumentSizeError
 
@@ -314,7 +315,7 @@ class Document(BaseModel):
             # accepted by design — real documents never start with a bare data URI on the first byte.
             if DATA_URI_PATTERN.match(v):
                 _, payload = v.split(",", 1)
-                v = base64.b64decode(payload)
+                v = base64.b64decode(payload, validate=True)
             else:
                 v = v.encode("utf-8")
         else:
@@ -382,7 +383,7 @@ class Document(BaseModel):
 
     @final
     @cached_property
-    def sha256(self) -> str:
+    def sha256(self) -> DocumentSha256:
         """Full SHA256 identity hash (name + content + sources + origins + attachments). BASE32 encoded, cached."""
         return compute_document_sha256(self)
 
@@ -530,7 +531,7 @@ class Document(BaseModel):
         # Get base serialization from Pydantic (uses field_serializer for content)
         result = self.model_dump(mode="json")
 
-        # Add metadata not present in standard model_dump
+        # Add metadata not present in standard model_dump (keys must match _DOCUMENT_SERIALIZE_METADATA_KEYS, used by from_dict() to strip them)
         result["id"] = self.id
         result["sha256"] = self.sha256
         result["content_sha256"] = self.content_sha256
@@ -559,7 +560,7 @@ class Document(BaseModel):
 
         # Strip attachment metadata added by serialize_model()
         if cleaned.get("attachments"):
-            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in {"mime_type", "size"}} for att in cleaned["attachments"]]
+            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in Attachment._SERIALIZE_METADATA_KEYS} for att in cleaned["attachments"]]
 
         return cls.model_validate(cleaned)
 

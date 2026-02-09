@@ -5,6 +5,7 @@ Provides logging configuration management that integrates with Prefect's logging
 
 import logging.config
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -129,6 +130,7 @@ class LoggingConfig:
 
 # Global configuration instance
 _logging_config: LoggingConfig | None = None
+_setup_lock = threading.Lock()
 
 
 def setup_logging(config_path: Path | None = None, level: str | None = None):
@@ -146,18 +148,19 @@ def setup_logging(config_path: Path | None = None, level: str | None = None):
     """
     global _logging_config  # noqa: PLW0603
 
-    _logging_config = LoggingConfig(config_path)
-    _logging_config.apply()
+    with _setup_lock:
+        _logging_config = LoggingConfig(config_path)
+        _logging_config.apply()
 
-    # Override level if provided
-    if level:
-        # Set for our loggers
-        for logger_name in DEFAULT_LOG_LEVELS:
-            logger = get_logger(logger_name)
-            logger.setLevel(level)
+        # Override level if provided
+        if level:
+            # Set for our loggers
+            for logger_name in DEFAULT_LOG_LEVELS:
+                logger = get_logger(logger_name)
+                logger.setLevel(level)
 
-        # Also set for Prefect
-        os.environ["PREFECT_LOGGING_LEVEL"] = level
+            # Also set for Prefect
+            os.environ["PREFECT_LOGGING_LEVEL"] = level
 
 
 def get_pipeline_logger(name: str):

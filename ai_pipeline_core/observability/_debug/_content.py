@@ -28,7 +28,7 @@ class ContentRef(BaseModel):
     """Reference to content in artifact store."""
 
     hash: str  # "sha256:abcdef..."
-    path: str  # "artifacts/sha256/ab/cd/abcdef...1234.txt"
+    path: str  # "artifacts/sha256/abcdef...1234.txt"
     size_bytes: int
     mime_type: str | None = None
     encoding: str | None = None  # "utf-8" | "binary"
@@ -39,7 +39,7 @@ class ContentRef(BaseModel):
 class ArtifactStore:
     """Hash-based artifact storage with automatic deduplication.
 
-    Stores large content elements in artifacts/sha256/<first2>/<next2>/<hash>.<ext>
+    Stores large content elements in artifacts/sha256/<hash>.<ext>
     Identical content automatically deduplicates (same hash = same file).
     """
 
@@ -58,9 +58,7 @@ class ArtifactStore:
         if content_hash in self._known_hashes:
             return self._known_hashes[content_hash]
 
-        # Create sharded path: ab/cd/abcdef...1234.txt
-        file_path = self._artifacts_path / content_hash[:2] / content_hash[2:4] / f"{content_hash}.txt"
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path = self._artifacts_path / f"{content_hash}.txt"
 
         if not file_path.exists():
             file_path.write_bytes(data)
@@ -93,8 +91,7 @@ class ArtifactStore:
         }
         ext = ext_map.get(mime_type, ".bin")
 
-        file_path = self._artifacts_path / content_hash[:2] / content_hash[2:4] / f"{content_hash}{ext}"
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path = self._artifacts_path / f"{content_hash}{ext}"
 
         if not file_path.exists():
             file_path.write_bytes(data)
@@ -112,8 +109,8 @@ class ArtifactStore:
 
     def get_stats(self) -> dict[str, int | float]:
         """Get deduplication statistics."""
-        total_files = len(list(self._artifacts_path.rglob("*.*")))
-        total_size = sum(f.stat().st_size for f in self._artifacts_path.rglob("*.*") if f.is_file())
+        total_files = len(list(self._artifacts_path.glob("*.*")))
+        total_size = sum(f.stat().st_size for f in self._artifacts_path.glob("*.*") if f.is_file())
         total_refs = len(self._known_hashes)
 
         return {
@@ -122,6 +119,11 @@ class ArtifactStore:
             "total_bytes": total_size,
             "dedup_ratio": total_refs / total_files if total_files > 0 else 1.0,
         }
+
+
+# Keys below mirror Document.serialize_model() output format:
+# "class_name", "name", "content", "mime_type", "attachments", "description"
+# Not imported from documents module to avoid circular dependency from observability.
 
 
 class ContentWriter:
@@ -200,10 +202,10 @@ class ContentWriter:
             return False
         if not content:
             return False
-        first = cast(Any, content[0])
-        if not isinstance(first, dict):
+        sample = content[: min(10, len(content))]
+        if not all(isinstance(item, dict) for item in sample):
             return False
-        return "role" in first and "content" in first
+        return all("role" in item and "content" in item for item in sample)
 
     def _is_document_list(self, content: Any) -> bool:
         """Check if content looks like a list of serialized documents."""
@@ -211,10 +213,10 @@ class ContentWriter:
             return False
         if not content:
             return False
-        first = cast(Any, content[0])
-        if not isinstance(first, dict):
+        sample = content[: min(10, len(content))]
+        if not all(isinstance(item, dict) for item in sample):
             return False
-        return "class_name" in first and "content" in first
+        return all("class_name" in item and "content" in item for item in sample)
 
     def _structure_llm_messages(self, messages: list[Any]) -> dict[str, Any]:
         """Structure LLM messages preserving ALL parts losslessly."""
@@ -345,6 +347,42 @@ class ContentWriter:
             "raw_data": raw,
         }, size
 
+    def _store_or_inline_text(self, text: str, entry: dict[str, Any], mime_type: str, excerpt_len: int) -> None:
+        """Store text in artifact store if oversized, otherwise inline in entry."""
+        text_bytes = len(text.encode("utf-8"))
+        if text_bytes > self._config.max_element_bytes and self._artifact_store:
+            ref = self._artifact_store.store_text(text, mime_type)
+            entry["content_ref"] = {
+                "hash": ref.hash,
+                "path": ref.path,
+                "mime_type": ref.mime_type,
+                "encoding": ref.encoding,
+            }
+            entry["excerpt"] = text[:excerpt_len] + "\n[TRUNCATED - see artifact for full content]"
+        else:
+            entry["content"] = text
+
+    def _store_or_inline_image(self, b64_data: str, mime_type: str, ext: str, entry: dict[str, Any]) -> None:
+        """Store base64 image in artifact store or mark as not extracted."""
+        if self._config.extract_base64_images and self._artifact_store and b64_data:
+            try:
+                image_bytes = base64.b64decode(b64_data)
+                ref = self._artifact_store.store_binary(image_bytes, mime_type)
+                entry["content_ref"] = {
+                    "hash": ref.hash,
+                    "path": ref.path,
+                    "mime_type": ref.mime_type,
+                    "encoding": ref.encoding,
+                }
+                estimated_size = entry.get("size_bytes", len(b64_data) * 3 // 4)
+                entry["preview"] = f"[{ext.upper()} image, {estimated_size} bytes]"
+                entry["extracted"] = True
+            except Exception as e:
+                entry["extract_error"] = str(e)
+                entry["extracted"] = False
+        else:
+            entry["extracted"] = False
+
     def _structure_text_element(self, text: str, sequence: int) -> dict[str, Any]:
         """Structure a text element, optionally externalizing large content."""
         text = self._redact(text)
@@ -356,25 +394,13 @@ class ContentWriter:
             "size_bytes": text_bytes,
         }
 
-        if text_bytes > self._config.max_element_bytes:
-            # Store full content in artifact store
-            if self._artifact_store:
-                ref = self._artifact_store.store_text(text, "text/plain")
-                excerpt_len = self._config.element_excerpt_bytes
-                entry["content_ref"] = {
-                    "hash": ref.hash,
-                    "path": ref.path,
-                    "mime_type": ref.mime_type,
-                    "encoding": ref.encoding,
-                }
-                entry["excerpt"] = text[:excerpt_len] + "\n[TRUNCATED - see artifact for full content]"
-            else:
-                # No artifact store — truncate with marker
-                entry["content"] = text[: self._config.max_element_bytes]
-                entry["truncated"] = True
-                entry["original_size_bytes"] = text_bytes
-        else:
-            entry["content"] = text
+        self._store_or_inline_text(text, entry, "text/plain", self._config.element_excerpt_bytes)
+
+        # When no artifact store is available, truncate oversized content with marker
+        if "content" in entry and text_bytes > self._config.max_element_bytes:
+            entry["content"] = text[: self._config.max_element_bytes]
+            entry["truncated"] = True
+            entry["original_size_bytes"] = text_bytes
 
         return entry
 
@@ -414,24 +440,7 @@ class ContentWriter:
             "detail": detail,
         }
 
-        # Extract if configured
-        if self._config.extract_base64_images and self._artifact_store:
-            try:
-                image_bytes = base64.b64decode(b64_data)
-                ref = self._artifact_store.store_binary(image_bytes, f"image/{ext}")
-                entry["content_ref"] = {
-                    "hash": ref.hash,
-                    "path": ref.path,
-                    "mime_type": ref.mime_type,
-                    "encoding": ref.encoding,
-                }
-                entry["preview"] = f"[{ext.upper()} image, {estimated_size} bytes]"
-                entry["extracted"] = True
-            except Exception as e:
-                entry["extract_error"] = str(e)
-                entry["extracted"] = False
-        else:
-            entry["extracted"] = False
+        self._store_or_inline_image(b64_data, f"image/{ext}", ext, entry)
 
         return entry
 
@@ -462,23 +471,7 @@ class ContentWriter:
             "hash": content_hash[:16],
         }
 
-        if self._config.extract_base64_images and self._artifact_store and b64_data:
-            try:
-                image_bytes = base64.b64decode(b64_data)
-                ref = self._artifact_store.store_binary(image_bytes, media_type)
-                entry["content_ref"] = {
-                    "hash": ref.hash,
-                    "path": ref.path,
-                    "mime_type": ref.mime_type,
-                    "encoding": ref.encoding,
-                }
-                entry["preview"] = f"[{ext.upper()} image, {estimated_size} bytes]"
-                entry["extracted"] = True
-            except Exception as e:
-                entry["extract_error"] = str(e)
-                entry["extracted"] = False
-        else:
-            entry["extracted"] = False
+        self._store_or_inline_image(b64_data, media_type, ext, entry)
 
         return entry
 
@@ -512,16 +505,8 @@ class ContentWriter:
         else:
             # Text content
             text = self._redact(str(content))
-            text_bytes = len(text.encode("utf-8"))
-            entry["size_bytes"] = text_bytes
-
-            if text_bytes > self._config.max_element_bytes and self._artifact_store:
-                ref = self._artifact_store.store_text(text)
-                excerpt_len = self._config.element_excerpt_bytes
-                entry["content_ref"] = {"hash": ref.hash, "path": ref.path, "mime_type": ref.mime_type, "encoding": ref.encoding}
-                entry["excerpt"] = text[:excerpt_len] + "\n[TRUNCATED - see artifact for full content]"
-            else:
-                entry["content"] = text
+            entry["size_bytes"] = len(text.encode("utf-8"))
+            self._store_or_inline_text(text, entry, mime_type, self._config.element_excerpt_bytes)
 
         return entry
 
@@ -674,53 +659,3 @@ class ContentWriter:
                     return str(value)
                 except Exception:
                     return f"<{type(value).__name__}>"
-
-
-def reconstruct_span_content(trace_root: Path, span_dir: Path, content_type: str) -> dict[str, Any]:
-    """Reconstruct full content from input.yaml/output.yaml + artifacts.
-
-    Args:
-        trace_root: Trace root directory
-        span_dir: Span directory containing input.yaml or output.yaml
-        content_type: "input" or "output"
-
-    Returns:
-        Complete reconstructed content with all artifact refs resolved
-    """
-    content_path = span_dir / f"{content_type}.yaml"
-    if not content_path.exists():
-        return {}
-
-    content = yaml.safe_load(content_path.read_text(encoding="utf-8"))
-    return _rehydrate(content, trace_root)
-
-
-def _rehydrate(obj: Any, trace_root: Path) -> Any:
-    """Recursively replace content_ref entries with actual content."""
-    if isinstance(obj, dict):
-        obj_dict = cast(dict[str, Any], obj)
-        if "content_ref" in obj_dict:
-            # This is an artifact reference - load the full content
-            ref: dict[str, Any] = obj_dict["content_ref"]
-            artifact_path: Path = trace_root / ref["path"]
-
-            full_content: str | bytes
-            if ref.get("encoding") == "utf-8":
-                full_content = artifact_path.read_text(encoding="utf-8")
-            else:
-                full_content = artifact_path.read_bytes()
-
-            # Replace ref with full content
-            obj_dict = obj_dict.copy()
-            obj_dict["content"] = full_content
-            del obj_dict["content_ref"]
-            if "excerpt" in obj_dict:
-                del obj_dict["excerpt"]
-
-        return {k: _rehydrate(v, trace_root) for k, v in obj_dict.items()}
-
-    if isinstance(obj, list):
-        obj_list = cast(list[Any], obj)
-        return [_rehydrate(v, trace_root) for v in obj_list]
-
-    return obj

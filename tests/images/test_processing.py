@@ -149,7 +149,7 @@ class TestLoadAndNormalize:
         # We can't easily create a 100MP+ image in memory, so test the check
         from ai_pipeline_core.llm._images import PIL_MAX_PIXELS
 
-        assert PIL_MAX_PIXELS == 100_000_000
+        assert PIL_MAX_PIXELS == 500_000_000
 
     def test_invalid_data_raises(self):
         with pytest.raises(Exception):
