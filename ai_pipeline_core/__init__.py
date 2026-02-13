@@ -61,7 +61,7 @@ from .pipeline import FlowOptions, pipeline_flow, pipeline_task
 from .prompt_manager import PromptManager
 from .settings import Settings
 
-__version__ = "0.8.2"
+__version__ = "0.8.3"
 
 __all__ = [
     "Attachment",

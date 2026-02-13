@@ -17,6 +17,10 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from ai_pipeline_core.logging import get_pipeline_logger
+
+logger = get_pipeline_logger(__name__)
+
 # ── Zero-width / invisible characters ──────────────────────────────────────────
 _INVISIBLE_CHARS = frozenset("\u200b\u200c\u200d\ufeff\u2060\u180e")
 
@@ -65,6 +69,34 @@ _JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\
 _CONTENT_ADDRESSED_SCHEMES = ("ipfs://", "ipns://", "magnet:", "data:")
 _CODE_KEYWORDS = ("install ", "npm ", "yarn ", "pnpm ", "pip ", "require(", "import ")
 _DELIMITER_PAIRS: dict[str, str] = {"(": ")", "[": "]", '"': '"', "'": "'", ">": "<"}
+
+# ── Fuzzy restore config ─────────────────────────────────────────────────────
+_FUZZY_BEFORE_CONTEXT = _URL_PREFIX_LEN + _URL_MAX_COLLISION_ATTEMPTS * 2 + 5  # 67
+_FUZZY_AFTER_CONTEXT = 20  # > max suffix (_URL_SUFFIX_LEN = 15)
+_FUZZY_MIN_PREFIX_MATCH = 8
+_FUZZY_BOUNDARY_CHARS = frozenset({
+    " ",
+    "\t",
+    "\n",
+    "\r",
+    '"',
+    "'",
+    "`",
+    ")",
+    ",",
+    ";",
+    ":",
+    "!",
+    "?",
+    "]",
+    "}",
+    ">",
+    "\\",
+    "&",
+    "/",
+    "#",  # URL delimiters — T1 patterns inside URLs have these after suffix
+})
+_FUZZY_DOTS_RE = re.compile(r"\.{3,}")
 
 # ── Helper functions ───────────────────────────────────────────────────────────
 
@@ -203,6 +235,9 @@ class URLSubstitutor:
     _url_prefixes: set[str] = field(default_factory=set)
     _url_suffixes: set[str] = field(default_factory=set)
 
+    # Fuzzy restore entries: (prefix_lower, suffix_lower, original)
+    _fuzzy_entries: list[tuple[str, str, str]] = field(default_factory=list)
+
     _prepared: bool = False
 
     @property
@@ -233,6 +268,7 @@ class URLSubstitutor:
         self._forward[original] = abbr
         if abbr.lower() not in self._reverse:
             self._reverse[abbr.lower()] = original
+            self._fuzzy_entries.append((parts[0], parts[1], original))
 
     def _abbreviate_t1(self, original: str) -> str | None:
         """Abbreviate a high-entropy value. Returns abbreviated form or None."""
@@ -338,6 +374,7 @@ class URLSubstitutor:
                 self._url_suffixes.add(parts[1])
                 self._forward[url] = abbr
                 self._reverse[abbr.lower()] = url
+                self._fuzzy_entries.append((parts[0], parts[1], url))
                 return abbr
 
         return None
@@ -532,8 +569,76 @@ class URLSubstitutor:
             result = result[:start] + short + result[end:]
         return result
 
+    def _fuzzy_restore(self, text: str) -> str:
+        """Fuzzy fallback: restore when LLM drops suffix or truncates prefix/suffix by 1-2 chars."""
+        if not self._fuzzy_entries:
+            return text
+
+        replacements: list[tuple[int, int, str]] = []
+
+        for m in _FUZZY_DOTS_RE.finditer(text):
+            dot_start = m.start()
+            dot_end = m.end()
+
+            before = text[max(0, dot_start - _FUZZY_BEFORE_CONTEXT) : dot_start]
+            before_lower = before.lower()
+            after = text[dot_end : min(len(text), dot_end + _FUZZY_AFTER_CONTEXT)]
+            after_lower = after.lower()
+
+            candidates: list[tuple[int, int, str]] = []
+
+            for prefix_lower, suffix_lower, original in self._fuzzy_entries:
+                # ── Prefix check: exact, -1 char, or -2 chars ──
+                prefix_match_len = 0
+                if before_lower.endswith(prefix_lower):
+                    prefix_match_len = len(prefix_lower)
+                elif len(prefix_lower) >= _FUZZY_MIN_PREFIX_MATCH + 1 and before_lower.endswith(prefix_lower[:-1]):
+                    prefix_match_len = len(prefix_lower) - 1
+                elif len(prefix_lower) >= _FUZZY_MIN_PREFIX_MATCH + 2 and before_lower.endswith(prefix_lower[:-2]):
+                    prefix_match_len = len(prefix_lower) - 2
+
+                if prefix_match_len < _FUZZY_MIN_PREFIX_MATCH:
+                    continue
+
+                # ── Suffix check: exact, skip 1, skip 2, or suffix dropped ──
+                suffix_match_len = 0
+                suffix_matched = False
+
+                if after_lower.startswith(suffix_lower):
+                    suffix_match_len = len(suffix_lower)
+                    suffix_matched = True
+                elif len(suffix_lower) >= 2 and after_lower.startswith(suffix_lower[1:]):
+                    suffix_match_len = len(suffix_lower) - 1
+                    suffix_matched = True
+                elif len(suffix_lower) >= 3 and after_lower.startswith(suffix_lower[2:]):
+                    suffix_match_len = len(suffix_lower) - 2
+                    suffix_matched = True
+
+                if not suffix_matched and (not after or after[0] in _FUZZY_BOUNDARY_CHARS):
+                    suffix_matched = True  # suffix_match_len stays 0 (suffix dropped)
+
+                if not suffix_matched:
+                    continue
+
+                repl_start = dot_start - prefix_match_len
+                repl_end = dot_end + suffix_match_len
+                candidates.append((repl_start, repl_end, original))
+
+            if len(candidates) == 1:
+                replacements.append(candidates[0])
+            elif len(candidates) > 1:
+                ctx = text[max(0, dot_start - 20) : min(len(text), dot_end + 20)]
+                logger.warning(f"Ambiguous fuzzy restore: {len(candidates)} candidates at position {dot_start}: '{ctx}'")
+
+        return self._apply_replacements(text, replacements)
+
     def restore(self, text: str) -> str:
-        """Restore shortened forms to originals. Case-insensitive, handles ... and … ."""
+        """Restore shortened forms to originals. Case-insensitive, handles ... and … .
+
+        First pass: exact match of full shortened forms (case-insensitive).
+        Second pass: fuzzy fallback for LLM-mangled forms — suffix dropped,
+        prefix/suffix truncated by 1-2 chars, or extra dots (4+).
+        """
         if not text or not self._reverse:
             return text
 
@@ -545,7 +650,7 @@ class URLSubstitutor:
                 continue
             original = self._reverse[short]
             escaped = re.escape(short)
-            result = re.sub(escaped, lambda _m, o=original: o, result, flags=re.IGNORECASE)
+            result = re.sub(escaped, original.replace("\\", "\\\\"), result, flags=re.IGNORECASE)
             lower_result = result.lower()
 
-        return result
+        return self._fuzzy_restore(result)

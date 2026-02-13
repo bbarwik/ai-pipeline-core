@@ -378,7 +378,7 @@ results = await asyncio.gather(
 )
 ```
 
-**Content protection (automatic):** URLs, blockchain addresses, and high-entropy strings in context documents are automatically shortened to save tokens. Responses are eagerly restored — `conv.content` always contains original URLs/addresses. Use `conv.restore_content(text)` for text from earlier turns if needed.
+**Content protection (automatic):** URLs, blockchain addresses, and high-entropy strings in context documents are automatically shortened to `prefix...suffix` forms to save tokens. Responses are eagerly restored — `conv.content` always contains original URLs/addresses. A fuzzy fallback handles LLM-mangled forms (dropped suffix, prefix/suffix truncated by 1-2 chars). Use `conv.restore_content(text)` for text from earlier turns if needed.
 
 #### Single-Shot Functions
 
