@@ -155,7 +155,7 @@ Auto-generated guide index. Do not edit manually.
 | logging | 8,569 bytes |
 | observability | 23,224 bytes |
 | pipeline | 33,593 bytes |
-| prompt_compiler | 30,250 bytes |
+| prompt_compiler | 30,507 bytes |
 | prompt_manager | 12,608 bytes |
 | settings | 7,498 bytes |
-| **Total** | **255,306 bytes** |
+| **Total** | **255,563 bytes** |

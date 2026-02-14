@@ -330,9 +330,13 @@ def main(argv: list[str] | None = None) -> int:
     render_parser.add_argument("--no-input-documents", action="store_true", help="Hide input document listing")
     render_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
 
+    # compile
+    compile_parser = subparsers.add_parser("compile", help="Compile all specs to .prompts/ directory")
+    compile_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
+
     args = parser.parse_args(argv)
 
-    handlers = {"list": _cmd_list, "inspect": _cmd_inspect, "render": _cmd_render}
+    handlers = {"list": _cmd_list, "inspect": _cmd_inspect, "render": _cmd_render, "compile": _cmd_compile}
     handler = handlers.get(args.command)
     if handler is None:
         parser.print_help()

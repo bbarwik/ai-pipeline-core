@@ -4,20 +4,21 @@ import argparse
 import ast
 import importlib
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, cast
 
 from .render import render_preview
 from .spec import PromptSpec
 
-_SKIP_DIRS: frozenset[str] = frozenset({".git", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", "node_modules"})
+_SKIP_DIRS: frozenset[str] = frozenset({".git", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", "node_modules", ".tmp"})
 
 APPROX_CHARS_PER_TOKEN = 4
 
 
 def _iter_python_files(root: Path) -> list[Path]:
     """Find Python files under root, skipping common non-source directories."""
-    return [f for f in root.rglob("*.py") if not any(part in _SKIP_DIRS for part in f.parts)]
+    return [f for f in root.rglob("*.py") if not any(part in _SKIP_DIRS for part in f.relative_to(root).parts)]
 
 
 def _module_name_from_path(file: Path, root: Path) -> str | None:
@@ -74,7 +75,9 @@ def _resolve_spec_class(ref: str, root: Path) -> type[PromptSpec[Any]]:
     """
     if ":" in ref:
         module_name, class_name = ref.split(":", maxsplit=1)
-        module = importlib.import_module(module_name)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            module = importlib.import_module(module_name)
         obj = getattr(module, class_name, None)
         if not isinstance(obj, type) or not issubclass(obj, PromptSpec):
             raise ValueError(f"'{ref}' is not a PromptSpec subclass")
@@ -88,7 +91,9 @@ def _resolve_spec_class(ref: str, root: Path) -> type[PromptSpec[Any]]:
         if module_name is None:
             continue
         try:
-            importlib.import_module(module_name)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                importlib.import_module(module_name)
         except Exception:  # noqa: BLE001, S112 — best-effort discovery, errors are not actionable
             continue
 
@@ -117,7 +122,9 @@ def _discover_all_specs(root: Path) -> tuple[list[type[PromptSpec[Any]]], list[s
         if module_name is None:
             continue
         try:
-            importlib.import_module(module_name)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                importlib.import_module(module_name)
         except Exception as e:  # noqa: BLE001
             errors.append(f"{module_name}: {e}")
 
@@ -297,6 +304,43 @@ def _cmd_render(args: argparse.Namespace) -> int:
     return 0
 
 
+_PROMPTS_DIR = ".prompts"
+
+
+def _cmd_compile(args: argparse.Namespace) -> int:
+    """Compile all discovered specs to .prompts/ directory as markdown files."""
+    _ensure_importable(args.root)
+    specs, errors = _discover_all_specs(args.root)
+
+    if not specs:
+        print("No PromptSpec subclasses found.")
+        return 0
+
+    out_dir = args.root / _PROMPTS_DIR
+    out_dir.mkdir(exist_ok=True)
+
+    # Remove stale files not matching any discovered spec
+    current_names = {f"{cls.__name__}.md" for cls in specs}
+    for existing in out_dir.glob("*.md"):
+        if existing.name not in current_names:
+            existing.unlink()
+
+    written = 0
+    for spec_cls in specs:
+        rendered = render_preview(spec_cls)
+        out_file = out_dir / f"{spec_cls.__name__}.md"
+        out_file.write_text(rendered, encoding="utf-8")
+        written += 1
+
+    print(f"Compiled {written} prompt(s) to {_PROMPTS_DIR}/")
+    if errors:
+        print(f"\n{len(errors)} import error(s):", file=sys.stderr)
+        for err in errors:
+            print(f"  {err}", file=sys.stderr)
+
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -322,9 +366,13 @@ def main(argv: list[str] | None = None) -> int:
     render_parser.add_argument("--no-input-documents", action="store_true", help="Hide input document listing")
     render_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
 
+    # compile
+    compile_parser = subparsers.add_parser("compile", help="Compile all specs to .prompts/ directory")
+    compile_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
+
     args = parser.parse_args(argv)
 
-    handlers = {"list": _cmd_list, "inspect": _cmd_inspect, "render": _cmd_render}
+    handlers = {"list": _cmd_list, "inspect": _cmd_inspect, "render": _cmd_render, "compile": _cmd_compile}
     handler = handlers.get(args.command)
     if handler is None:
         parser.print_help()

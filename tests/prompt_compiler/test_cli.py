@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.prompt_compiler.cli import (
+    _SKIP_DIRS,
     _ensure_importable,
     _file_defines_class,
     _file_may_contain_specs,
@@ -78,6 +79,21 @@ class StructuredInspectSpec(PromptSpec[CliPayload], phase=Phase("review")):
 # ---------------------------------------------------------------------------
 # _iter_python_files
 # ---------------------------------------------------------------------------
+
+
+def test_skip_dirs_includes_tmp() -> None:
+    """`.tmp` must be skipped to avoid scanning vendored dependency source trees."""
+    assert ".tmp" in _SKIP_DIRS
+
+
+def test_iter_python_files_skips_tmp_dirs(tmp_path: Path) -> None:
+    (tmp_path / ".tmp" / "deps").mkdir(parents=True)
+    (tmp_path / ".tmp" / "deps" / "mod.py").write_text("pass", encoding="utf-8")
+    (tmp_path / "real.py").write_text("pass", encoding="utf-8")
+    result = _iter_python_files(tmp_path)
+    names = {f.name for f in result}
+    assert "real.py" in names
+    assert "mod.py" not in names
 
 
 def test_iter_python_files_finds_py_files(tmp_path: Path) -> None:
@@ -500,6 +516,31 @@ def test_discover_all_specs_reports_import_errors(tmp_path: Path) -> None:
         sys.modules.pop("broken_pkg.spec", None)
 
 
+def test_discover_all_specs_suppresses_syntax_warnings(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """SyntaxWarning from third-party import hooks (e.g. beartype) must not leak to stderr."""
+    pkg = tmp_path / "warny_pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    # Module that references PromptSpec and contains a non-raw string with invalid escape
+    (pkg / "spec.py").write_text(
+        'from ai_pipeline_core.prompt_compiler import PromptSpec\nx = "test\\.pattern"\n',
+        encoding="utf-8",
+    )
+
+    root_str = str(tmp_path)
+    sys.path.insert(0, root_str)
+    try:
+        from ai_pipeline_core.prompt_compiler.cli import _discover_all_specs
+
+        _discover_all_specs(tmp_path)
+        captured = capsys.readouterr()
+        assert "SyntaxWarning" not in captured.err
+    finally:
+        sys.path.remove(root_str)
+        sys.modules.pop("warny_pkg", None)
+        sys.modules.pop("warny_pkg.spec", None)
+
+
 def test_discover_all_specs_skips_none_module_names(tmp_path: Path) -> None:
     """Files at root __init__.py get module_name=None and are skipped."""
     init = tmp_path / "__init__.py"
@@ -509,3 +550,71 @@ def test_discover_all_specs_skips_none_module_names(tmp_path: Path) -> None:
 
     # Should not crash — just skip the file
     _discover_all_specs(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# main() — compile command
+# ---------------------------------------------------------------------------
+
+
+def test_main_compile_creates_prompts_dir(capsys: pytest.CaptureFixture[str]) -> None:
+    """Compile writes rendered prompts to .prompts/ and reports count."""
+    ret = main(["compile", "--root", str(Path.cwd())])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "Compiled" in out
+    assert ".prompts/" in out
+
+    prompts_dir = Path.cwd() / ".prompts"
+    assert prompts_dir.is_dir()
+    md_files = sorted(prompts_dir.glob("*.md"))
+    assert len(md_files) > 0
+
+    # Each file should be named ClassName.md and contain rendered prompt text
+    for md_file in md_files:
+        content = md_file.read_text(encoding="utf-8")
+        assert "# Role" in content
+        assert "# Task" in content
+
+
+def test_main_compile_file_content_matches_render(capsys: pytest.CaptureFixture[str]) -> None:
+    """Compiled file content must match render_preview output for the same spec."""
+    main(["compile", "--root", str(Path.cwd())])
+    capsys.readouterr()
+
+    from ai_pipeline_core.prompt_compiler.render import render_preview
+
+    # Check a known spec
+    prompts_dir = Path.cwd() / ".prompts"
+    compiled = (prompts_dir / "MinimalInspectSpec.md").read_text(encoding="utf-8")
+    expected = render_preview(MinimalInspectSpec)
+    assert compiled == expected
+
+
+def test_main_compile_removes_stale_files(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Compile removes .md files that no longer correspond to a discovered spec."""
+    prompts_dir = tmp_path / ".prompts"
+    prompts_dir.mkdir()
+    stale_file = prompts_dir / "DeletedSpec.md"
+    stale_file.write_text("old content", encoding="utf-8")
+
+    # Compile in tmp_path (no specs found) — stale file should be removed
+    ret = main(["compile", "--root", str(tmp_path)])
+    assert ret == 0
+    assert not stale_file.exists()
+
+
+def test_main_compile_idempotent(capsys: pytest.CaptureFixture[str]) -> None:
+    """Running compile twice produces identical output files."""
+    root = Path.cwd()
+    main(["compile", "--root", str(root)])
+    capsys.readouterr()
+
+    prompts_dir = root / ".prompts"
+    first_run = {f.name: f.read_text(encoding="utf-8") for f in prompts_dir.glob("*.md")}
+
+    main(["compile", "--root", str(root)])
+    capsys.readouterr()
+
+    second_run = {f.name: f.read_text(encoding="utf-8") for f in prompts_dir.glob("*.md")}
+    assert first_run == second_run
