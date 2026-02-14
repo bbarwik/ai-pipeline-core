@@ -10,7 +10,7 @@ from ai_pipeline_core._llm_core import ModelOptions
 from ai_pipeline_core.llm.conversation import Conversation, _DEFAULT_SUBSTITUTOR_PROMPT
 from tests.support.helpers import create_test_model_response
 
-LONG_URL = "https://etherscan.io/address/0xdac17f958d2ee523a2206206994597c13d831ec7"
+LONG_URL = "https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page"
 
 
 class TestPromptInjection:

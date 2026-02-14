@@ -2,7 +2,7 @@
 
 LLMs may corrupt shortened forms in two ways:
 1. Unicode ellipsis: `...` → `…` (U+2026)
-2. Case change: `0xdAC17F95` → `0xdac17f95`
+2. Case change: `0x8CCD766E` → `0x8ccd766e`
 
 restore() handles both via Unicode normalization and case-insensitive lookup.
 """
@@ -10,11 +10,14 @@ restore() handles both via Unicode normalization and case-insensitive lookup.
 from ai_pipeline_core.llm import URLSubstitutor
 
 
-ETH_ADDRESS = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
-ETH_ADDRESS_2 = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-SOL_ADDRESS = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-LONG_URL = "https://etherscan.io/address/0xdac17f958d2ee523a2206206994597c13d831ec7"
-LONG_URL_2 = "https://polygonscan.com/token/0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+# Tier 1: tx hashes (0x + 64 hex = 66 chars)
+TX_HASH = "0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1"
+TX_HASH_2 = "0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
+TX_HASH_3 = "0x2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+
+# URLs containing tx hashes (> 80 chars)
+LONG_URL = "https://etherscan.io/tx/0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1"
+LONG_URL_2 = "https://polygonscan.com/tx/0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
 
 
 def _prepare(sub: URLSubstitutor, *texts: str) -> dict[str, str]:
@@ -26,17 +29,17 @@ def _prepare(sub: URLSubstitutor, *texts: str) -> dict[str, str]:
 class TestUnicodeEllipsisRestore:
     """Category 1: Unicode ellipsis normalization."""
 
-    def test_unicode_ellipsis_restores_address(self):
-        """ETH address with `…` (Unicode ellipsis) should restore."""
+    def test_unicode_ellipsis_restores_tx_hash(self):
+        """Tx hash with `…` (Unicode ellipsis) should restore."""
         sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        shortened = mappings[ETH_ADDRESS]
+        mappings = _prepare(sub, TX_HASH)
+        shortened = mappings[TX_HASH]
 
         # Simulate LLM converting ... to …
         corrupted = shortened.replace("...", "\u2026")
-        text = f"Contract: {corrupted}"
+        text = f"Transaction: {corrupted}"
         restored = sub.restore(text)
-        assert restored == f"Contract: {ETH_ADDRESS}"
+        assert restored == f"Transaction: {TX_HASH}"
 
     def test_unicode_ellipsis_restores_url(self):
         """Long URL with `…` should restore."""
@@ -65,42 +68,42 @@ class TestUnicodeEllipsisRestore:
     def test_unicode_ellipsis_multiple_patterns(self):
         """Multiple patterns all with `…` should all restore."""
         sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS, ETH_ADDRESS_2, SOL_ADDRESS)
+        mappings = _prepare(sub, TX_HASH, TX_HASH_2, TX_HASH_3)
 
         parts = []
-        for orig in [ETH_ADDRESS, ETH_ADDRESS_2, SOL_ADDRESS]:
+        for orig in [TX_HASH, TX_HASH_2, TX_HASH_3]:
             corrupted = mappings[orig].replace("...", "\u2026")
             parts.append(corrupted)
 
         text = " ".join(parts)
         restored = sub.restore(text)
-        assert ETH_ADDRESS in restored
-        assert ETH_ADDRESS_2 in restored
-        assert SOL_ADDRESS in restored
+        assert TX_HASH in restored
+        assert TX_HASH_2 in restored
+        assert TX_HASH_3 in restored
 
 
 class TestCaseInsensitiveRestore:
     """Category 2: Case-insensitive restoration."""
 
-    def test_lowercase_address_restores(self):
-        """Lowercased shortened address should restore."""
+    def test_lowercase_hash_restores(self):
+        """Lowercased shortened tx hash should restore."""
         sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        shortened = mappings[ETH_ADDRESS]
+        mappings = _prepare(sub, TX_HASH)
+        shortened = mappings[TX_HASH]
 
         lowered = shortened.lower()
         restored = sub.restore(lowered)
-        assert restored == ETH_ADDRESS
+        assert restored == TX_HASH
 
-    def test_uppercase_address_restores(self):
-        """Uppercased shortened address should restore."""
+    def test_uppercase_hash_restores(self):
+        """Uppercased shortened tx hash should restore."""
         sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        shortened = mappings[ETH_ADDRESS]
+        mappings = _prepare(sub, TX_HASH)
+        shortened = mappings[TX_HASH]
 
         uppered = shortened.upper()
         restored = sub.restore(uppered)
-        assert restored == ETH_ADDRESS
+        assert restored == TX_HASH
 
     def test_case_change_url_restores(self):
         """Case-changed shortened URL should restore."""
@@ -118,14 +121,14 @@ class TestCombinedCorruption:
     """Category 3: Unicode ellipsis + case change combined."""
 
     def test_ellipsis_plus_lowercase(self):
-        """Lowercased AND ellipsis-corrupted address should restore."""
+        """Lowercased AND ellipsis-corrupted tx hash should restore."""
         sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        shortened = mappings[ETH_ADDRESS]
+        mappings = _prepare(sub, TX_HASH)
+        shortened = mappings[TX_HASH]
 
         corrupted = shortened.replace("...", "\u2026").lower()
         restored = sub.restore(corrupted)
-        assert restored == ETH_ADDRESS
+        assert restored == TX_HASH
 
     def test_ellipsis_plus_lowercase_url(self):
         """Lowercased AND ellipsis-corrupted URL should restore."""
@@ -142,8 +145,8 @@ class TestCombinedCorruption:
 class TestURLWithEmbeddedPatternsCorrupted:
     """Category 4: URLs with embedded patterns, corruption applied."""
 
-    def test_url_embedded_eth_ellipsis(self):
-        """Etherscan URL with inner address ellipsis-corrupted should restore."""
+    def test_url_embedded_tx_hash_ellipsis(self):
+        """URL with inner tx hash ellipsis-corrupted should restore."""
         sub = URLSubstitutor()
         mappings = _prepare(sub, LONG_URL)
         shortened_url = mappings[LONG_URL]
@@ -153,20 +156,20 @@ class TestURLWithEmbeddedPatternsCorrupted:
         assert restored == LONG_URL
 
     def test_standalone_and_url_both_corrupted(self):
-        """Same address corrupted in text and in URL should both restore."""
+        """Same hash corrupted in text and in URL should both restore."""
         sub = URLSubstitutor()
-        eth = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/address/{eth}"
-        text = f"Contract {eth} at {url}"
+        tx = TX_HASH_2
+        url = f"https://etherscan.io/tx/{tx}"
+        text = f"Tx {tx} at {url}"
         mappings = _prepare(sub, text)
 
-        short_eth = mappings[eth]
+        short_tx = mappings[tx]
         short_url = mappings[url]
-        corrupted_eth = short_eth.replace("...", "\u2026")
+        corrupted_tx = short_tx.replace("...", "\u2026")
         corrupted_url = short_url.replace("...", "\u2026")
 
-        result = sub.restore(f"Contract {corrupted_eth} at {corrupted_url}")
-        assert eth in result
+        result = sub.restore(f"Tx {corrupted_tx} at {corrupted_url}")
+        assert tx in result
         assert url in result
 
 
@@ -176,7 +179,7 @@ class TestFalsePositiveResistance:
     def test_natural_text_not_falsely_restored(self):
         """Random text with hex-like chars should not be replaced."""
         sub = URLSubstitutor()
-        _prepare(sub, ETH_ADDRESS)
+        _prepare(sub, TX_HASH)
 
         innocent_text = "The value 0x7a25abc1488D is unrelated"
         restored = sub.restore(innocent_text)
@@ -185,7 +188,7 @@ class TestFalsePositiveResistance:
     def test_natural_ellipsis_not_falsely_matched(self):
         """Natural `...` in prose should not be mistaken for a shortened form."""
         sub = URLSubstitutor()
-        _prepare(sub, ETH_ADDRESS)
+        _prepare(sub, TX_HASH)
 
         text = "Loading... please wait"
         restored = sub.restore(text)
@@ -194,7 +197,7 @@ class TestFalsePositiveResistance:
     def test_natural_unicode_ellipsis_not_falsely_matched(self):
         """Natural `…` in prose should not be mistaken for a shortened form."""
         sub = URLSubstitutor()
-        _prepare(sub, ETH_ADDRESS)
+        _prepare(sub, TX_HASH)
 
         text = "Loading\u2026 please wait"
         restored = sub.restore(text)
@@ -209,8 +212,8 @@ class TestIntegrationWithSubstitute:
     def test_corrupted_form_passes_through_substitute(self):
         """Corrupted shortened form is too short for pattern regexes — substitute should not touch it."""
         sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        shortened = mappings[ETH_ADDRESS]
+        mappings = _prepare(sub, TX_HASH)
+        shortened = mappings[TX_HASH]
         corrupted = shortened.replace("...", "\u2026")
 
         result = sub.substitute(corrupted)
@@ -220,31 +223,31 @@ class TestIntegrationWithSubstitute:
     def test_substitute_after_corrupted_restore(self):
         """Restored original should re-shorten correctly."""
         sub = URLSubstitutor()
-        mappings = _prepare(sub, ETH_ADDRESS)
-        shortened = mappings[ETH_ADDRESS]
+        mappings = _prepare(sub, TX_HASH)
+        shortened = mappings[TX_HASH]
 
         corrupted = shortened.replace("...", "\u2026")
         restored = sub.restore(corrupted)
-        assert restored == ETH_ADDRESS
+        assert restored == TX_HASH
 
         re_shortened = sub.substitute(restored)
         assert re_shortened == shortened
 
     def test_roundtrip_through_corruption(self):
-        """Full cycle: substitute → corrupt address only → restore → re-substitute should be stable."""
+        """Full cycle: substitute → corrupt hash only → restore → re-substitute should be stable."""
         sub = URLSubstitutor()
-        text = f"Contract {ETH_ADDRESS} deployed"
+        text = f"Transaction {TX_HASH} confirmed"
         sub.prepare([text])
 
         shortened = sub.substitute(text)
-        addr_short = sub.get_mappings()[ETH_ADDRESS]
+        hash_short = sub.get_mappings()[TX_HASH]
 
-        # Corrupt only the shortened address form (not the surrounding text)
-        corrupted_addr = addr_short.replace("...", "\u2026").lower()
-        corrupted = shortened.replace(addr_short, corrupted_addr)
+        # Corrupt only the shortened hash form (not the surrounding text)
+        corrupted_hash = hash_short.replace("...", "\u2026").lower()
+        corrupted = shortened.replace(hash_short, corrupted_hash)
 
         restored = sub.restore(corrupted)
-        assert ETH_ADDRESS in restored
+        assert TX_HASH in restored
 
         re_shortened = sub.substitute(restored)
         assert re_shortened == shortened

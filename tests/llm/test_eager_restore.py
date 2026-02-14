@@ -8,9 +8,10 @@ from ai_pipeline_core.llm import URLSubstitutor
 from ai_pipeline_core.llm.conversation import Conversation
 from tests.support.helpers import create_test_model_response, create_test_structured_model_response
 
-LONG_URL = "https://etherscan.io/address/0xdac17f958d2ee523a2206206994597c13d831ec7"
-LONG_URL_2 = "https://polygonscan.com/token/0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
-ETH_ADDRESS = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+# URLs with tx hashes (>80 chars, contain 66-char T1 patterns)
+LONG_URL = "https://etherscan.io/tx/0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1"
+LONG_URL_2 = "https://polygonscan.com/tx/0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
+TX_HASH = "0x2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 
 
 class ItemList(BaseModel):
@@ -62,7 +63,7 @@ class TestEagerRestoreSend:
     @pytest.mark.asyncio
     async def test_multiple_urls_restored(self, monkeypatch):
         conv = Conversation(model="test-model")
-        shorts = _prepare_and_get_short(conv.substitutor, LONG_URL, LONG_URL_2, ETH_ADDRESS)
+        shorts = _prepare_and_get_short(conv.substitutor, LONG_URL, LONG_URL_2, TX_HASH)
 
         response_text = " ".join(shorts.values())
 
@@ -248,9 +249,9 @@ class TestSubstitutorRoundTrip:
         assert re_shortened == text
 
     def test_roundtrip_multiple_patterns(self):
-        """Round-trip with multiple URLs and addresses."""
+        """Round-trip with multiple URLs and tx hashes."""
         sub = URLSubstitutor()
-        sub.prepare([LONG_URL, LONG_URL_2, ETH_ADDRESS])
+        sub.prepare([LONG_URL, LONG_URL_2, TX_HASH])
         mappings = sub.get_mappings()
 
         text = " | ".join(mappings.values())

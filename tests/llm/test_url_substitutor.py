@@ -1,7 +1,7 @@
 """Tests for URLSubstitutor class.
 
 New two-tier design:
-- Tier 1: High-entropy strings (hex, base58, base64) → prefix...suffix (10+10 chars)
+- Tier 1: High-entropy strings (hex ≥66 chars, base64, base58) → prefix...suffix (10+10 chars)
 - Tier 2: URLs > 80 chars after Tier 1 → prefix...suffix (50+15 chars)
 - Paths: /first/.../last structural shortening
 """
@@ -9,6 +9,10 @@ New two-tier design:
 import pytest
 
 from ai_pipeline_core.llm import URLSubstitutor
+
+# Standard Tier 1 test values (0x + 64 hex = 66 chars, meets _T1_MIN_LENGTH)
+TX_HASH = "0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1"
+TX_HASH_2 = "0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
 
 
 @pytest.fixture
@@ -22,8 +26,8 @@ class TestURLSubstitutor:
 
     @pytest.mark.asyncio
     async def test_prepare_extracts_urls(self, substitutor):
-        # URL with ETH address → Tier 1 resolves it
-        texts = ["Check https://etherscan.io/address/0xdac17f958d2ee523a2206206994597c13d831ec7"]
+        # URL with tx hash → Tier 1 resolves it
+        texts = [f"Check https://etherscan.io/tx/{TX_HASH}"]
         substitutor.prepare(texts)
 
         assert substitutor.is_prepared
@@ -53,27 +57,27 @@ class TestURLSubstitutor:
         assert restored == original
 
     @pytest.mark.asyncio
-    async def test_eth_address_substitution(self, substitutor):
-        text = "Contract: 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+    async def test_tx_hash_substitution(self, substitutor):
+        text = f"Transaction: {TX_HASH}"
         substitutor.prepare([text])
 
         result = substitutor.substitute(text)
 
-        assert "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D" not in result
-        assert "0x7a250d56" in result  # 10-char prefix preserved
-        assert "c659F2488D" in result  # 10-char suffix preserved
+        assert TX_HASH not in result
+        assert "0x8ccd766e" in result  # 10-char prefix preserved
+        assert "8a874111e1" in result  # 10-char suffix preserved
         assert "..." in result  # Truncation marker
 
     @pytest.mark.asyncio
     async def test_multiple_patterns(self, substitutor):
         url = "https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page"
-        text = f"URL: {url}, Address: 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+        text = f"URL: {url}, Transaction: {TX_HASH}"
         substitutor.prepare([text])
 
         result = substitutor.substitute(text)
 
         assert url not in result
-        assert "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D" not in result
+        assert TX_HASH not in result
 
     @pytest.mark.asyncio
     async def test_no_patterns(self, substitutor):
@@ -109,42 +113,43 @@ class TestURLSubstitutor:
 
     @pytest.mark.asyncio
     async def test_persistence_across_prepare_calls(self, substitutor):
-        eth = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
         # First prepare
-        substitutor.prepare([eth])
-        label1 = substitutor.get_mappings().get(eth)
+        substitutor.prepare([TX_HASH])
+        label1 = substitutor.get_mappings().get(TX_HASH)
 
         # Second prepare with same value
-        substitutor.prepare([eth])
-        label2 = substitutor.get_mappings().get(eth)
+        substitutor.prepare([TX_HASH])
+        label2 = substitutor.get_mappings().get(TX_HASH)
 
         # Should use same label (deterministic)
         assert label1 == label2
 
     @pytest.mark.asyncio
     async def test_incremental_prepare(self, substitutor):
-        # Use ETH addresses that will be shortened by Tier 1
-        substitutor.prepare(["0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"])
+        substitutor.prepare([TX_HASH])
         assert substitutor.pattern_count == 1
 
-        substitutor.prepare(["0xdac17f958d2ee523a2206206994597c13d831ec7"])
+        substitutor.prepare([TX_HASH_2])
         assert substitutor.pattern_count == 2
 
     @pytest.mark.asyncio
-    async def test_btc_address_substitution(self, substitutor):
-        text = "Pay to 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    async def test_long_hex_substitution(self, substitutor):
+        """Long hex hash (66 chars) should be shortened by Tier 1."""
+        # Pure hex without 0x prefix, 66 chars
+        hex_hash = "8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1ab"
+        text = f"Hash: {hex_hash}"
         substitutor.prepare([text])
 
         result = substitutor.substitute(text)
 
-        assert "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" not in result
-        assert "1A1zP1eP5Q" in result  # 10-char prefix
+        assert hex_hash not in result
+        assert "8ccd766e39" in result  # 10-char prefix
         assert "..." in result  # Truncation marker
 
     @pytest.mark.asyncio
-    async def test_mixed_urls_and_addresses(self, substitutor):
-        text = """
-        Contract at 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
+    async def test_mixed_urls_and_tx_hashes(self, substitutor):
+        text = f"""
+        Transaction {TX_HASH}
         Docs: https://docs.example.com/api/v2/contracts/very/long/path/to/resource/page
         """
         substitutor.prepare([text])
@@ -189,15 +194,13 @@ class TestURLSubstitutorEdgeCases:
     @pytest.mark.asyncio
     async def test_deterministic_labels(self):
         """Same value should always produce same label."""
-        eth = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
-
         sub1 = URLSubstitutor()
-        sub1.prepare([eth])
-        label1 = sub1.get_mappings()[eth]
+        sub1.prepare([TX_HASH])
+        label1 = sub1.get_mappings()[TX_HASH]
 
         sub2 = URLSubstitutor()
-        sub2.prepare([eth])
-        label2 = sub2.get_mappings()[eth]
+        sub2.prepare([TX_HASH])
+        label2 = sub2.get_mappings()[TX_HASH]
 
         assert label1 == label2
 
@@ -214,16 +217,15 @@ class TestURLSubstitutorEdgeCases:
         assert "..." in label  # Ellipsis truncation marker
 
     @pytest.mark.asyncio
-    async def test_address_label_format(self):
-        """Address labels should follow prefix...suffix format (10+10)."""
+    async def test_tx_hash_label_format(self):
+        """Tx hash labels should follow prefix...suffix format (10+10)."""
         substitutor = URLSubstitutor()
-        eth = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
-        substitutor.prepare([eth])
+        substitutor.prepare([TX_HASH])
 
-        label = substitutor.get_mappings()[eth]
-        assert label.startswith("0x7a250d56")  # 10-char prefix
+        label = substitutor.get_mappings()[TX_HASH]
+        assert label.startswith("0x8ccd766e")  # 10-char prefix
         assert "..." in label  # Ellipsis truncation marker
-        assert label.endswith("c659F2488D")  # 10-char suffix
+        assert label.endswith("8a874111e1")  # 10-char suffix
 
     @pytest.mark.asyncio
     async def test_short_urls_not_shortened(self):
@@ -241,19 +243,18 @@ class TestURLSubstitutorEdgeCases:
 
 
 class TestURLWithEmbeddedPatterns:
-    """Tests for URLs containing high-entropy patterns (e.g., blockchain addresses).
+    """Tests for URLs containing high-entropy patterns (e.g., tx hashes).
 
-    When a URL contains a pattern that would be shortened on its own (like an Ethereum
-    address), the URL shortening should reuse the pattern's shortened form rather than
+    When a URL contains a pattern that would be shortened on its own (like a tx hash),
+    the URL shortening should reuse the pattern's shortened form rather than
     hashing the entire URL independently.
     """
 
     @pytest.mark.asyncio
-    async def test_url_with_eth_address_reuses_address_shortening(self):
-        """URL containing ETH address should reuse the address shortening."""
+    async def test_url_with_tx_hash_reuses_hash_shortening(self):
+        """URL containing tx hash should reuse the hash shortening."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/address/{eth_address}"
+        url = f"https://etherscan.io/tx/{TX_HASH}"
 
         substitutor.prepare([url])
 
@@ -263,17 +264,16 @@ class TestURLWithEmbeddedPatterns:
         assert url in mappings
         shortened_url = mappings[url]
 
-        # The shortened URL should contain the shortened address form
-        assert "/address/" in shortened_url, f"URL structure should be preserved: {shortened_url}"
-        assert "0xdac17f95" in shortened_url, f"Address 10-char prefix should be visible: {shortened_url}"
+        # The shortened URL should contain the shortened hash form
+        assert "/tx/" in shortened_url, f"URL structure should be preserved: {shortened_url}"
+        assert "0x8ccd766e" in shortened_url, f"Hash 10-char prefix should be visible: {shortened_url}"
 
     @pytest.mark.asyncio
-    async def test_url_with_eth_address_roundtrip(self):
-        """URL with embedded ETH address should round-trip correctly."""
+    async def test_url_with_tx_hash_roundtrip(self):
+        """URL with embedded tx hash should round-trip correctly."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/address/{eth_address}"
-        text = f"Check the contract at {url} for details"
+        url = f"https://etherscan.io/tx/{TX_HASH}"
+        text = f"Check the transaction at {url} for details"
 
         substitutor.prepare([text])
 
@@ -283,33 +283,31 @@ class TestURLWithEmbeddedPatterns:
         assert restored == text
 
     @pytest.mark.asyncio
-    async def test_url_and_standalone_address_share_shortening(self):
-        """Same address in URL and standalone should use consistent shortening."""
+    async def test_url_and_standalone_hash_share_shortening(self):
+        """Same hash in URL and standalone should use consistent shortening."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/address/{eth_address}"
-        text = f"Contract {eth_address} is at {url}"
+        url = f"https://etherscan.io/tx/{TX_HASH}"
+        text = f"Tx {TX_HASH} is at {url}"
 
         substitutor.prepare([text])
 
         substituted = substitutor.substitute(text)
 
-        # Both occurrences of the address (standalone and in URL) should use same shortening
+        # Both occurrences of the hash (standalone and in URL) should use same shortening
         mappings = substitutor.get_mappings()
 
-        # Get the standalone address shortening
-        assert eth_address in mappings
-        shortened_address = mappings[eth_address]
+        # Get the standalone hash shortening
+        assert TX_HASH in mappings
+        shortened_hash = mappings[TX_HASH]
 
-        # The shortened address should appear twice in the substituted text
-        assert substituted.count(shortened_address) == 2, f"Shortened address '{shortened_address}' should appear twice in: {substituted}"
+        # The shortened hash should appear twice in the substituted text
+        assert substituted.count(shortened_hash) == 2, f"Shortened hash '{shortened_hash}' should appear twice in: {substituted}"
 
     @pytest.mark.asyncio
-    async def test_url_with_solana_address_reuses_address_shortening(self):
-        """URL containing Solana address should reuse the address shortening."""
+    async def test_url_with_second_tx_hash_reuses_hash_shortening(self):
+        """URL containing a different tx hash should reuse the hash shortening."""
         substitutor = URLSubstitutor()
-        sol_address = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-        url = f"https://solscan.io/token/{sol_address}"
+        url = f"https://polygonscan.com/tx/{TX_HASH_2}"
 
         substitutor.prepare([url])
 
@@ -317,9 +315,9 @@ class TestURLWithEmbeddedPatterns:
         assert url in mappings
         shortened_url = mappings[url]
 
-        # Should contain shortened Solana address
-        assert "/token/" in shortened_url, f"URL structure should be preserved: {shortened_url}"
-        assert "Es9vMFrzaC" in shortened_url, f"Address 10-char prefix should be visible: {shortened_url}"
+        # Should contain shortened tx hash
+        assert "/tx/" in shortened_url, f"URL structure should be preserved: {shortened_url}"
+        assert "0x3a4b5c6d" in shortened_url, f"Hash 10-char prefix should be visible: {shortened_url}"
 
     @pytest.mark.asyncio
     async def test_url_with_long_hash_path_reuses_hash_shortening(self):
@@ -341,9 +339,7 @@ class TestURLWithEmbeddedPatterns:
     async def test_multiple_patterns_in_url(self):
         """URL with multiple high-entropy patterns should shorten all of them."""
         substitutor = URLSubstitutor()
-        addr1 = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        addr2 = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
-        url = f"https://example.com/swap/{addr1}/to/{addr2}"
+        url = f"https://example.com/compare/{TX_HASH}/to/{TX_HASH_2}"
 
         substitutor.prepare([url])
 
@@ -351,15 +347,14 @@ class TestURLWithEmbeddedPatterns:
         assert url in mappings
         shortened_url = mappings[url]
 
-        # Both addresses should be shortened within the URL
-        assert "0xdac17f95" in shortened_url or "0x7a250d56" in shortened_url, f"At least one address should be shortened in URL: {shortened_url}"
+        # At least one hash should be shortened within the URL
+        assert "0x8ccd766e" in shortened_url or "0x3a4b5c6d" in shortened_url, f"At least one hash should be shortened in URL: {shortened_url}"
 
     @pytest.mark.asyncio
     async def test_pattern_in_query_parameter(self):
-        """ETH address in query parameter should be shortened."""
+        """Tx hash in query parameter should be shortened."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://api.example.com/swap?from={eth_address}&to=USDC"
+        url = f"https://api.example.com/swap?from={TX_HASH}&to=USDC"
 
         substitutor.prepare([url])
 
@@ -367,17 +362,16 @@ class TestURLWithEmbeddedPatterns:
         assert url in mappings
         shortened_url = mappings[url]
 
-        # Query structure preserved, address shortened
+        # Query structure preserved, hash shortened
         assert "?from=" in shortened_url, f"Query param structure should be preserved: {shortened_url}"
         assert "&to=USDC" in shortened_url, f"Other params should be preserved: {shortened_url}"
-        assert "0xdac17f95" in shortened_url, f"Address prefix should be visible: {shortened_url}"
+        assert "0x8ccd766e" in shortened_url, f"Hash prefix should be visible: {shortened_url}"
 
     @pytest.mark.asyncio
     async def test_pattern_in_fragment(self):
-        """ETH address in URL fragment should be shortened."""
+        """Tx hash in URL fragment should be shortened."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://example.com/explorer#/address/{eth_address}"
+        url = f"https://example.com/explorer#/tx/{TX_HASH}"
 
         substitutor.prepare([url])
 
@@ -386,15 +380,15 @@ class TestURLWithEmbeddedPatterns:
         shortened_url = mappings[url]
 
         # Fragment structure preserved
-        assert "#/address/" in shortened_url, f"Fragment structure should be preserved: {shortened_url}"
-        assert "0xdac17f95" in shortened_url, f"Address prefix should be visible: {shortened_url}"
+        assert "#/tx/" in shortened_url, f"Fragment structure should be preserved: {shortened_url}"
+        assert "0x8ccd766e" in shortened_url, f"Hash prefix should be visible: {shortened_url}"
 
     @pytest.mark.asyncio
     async def test_url_encoded_pattern_not_matched(self):
         """URL-encoded patterns should not be matched as T1 (falls back to Tier 2)."""
         substitutor = URLSubstitutor()
-        # %64 is 'd', so this encodes 0xdac17... but regex won't match through %XX
-        url = "https://etherscan.io/address/0x%64ac17f958d2ee523a2206206994597c13d831ec7"
+        # %38 is '8', so this encodes 0x8ccd... but regex won't match through %XX
+        url = "https://etherscan.io/tx/0x%38ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1"
 
         substitutor.prepare([url])
 
@@ -402,15 +396,14 @@ class TestURLWithEmbeddedPatterns:
         assert url in mappings
         shortened_url = mappings[url]
 
-        # Should be shortened (Tier 2 since no T1 pattern matched)
+        # Should be shortened (Tier 2 since no T1 pattern matched through encoding)
         assert "..." in shortened_url
 
     @pytest.mark.asyncio
-    async def test_duplicate_address_in_url_both_replaced(self):
-        """Same address appearing twice in URL should be shortened."""
+    async def test_duplicate_hash_in_url_both_replaced(self):
+        """Same hash appearing twice in URL should be shortened."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://api.example.com/compare/{eth_address}/with/{eth_address}"
+        url = f"https://api.example.com/compare/{TX_HASH}/with/{TX_HASH}"
 
         substitutor.prepare([url])
 
@@ -425,8 +418,7 @@ class TestURLWithEmbeddedPatterns:
     async def test_restore_url_with_embedded_pattern(self):
         """Shortened URL with embedded pattern should restore correctly."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/address/{eth_address}"
+        url = f"https://etherscan.io/tx/{TX_HASH}"
         text = f"Check {url} for details"
 
         substitutor.prepare([text])
@@ -437,52 +429,49 @@ class TestURLWithEmbeddedPatterns:
 
     @pytest.mark.asyncio
     async def test_incremental_prepare_url_then_standalone(self):
-        """Preparing URL first, then standalone address should use consistent shortening."""
+        """Preparing URL first, then standalone hash should use consistent shortening."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/address/{eth_address}"
+        url = f"https://etherscan.io/tx/{TX_HASH}"
 
         # First prepare URL
         substitutor.prepare([url])
         url_shortened = substitutor.get_mappings()[url]
 
-        # Then prepare standalone address
-        substitutor.prepare([eth_address])
+        # Then prepare standalone hash
+        substitutor.prepare([TX_HASH])
 
-        # Both should use consistent address shortening
-        addr_shortened = substitutor.get_mappings()[eth_address]
-        assert addr_shortened in url_shortened, f"URL should contain address shortening: {url_shortened} should contain {addr_shortened}"
+        # Both should use consistent hash shortening
+        hash_shortened = substitutor.get_mappings()[TX_HASH]
+        assert hash_shortened in url_shortened, f"URL should contain hash shortening: {url_shortened} should contain {hash_shortened}"
 
     @pytest.mark.asyncio
     async def test_incremental_prepare_standalone_then_url(self):
-        """Preparing standalone address first, then URL should reuse the shortening."""
+        """Preparing standalone hash first, then URL should reuse the shortening."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/address/{eth_address}"
+        url = f"https://etherscan.io/tx/{TX_HASH}"
 
-        # First prepare standalone address
-        substitutor.prepare([eth_address])
-        addr_shortened = substitutor.get_mappings()[eth_address]
+        # First prepare standalone hash
+        substitutor.prepare([TX_HASH])
+        hash_shortened = substitutor.get_mappings()[TX_HASH]
 
         # Then prepare URL
         substitutor.prepare([url])
         url_shortened = substitutor.get_mappings()[url]
 
-        # URL should reuse the existing address shortening
-        assert addr_shortened in url_shortened, f"URL should reuse existing address shortening: {url_shortened} should contain {addr_shortened}"
+        # URL should reuse the existing hash shortening
+        assert hash_shortened in url_shortened, f"URL should reuse existing hash shortening: {url_shortened} should contain {hash_shortened}"
 
     @pytest.mark.asyncio
     async def test_already_shortened_not_reshortened(self):
         """URLs containing already-shortened patterns should not be re-shortened."""
         substitutor = URLSubstitutor()
 
-        # First shorten an address
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        substitutor.prepare([eth_address])
-        addr_shortened = substitutor.get_mappings()[eth_address]
+        # First shorten a hash
+        substitutor.prepare([TX_HASH])
+        hash_shortened = substitutor.get_mappings()[TX_HASH]
 
         # Now try to shorten a URL that contains the shortened form
-        fake_url = f"https://example.com/addr/{addr_shortened}"
+        fake_url = f"https://example.com/tx/{hash_shortened}"
         substitutor.prepare([fake_url])
 
         # The shortened form should not be re-processed (it's too short for T1)
@@ -495,21 +484,20 @@ class TestURLWithEmbeddedPatterns:
     async def test_pattern_at_url_path_end(self):
         """Pattern at the very end of URL path should be shortened."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/token/{eth_address}"
+        url = f"https://etherscan.io/tx/{TX_HASH}"
 
         substitutor.prepare([url])
 
         mappings = substitutor.get_mappings()
         shortened_url = mappings[url]
 
-        assert "0xdac17f95" in shortened_url
+        assert "0x8ccd766e" in shortened_url
 
     @pytest.mark.asyncio
     async def test_short_pattern_in_long_url_not_shortened(self):
         """Short patterns (below threshold) should not be shortened even in URLs."""
         substitutor = URLSubstitutor()
-        # This is too short to be a valid ETH address (only 20 chars after 0x)
+        # This is too short for T1 (only 20 chars after 0x)
         short_hex = "0x1234567890abcdef1234"
         url = f"https://example.com/something/path/to/resource/{short_hex}/more/path/segments/here"
 
@@ -521,18 +509,16 @@ class TestURLWithEmbeddedPatterns:
 
     @pytest.mark.asyncio
     async def test_mixed_pattern_types_in_url(self):
-        """URL with both ETH and Solana address should be shortened."""
+        """URL with two different tx hashes should be shortened."""
         substitutor = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        sol_address = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-        url = f"https://bridge.example.com/from/{eth_address}/to/{sol_address}"
+        url = f"https://bridge.example.com/from/{TX_HASH}/to/{TX_HASH_2}"
 
         substitutor.prepare([url])
 
         mappings = substitutor.get_mappings()
         shortened_url = mappings[url]
 
-        # URL must be shortened (T1 inside may push > 80 → Tier 2 takes over)
+        # URL must be shortened
         assert len(shortened_url) < len(url), f"URL should be shorter: {shortened_url}"
         assert "..." in shortened_url
         # Round-trip must work regardless of which tier handled it
@@ -589,10 +575,10 @@ class TestFalsePositives:
         assert restored == text
 
     def test_real_base64_with_slash_still_shortened(self):
-        """Actual Base64 containing `/` and `+` or `=` should still be shortened."""
+        """Actual Base64 containing `/` and `+` or `=` should still be shortened when ≥66 chars."""
         sub = URLSubstitutor()
-        # Real Base64 string (has / + and =)
-        b64 = "SGVsbG8gV29ybGQhIFRoaXMgaXMgYSB0ZXN0IG9mIEJhc2U2NC4="
+        # Long Base64 string (72 chars, has + and =)
+        b64 = "SGVsbG8gV29ybGQhIFRoaXMgaXMgYSBsb25nZXIgdGVzdCBvZiBCYXNlNjQgZW5jb2Rpbmc="
         text = f"Data: {b64}"
         sub.prepare([text])
         result = sub.substitute(text)
@@ -662,16 +648,15 @@ class TestPartiallyShortened:
         restored = sub.restore(substituted)
         assert restored == text
 
-    def test_url_with_eth_address_stays_short_enough(self):
-        """URL with ETH address that fits under threshold should preserve structure."""
+    def test_url_with_tx_hash_stays_short_enough(self):
+        """URL with tx hash that fits under threshold should preserve structure."""
         sub = URLSubstitutor()
-        eth_address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        url = f"https://etherscan.io/address/{eth_address}"
+        url = f"https://etherscan.io/tx/{TX_HASH}"
         sub.prepare([url])
         result = sub.substitute(url)
         # Short enough to keep structure
-        assert "/address/" in result, f"URL structure should be preserved: {result}"
-        assert "0xdac17f95" in result, f"Address prefix should be visible: {result}"
+        assert "/tx/" in result, f"URL structure should be preserved: {result}"
+        assert "0x8ccd766e" in result, f"Hash prefix should be visible: {result}"
         assert len(result) <= 80
 
 
@@ -698,9 +683,10 @@ class TestKnownLimitations:
         assert result == text
 
     def test_real_base64_with_slash_and_plus_still_shortened(self):
-        """Base64 with both / and + should still be shortened."""
+        """Base64 with both / and + should still be shortened when ≥66 chars."""
         sub = URLSubstitutor()
-        b64 = "SGVsbG8gV29ybGQhIFRoaXMgaXMgYSB0ZXN0+/"
+        # 72 chars: has both + and / to qualify as real base64
+        b64 = "SGVsbG8gV29ybGQh+FRoaXMg/XMgYSBsb25nZXIgdGVzdCBvZiBCYXNlNjQgZW5jb2Rpbmc="
         text = f"Data: {b64}"
         sub.prepare([text])
         result = sub.substitute(text)
@@ -709,16 +695,33 @@ class TestKnownLimitations:
     def test_phase2_fallback_preserves_standalone_pattern_mapping(self):
         """When URL falls through to Tier 2, standalone patterns still work."""
         sub = URLSubstitutor()
-        eth = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        long_url = f"https://very-long-domain-name.example.com/extremely/long/path/structure/{eth}/more/segments/here/that/push/over/threshold"
-        text = f"Address {eth} at {long_url}"
+        long_url = f"https://very-long-domain-name.example.com/extremely/long/path/structure/{TX_HASH}/more/segments/here/that/push/over/threshold"
+        text = f"Tx {TX_HASH} at {long_url}"
         sub.prepare([text])
         result = sub.substitute(text)
-        assert eth not in result
-        assert "0xdac17f95" in result
+        assert TX_HASH not in result
+        assert "0x8ccd766e" in result
         assert long_url not in result
         restored = sub.restore(result)
         assert restored == text
+
+    def test_short_eth_address_not_shortened(self):
+        """Ethereum addresses (42 chars) are below _T1_MIN_LENGTH and should not be shortened."""
+        sub = URLSubstitutor()
+        eth = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+        text = f"Contract: {eth}"
+        sub.prepare([text])
+        result = sub.substitute(text)
+        assert result == text
+
+    def test_short_solana_address_not_shortened(self):
+        """Solana addresses (44 chars) are below _T1_MIN_LENGTH and should not be shortened."""
+        sub = URLSubstitutor()
+        sol = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+        text = f"Token: {sol}"
+        sub.prepare([text])
+        result = sub.substitute(text)
+        assert result == text
 
 
 class TestPathShortening:
@@ -863,16 +866,15 @@ class TestPathShortening:
         assert path1 not in result
         assert path2 not in result
 
-    def test_path_coexists_with_addresses(self):
-        """Paths and blockchain addresses should coexist correctly."""
+    def test_path_coexists_with_tx_hashes(self):
+        """Paths and tx hashes should coexist correctly."""
         sub = URLSubstitutor()
         path = "/es/network/nodes/configure/telemetry"
-        eth = "0xdac17f958d2ee523a2206206994597c13d831ec7"
-        text = f"({path}) contract {eth}"
+        text = f"({path}) transaction {TX_HASH}"
         sub.prepare([text])
         result = sub.substitute(text)
         assert path not in result
-        assert eth not in result
+        assert TX_HASH not in result
         restored = sub.restore(result)
         assert restored == text
 

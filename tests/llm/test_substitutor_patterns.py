@@ -3,10 +3,10 @@
 import re
 
 
-# Define patterns locally for testing (mirrors internal _PATTERNS)
+# Define patterns locally for testing (mirrors internal _PATTERNS with _T1_MIN_LENGTH=66)
 _URL_PATTERN = re.compile(r"https?://[^\s<>\"'`\[\]{}|\\^]+", re.IGNORECASE)
-_HEX_PREFIXED_PATTERN = re.compile(r"\b0x[a-fA-F0-9]{40,}\b")
-_HIGH_ENTROPY_PATTERN = re.compile(r"\b[A-Za-z0-9]{26,}\b")
+_HEX_PREFIXED_PATTERN = re.compile(r"\b0x[a-fA-F0-9]{64,}\b")
+_HIGH_ENTROPY_PATTERN = re.compile(r"\b[A-Za-z0-9]{66,}\b")
 
 
 class TestURLExtraction:
@@ -61,48 +61,48 @@ class TestURLExtraction:
         assert len(matches) == 0
 
 
-class TestHexAddressExtraction:
-    """Tests for hex-prefixed address extraction (Ethereum, etc.)."""
+class TestHexPrefixedExtraction:
+    """Tests for hex-prefixed pattern extraction (tx hashes, etc.)."""
 
-    def test_eth_address(self):
-        text = "Contract: 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+    def test_tx_hash(self):
+        # Transaction hash is 0x + 64 hex chars = 66 total
+        text = "Tx: 0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1"
         matches = list(_HEX_PREFIXED_PATTERN.finditer(text))
         assert len(matches) == 1
         assert matches[0].group().startswith("0x")
-        assert len(matches[0].group()) == 42
+        assert len(matches[0].group()) == 66  # 0x + 64 hex
 
-    def test_eth_address_lowercase(self):
-        text = "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae"
+    def test_tx_hash_lowercase(self):
+        text = "0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
         matches = list(_HEX_PREFIXED_PATTERN.finditer(text))
         assert len(matches) == 1
 
-    def test_multiple_eth_addresses(self):
-        text = "From 0x1234567890123456789012345678901234567890 to 0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    def test_multiple_tx_hashes(self):
+        text = "From 0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1 to 0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
         matches = list(_HEX_PREFIXED_PATTERN.finditer(text))
         assert len(matches) == 2
 
-    def test_eth_tx_hash(self):
-        # Transaction hash is 0x + 64 hex chars = 66 total
-        text = "Tx: 0x7a250d5630b4cf539739df2c5dacb4c659f2488d7a250d5630b4cf539739df2c"
+    def test_short_eth_address_not_matched(self):
+        """Ethereum addresses (0x + 40 hex = 42 chars) should NOT match with {64,} minimum."""
+        text = "Contract: 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
         matches = list(_HEX_PREFIXED_PATTERN.finditer(text))
-        assert len(matches) == 1
-        assert len(matches[0].group()) == 66  # 0x + 64 hex
+        assert len(matches) == 0
 
 
 class TestHighEntropyExtraction:
     """Tests for high-entropy string extraction."""
 
-    def test_solana_address(self):
-        # Solana addresses are 43-44 base58 chars
-        text = "Solana: 7EcDhSYGxXyscszYEp35KHN8vvw3svAuLKTzXwCFLtV"
+    def test_long_alphanumeric_string(self):
+        # 66+ char alphanumeric string should match
+        text = "Token: 8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1ab"
         matches = list(_HIGH_ENTROPY_PATTERN.finditer(text))
         assert len(matches) >= 1
 
-    def test_btc_legacy_p2pkh(self):
-        text = "Pay to 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    def test_short_alphanumeric_not_matched(self):
+        """Strings under 66 chars should NOT match with {66,} minimum."""
+        text = "Solana: 7EcDhSYGxXyscszYEp35KHN8vvw3svAuLKTzXwCFLtV"
         matches = list(_HIGH_ENTROPY_PATTERN.finditer(text))
-        # May or may not match depending on entropy checks
-        assert isinstance(matches, list)
+        assert len(matches) == 0
 
 
 class TestEmptyAndEdgeCases:

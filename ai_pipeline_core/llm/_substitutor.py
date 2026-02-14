@@ -29,7 +29,7 @@ _T1_PREFIX = 10
 _T1_SUFFIX = 10
 _T1_STABLE_PREFIX = 8
 _T1_STABLE_SUFFIX = 8
-_T1_MIN_LENGTH = 32
+_T1_MIN_LENGTH = 66
 _T1_MAX_ATTEMPTS = 200
 
 # ── Tier 2 URL config ─────────────────────────────────────────────────────────
@@ -41,12 +41,12 @@ _URL_MAX_COLLISION_ATTEMPTS = (_URL_THRESHOLD - _URL_TARGET_LEN) // 2  # 6
 
 # ── Tier 1 detection patterns (most specific → least specific) ─────────────────
 _T1_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("hex_prefixed", re.compile(r"\b0x[a-fA-F0-9]{40,}\b")),
-    ("hex", re.compile(r"\b[a-fA-F0-9]{32,}\b")),
-    ("base64_padded", re.compile(r"\b[A-Za-z0-9+/]{32,}={1,2}\b")),
-    ("base64_unpadded", re.compile(r"\b[A-Za-z0-9+/]{40,}\b")),
-    ("base58", re.compile(r"\b[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{32,}\b")),
-    ("high_entropy", re.compile(r"\b[A-Za-z0-9]{32,}\b")),
+    ("hex_prefixed", re.compile(r"\b0x[a-fA-F0-9]{64,}\b")),
+    ("hex", re.compile(r"\b[a-fA-F0-9]{66,}\b")),
+    ("base64_padded", re.compile(r"\b[A-Za-z0-9+/]{64,}={1,2}\b")),
+    ("base64_unpadded", re.compile(r"\b[A-Za-z0-9+/]{66,}\b")),
+    ("base58", re.compile(r"\b[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{66,}\b")),
+    ("high_entropy", re.compile(r"\b[A-Za-z0-9]{66,}\b")),
 ]
 
 # Per-pattern entropy and diversity thresholds

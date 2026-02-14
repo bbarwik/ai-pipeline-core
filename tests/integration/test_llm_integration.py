@@ -234,19 +234,17 @@ class TestLLMIntegration:
     async def test_substitutor_roundtrip_with_real_llm(self):
         """End-to-end: substitutor shortens URLs/addresses for LLM, restores them in output."""
         urls = [
-            "https://etherscan.io/address/0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "https://etherscan.io/tx/0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1",
             "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQG1GvW3nY37WMAKEhLfIK3tYPcvi96LKvsRVZEhz5tW7J0wwWaD9l3YuBXL6D4B0vSwgH6NpUB9stPrmV3mE",
             "https://github.com/aptos-labs/aptos-core/blob/main/documentation/specifications/network/messaging-v1.md",
-            "https://explorer.solana.com/address/Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB?cluster=mainnet-beta",
+            "https://explorer.solana.com/tx/3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b?cluster=mainnet-beta",
             "https://docs.uniswap.org/contracts/v3/reference/periphery/interfaces/ISwapRouter",
-            "https://polygonscan.com/token/0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-            "https://bscscan.com/token/0x55d398326f99059fF775485246999027B3197955#balances",
+            "https://polygonscan.com/tx/0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
+            "https://bscscan.com/tx/0x2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824#internal",
         ]
         addresses = [
-            "0xdac17f958d2ee523a2206206994597c13d831ec7",
-            "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
-            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-            "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+            "0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1",
+            "0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
         ]
         all_items = urls + addresses
 
@@ -297,13 +295,13 @@ class TestLLMIntegration:
             items: list[str]
 
         urls = [
-            "https://etherscan.io/address/0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "https://etherscan.io/tx/0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1",
             "https://github.com/aptos-labs/aptos-core/blob/main/documentation/specifications/network/messaging-v1.md",
-            "https://polygonscan.com/token/0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+            "https://polygonscan.com/tx/0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
         ]
         addresses = [
-            "0xdac17f958d2ee523a2206206994597c13d831ec7",
-            "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+            "0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1",
+            "0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
         ]
         all_items = urls + addresses
 

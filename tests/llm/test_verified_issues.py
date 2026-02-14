@@ -105,7 +105,7 @@ class TestSubstitutorStatePersistenceFixed:
         # Create conversation with a document that has a long URL
         doc = ConcreteDocument.create(
             name="test.txt",
-            content="Visit https://example.com/very/long/path/to/resource/that/needs/shortening",
+            content="Visit https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page",
         )
         conv1 = Conversation(model="gpt-5.1", context=[doc])
 
@@ -113,7 +113,7 @@ class TestSubstitutorStatePersistenceFixed:
         assert conv1.substitutor is not None
 
         # Add mappings by calling prepare
-        conv1.substitutor.prepare(["https://example.com/very/long/path/to/resource/that/needs/shortening"])
+        conv1.substitutor.prepare(["https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page"])
         initial_count = conv1.substitutor.pattern_count
 
         # Send and get new conversation
