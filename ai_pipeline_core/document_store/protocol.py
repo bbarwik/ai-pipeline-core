@@ -4,6 +4,7 @@ Defines the DocumentStore protocol that all storage backends must implement,
 along with get/set helpers for the process-global singleton.
 """
 
+from datetime import timedelta
 from typing import Protocol, TypeVar, runtime_checkable
 
 from ai_pipeline_core.document_store._models import DocumentNode
@@ -71,6 +72,23 @@ class DocumentStore(Protocol):
         """Load lightweight metadata for ALL documents in a run scope.
 
         No content or attachments loaded.
+        """
+        ...
+
+    async def find_by_source(
+        self,
+        source_values: list[str],
+        document_type: type[_D],
+        *,
+        max_age: timedelta | None = None,
+    ) -> dict[str, _D]:
+        """Find the most recent document per source value.
+
+        For each value in source_values, finds the newest document of document_type
+        whose sources array contains that value. If max_age is set, only considers
+        documents stored within that time window.
+
+        Returns {source_value: Document} for found matches. Missing values are omitted.
         """
         ...
 

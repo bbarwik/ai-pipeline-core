@@ -61,6 +61,7 @@ from .pipeline import FlowOptions, pipeline_flow, pipeline_task
 from .prompt_compiler import Guide, OutputRule, OutputT, Phase, PromptSpec, Role, Rule, extract_result, render_preview, render_text, send_spec
 from .prompt_manager import PromptManager
 from .settings import Settings
+from .testing import disable_run_logger, prefect_test_harness
 
 __version__ = "0.9.0"
 
@@ -104,6 +105,7 @@ __all__ = [
     "TraceLevel",
     "URLSubstitutor",
     "create_document_store",
+    "disable_run_logger",
     "extract_result",
     "generate",
     "generate_structured",
@@ -115,6 +117,7 @@ __all__ = [
     "llm",
     "pipeline_flow",
     "pipeline_task",
+    "prefect_test_harness",
     "process_image",
     "progress",
     "render_preview",

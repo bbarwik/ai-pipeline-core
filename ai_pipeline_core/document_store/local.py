@@ -9,6 +9,7 @@ Layout:
 import asyncio
 import json
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -108,6 +109,16 @@ class LocalDocumentStore:
         """Load lightweight metadata for all documents in a run scope."""
         return await asyncio.to_thread(self._load_scope_metadata_sync, run_scope)
 
+    async def find_by_source(
+        self,
+        source_values: list[str],
+        document_type: type[Document],
+        *,
+        max_age: timedelta | None = None,
+    ) -> dict[str, Document]:
+        """Find most recent document per source value by scanning meta files."""
+        return await asyncio.to_thread(self._find_by_source_sync, source_values, document_type, max_age)
+
     def flush(self) -> None:
         """Block until all pending document summaries are processed."""
         if self._summary_worker:
@@ -198,6 +209,7 @@ class LocalDocumentStore:
             "origins": list(document.origins),
             "mime_type": document.mime_type,
             "attachments": att_meta_list,
+            "stored_at": datetime.now(UTC).isoformat(),
         }
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -479,6 +491,56 @@ class LocalDocumentStore:
                 )
             )
         return nodes
+
+    @staticmethod
+    def _check_stored_at(meta: dict[str, Any], cutoff: datetime | None) -> str | None:
+        """Check if meta's stored_at is recent enough. Returns stored_at string or None to skip."""
+        stored_at_str = meta.get("stored_at")
+        if cutoff is None:
+            return stored_at_str or ""
+        if not stored_at_str:
+            return None
+        try:
+            return stored_at_str if datetime.fromisoformat(stored_at_str) >= cutoff else None
+        except (ValueError, TypeError):
+            return None
+
+    def _find_by_source_sync(self, source_values: list[str], document_type: type[Document], max_age: timedelta | None) -> dict[str, Document]:
+        """Scan all meta files to find documents with matching sources. Returns newest per source value."""
+        if not source_values or not self._base_path.exists():
+            return {}
+
+        source_set = set(source_values)
+        class_name = document_type.__name__
+        cutoff = (datetime.now(UTC) - max_age) if max_age is not None else None
+
+        # Collect candidates: {source_value: (stored_at_iso, meta_path, meta)}
+        best: dict[str, tuple[str, Path, dict[str, Any]]] = {}
+
+        for meta_path in self._base_path.rglob("*.meta.json"):
+            meta = self._read_meta(meta_path)
+            if meta is None or meta.get("class_name") != class_name:
+                continue
+
+            sort_key = self._check_stored_at(meta, cutoff)
+            if sort_key is None:
+                continue
+
+            for src in meta.get("sources", ()):
+                if src in source_set:
+                    prev = best.get(src)
+                    if prev is None or sort_key > prev[0]:
+                        best[src] = (sort_key, meta_path, meta)
+
+        # Construct documents for each match
+        result: dict[str, Document] = {}
+        with suppress_registration():
+            for source_val, (_ts, meta_path, meta) in best.items():
+                doc = self._construct_document_from_meta(meta_path.parent, meta_path, meta, document_type)
+                if doc is not None:
+                    result[source_val] = doc
+
+        return result
 
     def _find_all_meta_by_sha256(self, document_sha256: DocumentSha256) -> list[Path]:
         """Scan all meta files to find ones matching the given sha256."""

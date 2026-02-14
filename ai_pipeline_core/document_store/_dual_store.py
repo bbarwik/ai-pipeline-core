@@ -8,6 +8,7 @@ Summary generation is owned by this store (not the primary), so that
 update_summary fans out to both stores via this class's method.
 """
 
+from datetime import timedelta
 from typing import TypeVar
 
 from ai_pipeline_core.document_store._models import DocumentNode
@@ -105,6 +106,16 @@ class DualDocumentStore:
     async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         """Delegate to primary store."""
         return await self._primary.load_scope_metadata(run_scope)
+
+    async def find_by_source(
+        self,
+        source_values: list[str],
+        document_type: type[Document],
+        *,
+        max_age: timedelta | None = None,
+    ) -> dict[str, Document]:
+        """Delegate to primary store."""
+        return await self._primary.find_by_source(source_values, document_type, max_age=max_age)
 
     def flush(self) -> None:
         """Flush both stores; secondary failures are best-effort."""

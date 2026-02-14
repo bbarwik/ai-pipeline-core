@@ -4,6 +4,7 @@ Simple dict-based storage implementing the full DocumentStore protocol.
 Not for production use — all data is lost when the process exits.
 """
 
+from datetime import timedelta
 from typing import TypeVar
 
 from ai_pipeline_core.document_store._models import DocumentNode
@@ -125,6 +126,26 @@ class MemoryDocumentStore:
             for sha in sha256s
             if (doc := self._documents.get(sha)) is not None
         ]
+
+    async def find_by_source(
+        self,
+        source_values: list[str],
+        document_type: type[Document],
+        *,
+        max_age: timedelta | None = None,
+    ) -> dict[str, Document]:
+        """Find documents by source value. Ignores max_age (no timestamps in memory store)."""
+        if not source_values:
+            return {}
+        source_set = set(source_values)
+        result: dict[str, Document] = {}
+        for doc in self._documents.values():
+            if not isinstance(doc, document_type):
+                continue
+            for src in doc.sources:
+                if src in source_set and src not in result:
+                    result[src] = doc
+        return result
 
     def flush(self) -> None:
         """Block until all pending document summaries are processed."""

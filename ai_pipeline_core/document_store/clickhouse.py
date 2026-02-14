@@ -11,7 +11,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
 
 import clickhouse_connect
@@ -249,6 +249,16 @@ class ClickHouseDocumentStore:
     async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         """Load lightweight metadata for all documents in a run scope."""
         return await self._run(self._load_scope_metadata_sync, run_scope)
+
+    async def find_by_source(
+        self,
+        source_values: list[str],
+        document_type: type[Document],
+        *,
+        max_age: timedelta | None = None,
+    ) -> dict[str, Document]:
+        """Find most recent document per source value via sources array lookup."""
+        return await self._run(self._find_by_source_sync, source_values, document_type, max_age)
 
     def flush(self) -> None:
         """Block until all pending document summaries are processed."""
@@ -709,6 +719,125 @@ class ClickHouseDocumentStore:
                 )
             )
         return nodes
+
+    def _find_by_source_sync(self, source_values: list[str], document_type: type[Document], max_age: timedelta | None) -> dict[str, Document]:
+        """Find most recent document per source value. Two-query pattern: metadata+content, then attachments."""
+        if not source_values:
+            return {}
+        self._ensure_tables()
+
+        parsed_rows, all_att_sha256s = self._query_by_source(source_values, document_type.__name__, max_age)
+        if not parsed_rows:
+            return {}
+
+        att_content_by_sha = self._fetch_attachment_content(all_att_sha256s)
+        return self._reconstruct_source_documents(parsed_rows, att_content_by_sha, document_type)
+
+    def _query_by_source(
+        self,
+        source_values: list[str],
+        class_name: str,
+        max_age: timedelta | None,
+    ) -> tuple[list[tuple[str, str, str | None, tuple[str, ...], tuple[str, ...], list[str], list[str], list[str], bytes]], set[str]]:
+        """Query document_index for newest document per source value, joined with main content."""
+        params: dict[str, Any] = {"class_name": class_name, "source_values": source_values}
+
+        age_filter = ""
+        if max_age is not None:
+            params["cutoff"] = datetime.now(UTC) - max_age
+            age_filter = "AND di.stored_at >= {cutoff:DateTime64(3, 'UTC')}"
+
+        rows = self._client.query(
+            f"WITH matched AS ("
+            f"  SELECT"
+            f"    arrayJoin(di.sources) AS matched_source,"
+            f"    di.content_sha256,"
+            f"    di.name, di.description, di.sources, di.origins,"
+            f"    di.attachment_names, di.attachment_descriptions, di.attachment_sha256s,"
+            f"    ROW_NUMBER() OVER (PARTITION BY matched_source ORDER BY di.stored_at DESC, di.document_sha256 DESC) AS rn"
+            f"  FROM {TABLE_DOCUMENT_INDEX} FINAL AS di"
+            f"  WHERE di.class_name = {{class_name:String}}"
+            f"  AND hasAny(di.sources, {{source_values:Array(String)}})"
+            f"  {age_filter}"
+            f")"
+            f" SELECT m.matched_source, m.name, m.description, m.sources, m.origins,"
+            f"   m.attachment_names, m.attachment_descriptions, m.attachment_sha256s,"
+            f"   dc.content, length(dc.content)"
+            f" FROM matched AS m"
+            f" JOIN {TABLE_DOCUMENT_CONTENT} FINAL AS dc ON m.content_sha256 = dc.content_sha256"
+            f" WHERE m.rn = 1 AND m.matched_source IN {{source_values:Array(String)}}",
+            parameters=params,
+        )
+
+        source_set = set(source_values)
+        parsed: list[tuple[str, str, str | None, tuple[str, ...], tuple[str, ...], list[str], list[str], list[str], bytes]] = []
+        all_att_sha256s: set[str] = set()
+
+        for row in rows.result_rows:
+            matched_source_raw, name_raw, desc_raw, sources_raw, origins_raw, att_names_raw, att_descs_raw, att_sha256s_raw, content_raw, content_len = row
+            matched_source = _decode(matched_source_raw)
+            if matched_source not in source_set:
+                continue
+            att_sha256s = [_decode(s) for s in att_sha256s_raw]
+            all_att_sha256s.update(att_sha256s)
+            parsed.append((
+                matched_source,
+                _decode(name_raw),
+                _decode(desc_raw) or None,
+                tuple(_decode(s) for s in sources_raw),
+                tuple(_decode(o) for o in origins_raw),
+                [_decode(n) for n in att_names_raw],
+                [_decode(d) for d in att_descs_raw],
+                att_sha256s,
+                _decode_content(content_raw, content_len),
+            ))
+
+        return parsed, all_att_sha256s
+
+    def _fetch_attachment_content(self, att_sha256s: set[str]) -> dict[str, bytes]:
+        """Batch-fetch attachment content blobs by SHA256."""
+        if not att_sha256s:
+            return {}
+        att_rows = self._client.query(
+            f"SELECT content_sha256, content, length(content) FROM {TABLE_DOCUMENT_CONTENT} FINAL WHERE content_sha256 IN {{sha256s:Array(String)}}",
+            parameters={"sha256s": list(att_sha256s)},
+        )
+        return {_decode(row[0]): _decode_content(row[1], row[2]) for row in att_rows.result_rows}
+
+    @staticmethod
+    def _reconstruct_source_documents(
+        parsed_rows: list[tuple[str, str, str | None, tuple[str, ...], tuple[str, ...], list[str], list[str], list[str], bytes]],
+        att_content_by_sha: dict[str, bytes],
+        document_type: type[Document],
+    ) -> dict[str, Document]:
+        """Reconstruct Document objects from parsed query rows and attachment content."""
+        result: dict[str, Document] = {}
+        with suppress_registration():
+            for matched_source, name, description, sources, origins, att_names, att_descs, att_sha256s, content in parsed_rows:
+                if matched_source in result:
+                    continue
+
+                attachments: tuple[Attachment, ...] = ()
+                if att_sha256s:
+                    att_list: list[Attachment] = []
+                    for a_name, a_desc, a_sha in zip(att_names, att_descs, att_sha256s, strict=True):
+                        a_content = att_content_by_sha.get(a_sha)
+                        if a_content is None:
+                            logger.warning(f"Attachment content {a_sha[:12]}... not found for document '{name}'")
+                            continue
+                        att_list.append(Attachment(name=a_name, content=a_content, description=a_desc or None))
+                    attachments = tuple(att_list)
+
+                result[matched_source] = document_type(
+                    name=name,
+                    content=content,
+                    description=description,
+                    sources=sources,
+                    origins=origins if origins else (),
+                    attachments=attachments if attachments else None,
+                )
+
+        return result
 
 
 def _decode(value: bytes | str) -> str:
