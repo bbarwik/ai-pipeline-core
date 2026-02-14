@@ -39,7 +39,8 @@ _DEFAULT_SUBSTITUTOR_PROMPT = (
     "Text uses ... (three dots) to indicate shortened content. "
     "For example, 0x7a250d56...c659F2488D is a shortened blockchain address, "
     "and https://example.com/very/long/path/to/page...resource.pdf is a shortened URL. "
-    "When quoting or referencing such text, preserve the ... markers exactly as shown."
+    "When quoting or referencing such text, preserve entire url or address with the ... markers exactly as shown. "
+    "Never create shortened content yourself, you can only reuse existing one."
 )
 
 logger = get_pipeline_logger(__name__)

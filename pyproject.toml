@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.9.0"
+version = "0.9.1"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -151,6 +151,8 @@ convention = "google"
 "ai_pipeline_core/__init__.py" = ["RUF067"]
 "ai_pipeline_core/prompt_compiler/cli.py" = ["T201", "C901", "PLR0912", "PLR0915"]
 "ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046", "BLE001"]
+"ai_pipeline_core/pipeline/limits.py" = ["BLE001", "ASYNC109"]
+"tests/pipeline/test_limits.py" = ["PLC2801"]
 "ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912", "BLE001"]
 "ai_pipeline_core/deployment/remote.py" = ["UP046", "UP047"]
 "ai_pipeline_core/deployment/progress.py" = ["RUF029", "BLE001"]
@@ -258,7 +260,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.9.0"
+current_version = "0.9.1"
 commit = true
 tag = true
 tag_name = "v{new_version}"

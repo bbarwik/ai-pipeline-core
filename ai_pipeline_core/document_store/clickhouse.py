@@ -222,9 +222,9 @@ class ClickHouseDocumentStore:
         """Load documents via run_documents + index JOIN content, then batch-fetch attachments."""
         return await self._run(self._load_sync, run_scope, document_types)
 
-    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
         """Check if any documents of this type exist in the run scope."""
-        return await self._run(self._has_documents_sync, run_scope, document_type)
+        return await self._run(self._has_documents_sync, run_scope, document_type, max_age)
 
     async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Return the subset of sha256s that exist in the document index."""
@@ -503,11 +503,16 @@ class ClickHouseDocumentStore:
 
         return documents
 
-    def _has_documents_sync(self, run_scope: RunScope, document_type: type[Document]) -> bool:
+    def _has_documents_sync(self, run_scope: RunScope, document_type: type[Document], max_age: timedelta | None = None) -> bool:
         self._ensure_tables()
+        params: dict[str, Any] = {"run_scope": run_scope, "class_name": document_type.__name__}
+        age_filter = ""
+        if max_age is not None:
+            params["cutoff"] = datetime.now(UTC) - max_age
+            age_filter = " AND stored_at >= {cutoff:DateTime64(3, 'UTC')}"
         result = self._client.query(
-            f"SELECT 1 FROM {TABLE_RUN_DOCUMENTS} FINAL WHERE run_scope = {{run_scope:String}} AND class_name = {{class_name:String}} LIMIT 1",
-            parameters={"run_scope": run_scope, "class_name": document_type.__name__},
+            f"SELECT 1 FROM {TABLE_RUN_DOCUMENTS} FINAL WHERE run_scope = {{run_scope:String}} AND class_name = {{class_name:String}}{age_filter} LIMIT 1",
+            parameters=params,
         )
         return len(result.result_rows) > 0
 

@@ -57,13 +57,13 @@ from .logging import (
 )
 from .logging import get_pipeline_logger as get_logger
 from .observability.tracing import TraceInfo, TraceLevel, set_trace_cost, trace
-from .pipeline import FlowOptions, pipeline_flow, pipeline_task
+from .pipeline import FlowOptions, LimitKind, PipelineLimit, pipeline_concurrency, pipeline_flow, pipeline_task
 from .prompt_compiler import Guide, OutputRule, OutputT, Phase, PromptSpec, Role, Rule, extract_result, render_preview, render_text, send_spec
 from .prompt_manager import PromptManager
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 __all__ = [
     "Attachment",
@@ -81,6 +81,7 @@ __all__ = [
     "ImagePreset",
     "ImageProcessingConfig",
     "ImageProcessingError",
+    "LimitKind",
     "LoggingConfig",
     "ModelName",
     "ModelOptions",
@@ -89,6 +90,7 @@ __all__ = [
     "OutputT",
     "Phase",
     "PipelineDeployment",
+    "PipelineLimit",
     "ProcessedImage",
     "PromptManager",
     "PromptSpec",
@@ -115,6 +117,7 @@ __all__ = [
     "get_run_context",
     "is_document_sha256",
     "llm",
+    "pipeline_concurrency",
     "pipeline_flow",
     "pipeline_task",
     "prefect_test_harness",

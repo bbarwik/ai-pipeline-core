@@ -4,9 +4,13 @@ Proves that the resume/skip logic correctly handles:
 - Same inputs + same options → skip (cache hit)
 - Different inputs → no skip (cache miss)
 - Different options → no skip (cache miss)
+- cache_ttl default is 24 hours
+- cache_ttl=None disables expiry
 """
 
 # pyright: reportPrivateUsage=false
+
+from datetime import timedelta
 
 import pytest
 
@@ -133,3 +137,37 @@ class TestResumeLogic:
 
         await self._run("proj", docs, opts)
         assert len(_flow_executions) == 1  # still skipped
+
+
+class TestCacheTTL:
+    """Verify cache_ttl ClassVar on PipelineDeployment."""
+
+    def test_default_cache_ttl_is_24_hours(self):
+        """Default cache_ttl is 24 hours."""
+        assert ResumeDeployment.cache_ttl == timedelta(hours=24)
+
+    def test_cache_ttl_can_be_overridden(self):
+        """Subclass can set cache_ttl to custom value."""
+
+        class CustomTTLDeployment(PipelineDeployment[ResumeOptions, ResumeResult]):
+            flows = [resume_flow]  # type: ignore[reportAssignmentType]
+            cache_ttl = timedelta(hours=48)
+
+            @staticmethod
+            def build_result(project_name: str, documents: list[Document], options: ResumeOptions) -> ResumeResult:
+                return ResumeResult(success=True)
+
+        assert CustomTTLDeployment.cache_ttl == timedelta(hours=48)
+
+    def test_cache_ttl_can_be_none(self):
+        """Subclass can disable cache expiry with cache_ttl=None."""
+
+        class NoCacheTTLDeployment(PipelineDeployment[ResumeOptions, ResumeResult]):
+            flows = [resume_flow]  # type: ignore[reportAssignmentType]
+            cache_ttl = None
+
+            @staticmethod
+            def build_result(project_name: str, documents: list[Document], options: ResumeOptions) -> ResumeResult:
+                return ResumeResult(success=True)
+
+        assert NoCacheTTLDeployment.cache_ttl is None

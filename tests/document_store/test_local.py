@@ -1,6 +1,7 @@
 """Tests for LocalDocumentStore."""
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -205,6 +206,31 @@ class TestHasDocuments:
     async def test_returns_false_for_wrong_type(self, store: LocalDocumentStore):
         await store.save(_make(ReportDoc, "a.md"), RunScope("run1"))
         assert await store.has_documents(RunScope("run1"), DataDoc) is False
+
+    @pytest.mark.asyncio
+    async def test_max_age_returns_true_for_recent(self, store: LocalDocumentStore):
+        await store.save(_make(ReportDoc, "a.md"), RunScope("run1"))
+        assert await store.has_documents(RunScope("run1"), ReportDoc, max_age=timedelta(hours=1)) is True
+
+    @pytest.mark.asyncio
+    async def test_max_age_returns_false_for_expired(self, store: LocalDocumentStore, tmp_path: Path):
+        await store.save(_make(ReportDoc, "a.md"), RunScope("run1"))
+        # Backdate stored_at in the meta file to 2 days ago
+        for meta_path in tmp_path.rglob("*.meta.json"):
+            meta = json.loads(meta_path.read_text())
+            meta["stored_at"] = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+            meta_path.write_text(json.dumps(meta))
+        assert await store.has_documents(RunScope("run1"), ReportDoc, max_age=timedelta(hours=24)) is False
+
+    @pytest.mark.asyncio
+    async def test_max_age_none_ignores_age(self, store: LocalDocumentStore, tmp_path: Path):
+        await store.save(_make(ReportDoc, "a.md"), RunScope("run1"))
+        # Backdate to very old
+        for meta_path in tmp_path.rglob("*.meta.json"):
+            meta = json.loads(meta_path.read_text())
+            meta["stored_at"] = (datetime.now(UTC) - timedelta(days=365)).isoformat()
+            meta_path.write_text(json.dumps(meta))
+        assert await store.has_documents(RunScope("run1"), ReportDoc, max_age=None) is True
 
 
 class TestCheckExisting:

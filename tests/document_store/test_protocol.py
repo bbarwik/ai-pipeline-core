@@ -1,5 +1,7 @@
 """Tests for DocumentStore protocol and singleton management."""
 
+from datetime import timedelta
+
 import pytest
 
 from ai_pipeline_core.document_store import (
@@ -31,7 +33,7 @@ class _DummyStore:
     async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         return []
 
-    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
         return False
 
     async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
@@ -53,6 +55,9 @@ class _DummyStore:
 
     async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         return []
+
+    async def find_by_source(self, source_values: list[str], document_type: type[Document], *, max_age: timedelta | None = None) -> dict[str, Document]:
+        return {}
 
     def flush(self) -> None:
         pass

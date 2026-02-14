@@ -2,7 +2,7 @@
 # CLASSES: ClickHouseDocumentStore, LocalDocumentStore, MemoryDocumentStore, DocumentStore
 # DEPENDS: Protocol
 # PURPOSE: Document store protocol and backends for AI pipeline flows.
-# SIZE: ~24KB
+# SIZE: ~27KB
 
 # === IMPORTS ===
 from ai_pipeline_core import DocumentStore, SummaryGenerator, create_document_store, get_document_store, set_document_store
@@ -73,14 +73,24 @@ this executor via loop.run_in_executor()."""
         """Return the subset of sha256s that exist in the document index."""
         return await self._run(self._check_existing_sync, sha256s)
 
+    async def find_by_source(
+        self,
+        source_values: list[str],
+        document_type: type[Document],
+        *,
+        max_age: timedelta | None = None,
+    ) -> dict[str, Document]:
+        """Find most recent document per source value via sources array lookup."""
+        return await self._run(self._find_by_source_sync, source_values, document_type, max_age)
+
     def flush(self) -> None:
         """Block until all pending document summaries are processed."""
         if self._summary_worker:
             self._summary_worker.flush()
 
-    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
         """Check if any documents of this type exist in the run scope."""
-        return await self._run(self._has_documents_sync, run_scope, document_type)
+        return await self._run(self._has_documents_sync, run_scope, document_type, max_age)
 
     async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Load documents via run_documents + index JOIN content, then batch-fetch attachments."""
@@ -158,14 +168,24 @@ content files without a valid .meta.json."""
         """Scan all meta files to find matching document_sha256 values."""
         return await asyncio.to_thread(self._check_existing_sync, sha256s)
 
+    async def find_by_source(
+        self,
+        source_values: list[str],
+        document_type: type[Document],
+        *,
+        max_age: timedelta | None = None,
+    ) -> dict[str, Document]:
+        """Find most recent document per source value by scanning meta files."""
+        return await asyncio.to_thread(self._find_by_source_sync, source_values, document_type, max_age)
+
     def flush(self) -> None:
         """Block until all pending document summaries are processed."""
         if self._summary_worker:
             self._summary_worker.flush()
 
-    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
         """Check for meta files in the type's directory without loading content."""
-        return await asyncio.to_thread(self._has_documents_sync, run_scope, document_type)
+        return await asyncio.to_thread(self._has_documents_sync, run_scope, document_type, max_age)
 
     async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Load documents by type from the run scope directory."""
@@ -232,13 +252,33 @@ Storage layout: global documents dict + per-run membership sets + global summari
         """Return the subset of sha256s that exist in global documents."""
         return {sha for sha in sha256s if sha in self._documents}
 
+    async def find_by_source(
+        self,
+        source_values: list[str],
+        document_type: type[Document],
+        *,
+        max_age: timedelta | None = None,
+    ) -> dict[str, Document]:
+        """Find documents by source value. Ignores max_age (no timestamps in memory store)."""
+        if not source_values:
+            return {}
+        source_set = set(source_values)
+        result: dict[str, Document] = {}
+        for doc in self._documents.values():
+            if not isinstance(doc, document_type):
+                continue
+            for src in doc.sources:
+                if src in source_set and src not in result:
+                    result[src] = doc
+        return result
+
     def flush(self) -> None:
         """Block until all pending document summaries are processed."""
         if self._summary_worker:
             self._summary_worker.flush()
 
-    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
-        """Check if any documents of this type exist in the run scope."""
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
+        """Check if any documents of this type exist in the run scope. Ignores max_age (no timestamps in memory store)."""
         sha256s = self._run_docs.get(run_scope, set())
         return any(sha in self._documents and isinstance(self._documents[sha], document_type) for sha in sha256s)
 
@@ -339,12 +379,32 @@ MemoryDocumentStore (testing)."""
         """Return the subset of sha256s that already exist in the store."""
         ...
 
+    async def find_by_source(
+        self,
+        source_values: list[str],
+        document_type: type[Document],
+        *,
+        max_age: timedelta | None = None,
+    ) -> dict[str, Document]:
+        """Find the most recent document per source value.
+
+        For each value in source_values, finds the newest document of document_type
+        whose sources array contains that value. If max_age is set, only considers
+        documents stored within that time window.
+
+        Returns {source_value: Document} for found matches. Missing values are omitted.
+        """
+        ...
+
     def flush(self) -> None:
         """Block until all pending background work (summaries) is processed."""
         ...
 
-    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
-        """Check if any documents of this type exist in the run scope."""
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
+        """Check if any documents of this type exist in the run scope.
+
+        When max_age is set, only considers documents stored within that time window.
+        """
         ...
 
     async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
@@ -440,7 +500,7 @@ def set_document_store(store: DocumentStore | None) -> None:
 # === EXAMPLES (from tests/) ===
 
 # Example: Create document store returns local when no clickhouse
-# Source: tests/document_store/test_local.py:380
+# Source: tests/document_store/test_local.py:406
 def test_create_document_store_returns_local_when_no_clickhouse(self):
     from ai_pipeline_core.settings import Settings
 
@@ -449,13 +509,13 @@ def test_create_document_store_returns_local_when_no_clickhouse(self):
     assert isinstance(store, LocalDocumentStore)
 
 # Example: Get document store returns none by default
-# Source: tests/document_store/test_protocol.py:83
+# Source: tests/document_store/test_protocol.py:88
 def test_get_document_store_returns_none_by_default():
     """Before any set call, the store is None."""
     assert get_document_store() is None
 
 # Example: Set document store to none
-# Source: tests/document_store/test_protocol.py:95
+# Source: tests/document_store/test_protocol.py:100
 def test_set_document_store_to_none():
     """Store can be reset to None."""
     store = _DummyStore()
@@ -465,7 +525,7 @@ def test_set_document_store_to_none():
     assert get_document_store() is None
 
 # Example: Set and get document store
-# Source: tests/document_store/test_protocol.py:88
+# Source: tests/document_store/test_protocol.py:93
 def test_set_and_get_document_store():
     """Setting a store makes it retrievable."""
     store = _DummyStore()
@@ -473,7 +533,7 @@ def test_set_and_get_document_store():
     assert get_document_store() is store
 
 # Example: Basic round trip
-# Source: tests/document_store/test_local.py:46
+# Source: tests/document_store/test_local.py:47
 @pytest.mark.asyncio
 async def test_basic_round_trip(self, store: LocalDocumentStore):
     doc = _make(ReportDoc, "report.md", "# Hello\nWorld")
@@ -510,7 +570,7 @@ async def test_cross_scope_delegates_to_primary(self):
 # === ERROR EXAMPLES (What NOT to Do) ===
 
 # Error: Create document store rejects non settings
-# Source: tests/document_store/test_local.py:387
+# Source: tests/document_store/test_local.py:413
 def test_create_document_store_rejects_non_settings(self):
     with pytest.raises(AttributeError):
         create_document_store("not_settings")  # type: ignore[arg-type]
@@ -568,7 +628,7 @@ async def test_primary_update_summary_failure_still_attempts_secondary(self):
     assert (await secondary.load_summaries([sha]))[sha] == "summary"
 
 # Error: Path traversal rejected at document level
-# Source: tests/document_store/test_local.py:338
+# Source: tests/document_store/test_local.py:364
 def test_path_traversal_rejected_at_document_level(self):
     """Document validation rejects path traversal before the store."""
     with pytest.raises(Exception, match="path traversal"):

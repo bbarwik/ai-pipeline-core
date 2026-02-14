@@ -1,11 +1,11 @@
 # MODULE: pipeline
-# CLASSES: FlowOptions
-# DEPENDS: BaseSettings
-# PURPOSE: Pipeline framework primitives — decorators and flow options.
-# SIZE: ~28KB
+# CLASSES: LimitKind, PipelineLimit, FlowOptions
+# DEPENDS: BaseSettings, StrEnum
+# PURPOSE: Pipeline framework primitives — decorators, flow options, and concurrency limits.
+# SIZE: ~32KB
 
 # === IMPORTS ===
-from ai_pipeline_core import FlowOptions, pipeline_flow, pipeline_task
+from ai_pipeline_core import FlowOptions, LimitKind, PipelineLimit, pipeline_concurrency, pipeline_flow, pipeline_task
 
 # === TYPES & CONSTANTS ===
 
@@ -50,6 +50,42 @@ class _TaskLike(Protocol[R_co]):
 
 
 # === PUBLIC API ===
+
+# Enum
+class LimitKind(StrEnum):
+    """Kind of concurrency/rate limit.
+
+CONCURRENT: Slots held for duration of operation (lease-based).
+    limit=500 means at most 500 simultaneous operations across all runs.
+
+PER_MINUTE: Token bucket with limit/60 decay per second.
+    Allows bursting up to `limit` immediately, then refills gradually.
+    NOT a sliding window.
+
+PER_HOUR: Token bucket with limit/3600 decay per second. Same burst semantics."""
+    CONCURRENT = 'concurrent'
+    PER_MINUTE = 'per_minute'
+    PER_HOUR = 'per_hour'
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineLimit:
+    """Concurrency/rate limit configuration.
+
+limit: Maximum slots. For CONCURRENT: max simultaneous operations.
+       For PER_MINUTE/PER_HOUR: token bucket capacity (burst size).
+kind: Type of limit enforcement.
+timeout: Max seconds to wait for slot acquisition."""
+    limit: int
+    kind: LimitKind = LimitKind.CONCURRENT
+    timeout: int = 600
+
+    def __post_init__(self) -> None:
+        if self.limit < 1:
+            raise ValueError(f"limit must be >= 1, got {self.limit}")
+        if self.timeout <= 0:
+            raise ValueError(f"timeout must be > 0, got {self.timeout}")
+
 
 class FlowOptions(BaseSettings):
     """Base configuration for pipeline flows.
@@ -551,6 +587,63 @@ def pipeline_flow(
 
     return _apply
 
+@asynccontextmanager
+async def pipeline_concurrency(
+    name: str,
+    *,
+    timeout: int | None = None,
+) -> AsyncGenerator[None, None]:
+    """Acquire a concurrency/rate-limit slot for an operation.
+
+    For CONCURRENT limits: slot held during block, released on exit.
+    For PER_MINUTE/PER_HOUR: slot acquired (decays automatically), exit is no-op.
+
+    Falls back to per-process asyncio.Semaphore when Prefect is unavailable (CONCURRENT only).
+    Timeout always raises AcquireConcurrencySlotTimeoutError.
+    """
+    state = _limits_state.get()
+    cfg = state.limits.get(name)
+    if cfg is None:
+        available = ", ".join(sorted(state.limits)) or "(none)"
+        raise KeyError(f"pipeline_concurrency({name!r}) not registered. Available limits: {available}. Declare it on PipelineDeployment.concurrency_limits.")
+
+    effective_timeout = timeout if timeout is not None else cfg.timeout
+
+    # Prefect unavailable — use local semaphore fallback
+    if not state.status.prefect_available:
+        if cfg.kind == LimitKind.CONCURRENT:
+            async with _acquire_local_semaphore(name, cfg, state.status, effective_timeout):
+                yield
+        else:
+            yield
+        return
+
+    # Prefect available — use global concurrency/rate limiting
+    yielded = False
+    try:
+        match cfg.kind:
+            case LimitKind.CONCURRENT:
+                async with concurrency(name, occupy=1, timeout_seconds=effective_timeout, strict=False):
+                    yielded = True
+                    yield
+            case LimitKind.PER_MINUTE | LimitKind.PER_HOUR:
+                await rate_limit(name, occupy=1, timeout_seconds=effective_timeout, strict=False)
+                yielded = True
+                yield
+    except AcquireConcurrencySlotTimeoutError:
+        raise
+    except ConcurrencySlotAcquisitionError as e:
+        logger.warning("Prefect concurrency unavailable for %r, falling back to local semaphore: %s", name, e)
+        state.status.prefect_available = False
+        if yielded:
+            return
+        # Use local fallback for this call
+        if cfg.kind == LimitKind.CONCURRENT:
+            async with _acquire_local_semaphore(name, cfg, state.status, effective_timeout):
+                yield
+        else:
+            yield
+
 # === EXAMPLES (from tests/) ===
 
 # Example: Pipeline flow deduplicates returned documents
@@ -624,6 +717,26 @@ async def test_pipeline_flow_saves_returned_documents(prefect_test_fixture, memo
     assert len(loaded) == 1
     assert loaded[0].name == "output.txt"
 
+# Example: Pipeline flow sets run context when missing
+# Source: tests/pipeline/test_flow_storage.py:70
+@pytest.mark.asyncio
+async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture, memory_store):
+    """Test that pipeline_flow sets RunContext if none exists."""
+    from ai_pipeline_core.documents.context import get_run_context
+
+    captured_ctx = None
+
+    @pipeline_flow()
+    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+        nonlocal captured_ctx
+        captured_ctx = get_run_context()
+        return []
+
+    await test_flow("my-project", [], FlowOptions())
+
+    assert captured_ctx is not None
+    assert captured_ctx.run_scope == "my-project/test_flow"
+
 # === ERROR EXAMPLES (What NOT to Do) ===
 
 # Error: Pipeline task then trace raises error
@@ -672,4 +785,16 @@ def test_sync_function_with_pipeline_task_with_params_raises_error(self):
 
         @cast(Any, pipeline_task(retries=3, trace_level="debug"))
         def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
+            return x * 2
+
+# Error: Trace then pipeline task raises error
+# Source: tests/pipeline/test_decorators.py:869
+def test_trace_then_pipeline_task_raises_error(self):
+    from ai_pipeline_core import trace
+
+    with pytest.raises(TypeError, match=r"already decorated.*with @trace"):
+
+        @pipeline_task
+        @trace
+        async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
             return x * 2

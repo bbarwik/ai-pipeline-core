@@ -2,7 +2,7 @@
 # CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, ProgressContext, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# SIZE: ~34KB
+# SIZE: ~35KB
 
 # === IMPORTS ===
 from ai_pipeline_core import DeploymentContext, DeploymentResult, PipelineDeployment, RemoteDeployment, progress, run_remote_deployment
@@ -52,6 +52,8 @@ Features enabled by default:
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
+    cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
+    concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -90,6 +92,9 @@ Features enabled by default:
 
         # Flow type chain validation: simulate a type pool
         _validate_flow_chain(cls.__name__, cls.flows)
+
+        # Concurrency limits validation
+        cls.concurrency_limits = _validate_concurrency_limits(cls.__name__, getattr(cls, "concurrency_limits", MappingProxyType({})))
 
     @final
     def as_prefect_flow(self) -> Callable[..., Any]:
@@ -234,9 +239,12 @@ Features enabled by default:
             logger.warning("Tracking service initialization failed: %s", e)
             tracking_svc = None
 
-        # Set RunContext for the entire pipeline run
+        # Set concurrency limits and RunContext for the entire pipeline run
+        limits_token = _set_limits_state(_LimitsState(limits=self.concurrency_limits, status=_SharedStatus()))
         run_token = set_run_context(RunContext(run_scope=run_scope))
         try:
+            await _ensure_concurrency_limits(self.concurrency_limits)
+
             # Save initial input documents to store
             if store and input_docs:
                 await store.save_batch(input_docs, run_scope)
@@ -251,7 +259,7 @@ Features enabled by default:
                 # Resume check: skip if output documents already exist in store
                 output_types = getattr(flow_fn, "output_document_types", [])
                 if store and output_types:
-                    all_outputs_exist = all([await store.has_documents(run_scope, ot) for ot in output_types])
+                    all_outputs_exist = all([await store.has_documents(run_scope, ot, max_age=self.cache_ttl) for ot in output_types])
                     if all_outputs_exist:
                         logger.info("[%d/%d] Resume: skipping %s (outputs exist)", step, total_steps, flow_name)
                         await self._send_progress(
@@ -354,6 +362,7 @@ Features enabled by default:
             raise
         finally:
             reset_run_context(run_token)
+            _reset_limits_state(limits_token)
             store = get_document_store()
             if store:
                 try:

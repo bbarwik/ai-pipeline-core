@@ -73,9 +73,9 @@ class DualDocumentStore:
         """Load documents from primary store only."""
         return await self._primary.load(run_scope, document_types)
 
-    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
         """Check primary store for documents of given type."""
-        return await self._primary.has_documents(run_scope, document_type)
+        return await self._primary.has_documents(run_scope, document_type, max_age=max_age)
 
     async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Check primary store for existing document SHA256s."""

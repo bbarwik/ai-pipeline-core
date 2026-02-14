@@ -58,8 +58,8 @@ class MemoryDocumentStore:
         type_tuple = tuple(document_types)
         return [self._documents[sha] for sha in sha256s if sha in self._documents and isinstance(self._documents[sha], type_tuple)]
 
-    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
-        """Check if any documents of this type exist in the run scope."""
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
+        """Check if any documents of this type exist in the run scope. Ignores max_age (no timestamps in memory store)."""
         sha256s = self._run_docs.get(run_scope, set())
         return any(sha in self._documents and isinstance(self._documents[sha], document_type) for sha in sha256s)
 

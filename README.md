@@ -574,10 +574,48 @@ prefect_flow = pipeline.as_prefect_flow()
 ```
 
 Features:
-- **Per-flow resume**: Skips flows whose output documents already exist in the store
+- **Per-flow resume**: Skips flows whose output documents already exist in the store (with configurable `cache_ttl`, default 24h)
 - **Type chain validation**: At class definition time, validates that each flow's input types are producible by preceding flows
 - **Per-flow uploads**: Upload documents after each flow completes
+- **Concurrency limits**: Cross-run enforcement via Prefect global concurrency limits, with per-process semaphore fallback
 - **CLI mode**: `--start N` / `--end N` for step control, automatic `LocalDocumentStore`
+
+#### Concurrency Limits
+
+Declare cross-run concurrency and rate limits on `PipelineDeployment` to prevent exceeding external API quotas across all concurrent pipeline runs:
+
+```python
+from ai_pipeline_core import LimitKind, PipelineLimit, PipelineDeployment, pipeline_concurrency
+
+class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
+    flows = [my_flow]
+    concurrency_limits = {
+        "provider-a": PipelineLimit(500, LimitKind.CONCURRENT),       # max 500 simultaneous
+        "provider-b": PipelineLimit(15, LimitKind.PER_MINUTE, timeout=300),  # 15/min token bucket
+    }
+    ...
+```
+
+Use `pipeline_concurrency()` at call sites to acquire slots:
+
+```python
+from ai_pipeline_core import pipeline_concurrency
+
+async def fetch_data(url: str) -> Data:
+    async with pipeline_concurrency("provider-a"):
+        return await provider.fetch(url)
+```
+
+**Limit kinds:**
+- `CONCURRENT` — Lease-based slots held during operation, released on exit
+- `PER_MINUTE` — Token bucket with `limit/60` decay per second (allows bursting)
+- `PER_HOUR` — Token bucket with `limit/3600` decay per second
+
+**Behavior:**
+- Limits are auto-created in Prefect server at pipeline start (idempotent upsert)
+- Timeout raises `AcquireConcurrencySlotTimeoutError` (limit doing its job)
+- When Prefect is unavailable, `CONCURRENT` limits fall back to per-process `asyncio.Semaphore`; rate limits proceed unthrottled
+- Limit names are validated at class definition time (alphanumeric, dashes, underscores)
 
 #### Deploying to Prefect Cloud
 
@@ -894,7 +932,7 @@ ai-pipeline-core/
 |   |-- llm/               # Conversation class, URLSubstitutor, image processing, validation
 |   |-- logging/           # Logging infrastructure
 |   |-- observability/     # Tracing, tracking, and debug trace writer
-|   |-- pipeline/          # Pipeline decorators and FlowOptions
+|   |-- pipeline/          # Pipeline decorators, FlowOptions, and concurrency limits
 |   |-- prompt_compiler/   # Type-safe prompt specs, rendering, and CLI tool
 |   |-- prompt_manager.py  # Jinja2 template management
 |   |-- settings.py        # Configuration management (Pydantic BaseSettings)

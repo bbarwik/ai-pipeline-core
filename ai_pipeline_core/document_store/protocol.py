@@ -34,8 +34,11 @@ class DocumentStore(Protocol):
         """Load all documents of the given types from a run scope."""
         ...
 
-    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
-        """Check if any documents of this type exist in the run scope."""
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
+        """Check if any documents of this type exist in the run scope.
+
+        When max_age is set, only considers documents stored within that time window.
+        """
         ...
 
     async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
@@ -78,10 +81,10 @@ class DocumentStore(Protocol):
     async def find_by_source(
         self,
         source_values: list[str],
-        document_type: type[_D],
+        document_type: type[Document],
         *,
         max_age: timedelta | None = None,
-    ) -> dict[str, _D]:
+    ) -> dict[str, Document]:
         """Find the most recent document per source value.
 
         For each value in source_values, finds the newest document of document_type

@@ -12,10 +12,11 @@ import asyncio
 import hashlib
 import os
 from abc import abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
 from uuid import UUID, uuid4
 
@@ -35,6 +36,15 @@ from ai_pipeline_core.documents.context import RunContext, reset_run_context, se
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._initialization import get_tracking_service, initialize_observability
 from ai_pipeline_core.observability._tracking._models import RunStatus
+from ai_pipeline_core.pipeline.limits import (
+    PipelineLimit,
+    _ensure_concurrency_limits,
+    _LimitsState,
+    _reset_limits_state,
+    _set_limits_state,
+    _SharedStatus,
+    _validate_concurrency_limits,
+)
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
@@ -202,6 +212,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
+    cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
+    concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -240,6 +252,9 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
         # Flow type chain validation: simulate a type pool
         _validate_flow_chain(cls.__name__, cls.flows)
+
+        # Concurrency limits validation
+        cls.concurrency_limits = _validate_concurrency_limits(cls.__name__, getattr(cls, "concurrency_limits", MappingProxyType({})))
 
     @staticmethod
     @abstractmethod
@@ -451,9 +466,12 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             logger.warning("Tracking service initialization failed: %s", e)
             tracking_svc = None
 
-        # Set RunContext for the entire pipeline run
+        # Set concurrency limits and RunContext for the entire pipeline run
+        limits_token = _set_limits_state(_LimitsState(limits=self.concurrency_limits, status=_SharedStatus()))
         run_token = set_run_context(RunContext(run_scope=run_scope))
         try:
+            await _ensure_concurrency_limits(self.concurrency_limits)
+
             # Save initial input documents to store
             if store and input_docs:
                 await store.save_batch(input_docs, run_scope)
@@ -468,7 +486,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 # Resume check: skip if output documents already exist in store
                 output_types = getattr(flow_fn, "output_document_types", [])
                 if store and output_types:
-                    all_outputs_exist = all([await store.has_documents(run_scope, ot) for ot in output_types])
+                    all_outputs_exist = all([await store.has_documents(run_scope, ot, max_age=self.cache_ttl) for ot in output_types])
                     if all_outputs_exist:
                         logger.info("[%d/%d] Resume: skipping %s (outputs exist)", step, total_steps, flow_name)
                         await self._send_progress(
@@ -571,6 +589,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             raise
         finally:
             reset_run_context(run_token)
+            _reset_limits_state(limits_token)
             store = get_document_store()
             if store:
                 try:

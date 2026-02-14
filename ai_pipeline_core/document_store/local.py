@@ -81,9 +81,9 @@ class LocalDocumentStore:
         """Load documents by type from the run scope directory."""
         return await asyncio.to_thread(self._load_sync, run_scope, document_types)
 
-    async def has_documents(self, run_scope: RunScope, document_type: type[Document]) -> bool:
+    async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
         """Check for meta files in the type's directory without loading content."""
-        return await asyncio.to_thread(self._has_documents_sync, run_scope, document_type)
+        return await asyncio.to_thread(self._has_documents_sync, run_scope, document_type, max_age)
 
     async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Scan all meta files to find matching document_sha256 values."""
@@ -288,14 +288,21 @@ class LocalDocumentStore:
             )
             out.append(doc)
 
-    def _has_documents_sync(self, run_scope: RunScope, document_type: type[Document]) -> bool:
+    def _has_documents_sync(self, run_scope: RunScope, document_type: type[Document], max_age: timedelta | None = None) -> bool:
         """Check for meta files in the type's directory without loading content."""
         scope_path = self._scope_path(run_scope)
         canonical = document_type.__name__
         type_dir = scope_path / canonical
         if not type_dir.is_dir():
             return False
-        return any(type_dir.glob("*.meta.json"))
+        if max_age is None:
+            return any(type_dir.glob("*.meta.json"))
+        cutoff = datetime.now(UTC) - max_age
+        for meta_path in type_dir.glob("*.meta.json"):
+            meta = self._read_meta(meta_path)
+            if meta is not None and self._check_stored_at(meta, cutoff) is not None:
+                return True
+        return False
 
     def _check_existing_sync(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Scan all meta files to find matching document_sha256 values."""

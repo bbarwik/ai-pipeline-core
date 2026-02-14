@@ -11,7 +11,7 @@ Auto-generated guide index. Do not edit manually.
 5. [llm](llm.md) — Large Language Model integration via LiteLLM proxy.
 6. [logging](logging.md) — Logging infrastructure for AI Pipeline Core.
 7. [observability](observability.md) — Observability system for AI pipelines.
-8. [pipeline](pipeline.md) — Pipeline framework primitives — decorators and flow options.
+8. [pipeline](pipeline.md) — Pipeline framework primitives — decorators, flow options, and concurrency limits.
 9. [prompt_compiler](prompt_compiler.md) — Prompt compiler for type-safe, validated prompt specifications.
 10. [prompt_manager](prompt_manager.md)
 11. [settings](settings.md)
@@ -63,6 +63,7 @@ Auto-generated guide index. Do not edit manually.
 | is_pdf_mime_type | func | [documents](documents.md) |
 | is_text_mime_type | func | [documents](documents.md) |
 | is_yaml_mime_type | func | [documents](documents.md) |
+| LimitKind | class | [pipeline](pipeline.md) |
 | LLMError | class | [exceptions](exceptions.md) |
 | LocalDocumentStore | class | [document_store](document_store.md) |
 | LoggingConfig | class | [logging](logging.md) |
@@ -78,10 +79,12 @@ Auto-generated guide index. Do not edit manually.
 | PendingRun | class | [deployment](deployment.md) |
 | Phase | class | [prompt_compiler](prompt_compiler.md) |
 | PIP_TARGET_PLATFORMS | constant | [deployment](deployment.md) |
+| pipeline_concurrency | func | [pipeline](pipeline.md) |
 | pipeline_flow | func | [pipeline](pipeline.md) |
 | pipeline_task | func | [pipeline](pipeline.md) |
 | PipelineCoreError | class | [exceptions](exceptions.md) |
 | PipelineDeployment | class | [deployment](deployment.md) |
+| PipelineLimit | class | [pipeline](pipeline.md) |
 | ProgressContext | class | [deployment](deployment.md) |
 | ProgressRun | class | [deployment](deployment.md) |
 | PromptError | class | [exceptions](exceptions.md) |
@@ -144,15 +147,15 @@ Auto-generated guide index. Do not edit manually.
 
 | Module | Size |
 | ------ | ---- |
-| deployment | 35,547 bytes |
-| document_store | 25,326 bytes |
+| deployment | 36,146 bytes |
+| document_store | 27,703 bytes |
 | documents | 40,265 bytes |
 | exceptions | 1,124 bytes |
 | llm | 34,326 bytes |
 | logging | 8,569 bytes |
 | observability | 23,224 bytes |
-| pipeline | 28,832 bytes |
+| pipeline | 33,593 bytes |
 | prompt_compiler | 30,250 bytes |
 | prompt_manager | 12,608 bytes |
 | settings | 7,498 bytes |
-| **Total** | **247,569 bytes** |
+| **Total** | **255,306 bytes** |

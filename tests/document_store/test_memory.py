@@ -1,5 +1,7 @@
 """Tests for MemoryDocumentStore."""
 
+from datetime import timedelta
+
 import pytest
 
 from ai_pipeline_core.document_store import DocumentNode, DocumentStore, walk_provenance
@@ -97,6 +99,12 @@ class TestHasDocuments:
     async def test_returns_false_for_wrong_type(self, store: MemoryDocumentStore):
         await store.save(_make(DocA, "a.txt"), RunScope("run1"))
         assert await store.has_documents(RunScope("run1"), DocB) is False
+
+    @pytest.mark.asyncio
+    async def test_max_age_ignored_in_memory_store(self, store: MemoryDocumentStore):
+        """Memory store ignores max_age — always returns True if documents exist."""
+        await store.save(_make(DocA, "a.txt"), RunScope("run1"))
+        assert await store.has_documents(RunScope("run1"), DocA, max_age=timedelta(seconds=0)) is True
 
 
 class TestCheckExisting:
