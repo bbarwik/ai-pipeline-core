@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.8.3"
+version = "0.9.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -36,6 +36,10 @@ dependencies = [
     "opentelemetry-sdk>=1.39.1",
     "prefect-gcp>=0.6.15",
 ]
+
+[project.scripts]
+ai-prompt-compiler = "ai_pipeline_core.prompt_compiler.cli:main"
+ai-pipeline-deploy = "ai_pipeline_core.deployment.deploy:main"
 
 [project.urls]
 Homepage = "https://github.com/bbarwik/ai-pipeline-core"
@@ -141,10 +145,11 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "TID251"]
-"examples/**/*.py" = ["D", "DOC", "PLC0415", "S", "ARG", "T20", "RUF029"]
+"examples/**/*.py" = ["D", "DOC", "PLC0415", "S", "ARG", "T20", "RUF029", "C901", "PLR0914", "PLR0915"]
 "dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
 ".vulture_whitelist.py" = ["B018", "E402", "F401", "D"]
 "ai_pipeline_core/__init__.py" = ["RUF067"]
+"ai_pipeline_core/prompt_compiler/cli.py" = ["T201", "C901", "PLR0912", "PLR0915"]
 "ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046", "BLE001"]
 "ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912", "BLE001"]
 "ai_pipeline_core/deployment/remote.py" = ["UP046", "UP047"]
@@ -253,7 +258,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.8.3"
+current_version = "0.9.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"

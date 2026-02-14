@@ -1,21 +1,21 @@
 # MODULE: deployment
 # CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, ProgressContext, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
-# SIZE: ~31KB
+# PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
+# SIZE: ~34KB
 
-# === DEPENDENCIES (Resolved) ===
+# === IMPORTS ===
+from ai_pipeline_core import DeploymentContext, DeploymentResult, PipelineDeployment, RemoteDeployment, progress, run_remote_deployment
 
-class BaseModel:
-    """Pydantic base model. Fields are typed class attributes."""
-    ...
+# === TYPES & CONSTANTS ===
 
-class Generic:
-    """Python generic base class for parameterized types."""
-    ...
+UV_TARGET_PLATFORM = "x86_64-unknown-linux-gnu"
 
-class StrEnum:
-    """String enumeration base class."""
-    ...
+PIP_TARGET_PLATFORMS = ("manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64", "linux_x86_64")
+
+TARGET_PYTHON_VERSION = "3.12"
+
+TARGET_ABI = "cp312"
 
 # === PUBLIC API ===
 
@@ -427,6 +427,7 @@ Features enabled by default:
         return result
 
 
+# Enum
 class RunState(StrEnum):
     """Pipeline run lifecycle state."""
     PENDING = 'PENDING'
@@ -437,6 +438,7 @@ class RunState(StrEnum):
     CANCELLED = 'CANCELLED'
 
 
+# Enum
 class FlowStatus(StrEnum):
     """Individual flow step status within a pipeline run."""
     STARTED = 'started'
@@ -799,6 +801,47 @@ def test_deployment_result_data(self):
     dumped = data.model_dump()
     assert "success" in dumped
 
+# Example: Noop without context
+# Source: tests/deployment/test_progress.py:25
+async def test_noop_without_context(self):
+    """Test update is a no-op when no context is set."""
+    await update(0.5, "test")  # Should not raise
+
+# Example: Subclass specific trace names
+# Source: tests/deployment/test_remote_deployment.py:441
+def test_subclass_specific_trace_names(self):
+    class PipelineA(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        pass
+
+    class PipelineB(RemoteDeployment[BetaDoc, FlowOptions, SimpleResult]):
+        pass
+
+    assert PipelineA._execute is not PipelineB._execute
+
+# Example: Three args returned by helper
+# Source: tests/deployment/test_remote_deployment.py:94
+def test_three_args_returned_by_helper(self):
+    class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        trace_level: ClassVar[TraceLevel] = "off"
+
+    args = extract_generic_params(Foo, RemoteDeployment)
+    assert len(args) == 3
+    assert args[0] is AlphaDoc
+    assert args[1] is FlowOptions
+    assert args[2] is SimpleResult
+
+# Example: Three params from remote deployment
+# Source: tests/deployment/test_remote_deployment.py:612
+def test_three_params_from_remote_deployment(self):
+    class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        trace_level: ClassVar[TraceLevel] = "off"
+
+    result = extract_generic_params(Foo, RemoteDeployment)
+    assert len(result) == 3
+    assert result[0] is AlphaDoc
+    assert result[1] is FlowOptions
+    assert result[2] is SimpleResult
+
 # === ERROR EXAMPLES (What NOT to Do) ===
 
 # Error: Frozen
@@ -843,4 +886,42 @@ def test_rejects_no_generic_params(self):
     with pytest.raises(TypeError, match="must specify 3 Generic parameters"):
 
         class Bad(RemoteDeployment):  # type: ignore[type-arg]
+            trace_level: ClassVar[TraceLevel] = "off"
+
+# Error: Rejects non deployment result
+# Source: tests/deployment/test_remote_deployment.py:169
+def test_rejects_non_deployment_result(self):
+    class NotAResult(BaseModel):
+        x: int = 1
+
+    with pytest.raises(TypeError, match="DeploymentResult subclass"):
+
+        class Bad(RemoteDeployment[AlphaDoc, FlowOptions, NotAResult]):  # type: ignore[type-var]
+            trace_level: ClassVar[TraceLevel] = "off"
+
+# Error: Rejects non document in union
+# Source: tests/deployment/test_remote_deployment.py:144
+def test_rejects_non_document_in_union(self):
+    with pytest.raises(TypeError, match="Document subclass"):
+
+        class Bad(RemoteDeployment[AlphaDoc | str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
+            trace_level: ClassVar[TraceLevel] = "off"
+
+# Error: Rejects non document type
+# Source: tests/deployment/test_remote_deployment.py:138
+def test_rejects_non_document_type(self):
+    with pytest.raises(TypeError, match="Document subclass"):
+
+        class Bad(RemoteDeployment[str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
+            trace_level: ClassVar[TraceLevel] = "off"
+
+# Error: Rejects non flow options
+# Source: tests/deployment/test_remote_deployment.py:158
+def test_rejects_non_flow_options(self):
+    class NotFlowOptions(BaseModel):
+        x: int = 1
+
+    with pytest.raises(TypeError, match="FlowOptions subclass"):
+
+        class Bad(RemoteDeployment[AlphaDoc, NotFlowOptions, SimpleResult]):  # type: ignore[type-var]
             trace_level: ClassVar[TraceLevel] = "off"

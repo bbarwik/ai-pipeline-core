@@ -10,7 +10,11 @@
     "reportAttributeAccessIssue": "warning",
     "reportCallIssue": false,
     "reportPrivateUsage": false,
+    "reportUnusedClass": false,
     "reportUnusedFunction": false,
     "reportUnusedVariable": false,
+    "reportOptionalMemberAccess": "warning",
+    "reportReturnType": "warning",
+    "reportAssignmentType": "warning",
     "reportUnnecessaryTypeIgnoreComment": false
 }

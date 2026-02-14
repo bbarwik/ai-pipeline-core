@@ -1,6 +1,9 @@
 # MODULE: prompt_manager
 # CLASSES: PromptManager
 # SIZE: ~12KB
+
+# === IMPORTS ===
+from ai_pipeline_core import PromptManager
 # === PUBLIC API ===
 
 class PromptManager:

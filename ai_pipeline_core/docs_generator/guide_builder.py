@@ -15,6 +15,8 @@ from ai_pipeline_core.docs_generator.extractor import (
     FunctionInfo,
     MethodInfo,
     SymbolTable,
+    ValueInfo,
+    get_source,
     is_public_name,
     resolve_dependencies,
 )
@@ -52,6 +54,9 @@ class GuideData:
     normal_examples: list[ScoredExample]
     error_examples: list[ScoredExample]
     internal_types: list[ClassInfo] = field(default_factory=list)
+    values: list[ValueInfo] = field(default_factory=list)
+    purpose: str = ""
+    imports: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +281,14 @@ def render_guide(data: GuideData) -> str:  # noqa: C901, PLR0912, PLR0915
         parts.append(f"# CLASSES: {class_names}")
     if external:
         parts.append(f"# DEPENDS: {external}")
+    if data.purpose:
+        parts.append(f"# PURPOSE: {data.purpose}")
+
+    # Imports
+    if data.imports:
+        parts.append("")
+        parts.append("# === IMPORTS ===")
+        parts.append(f"from ai_pipeline_core import {', '.join(data.imports)}")
 
     # Rules
     if data.rules:
@@ -284,17 +297,13 @@ def render_guide(data: GuideData) -> str:  # noqa: C901, PLR0912, PLR0915
         for i, rule in enumerate(data.rules, 1):
             parts.append(f"# {i}. {rule}")
 
-    # Dependencies (external stubs)
-    if data.external_bases:
+    # Types & Constants
+    if data.values:
         parts.append("")
-        parts.append("# === DEPENDENCIES (Resolved) ===")
+        parts.append("# === TYPES & CONSTANTS ===")
         parts.append("")
-        for base_name in sorted(data.external_bases):
-            clean = base_name.split("[")[0]
-            desc = EXTERNAL_STUBS.get(clean, "External base class (not fully documented).")
-            parts.append(f"class {clean}:")
-            parts.append(f'    """{desc}"""')
-            parts.append("    ...")
+        for val in data.values:
+            parts.append(val.source)
             parts.append("")
 
     # Internal types (private classes referenced by public API)
@@ -351,7 +360,7 @@ def render_guide(data: GuideData) -> str:  # noqa: C901, PLR0912, PLR0915
     # Insert after last header line (MODULE/CLASSES/DEPENDS), before any blank or section line
     insert_idx = 0
     for i, line in enumerate(result_lines):
-        if line.startswith(("# MODULE:", "# CLASSES:", "# DEPENDS:")):
+        if line.startswith(("# MODULE:", "# CLASSES:", "# DEPENDS:", "# PURPOSE:")):
             insert_idx = i + 1
         elif line.startswith("# ==="):
             break
@@ -364,7 +373,7 @@ def render_guide(data: GuideData) -> str:  # noqa: C901, PLR0912, PLR0915
 # ---------------------------------------------------------------------------
 
 
-def build_guide(  # noqa: PLR0917
+def build_guide(  # noqa: PLR0914, PLR0917
     module_name: str,
     source_dir: Path,
     tests_dir: Path,
@@ -382,6 +391,7 @@ def build_guide(  # noqa: PLR0917
 
     public_classes = [c for c in table.classes.values() if c.is_public and table.class_to_module.get(c.name) == module_name]
     public_functions = [f for f in table.functions.values() if f.is_public and table.function_to_module.get(f.name) == module_name]
+    public_values = [v for v in table.values.values() if v.is_public and table.value_to_module.get(v.name) == module_name]
 
     # Resolve dependencies
     root_names = [c.name for c in public_classes]
@@ -424,7 +434,8 @@ def build_guide(  # noqa: PLR0917
                 module_name,
             )
 
-    normal_examples, error_examples = select_examples(tests, symbol_names)
+    example_budget = _compute_example_budget(len(flattened_classes))
+    normal_examples, error_examples = select_examples(tests, symbol_names, max_total=example_budget)
 
     rules = extract_rules(flattened_classes)
 
@@ -437,12 +448,22 @@ def build_guide(  # noqa: PLR0917
         normal_examples=normal_examples,
         error_examples=error_examples,
         internal_types=internal_types,
+        values=public_values,
     )
 
 
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+BASE_EXAMPLE_BUDGET = 8
+MAX_EXAMPLE_BUDGET = 16
+
+
+def _compute_example_budget(num_classes: int) -> int:
+    """Dynamic example budget: more classes get more examples."""
+    return min(BASE_EXAMPLE_BUDGET + 2 * max(num_classes - 2, 0), MAX_EXAMPLE_BUDGET)
+
 
 _PRIVATE_TYPE_RE = re.compile(r"\b_[A-Z]\w*")
 
@@ -470,16 +491,6 @@ def _collect_internal_types(
     )
 
 
-def _get_source(source_lines: list[str], node: ast.AST) -> str:
-    decoratable = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-    if isinstance(node, decoratable) and node.decorator_list:
-        start = node.decorator_list[0].lineno - 1
-    else:
-        start: int = node.lineno - 1  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
-    end: int = node.end_lineno or node.lineno  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
-    return "\n".join(source_lines[start:end])
-
-
 def _extract_test_functions(path: Path, repo_root: Path | None = None) -> list[ScoredExample]:
     source = path.read_text(encoding="utf-8")
     source_lines = source.splitlines()
@@ -500,7 +511,7 @@ def _extract_test_functions(path: Path, repo_root: Path | None = None) -> list[S
         if not node.name.startswith("test_"):
             continue
 
-        code = _get_source(source_lines, node)
+        code = get_source(source_lines, node)
         code = "\n".join(line for line in code.splitlines() if "pytest.mark.ai_docs" not in line and "mark.ai_docs" not in line)
         code = "\n".join(_dedented_source(code))
         results.append(
@@ -564,8 +575,13 @@ def _sort_methods(methods: list[MethodInfo]) -> list[MethodInfo]:
     return sorted(methods, key=key)
 
 
-def _render_class(cls: ClassInfo) -> list[str]:
-    lines: list[str] = [f"@{dec}" for dec in cls.decorators]
+def _render_class(cls: ClassInfo) -> list[str]:  # noqa: C901, PLR0912
+    lines: list[str] = []
+    if any(b.split("[")[0] == "Protocol" for b in cls.bases):
+        lines.append("# Protocol — implement in concrete class")
+    elif any(b.split("[")[0] in {"StrEnum", "Enum", "IntEnum"} for b in cls.bases):
+        lines.append("# Enum")
+    lines.extend(f"@{dec}" for dec in cls.decorators)
     bases_str = f"({', '.join(cls.bases)})" if cls.bases else ""
     lines.append(f"class {cls.name}{bases_str}:")
 

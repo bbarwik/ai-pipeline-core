@@ -1,14 +1,11 @@
 # MODULE: observability
 # CLASSES: TraceInfo
 # DEPENDS: BaseModel
+# PURPOSE: Observability system for AI pipelines.
 # SIZE: ~22KB
 
-# === DEPENDENCIES (Resolved) ===
-
-class BaseModel:
-    """Pydantic base model. Fields are typed class attributes."""
-    ...
-
+# === IMPORTS ===
+from ai_pipeline_core import TraceInfo, TraceLevel, set_trace_cost, trace
 # === PUBLIC API ===
 
 class TraceInfo(BaseModel):

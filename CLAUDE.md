@@ -475,6 +475,14 @@ The framework auto-generates documentation for AI coding agents via `docs_genera
 - Private classes matching `_CapitalizedName` pattern that appear in public API signatures are automatically included in INTERNAL TYPES section
 - Ensures guides are self-contained
 
+**Guide Structure Rules:**
+- Every guide must include `# === IMPORTS ===` with canonical `from ai_pipeline_core import ...` paths
+- Module-level `NewType`, `type` aliases, and public `UPPER_CASE` constants must be extracted into `# === TYPES & CONSTANTS ===` section
+- INDEX.md must include a Symbol Index table mapping every public symbol to module and kind
+- When `__init_subclass__` calls private helpers, the class docstring must enumerate all constraints as rule lines
+- Prefer `class MyType(str)` over `NewType` for types that should appear in documentation with their own docstring
+- Protocol and Enum classes are tagged with a comment line (`# Protocol` / `# Enum`) above the class definition
+
 ### 4.4 Module Cohesion
 
 Each framework module produces one AI-docs guide. That guide must be **self-sufficient for usage**: an AI coding agent must be able to correctly use the module's public API by reading only that guide.

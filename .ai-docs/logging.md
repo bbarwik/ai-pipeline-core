@@ -1,6 +1,21 @@
 # MODULE: logging
 # CLASSES: LoggingConfig
-# SIZE: ~7KB
+# PURPOSE: Logging infrastructure for AI Pipeline Core.
+# SIZE: ~8KB
+
+# === IMPORTS ===
+from ai_pipeline_core import LoggingConfig, get_logger, get_pipeline_logger, setup_logging
+
+# === TYPES & CONSTANTS ===
+
+DEFAULT_LOG_LEVELS = {
+    "ai_pipeline_core": "INFO",
+    "ai_pipeline_core.documents": "INFO",
+    "ai_pipeline_core.llm": "INFO",
+    "ai_pipeline_core.pipeline": "INFO",
+    "ai_pipeline_core.testing": "DEBUG",
+}
+
 # === PUBLIC API ===
 
 class LoggingConfig:

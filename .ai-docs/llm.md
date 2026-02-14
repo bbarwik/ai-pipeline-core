@@ -1,21 +1,31 @@
 # MODULE: llm
-# CLASSES: ModelOptions, Citation, ModelResponse, Role, TextContent, ImageContent, PDFContent, CoreMessage, TokenUsage, Conversation
-# DEPENDS: BaseModel, Generic, StrEnum
-# SIZE: ~29KB
+# CLASSES: ModelOptions, Citation, ModelResponse, TextContent, ImageContent, PDFContent, CoreMessage, TokenUsage, Conversation
+# DEPENDS: BaseModel, Generic
+# PURPOSE: Large Language Model integration via LiteLLM proxy.
+# SIZE: ~33KB
 
-# === DEPENDENCIES (Resolved) ===
+# === IMPORTS ===
+from ai_pipeline_core import Citation, Conversation, ConversationContent, ImagePart, ImagePreset, ImageProcessingConfig, ImageProcessingError, ModelName, ModelOptions, ModelResponse, ProcessedImage, TokenUsage, URLSubstitutor, generate, generate_structured, process_image
 
-class BaseModel:
-    """Pydantic base model. Fields are typed class attributes."""
-    ...
+# === TYPES & CONSTANTS ===
 
-class Generic:
-    """Python generic base class for parameterized types."""
-    ...
-
-class StrEnum:
-    """String enumeration base class."""
-    ...
+type ModelName = (
+    Literal[
+        # Core models
+        "gemini-3-pro",
+        "gpt-5.1",
+        # Small models
+        "gemini-3-flash",
+        "gpt-5-mini",
+        "grok-4.1-fast",
+        # Search models
+        "gemini-3-flash-search",
+        "gpt-5-mini-search",
+        "grok-4.1-fast-search",
+        "sonar-pro-search",
+    ]
+    | str
+)
 
 # === PUBLIC API ===
 
@@ -295,13 +305,6 @@ for structured responses (use MyModel.model_validate(response.parsed) to reconst
         if isinstance(value, BaseModel):
             return value.model_dump()
         return value
-
-
-class Role(StrEnum):
-    """Message role in conversation."""
-    SYSTEM = 'system'
-    USER = 'user'
-    ASSISTANT = 'assistant'
 
 
 class TextContent(BaseModel):
@@ -772,6 +775,91 @@ def test_small_png_document(self):
     image_parts = [p for p in parts if isinstance(p, ImageContent)]
     assert len(image_parts) == 1
     assert image_parts[0].mime_type == "image/png"
+
+# Example: Token usage property removed
+# Source: tests/llm/test_verified_issues.py:248
+def test_token_usage_property_removed(self):
+    """ModelResponse should not have token_usage property."""
+    assert not hasattr(ModelResponse, "token_usage"), "token_usage property should be removed"
+
+# Example: Default values
+# Source: tests/llm/test_model_options.py:11
+def test_default_values(self):
+    """Test default ModelOptions values."""
+    options = ModelOptions()
+    assert options.system_prompt is None
+    assert options.search_context_size is None
+    assert options.reasoning_effort is None
+    assert options.retries == 3
+    assert options.retry_delay_seconds == 20
+    assert options.timeout == 600
+    assert options.cache_ttl == "300s"
+    assert options.max_completion_tokens is None
+    assert options.stop is None
+    assert options.response_format is None
+    assert options.verbosity is None
+    assert options.usage_tracking is True
+    assert options.user is None
+    assert options.metadata is None
+    assert options.extra_body is None
+
+# Example: Document description is escaped
+# Source: tests/llm/test_verified_issues.py:200
+def test_document_description_is_escaped(self):
+    """Document description should have < and > escaped."""
+    doc = ConcreteDocument.create(name="test.txt", content="Hello", description="A <test> description")
+
+    parts = _document_to_content_parts(doc, "gpt-5.1")
+    combined = "".join(p.text for p in parts if isinstance(p, TextContent))
+
+    assert "&lt;test&gt;" in combined, "Description < > should be escaped"
+
+# Example: Document with multiple urls preserved
+# Source: tests/llm/test_escape_xml_issues.py:112
+def test_document_with_multiple_urls_preserved(self):
+    """Document containing URLs has ampersands intact."""
+    content = "Check these sources:\n- https://example.com/api?key=abc&format=json\n- https://example.com/data?from=2024&to=2025&type=csv\n"
+    doc = ConcreteDocument.create(name="sources.md", content=content)
+    parts = _document_to_content_parts(doc, "gpt-5.1")
+    combined = "".join(p.text for p in parts if isinstance(p, TextContent))
+
+    assert "&amp;" not in combined
+    assert "key=abc&format=json" in combined
+
+# Example: Explicit disable on non search
+# Source: tests/llm/test_substitutor_search_models.py:45
+def test_explicit_disable_on_non_search(self):
+    """Explicitly disabling substitutor on non-search model should work."""
+    conv = Conversation(model="gemini-3-flash", enable_substitutor=False)
+    assert conv.enable_substitutor is False
+    assert conv.substitutor is None
+
+# Example: Explicit enable overrides auto disable
+# Source: tests/llm/test_substitutor_search_models.py:39
+def test_explicit_enable_overrides_auto_disable(self):
+    """Explicitly enabling substitutor on search model should be respected."""
+    conv = Conversation(model="sonar-pro-search", enable_substitutor=True)
+    assert conv.enable_substitutor is True
+    assert conv.substitutor is not None
+
+# Example: Extra body none defaults to empty dict
+# Source: tests/llm/test_model_options.py:170
+def test_extra_body_none_defaults_to_empty_dict(self):
+    """Test that extra_body defaults to empty dict when None."""
+    options = ModelOptions(extra_body=None, usage_tracking=False)
+    kwargs = options.to_openai_completion_kwargs()
+    assert kwargs["extra_body"] == {}
+
+# Example: Extra body with usage tracking
+# Source: tests/llm/test_model_options.py:176
+def test_extra_body_with_usage_tracking(self):
+    """Test extra_body is replaced when usage_tracking is enabled."""
+    custom_params = {"custom_field": "value"}
+    options = ModelOptions(extra_body=custom_params, usage_tracking=True)
+    kwargs = options.to_openai_completion_kwargs()
+    # extra_body is replaced with custom_params, then usage is added
+    assert kwargs["extra_body"]["custom_field"] == "value"
+    assert kwargs["extra_body"]["usage"] == {"include": True}
 
 # === ERROR EXAMPLES (What NOT to Do) ===
 

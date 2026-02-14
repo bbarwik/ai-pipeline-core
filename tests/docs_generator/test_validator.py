@@ -210,3 +210,41 @@ def test_validation_result_frozen():
     result = ValidationResult(is_fresh=True, missing_symbols=(), size_violations=())
     with pytest.raises(dataclasses.FrozenInstanceError):
         result.is_fresh = False  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Completeness checks for NewType/Constants (#2)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_completeness_finds_newtype(tmp_path):
+    src = tmp_path / "ai_pipeline_core"
+    src.mkdir()
+    _write_py(src / "types.py", 'from typing import NewType\nDocSha = NewType("DocSha", str)\n')
+    ai_docs = tmp_path / ".ai-docs"
+    ai_docs.mkdir()
+    (ai_docs / "types.md").write_text("nothing\n")
+    missing = validate_completeness(ai_docs, src)
+    assert "DocSha" in missing
+
+
+def test_validate_completeness_covered_newtype(tmp_path):
+    src = tmp_path / "ai_pipeline_core"
+    src.mkdir()
+    _write_py(src / "types.py", 'from typing import NewType\nDocSha = NewType("DocSha", str)\n')
+    ai_docs = tmp_path / ".ai-docs"
+    ai_docs.mkdir()
+    (ai_docs / "types.md").write_text('DocSha = NewType("DocSha", str)\n')
+    missing = validate_completeness(ai_docs, src)
+    assert "DocSha" not in missing
+
+
+def test_validate_completeness_finds_uppercase_constant(tmp_path):
+    src = tmp_path / "ai_pipeline_core"
+    src.mkdir()
+    _write_py(src / "config.py", "MAX_RETRIES = 3\n")
+    ai_docs = tmp_path / ".ai-docs"
+    ai_docs.mkdir()
+    (ai_docs / "config.md").write_text("nothing\n")
+    missing = validate_completeness(ai_docs, src)
+    assert "MAX_RETRIES" in missing

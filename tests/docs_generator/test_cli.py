@@ -266,3 +266,91 @@ def test_render_index_content():
     assert "documents" in content
     assert "llm" in content
     assert "5,000" in content
+
+
+# ---------------------------------------------------------------------------
+# Symbol Index in INDEX.md (#1)
+# ---------------------------------------------------------------------------
+
+
+def test_render_index_with_symbol_index():
+    generated = [("documents", 5000), ("llm", 3000)]
+    symbol_index = [
+        ("Attachment", "class", "documents"),
+        ("Conversation", "class", "llm"),
+        ("generate", "func", "llm"),
+    ]
+    content = _render_index(generated, symbol_index=symbol_index)
+    assert "## Symbol Index" in content
+    assert "| Attachment | class | [documents](documents.md) |" in content
+    assert "| Conversation | class | [llm](llm.md) |" in content
+    assert "| generate | func | [llm](llm.md) |" in content
+
+
+def test_render_index_no_symbol_index_when_empty():
+    generated = [("documents", 5000)]
+    content = _render_index(generated)
+    assert "## Symbol Index" not in content
+
+
+def test_render_index_module_descriptions():
+    generated = [("documents", 5000), ("llm", 3000)]
+    descriptions = {"documents": "Document handling.", "llm": "LLM interaction."}
+    content = _render_index(generated, module_descriptions=descriptions)
+    assert "documents](documents.md) — Document handling." in content
+    assert "llm](llm.md) — LLM interaction." in content
+
+
+# ---------------------------------------------------------------------------
+# Module purpose helper
+# ---------------------------------------------------------------------------
+
+
+def test_read_module_purpose(tmp_path):
+    from ai_pipeline_core.docs_generator.cli import _read_module_purpose
+
+    src = tmp_path / "ai_pipeline_core"
+    mod = src / "mymod"
+    mod.mkdir(parents=True)
+    (mod / "__init__.py").write_text('"""Document handling and metadata management.\n\nDetailed description here.\n"""\n')
+    purpose = _read_module_purpose(src, "mymod")
+    assert purpose == "Document handling and metadata management."
+
+
+def test_read_module_purpose_missing_init(tmp_path):
+    from ai_pipeline_core.docs_generator.cli import _read_module_purpose
+
+    src = tmp_path / "ai_pipeline_core"
+    src.mkdir(parents=True)
+    assert _read_module_purpose(src, "nonexistent") == ""
+
+
+def test_read_module_purpose_no_docstring(tmp_path):
+    from ai_pipeline_core.docs_generator.cli import _read_module_purpose
+
+    src = tmp_path / "ai_pipeline_core"
+    mod = src / "mymod"
+    mod.mkdir(parents=True)
+    (mod / "__init__.py").write_text("from .core import MyClass\n")
+    assert _read_module_purpose(src, "mymod") == ""
+
+
+# ---------------------------------------------------------------------------
+# Import map helper
+# ---------------------------------------------------------------------------
+
+
+def test_build_import_map(tmp_path):
+    from ai_pipeline_core.docs_generator.cli import _build_import_map
+
+    src = tmp_path / "ai_pipeline_core"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text(
+        "from .documents import Document, Attachment\n"
+        "from .llm import Conversation, generate\n"
+        "\n"
+        '__all__ = ["Document", "Attachment", "Conversation", "generate"]\n'
+    )
+    result = _build_import_map(src)
+    assert "Document" in result.get("documents", [])
+    assert "Conversation" in result.get("llm", [])

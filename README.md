@@ -22,6 +22,7 @@ AI Pipeline Core is a production-ready framework that combines document processi
 - **Auto-Persistence**: `@pipeline_task` saves returned documents to `DocumentStore` automatically (configurable via `persist` parameter)
 - **Image Processing**: Automatic image tiling/splitting for LLM vision models with model-specific presets
 - **Observability**: Built-in distributed tracing via Laminar (LMNR) with cost tracking, local trace debugging, and ClickHouse-based tracking
+- **Prompt Compiler**: Type-safe prompt specifications replacing Jinja2 templates — typed Python classes for roles, rules, guides, and output formats with definition-time validation and a CLI tool for inspection
 - **Deployment**: Unified pipeline execution for local, CLI, and production environments with per-flow resume and dual-store support
 
 ## Installation
@@ -29,6 +30,10 @@ AI Pipeline Core is a production-ready framework that combines document processi
 ```bash
 pip install ai-pipeline-core
 ```
+
+This installs two CLI commands:
+- `ai-prompt-compiler` — discover, inspect, and render prompt specifications
+- `ai-pipeline-deploy` — build and deploy pipelines to Prefect Cloud
 
 ### Requirements
 
@@ -580,6 +585,9 @@ The framework includes a deploy script that builds a fully bundled deployment (p
 
 ```bash
 # From your project root (where pyproject.toml lives)
+ai-pipeline-deploy
+
+# Also available as module:
 python -m ai_pipeline_core.deployment.deploy
 ```
 
@@ -587,6 +595,98 @@ python -m ai_pipeline_core.deployment.deploy
 - `uv` (dependency resolution) and `pip` (wheel download) on the deploy machine
 - `PREFECT_API_URL`, `PREFECT_GCS_BUCKET` configured
 - `uv` on the worker (for offline install)
+
+### Prompt Compiler
+
+Type-safe prompt specifications that replace Jinja2 templates. Every piece of prompt content is a class or class attribute, validated at definition time (import time).
+
+**Components** — define once, reuse across specs:
+
+```python
+from ai_pipeline_core import Role, Rule, OutputRule, Guide
+
+class ResearchAnalyst(Role):
+    """Analyst role for research pipelines."""
+    text = "experienced research analyst with expertise in data synthesis"
+
+class CiteEvidence(Rule):
+    """Citation rule."""
+    text = "Always cite specific evidence from the source documents.\nInclude document IDs when referencing."
+
+class DontUseMarkdownTables(OutputRule):
+    """Table formatting rule."""
+    text = "Do not use markdown tables in the output."
+
+class RiskFrameworkGuide(Guide):
+    """Risk assessment framework guide."""
+    template = "guides/risk_framework.md"  # Relative to module file, loaded at import time
+```
+
+**Specs** — typed prompt definitions with full validation:
+
+```python
+from ai_pipeline_core import PromptSpec, Phase, Document
+from pydantic import Field
+
+class SourceDocument(Document):
+    """Source material for analysis."""
+
+class AnalysisSpec(PromptSpec, phase=Phase("analysis")):
+    """Analyze source documents for key findings."""
+    role = ResearchAnalyst
+    input_documents = (SourceDocument,)
+    task = "Analyze the provided documents and identify key findings."
+    rules = (CiteEvidence,)
+    guides = (RiskFrameworkGuide,)
+    output_type = str
+    output_structure = "## Key Findings\n## Evidence\n## Gaps"
+    output_rules = (DontUseMarkdownTables,)
+
+    # Dynamic fields — become template variables
+    project_name: str = Field(description="Project name")
+```
+
+**Rendering and sending:**
+
+```python
+from ai_pipeline_core import render_text, render_preview, send_spec, extract_result
+
+# Render with actual values
+prompt = render_text(AnalysisSpec, project_name="ACME", documents=[source_doc])
+
+# Preview with placeholder values (for debugging)
+preview = render_preview(AnalysisSpec)
+
+# Send to LLM via Conversation
+conv = await send_spec(conv, AnalysisSpec, project_name="ACME", documents=[source_doc])
+print(conv.content)
+
+# Extract result from XML-wrapped responses
+result = extract_result(conv.content)  # Extracts text between <result> tags
+```
+
+**XML-wrapped output** — for `output_type=str` specs, setting `xml_wrapped = True` adds `<result>` tags to the prompt and enables `extract_result()` extraction. Structured output (`output_type=SomeModel`) uses `send_structured()` automatically.
+
+**Phase** is a `str` subclass — any non-empty string is valid (e.g. `Phase("review")`, `Phase("analysis")`). Use whatever labels fit your pipeline.
+
+**CLI tool** for discovery, inspection, and rendering:
+
+```bash
+# List all discovered specs
+ai-prompt-compiler list
+
+# Inspect a spec's anatomy (role, docs, fields, rules, output config, token estimate)
+ai-prompt-compiler inspect AnalysisSpec
+
+# Render a prompt preview
+ai-prompt-compiler render AnalysisSpec
+
+# Explicit module:class reference
+ai-prompt-compiler render my_package.specs:AnalysisSpec
+
+# Also available as module:
+python -m ai_pipeline_core.prompt_compiler list
+```
 
 ### Prompt Manager
 
@@ -764,6 +864,7 @@ The `examples/` directory contains:
 
 - **`showcase.py`** -- Full pipeline demonstrating Document types, `@pipeline_task` auto-save, `@pipeline_flow` annotations, `PipelineDeployment`, and CLI mode
 - **`showcase_document_store.py`** -- DocumentStore usage patterns: MemoryDocumentStore, LocalDocumentStore, RunContext scoping, pipeline tasks with auto-save, and `run_local()` execution
+- **`showcase_prompt_compiler.py`** -- Prompt compiler features: Role, Rule, OutputRule, Guide, PromptSpec, rendering, XML-wrapped output, `extract_result()`, definition-time validation
 
 Run examples:
 ```bash
@@ -775,6 +876,9 @@ python examples/showcase.py ./output --max-keywords 8
 
 # Document store showcase (no arguments needed)
 python examples/showcase_document_store.py
+
+# Prompt compiler showcase (no arguments needed)
+python examples/showcase_prompt_compiler.py
 ```
 
 ## Project Structure
@@ -791,6 +895,7 @@ ai-pipeline-core/
 |   |-- logging/           # Logging infrastructure
 |   |-- observability/     # Tracing, tracking, and debug trace writer
 |   |-- pipeline/          # Pipeline decorators and FlowOptions
+|   |-- prompt_compiler/   # Type-safe prompt specs, rendering, and CLI tool
 |   |-- prompt_manager.py  # Jinja2 template management
 |   |-- settings.py        # Configuration management (Pydantic BaseSettings)
 |   +-- exceptions.py      # Framework exceptions (LLMError, DocumentNameError, etc.)

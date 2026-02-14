@@ -1,10 +1,11 @@
 """CLI for AI documentation generation and validation."""
 
 import argparse
+import ast
 import sys
 from pathlib import Path
 
-from ai_pipeline_core.docs_generator.extractor import build_symbol_table
+from ai_pipeline_core.docs_generator.extractor import SymbolTable, build_symbol_table
 from ai_pipeline_core.docs_generator.guide_builder import build_guide, render_guide
 from ai_pipeline_core.docs_generator.trimmer import manage_guide_size
 from ai_pipeline_core.docs_generator.validator import (
@@ -14,6 +15,7 @@ from ai_pipeline_core.docs_generator.validator import (
 )
 
 EXCLUDED_MODULES: frozenset[str] = frozenset({"docs_generator"})
+PACKAGE_NAME = "ai_pipeline_core"
 
 
 def _normalize_whitespace(content: str) -> str:
@@ -39,6 +41,91 @@ def _discover_modules(source_dir: Path) -> list[str]:
         else:
             modules.add(relative.stem)
     return sorted(modules - EXCLUDED_MODULES)
+
+
+def _read_module_purpose(source_dir: Path, module_name: str) -> str:
+    """Read first line of __init__.py docstring for module purpose."""
+    init_file = source_dir / module_name / "__init__.py"
+    if not init_file.exists():
+        return ""
+    try:
+        tree = ast.parse(init_file.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return ""
+    doc = ast.get_docstring(tree)
+    if not doc:
+        return ""
+    return doc.splitlines()[0].strip()
+
+
+def _build_import_map(source_dir: Path) -> dict[str, list[str]]:  # noqa: C901, PLR0912
+    """Parse top-level __init__.py __all__ and map each symbol to its module.
+
+    Returns {module_name: [symbol1, symbol2, ...]} for symbols in __all__.
+    """
+    init_file = source_dir / "__init__.py"
+    if not init_file.exists():
+        return {}
+
+    try:
+        tree = ast.parse(init_file.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return {}
+
+    # Collect __all__ names
+    all_names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "__all__" and isinstance(node.value, ast.List):
+                all_names = {elt.value for elt in node.value.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)}
+
+    if not all_names:
+        return {}
+
+    # Map symbol to import source module by scanning imports
+    symbol_source: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module and node.names:
+            # Extract first-level subpackage from import path
+            # Relative: from .documents import ... -> module="documents", level=1
+            # Relative nested: from .observability.tracing import ... -> module="observability.tracing", level=1
+            # Absolute: from ai_pipeline_core.documents import ... -> module="ai_pipeline_core.documents"
+            parts = node.module.split(".")
+            if node.level > 0:
+                # Relative import: first part is the subpackage
+                mod = parts[0]
+            elif len(parts) >= 2 and parts[0] == PACKAGE_NAME:
+                # Absolute import from our package
+                mod = parts[1]
+            else:
+                mod = parts[0]
+            for alias in node.names:
+                name = alias.asname if alias.asname else alias.name
+                if name in all_names:
+                    symbol_source[name] = mod
+
+    # Group by module
+    result: dict[str, list[str]] = {}
+    for name, mod in sorted(symbol_source.items()):
+        result.setdefault(mod, []).append(name)
+    return result
+
+
+def _collect_symbol_index(table: SymbolTable, generated_modules: set[str]) -> list[tuple[str, str, str]]:
+    """Collect (symbol, kind, module) tuples for the symbol index in INDEX.md."""
+    entries: list[tuple[str, str, str]] = []
+    for name, mod in sorted(table.class_to_module.items()):
+        if mod in generated_modules and table.classes.get(name, None) and table.classes[name].is_public:
+            entries.append((name, "class", mod))
+    for name, mod in sorted(table.function_to_module.items()):
+        if mod in generated_modules and table.functions.get(name, None) and table.functions[name].is_public:
+            entries.append((name, "func", mod))
+    for name, mod in sorted(table.value_to_module.items()):
+        if mod in generated_modules and table.values.get(name, None) and table.values[name].is_public:
+            entries.append((name, table.values[name].kind.lower(), mod))
+    return sorted(entries, key=lambda x: x[0].lower())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,13 +172,23 @@ def _run_generate(source_dir: Path, tests_dir: Path, output_dir: Path, repo_root
         hash_file.unlink()
 
     table = build_symbol_table(source_dir)
+    import_map = _build_import_map(source_dir)
     generated: list[tuple[str, int]] = []
+    generated_modules: set[str] = set()
+    module_descriptions: dict[str, str] = {}
 
     for module_name in _discover_modules(source_dir):
         data = build_guide(module_name, source_dir, tests_dir, table, TEST_DIR_OVERRIDES, repo_root)
-        if not data.classes and not data.functions:
+        if not data.classes and not data.functions and not data.values:
             print(f"  skip {module_name} (no public symbols)")
             continue
+
+        # Enrich guide data with purpose and imports
+        data.purpose = _read_module_purpose(source_dir, module_name)
+        data.imports = sorted(import_map.get(module_name, []))
+
+        if data.purpose:
+            module_descriptions[module_name] = data.purpose
 
         content = render_guide(data)
         content = manage_guide_size(data, content)
@@ -101,10 +198,12 @@ def _run_generate(source_dir: Path, tests_dir: Path, output_dir: Path, repo_root
         guide_path.write_text(content)
         size = len(content.encode("utf-8"))
         generated.append((module_name, size))
+        generated_modules.add(module_name)
         print(f"  wrote {module_name}.md ({size:,} bytes)")
 
     # INDEX.md
-    index_content = _normalize_whitespace(_render_index(generated))
+    symbol_index = _collect_symbol_index(table, generated_modules)
+    index_content = _normalize_whitespace(_render_index(generated, symbol_index, module_descriptions))
     (output_dir / "INDEX.md").write_text(index_content)
     print(f"  wrote INDEX.md ({len(index_content):,} bytes)")
 
@@ -143,8 +242,12 @@ def _run_check(source_dir: Path, tests_dir: Path, output_dir: Path) -> int:
     return 1
 
 
-def _render_index(generated: list[tuple[str, int]]) -> str:
-    """Render INDEX.md with reading order, task lookup, imports, and size table."""
+def _render_index(
+    generated: list[tuple[str, int]],
+    symbol_index: list[tuple[str, str, str]] | None = None,
+    module_descriptions: dict[str, str] | None = None,
+) -> str:
+    """Render INDEX.md with reading order, symbol index, task lookup, and size table."""
     lines: list[str] = [
         "# AI Documentation Index",
         "",
@@ -154,7 +257,20 @@ def _render_index(generated: list[tuple[str, int]]) -> str:
         "",
     ]
     for i, (name, _) in enumerate(generated, 1):
-        lines.append(f"{i}. [{name}]({name}.md)")
+        desc = f" — {module_descriptions[name]}" if module_descriptions and name in module_descriptions else ""
+        lines.append(f"{i}. [{name}]({name}.md){desc}")
+
+    # Symbol Index
+    if symbol_index:
+        lines.extend([
+            "",
+            "## Symbol Index",
+            "",
+            "| Symbol | Kind | Module |",
+            "| ------ | ---- | ------ |",
+        ])
+        for symbol, kind, module in symbol_index:
+            lines.append(f"| {symbol} | {kind} | [{module}]({module}.md) |")
 
     lines.extend([
         "",
@@ -176,6 +292,7 @@ def _render_index(generated: list[tuple[str, int]]) -> str:
         "Log messages": "logging",
         "Debug & observe traces": "observability",
         "Test pipelines": "testing",
+        "Build prompts": "prompt_compiler",
     }
     guide_set = {name for name, _ in generated}
     for task, guide in task_map.items():

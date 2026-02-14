@@ -1,0 +1,23 @@
+Risk Assessment Framework
+
+Evaluate each risk along four dimensions:
+
+1. Time Horizon
+   - Short (0-6 months): Immediate operational impact
+   - Medium (6-18 months): Strategic adjustment needed
+   - Long (18+ months): Fundamental structural concern
+
+2. Likelihood
+   - High: Evidence directly supports this outcome
+   - Medium: Plausible given current trajectory
+   - Low: Requires multiple unlikely events
+
+3. Impact Severity
+   - Critical: Existential threat to project viability
+   - Major: Significant setback requiring strategy change
+   - Minor: Manageable with standard mitigation
+
+4. Mitigation Complexity
+   - High: Requires fundamental redesign or external factors
+   - Medium: Achievable with dedicated effort and resources
+   - Low: Standard engineering or operational fix

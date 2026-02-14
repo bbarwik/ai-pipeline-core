@@ -3,12 +3,8 @@
 # DEPENDS: BaseSettings
 # SIZE: ~7KB
 
-# === DEPENDENCIES (Resolved) ===
-
-class BaseSettings:
-    """Pydantic settings model. Loads values from environment variables."""
-    ...
-
+# === IMPORTS ===
+from ai_pipeline_core import Settings
 # === PUBLIC API ===
 
 class Settings(BaseSettings):

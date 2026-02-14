@@ -2,13 +2,6 @@
 # CLASSES: PipelineCoreError, DocumentValidationError, DocumentSizeError, DocumentNameError, LLMError, PromptError, PromptRenderError, PromptNotFoundError
 # DEPENDS: Exception
 # SIZE: ~1KB
-
-# === DEPENDENCIES (Resolved) ===
-
-class Exception:
-    """External base class (not fully documented)."""
-    ...
-
 # === PUBLIC API ===
 
 class PipelineCoreError(Exception):

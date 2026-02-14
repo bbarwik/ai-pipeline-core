@@ -1,0 +1,11 @@
+Positive Team Assumptions
+
+When evaluating a project, assume the founding team:
+
+- Is technically competent and acting in good faith
+- Has domain expertise relevant to their stated goals
+- Will respond to identified risks with reasonable mitigation efforts
+- Has access to industry-standard resources and advisors
+
+These assumptions establish a fair baseline. Deviations should be
+noted only when supported by concrete evidence from the research.

@@ -1,13 +1,45 @@
 # MODULE: documents
 # CLASSES: Attachment, TaskDocumentContext, Document
 # DEPENDS: BaseModel
-# SIZE: ~37KB
+# PURPOSE: Document system for AI pipeline flows.
+# SIZE: ~39KB
 
-# === DEPENDENCIES (Resolved) ===
+# === IMPORTS ===
+from ai_pipeline_core import Attachment, Document, DocumentSha256, RunContext, RunScope, TaskDocumentContext, get_run_context, is_document_sha256, reset_run_context, sanitize_url, set_run_context
 
-class BaseModel:
-    """Pydantic base model. Fields are typed class attributes."""
-    ...
+# === TYPES & CONSTANTS ===
+
+EXTENSION_MIME_MAP = {
+    "md": "text/markdown",
+    "txt": "text/plain",
+    "pdf": "application/pdf",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "bmp": "image/bmp",
+    "webp": "image/webp",
+    "heic": "image/heic",
+    "heif": "image/heif",
+    "json": "application/json",
+    "yaml": "application/yaml",
+    "yml": "application/yaml",
+    "xml": "text/xml",
+    "html": "text/html",
+    "htm": "text/html",
+    "py": "text/x-python",
+    "css": "text/css",
+    "js": "application/javascript",
+    "ts": "application/typescript",
+    "tsx": "application/typescript",
+    "jsx": "application/javascript",
+}
+
+DATA_URI_PATTERN = re.compile(r"^data:[a-zA-Z0-9.+/-]+;base64,")
+
+DocumentSha256 = NewType("DocumentSha256", str)
+
+RunScope = NewType("RunScope", str)
 
 # === PUBLIC API ===
 
@@ -923,6 +955,13 @@ def test_attachment_order_does_not_matter(self):
     doc2 = HashDoc.create(name="doc.txt", content="content", attachments=(att_b, att_a))
     assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
 
+# Example: Document mime type
+# Source: tests/documents/test_document_core.py:914
+def test_document_mime_type(self):
+    """Document.mime_type returns detected MIME type."""
+    doc = ConcreteTestDocument.create(name="data.json", content={"key": "value"})
+    assert doc.mime_type == "application/json"
+
 # === ERROR EXAMPLES (What NOT to Do) ===
 
 # Error: Cannot convert to document
@@ -963,4 +1002,14 @@ def test_content_plus_attachments_exceeding_limit(self):
             name="test.txt",
             content=b"1234567",  # 7 bytes
             attachments=(Attachment(name="a.txt", content=b"12345"),),  # 5 bytes => total 12
+        )
+
+# Error: Content plus attachments exceeding limit rejected
+# Source: tests/documents/test_document_attachments.py:137
+def test_content_plus_attachments_exceeding_limit_rejected(self):
+    with pytest.raises(DocumentSizeError, match="including attachments"):
+        SmallLimitDoc(
+            name="test.txt",
+            content=b"A" * 30,  # 30 bytes
+            attachments=(Attachment(name="a.txt", content=b"B" * 25),),  # total 55 > 50
         )

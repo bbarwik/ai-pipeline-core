@@ -1,13 +1,27 @@
 # MODULE: document_store
 # CLASSES: ClickHouseDocumentStore, LocalDocumentStore, MemoryDocumentStore, DocumentStore
 # DEPENDS: Protocol
-# SIZE: ~22KB
+# PURPOSE: Document store protocol and backends for AI pipeline flows.
+# SIZE: ~24KB
 
-# === DEPENDENCIES (Resolved) ===
+# === IMPORTS ===
+from ai_pipeline_core import DocumentStore, SummaryGenerator, create_document_store, get_document_store, set_document_store
 
-class Protocol:
-    """External base class (not fully documented)."""
-    ...
+# === TYPES & CONSTANTS ===
+
+TABLE_DOCUMENT_CONTENT = "document_content"
+
+TABLE_DOCUMENT_INDEX = "document_index"
+
+TABLE_RUN_DOCUMENTS = "run_documents"
+
+DOC_ID_LENGTH = 6
+
+MAX_PROVENANCE_GRAPH_NODES = 5000
+
+type SummaryGenerator = Callable[[str, str], Coroutine[None, None, str]]
+
+type SummaryUpdateFn = Callable[[DocumentSha256, str], Coroutine[None, None, None]]
 
 # === PUBLIC API ===
 
@@ -314,6 +328,7 @@ Storage layout: global documents dict + per-run membership sets + global summari
         self._summaries[document_sha256] = summary
 
 
+# Protocol — implement in concrete class
 @runtime_checkable
 class DocumentStore(Protocol):
     """Protocol for document storage backends.
@@ -457,6 +472,41 @@ def test_set_and_get_document_store():
     set_document_store(store)
     assert get_document_store() is store
 
+# Example: Basic round trip
+# Source: tests/document_store/test_local.py:46
+@pytest.mark.asyncio
+async def test_basic_round_trip(self, store: LocalDocumentStore):
+    doc = _make(ReportDoc, "report.md", "# Hello\nWorld")
+    await store.save(doc, RunScope("run1"))
+    loaded = await store.load(RunScope("run1"), [ReportDoc])
+    assert len(loaded) == 1
+    assert loaded[0].name == "report.md"
+    assert loaded[0].content == b"# Hello\nWorld"
+    assert isinstance(loaded[0], ReportDoc)
+
+# Example: Check existing reads primary
+# Source: tests/document_store/test_dual_store.py:72
+@pytest.mark.asyncio
+async def test_check_existing_reads_primary(self):
+    primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
+    dual = DualDocumentStore(primary=primary, secondary=secondary)
+    doc = _make("a.md", "content")
+    sha = compute_document_sha256(doc)
+    await primary.save(doc, RunScope("run1"))
+    assert sha in await dual.check_existing([sha])
+
+# Example: Cross scope delegates to primary
+# Source: tests/document_store/test_dual_store.py:232
+@pytest.mark.asyncio
+async def test_cross_scope_delegates_to_primary(self):
+    primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
+    dual = DualDocumentStore(primary=primary, secondary=secondary)
+    doc = _make("a.md", "cross scope dual")
+    await primary.save(doc, RunScope("run1"))
+    result = await dual.load_by_sha256s([doc.sha256], DualReportDoc)
+    assert doc.sha256 in result
+    assert result[doc.sha256].sha256 == doc.sha256
+
 # === ERROR EXAMPLES (What NOT to Do) ===
 
 # Error: Create document store rejects non settings
@@ -516,3 +566,10 @@ async def test_primary_update_summary_failure_still_attempts_secondary(self):
         await dual.update_summary(sha, "summary")
     # Secondary should still have been updated
     assert (await secondary.load_summaries([sha]))[sha] == "summary"
+
+# Error: Path traversal rejected at document level
+# Source: tests/document_store/test_local.py:338
+def test_path_traversal_rejected_at_document_level(self):
+    """Document validation rejects path traversal before the store."""
+    with pytest.raises(Exception, match="path traversal"):
+        ReportDoc(name="../../../etc/passwd", content=b"evil")

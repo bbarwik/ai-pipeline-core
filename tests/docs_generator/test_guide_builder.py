@@ -7,9 +7,13 @@ from ai_pipeline_core.docs_generator.extractor import (
     SymbolTable,
     build_symbol_table,
 )
+from ai_pipeline_core.docs_generator.extractor import ValueInfo
 from ai_pipeline_core.docs_generator.guide_builder import (
+    BASE_EXAMPLE_BUDGET,
+    MAX_EXAMPLE_BUDGET,
     GuideData,
     ScoredExample,
+    _compute_example_budget,
     build_guide,
     discover_tests,
     extract_rules,
@@ -907,8 +911,8 @@ def test_render_guide_no_internal_types_section_when_empty():
     assert "INTERNAL TYPES" not in output
 
 
-def test_internal_types_section_between_dependencies_and_public_api():
-    """INTERNAL TYPES section appears between DEPENDENCIES and PUBLIC API."""
+def test_internal_types_section_before_public_api():
+    """INTERNAL TYPES section appears before PUBLIC API."""
     private_cls = _make_class(name="_Proto", is_public=False)
     data = _empty_guide(
         external_bases={"BaseModel"},
@@ -916,7 +920,140 @@ def test_internal_types_section_between_dependencies_and_public_api():
         classes=[_make_class(name="MyClass")],
     )
     output = render_guide(data)
-    deps_idx = output.index("# === DEPENDENCIES")
     internal_idx = output.index("# === INTERNAL TYPES")
     api_idx = output.index("# === PUBLIC API")
-    assert deps_idx < internal_idx < api_idx
+    assert internal_idx < api_idx
+
+
+# ---------------------------------------------------------------------------
+# No DEPENDENCIES stubs section (#4)
+# ---------------------------------------------------------------------------
+
+
+def test_render_guide_no_dependencies_stubs():
+    """DEPENDENCIES (Resolved) section with class stubs is removed."""
+    data = _empty_guide(external_bases={"BaseModel"}, classes=[_make_class(name="Foo")])
+    output = render_guide(data)
+    assert "# === DEPENDENCIES (Resolved) ===" not in output
+    assert "# DEPENDS: BaseModel" in output
+
+
+# ---------------------------------------------------------------------------
+# Protocol/Enum class tags (#8)
+# ---------------------------------------------------------------------------
+
+
+def test_render_guide_protocol_tag():
+    cls = _make_class(name="Store", bases=("Protocol",))
+    data = _empty_guide(classes=[cls])
+    output = render_guide(data)
+    lines = output.splitlines()
+    proto_idx = next(i for i, line in enumerate(lines) if "# Protocol" in line)
+    class_idx = next(i for i, line in enumerate(lines) if "class Store" in line)
+    assert proto_idx < class_idx
+
+
+def test_render_guide_enum_tag():
+    cls = _make_class(name="Color", bases=("StrEnum",))
+    data = _empty_guide(classes=[cls])
+    output = render_guide(data)
+    assert "# Enum" in output
+
+
+def test_render_guide_no_tag_for_normal_class():
+    cls = _make_class(name="Normal", bases=("BaseModel",))
+    data = _empty_guide(classes=[cls])
+    output = render_guide(data)
+    assert "# Protocol" not in output
+    assert "# Enum" not in output
+
+
+# ---------------------------------------------------------------------------
+# Dynamic example budget (#7)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_example_budget_small_module():
+    assert _compute_example_budget(0) == BASE_EXAMPLE_BUDGET
+    assert _compute_example_budget(1) == BASE_EXAMPLE_BUDGET
+    assert _compute_example_budget(2) == BASE_EXAMPLE_BUDGET
+
+
+def test_compute_example_budget_medium_module():
+    assert _compute_example_budget(3) == 10
+    assert _compute_example_budget(4) == 12
+
+
+def test_compute_example_budget_large_module():
+    assert _compute_example_budget(6) == MAX_EXAMPLE_BUDGET
+    assert _compute_example_budget(10) == MAX_EXAMPLE_BUDGET
+
+
+# ---------------------------------------------------------------------------
+# TYPES & CONSTANTS section (#2)
+# ---------------------------------------------------------------------------
+
+
+def _make_value(name: str = "MY_CONST", source: str = "MY_CONST = 42", kind: str = "Constant") -> ValueInfo:
+    return ValueInfo(name=name, source=source, kind=kind, is_public=True, module_path="mod")
+
+
+def test_render_guide_types_and_constants_section():
+    val = _make_value(name="DocumentSha256", source='DocumentSha256 = NewType("DocumentSha256", str)', kind="NewType")
+    data = _empty_guide(values=[val])
+    output = render_guide(data)
+    assert "# === TYPES & CONSTANTS ===" in output
+    assert "DocumentSha256 = NewType" in output
+
+
+def test_render_guide_no_types_section_when_empty():
+    data = _empty_guide()
+    output = render_guide(data)
+    assert "TYPES & CONSTANTS" not in output
+
+
+def test_render_guide_types_section_before_public_api():
+    val = _make_value()
+    cls = _make_class(name="Foo")
+    data = _empty_guide(values=[val], classes=[cls])
+    output = render_guide(data)
+    types_idx = output.index("# === TYPES & CONSTANTS")
+    api_idx = output.index("# === PUBLIC API")
+    assert types_idx < api_idx
+
+
+# ---------------------------------------------------------------------------
+# PURPOSE header (#5)
+# ---------------------------------------------------------------------------
+
+
+def test_render_guide_purpose_header():
+    data = _empty_guide()
+    data.purpose = "Document handling and metadata management."
+    output = render_guide(data)
+    assert "# PURPOSE: Document handling and metadata management." in output
+
+
+def test_render_guide_no_purpose_when_empty():
+    data = _empty_guide()
+    output = render_guide(data)
+    assert "# PURPOSE:" not in output
+
+
+# ---------------------------------------------------------------------------
+# IMPORTS section (#3)
+# ---------------------------------------------------------------------------
+
+
+def test_render_guide_imports_section():
+    data = _empty_guide()
+    data.imports = ["Conversation", "generate"]
+    output = render_guide(data)
+    assert "# === IMPORTS ===" in output
+    assert "from ai_pipeline_core import Conversation, generate" in output
+
+
+def test_render_guide_no_imports_when_empty():
+    data = _empty_guide()
+    output = render_guide(data)
+    assert "# === IMPORTS ===" not in output

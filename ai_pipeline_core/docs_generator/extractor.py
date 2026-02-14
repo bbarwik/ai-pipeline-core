@@ -55,6 +55,17 @@ class FunctionInfo:
 
 
 @dataclass(frozen=True)
+class ValueInfo:
+    """Extracted module-level value: NewType, type alias, or constant."""
+
+    name: str
+    source: str
+    kind: str  # "NewType", "TypeAlias", "Constant"
+    is_public: bool
+    module_path: str
+
+
+@dataclass(frozen=True)
 class ModuleInfo:
     """Parsed module containing its classes and functions."""
 
@@ -64,6 +75,7 @@ class ModuleInfo:
     is_public: bool
     classes: tuple[ClassInfo, ...]
     functions: tuple[FunctionInfo, ...]
+    values: tuple[ValueInfo, ...] = ()
 
 
 @dataclass
@@ -76,8 +88,10 @@ class SymbolTable:
 
     classes: dict[str, ClassInfo] = field(default_factory=dict)
     functions: dict[str, FunctionInfo] = field(default_factory=dict)
+    values: dict[str, ValueInfo] = field(default_factory=dict)
     class_to_module: dict[str, str] = field(default_factory=dict)
     function_to_module: dict[str, str] = field(default_factory=dict)
+    value_to_module: dict[str, str] = field(default_factory=dict)
 
 
 # Known external base classes that get stub representations
@@ -110,14 +124,17 @@ def parse_module(path: Path) -> ModuleInfo:
 
     classes: list[ClassInfo] = []
     functions: list[FunctionInfo] = []
+    values: list[ValueInfo] = []
 
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
             classes.append(_extract_class(node, source_lines, module_path))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             functions.append(_extract_function(node, source_lines, module_path))
+        elif value := _extract_value(node, source_lines, module_path):
+            values.append(value)
 
-    module_public = any(c.is_public for c in classes) or any(f.is_public for f in functions)
+    module_public = any(c.is_public for c in classes) or any(f.is_public for f in functions) or any(v.is_public for v in values)
 
     return ModuleInfo(
         name=path.stem,
@@ -126,6 +143,7 @@ def parse_module(path: Path) -> ModuleInfo:
         is_public=module_public,
         classes=tuple(classes),
         functions=tuple(functions),
+        values=tuple(values),
     )
 
 
@@ -150,13 +168,20 @@ def build_symbol_table(source_dir: Path) -> SymbolTable:
         for func in module.functions:
             table.functions[func.name] = func
             table.function_to_module[func.name] = package_name
+        for val in module.values:
+            table.values[val.name] = val
+            table.value_to_module[val.name] = package_name
 
     _remap_private_symbols(table, source_dir)
     return table
 
 
-def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:
-    """Remap symbols defined in private modules to public modules that re-export them via __all__."""
+def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:  # noqa: C901, PLR0912
+    """Remap symbols defined in private modules to public modules that re-export them via __all__.
+
+    Also discovers symbols from private files (e.g. _types.py) that are
+    re-exported via a public module's __all__ but were skipped during initial parsing.
+    """
     if not source_dir.is_dir():
         return
     public_exports: dict[str, set[str]] = {}
@@ -170,7 +195,8 @@ def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:
         if all_names:
             public_exports[subdir.name] = all_names
 
-    for symbol_map in (table.class_to_module, table.function_to_module):
+    # Remap already-discovered symbols from private to public modules
+    for symbol_map in (table.class_to_module, table.function_to_module, table.value_to_module):
         for name, current_module in list(symbol_map.items()):
             if not current_module.startswith("_"):
                 continue
@@ -178,6 +204,24 @@ def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:
                 if name in exports:
                     symbol_map[name] = public_module
                     break
+
+    # Discover values (NewType, TypeAlias, Constants) from private files
+    # that are re-exported via __all__ but were skipped during initial parsing.
+    # Classes and functions from private files are already handled by the remap above.
+    known_values = set(table.values)
+    for public_module, exports in public_exports.items():
+        missing_values = exports - set(table.classes) - set(table.functions) - known_values
+        if not missing_values:
+            continue
+        subdir = source_dir / public_module
+        for py_file in sorted(subdir.rglob("*.py")):
+            if py_file.name == "__init__.py":
+                continue
+            module = parse_module(py_file)
+            for val in module.values:
+                if val.name in missing_values:
+                    table.values[val.name] = val
+                    table.value_to_module[val.name] = public_module
 
 
 def _parse_dunder_all(init_file: Path) -> set[str]:
@@ -274,7 +318,8 @@ def _extract_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     return f"({args_str}){ret}"
 
 
-def _get_source(source_lines: list[str], node: ast.AST) -> str:
+def get_source(source_lines: list[str], node: ast.AST) -> str:
+    """Extract source code text for an AST node, including decorators."""
     decoratable = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
     if isinstance(node, decoratable) and node.decorator_list:
         start = node.decorator_list[0].lineno - 1
@@ -298,12 +343,39 @@ def _extract_method(
         name=node.name,
         signature=_extract_signature(node),
         docstring=ast.get_docstring(node) or "",
-        source=_get_source(source_lines, node),
+        source=get_source(source_lines, node),
         is_property="property" in decorator_names,
         is_classmethod="classmethod" in decorator_names,
         is_abstract="abstractmethod" in decorator_names,
         line_count=_body_line_count(node),
     )
+
+
+def _extract_value(node: ast.stmt, source_lines: list[str], module_path: str) -> ValueInfo | None:
+    """Extract module-level NewType, type alias, or UPPER_CASE constant."""
+    # NewType("Name", base) — ast.Assign with Call to NewType
+    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+        name = node.targets[0].id
+        if isinstance(node.value, ast.Call) and _is_newtype_call(node.value):
+            return ValueInfo(name=name, source=get_source(source_lines, node), kind="NewType", is_public=is_public_name(name), module_path=module_path)
+        if name.isupper() and is_public_name(name) and len(name) > 1:
+            return ValueInfo(name=name, source=get_source(source_lines, node), kind="Constant", is_public=True, module_path=module_path)
+    # PEP 695 type alias: type Name = ...
+    if isinstance(node, ast.TypeAlias):
+        name = node.name.id
+        return ValueInfo(name=name, source=get_source(source_lines, node), kind="TypeAlias", is_public=is_public_name(name), module_path=module_path)
+    # Annotated type alias: Name: TypeAlias = ...
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
+        ann = ast.unparse(node.annotation)
+        if "TypeAlias" in ann:
+            name = node.target.id
+            return ValueInfo(name=name, source=get_source(source_lines, node), kind="TypeAlias", is_public=is_public_name(name), module_path=module_path)
+    return None
+
+
+def _is_newtype_call(node: ast.Call) -> bool:
+    """Check if a Call node is NewType(...)."""
+    return (isinstance(node.func, ast.Name) and node.func.id == "NewType") or (isinstance(node.func, ast.Attribute) and node.func.attr == "NewType")
 
 
 def _extract_class(node: ast.ClassDef, source_lines: list[str], module_path: str) -> ClassInfo:
@@ -354,7 +426,7 @@ def _extract_function(
         name=node.name,
         signature=_extract_signature(node),
         docstring=ast.get_docstring(node) or "",
-        source=_get_source(source_lines, node),
+        source=get_source(source_lines, node),
         is_public=is_public_name(node.name),
         is_async=isinstance(node, ast.AsyncFunctionDef),
         line_count=_body_line_count(node),

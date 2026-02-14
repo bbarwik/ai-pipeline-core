@@ -397,3 +397,78 @@ def test_parse_module_class_multiple_decorators(tmp_path):
     src.write_text('@decorator_a\n@decorator_b(x=1)\nclass Multi:\n    """Multi-decorated."""\n    pass\n')
     cls = parse_module(src).classes[0]
     assert cls.decorators == ("decorator_a", "decorator_b(x=1)")
+
+
+# ---------------------------------------------------------------------------
+# ValueInfo extraction (NewType, TypeAlias, Constants)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_module_extracts_newtype(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text('from typing import NewType\nDocSha = NewType("DocSha", str)\n')
+    module = parse_module(src)
+    assert len(module.values) == 1
+    val = module.values[0]
+    assert val.name == "DocSha"
+    assert val.kind == "NewType"
+    assert val.is_public is True
+
+
+def test_parse_module_extracts_uppercase_constant(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text("MAX_RETRIES = 3\n")
+    module = parse_module(src)
+    assert len(module.values) == 1
+    assert module.values[0].name == "MAX_RETRIES"
+    assert module.values[0].kind == "Constant"
+
+
+def test_parse_module_skips_private_constant(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text("_INTERNAL = 42\nPUBLIC = 1\n")
+    module = parse_module(src)
+    public_vals = [v for v in module.values if v.is_public]
+    assert len(public_vals) == 1
+    assert public_vals[0].name == "PUBLIC"
+
+
+def test_parse_module_skips_lowercase_assigns(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text('logger = get_logger()\nname = "test"\n')
+    module = parse_module(src)
+    assert len(module.values) == 0
+
+
+def test_parse_module_extracts_type_alias_pep695(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text("type ConversationContent = str | list[dict]\n")
+    module = parse_module(src)
+    assert len(module.values) == 1
+    assert module.values[0].name == "ConversationContent"
+    assert module.values[0].kind == "TypeAlias"
+
+
+def test_parse_module_extracts_annotated_type_alias(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text("from typing import TypeAlias\nModelName: TypeAlias = str\n")
+    module = parse_module(src)
+    assert len(module.values) == 1
+    assert module.values[0].name == "ModelName"
+    assert module.values[0].kind == "TypeAlias"
+
+
+def test_build_symbol_table_includes_values(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    _write_py(pkg / "types.py", 'from typing import NewType\nDocSha = NewType("DocSha", str)\n')
+    table = build_symbol_table(tmp_path)
+    assert "DocSha" in table.values
+    assert table.value_to_module["DocSha"] == "pkg"
+
+
+def test_parse_module_values_make_module_public(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text("MAX_SIZE = 1024\n")
+    module = parse_module(src)
+    assert module.is_public is True

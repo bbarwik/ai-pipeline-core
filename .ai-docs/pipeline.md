@@ -1,17 +1,24 @@
 # MODULE: pipeline
 # CLASSES: FlowOptions
 # DEPENDS: BaseSettings
-# SIZE: ~27KB
+# PURPOSE: Pipeline framework primitives — decorators and flow options.
+# SIZE: ~28KB
 
-# === DEPENDENCIES (Resolved) ===
+# === IMPORTS ===
+from ai_pipeline_core import FlowOptions, pipeline_flow, pipeline_task
 
-class BaseSettings:
-    """Pydantic settings model. Loads values from environment variables."""
-    ...
+# === TYPES & CONSTANTS ===
+
+type RetryConditionCallable = Callable[[Any, Any, Any], bool]
+
+type StateHookCallable = Callable[[Any, Any, Any], None]
+
+type TaskRunNameValueOrCallable = str | Callable[[], str]
 
 
 # === INTERNAL TYPES (referenced by public API) ===
 
+# Protocol — implement in concrete class
 class _FlowLike(Protocol[FO_contra]):
     """Protocol for decorated flow objects returned by @pipeline_flow."""
     name: str | None
@@ -29,6 +36,7 @@ class _FlowLike(Protocol[FO_contra]):
     def __getattr__(self, name: str) -> Any: ...
 
 
+# Protocol — implement in concrete class
 class _TaskLike(Protocol[R_co]):
     """Protocol for type-safe Prefect task representation."""
     submit: Callable[..., Any]

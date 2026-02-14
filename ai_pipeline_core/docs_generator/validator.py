@@ -56,7 +56,11 @@ def validate_completeness(ai_docs_dir: Path, source_dir: Path, excluded_modules:
     """Return public symbols (by naming convention) not found in any guide file."""
     public_symbols = _find_public_symbols(source_dir, excluded_modules)
     guide_content = _read_all_guides(ai_docs_dir)
-    return [symbol for symbol in sorted(public_symbols) if f"class {symbol}" not in guide_content and f"def {symbol}" not in guide_content]
+    return [
+        symbol
+        for symbol in sorted(public_symbols)
+        if f"class {symbol}" not in guide_content and f"def {symbol}" not in guide_content and f"{symbol} =" not in guide_content
+    ]
 
 
 def validate_size(ai_docs_dir: Path, max_size: int = MAX_GUIDE_SIZE) -> list[tuple[str, int]]:
@@ -100,11 +104,30 @@ def _find_public_symbols(source_dir: Path, excluded_modules: frozenset[str] = fr
         except SyntaxError:
             continue
         for node in tree.body:
-            if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if is_public_name(node.name) and node.name not in _EXCLUDED_SYMBOLS:
-                symbols.add(node.name)
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                if is_public_name(node.name) and node.name not in _EXCLUDED_SYMBOLS:
+                    symbols.add(node.name)
+            # NewType / type alias / constant
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+                if is_public_name(name) and name not in _EXCLUDED_SYMBOLS and ((name.isupper() and len(name) > 1) or _is_newtype_assign(node)):
+                    symbols.add(name)
+            elif isinstance(node, ast.TypeAlias):
+                name = node.name.id
+                if is_public_name(name) and name not in _EXCLUDED_SYMBOLS:
+                    symbols.add(name)
     return symbols
+
+
+def _is_newtype_assign(node: ast.Assign) -> bool:
+    """Check if an Assign node is a NewType(...) call."""
+    if isinstance(node.value, ast.Call):
+        func = node.value.func
+        if isinstance(func, ast.Name) and func.id == "NewType":
+            return True
+        if isinstance(func, ast.Attribute) and func.attr == "NewType":
+            return True
+    return False
 
 
 def _read_all_guides(ai_docs_dir: Path) -> str:

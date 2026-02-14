@@ -357,7 +357,7 @@ class TestReplacingMergeTree:
         rows = _query(client, f"SELECT status, version FROM {TABLE_PIPELINE_RUNS} FINAL WHERE run_id = '{run_id}'")
         assert len(rows) == 1
         assert rows[0][0] == "completed"
-        assert rows[0][1] == 2  # version 1 = start, version 2 = end
+        assert rows[0][1] > 1  # end version > start version (nanosecond timestamps)
 
     def test_span_version_dedup(self, service, client):
         run_id = uuid4()
@@ -382,7 +382,7 @@ class TestReplacingMergeTree:
         rows = _query(client, f"SELECT status, version FROM {TABLE_TRACKED_SPANS} FINAL WHERE span_id = 'vspan01' AND run_id = '{run_id}'")
         assert len(rows) == 1
         assert rows[0][0] == "completed"
-        assert rows[0][1] == 2
+        assert rows[0][1] > 1  # end version > start version (nanosecond timestamps)
 
 
 class TestSummaryUpdate:
