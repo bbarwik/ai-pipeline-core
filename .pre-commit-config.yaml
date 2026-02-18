@@ -1,67 +1,105 @@
+---
 repos:
-- repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v6.0.0
-  hooks:
-    - id: trailing-whitespace
-    - id: end-of-file-fixer
-    - id: check-yaml
-    - id: check-added-large-files
-    - id: check-json
-    - id: check-merge-conflict
-    - id: check-toml
-    - id: debug-statements
-    - id: mixed-line-ending
-
-- repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.14.14
-  hooks:
-    - id: ruff
-      args: [--fix, --exit-non-zero-on-fix]
-      exclude: ^(.*\.md|dependencies_docs/)
-    - id: ruff-format
-      exclude: ^(.*\.md|dependencies_docs/)
-
-- repo: https://github.com/econchick/interrogate
-  rev: 1.7.0
-  hooks:
-    - id: interrogate
-      args: [--fail-under=100, -v, ai_pipeline_core]
-      pass_filenames: false
-
-- repo: local
-  hooks:
-    - id: vulture
-      name: vulture dead code check
-      entry: vulture ai_pipeline_core/ .vulture_whitelist.py --min-confidence 80
-      language: system
-      types: [python]
-      pass_filenames: false
-
-    - id: semgrep
-      name: semgrep custom rules
-      entry: semgrep --config .semgrep/ ai_pipeline_core/ tests/ --error --quiet
-      language: system
-      types: [python]
-      pass_filenames: false
-
-    - id: basedpyright
-      name: basedpyright (source)
-      entry: basedpyright
-      language: system
-      types: [python]
-      pass_filenames: false
-      fail_fast: true
-
-    - id: basedpyright-tests
-      name: basedpyright (tests, errors only)
-      entry: basedpyright --level error -p pyrightconfig.tests.json
-      language: system
-      types: [python]
-      pass_filenames: false
-
-    - id: check-ai-docs
-      name: check .ai-docs/ freshness
-      entry: python -m ai_pipeline_core.docs_generator check
-      language: system
-      pass_filenames: false
-      files: \.py$
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        stages:
+          - pre-commit
+      - id: end-of-file-fixer
+        stages:
+          - pre-commit
+      - id: check-yaml
+        stages:
+          - pre-commit
+      - id: check-added-large-files
+        exclude: uv.lock
+        stages:
+          - pre-commit
+      - id: check-json
+        stages:
+          - pre-commit
+      - id: check-merge-conflict
+        stages:
+          - pre-commit
+      - id: check-toml
+        stages:
+          - pre-commit
+      - id: debug-statements
+        stages:
+          - pre-commit
+      - id: mixed-line-ending
+        stages:
+          - pre-commit
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.14
+    hooks:
+      - id: ruff
+        args:
+          - '--fix'
+          - '--exit-non-zero-on-fix'
+        exclude: ^(.*\.md|dependencies_docs/)
+        stages:
+          - pre-commit
+      - id: ruff-format
+        exclude: ^(.*\.md|dependencies_docs/)
+        stages:
+          - pre-commit
+  - repo: https://github.com/econchick/interrogate
+    rev: 1.7.0
+    hooks:
+      - id: interrogate
+        args:
+          - '--fail-under=100'
+          - '-v'
+          - 'ai_pipeline_core'
+        pass_filenames: false
+        stages:
+          - pre-commit
+  - repo: local
+    hooks:
+      - id: vulture
+        name: vulture dead code check
+        entry: vulture ai_pipeline_core/ .vulture_whitelist.py --min-confidence 80
+        language: system
+        types:
+          - python
+        pass_filenames: false
+        stages:
+          - pre-commit
+      - id: semgrep
+        name: semgrep custom rules
+        entry: semgrep --config .semgrep/ ai_pipeline_core/ tests/ --error --quiet
+        language: system
+        types:
+          - python
+        pass_filenames: false
+        stages:
+          - pre-commit
+      - id: basedpyright
+        name: basedpyright (source)
+        entry: basedpyright
+        language: system
+        types:
+          - python
+        pass_filenames: false
+        fail_fast: true
+        stages:
+          - pre-commit
+      - id: basedpyright-tests
+        name: basedpyright (tests, errors only)
+        entry: basedpyright --level error -p pyrightconfig.tests.json
+        language: system
+        types:
+          - python
+        pass_filenames: false
+        stages:
+          - pre-commit
+      - id: check-ai-docs
+        name: check .ai-docs/ freshness
+        entry: python -m ai_pipeline_core.docs_generator check
+        language: system
+        pass_filenames: false
+        files: \.py$
+        stages:
+          - pre-commit

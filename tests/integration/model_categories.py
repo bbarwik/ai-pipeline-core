@@ -2,7 +2,7 @@
 
 from typing import cast, get_args
 
-from ai_pipeline_core.llm.model_types import ModelName
+from ai_pipeline_core.llm import ModelName
 
 # Get all models from the Literal type
 # ModelName is now Literal[...] | str, so we need to extract the Literal part

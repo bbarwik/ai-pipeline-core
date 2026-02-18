@@ -67,7 +67,12 @@ dev = [
 minversion = "8.0"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-q -m 'not integration and not clickhouse'"
+addopts = '''
+  --doctest-modules
+  --quiet
+  -m 'not integration and not clickhouse'
+'''
+strict = true
 testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",

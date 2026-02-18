@@ -39,15 +39,14 @@ This installs two CLI commands:
 
 - Python 3.12 or higher
 - Linux/macOS (Windows via WSL2)
+- [uv](https://astral.sh/uv) (recommended)
 
 ### Development Installation
 
 ```bash
 git clone https://github.com/bbarwik/ai-pipeline-core.git
 cd ai-pipeline-core
-pip install -e ".[dev]"
-pipx install semgrep  # Installed separately due to dependency conflicts
-make install-dev  # Installs pre-commit hooks
+make install-dev     # Initializes uv environment and installs pre-commit hooks
 ```
 
 ## Quick Start
@@ -630,7 +629,7 @@ python -m ai_pipeline_core.deployment.deploy
 ```
 
 **Requirements:**
-- `uv` (dependency resolution) and `pip` (wheel download) on the deploy machine
+- `uv` (dependency resolution and wheel download) on the deploy machine
 - `PREFECT_API_URL`, `PREFECT_GCS_BUCKET` configured
 - `uv` on the worker (for offline install)
 
