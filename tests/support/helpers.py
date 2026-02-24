@@ -57,7 +57,7 @@ def create_test_structured_model_response(
     """Create a ModelResponse with structured output for testing."""
     if content is None:
         content = parsed.model_dump_json()
-    return ModelResponse(
+    return ModelResponse[Any](
         content=content,
         parsed=parsed,
         reasoning_content=reasoning_content,

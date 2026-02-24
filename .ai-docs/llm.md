@@ -2,7 +2,7 @@
 # CLASSES: ModelOptions, Citation, Conversation
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.10.0
+# VERSION: 0.10.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -376,7 +376,7 @@ Attachment rendering in LLM context:
 
 ## Examples
 
-**Citation has slots** (`tests/llm/test_verified_issues.py:294`)
+**Citation has slots** (`tests/llm/test_verified_issues.py:296`)
 
 ```python
 def test_citation_has_slots(self):

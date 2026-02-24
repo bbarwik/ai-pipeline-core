@@ -15,7 +15,7 @@ from ai_pipeline_core.observability._debug import ContentWriter, TraceDebugConfi
 @pytest.fixture
 def config(tmp_path: Path) -> TraceDebugConfig:
     """Create test configuration."""
-    return TraceDebugConfig(path=tmp_path, max_element_bytes=100)
+    return TraceDebugConfig(path=tmp_path)
 
 
 @pytest.fixture

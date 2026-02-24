@@ -21,17 +21,24 @@ class LocalDebugSpanProcessor(SpanProcessor):
 
     Integrates with the OpenTelemetry SDK to capture all spans and write them
     to a structured directory hierarchy for debugging.
+
+    When verbose=False (default), LLM-type spans are filtered out to avoid
+    duplicate directories (every Conversation call creates both a DEFAULT and
+    an inner LLM span). Filtered span metrics are still captured for totals.
     """
 
-    def __init__(self, writer: LocalTraceWriter):
-        """Initialize span processor with writer."""
+    def __init__(self, writer: LocalTraceWriter, *, verbose: bool = False):
         self._writer = writer
+        self._verbose = verbose
+        self._filtered_span_ids: set[str] = set()
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         """Handle span start - create directories.
 
         Creates the span directory early so we can see "running" spans.
         Input/output data is not available yet - will be captured in on_end().
+
+        LLM-type spans are filtered unless verbose mode is enabled.
         """
         try:
             if span.context is None:
@@ -39,6 +46,13 @@ class LocalDebugSpanProcessor(SpanProcessor):
             trace_id = format(span.context.trace_id, "032x")
             span_id = format(span.context.span_id, "016x")
             parent_id = self._get_parent_span_id(span)
+
+            # Filter LLM-type spans unless verbose mode
+            if not self._verbose:
+                attrs = span.attributes
+                if attrs and attrs.get("lmnr.span.type") == "LLM":
+                    self._filtered_span_ids.add(span_id)
+                    return
 
             self._writer.on_span_start(trace_id, span_id, parent_id, span.name)
         except _PROCESSOR_ERRORS as e:
@@ -49,13 +63,27 @@ class LocalDebugSpanProcessor(SpanProcessor):
 
         All data (input, output, attributes, events) is captured here because
         Laminar sets these attributes after span start.
+
+        Filtered spans are not written to disk but their metrics are passed
+        to the writer for trace-level cost/token totals.
         """
         try:
             if span.context is None or span.start_time is None or span.end_time is None:
                 return
+
+            span_id = format(span.context.span_id, "016x")
+
+            if span_id in self._filtered_span_ids:
+                self._filtered_span_ids.discard(span_id)
+                # Pass metrics to writer for document_summary cost tracking
+                trace_id = format(span.context.trace_id, "032x")
+                attributes = dict(span.attributes) if span.attributes else {}
+                self._writer.record_filtered_llm_metrics(trace_id, attributes)
+                return
+
             job = WriteJob(
                 trace_id=format(span.context.trace_id, "032x"),
-                span_id=format(span.context.span_id, "016x"),
+                span_id=span_id,
                 name=span.name,
                 parent_id=self._get_parent_span_id(span),
                 attributes=dict(span.attributes) if span.attributes else {},

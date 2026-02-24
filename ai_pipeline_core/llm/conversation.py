@@ -437,7 +437,7 @@ class Conversation(BaseModel, Generic[T]):
         # Trace the full send operation — input captures pre-substitution content
         span_name = purpose or f"conversation.{'send_structured' if response_format else 'send'}"
         span_input = self._core_messages_to_span_input(core_messages)
-        with Laminar.start_as_current_span(span_name, input=span_input) as span:
+        with Laminar.start_as_current_span(f"{span_name}:{self.model}", input=span_input) as span:
             if substitutor:
                 core_messages = self._apply_substitution(core_messages, substitutor)
 
@@ -466,6 +466,8 @@ class Conversation(BaseModel, Generic[T]):
 
             Laminar.set_span_output(response.content)
             span.set_attributes(response.get_laminar_metadata())  # pyright: ignore[reportArgumentType]
+            if purpose:
+                span.set_attribute("purpose", purpose)
 
             return new_messages, response
 

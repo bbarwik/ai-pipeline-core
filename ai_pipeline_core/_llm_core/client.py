@@ -323,7 +323,7 @@ def _build_model_response(
             for a in url_citations
         )
 
-    return ModelResponse(
+    return ModelResponse[Any](
         content=content,
         parsed=parsed,
         reasoning_content=reasoning_content,
@@ -389,7 +389,7 @@ async def _generate_impl(
     for attempt in range(total_attempts):
         try:
             async with AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url) as client:
-                with Laminar.start_as_current_span(purpose or model, span_type="LLM", input=api_messages) as span:
+                with Laminar.start_as_current_span(f"{purpose}:{model}" if purpose else model, span_type="LLM", input=api_messages) as span:
                     if model_options.stream:
                         response, metadata, stream_usage = await _generate_streaming(client, model, api_messages, completion_kwargs)
                     else:

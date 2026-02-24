@@ -1,111 +1,52 @@
-"""Content writing and extraction for trace debugging V3.
+"""Content writing for trace debugging.
 
-Uses hash-based artifact storage with automatic deduplication.
-Handles Document attachments by externalizing large binary/text attachments to the artifact store.
+Writes span input/output as YAML files with inline content trimming.
+Large text is trimmed (first/last chars preserved), images are replaced with metadata placeholders,
+and documents use the same trimming as the rest of the trace system.
 """
 
-import base64
 import hashlib
 import json
 import re
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 from uuid import UUID
 
 import yaml
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, SecretStr
 
 from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.observability._trimming import _CONTENT_TRIM_THRESHOLD, _is_binary_content, _trim_content_string
 
 from ._config import TraceDebugConfig
 
 logger = get_pipeline_logger(__name__)
 
 
-class ContentRef(BaseModel):
-    """Reference to content in artifact store."""
-
-    hash: str  # "sha256:abcdef..."
-    path: str  # "artifacts/sha256/abcdef...1234.txt"
-    size_bytes: int
-    mime_type: str | None = None
-    encoding: str | None = None  # "utf-8" | "binary"
-
-    model_config = ConfigDict(frozen=True)
+class _BlockStringDumper(yaml.SafeDumper):
+    """YAML dumper that uses block scalar style (|) for multiline strings."""
 
 
-class ArtifactStore:
-    """Hash-based artifact storage with automatic deduplication.
-
-    Stores large content elements in artifacts/sha256/<hash>.<ext>
-    Identical content automatically deduplicates (same hash = same file).
-    """
-
-    def __init__(self, trace_path: Path):
-        """Initialize artifact store for given trace path."""
-        self._artifacts_path = trace_path / "artifacts" / "sha256"
-        self._artifacts_path.mkdir(parents=True, exist_ok=True)
-        self._known_hashes: dict[str, ContentRef] = {}
-        self._trace_path = trace_path
-
-    _MIME_EXT_MAP: ClassVar[dict[str, str]] = {
-        "image/png": ".png",
-        "image/jpeg": ".jpg",
-        "image/gif": ".gif",
-        "image/webp": ".webp",
-        "application/pdf": ".pdf",
-        "text/plain": ".txt",
-    }
-
-    def store(self, data: bytes, mime_type: str = "application/octet-stream") -> ContentRef:
-        """Store content (text or binary), return reference with deduplication."""
-        content_hash = hashlib.sha256(data).hexdigest()
-
-        if content_hash in self._known_hashes:
-            return self._known_hashes[content_hash]
-
-        ext = self._MIME_EXT_MAP.get(mime_type, ".bin")
-        is_text = mime_type.startswith("text/")
-        file_path = self._artifacts_path / f"{content_hash}{ext}"
-
-        if not file_path.exists():
-            file_path.write_bytes(data)
-
-        ref = ContentRef(
-            hash=f"sha256:{content_hash}",
-            path=str(file_path.relative_to(self._trace_path)),
-            size_bytes=len(data),
-            mime_type=mime_type,
-            encoding="utf-8" if is_text else "binary",
-        )
-
-        self._known_hashes[content_hash] = ref
-        return ref
+def _block_string_representer(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
 
 
-# Keys below mirror Document.serialize_model() output format:
-# "class_name", "name", "content", "mime_type", "attachments", "description"
-# Not imported from documents module to avoid circular dependency from observability.
+_BlockStringDumper.add_representer(str, _block_string_representer)
 
 
 class ContentWriter:
-    """Writes content as input.yaml / output.yaml with artifact externalization."""
+    """Writes content as input.yaml / output.yaml with inline trimming."""
 
-    def __init__(self, config: TraceDebugConfig, artifact_store: ArtifactStore | None = None):
-        """Initialize content writer with config and optional artifact store."""
+    def __init__(self, config: TraceDebugConfig):
         self._config = config
         self._compiled_patterns = [re.compile(p) for p in config.redact_patterns]
-        self._artifact_store = artifact_store
 
     def write(self, content: Any, span_dir: Path, name: str) -> dict[str, Any]:
-        """Write content as {name}.yaml with artifact externalization.
-
-        Args:
-            content: Raw content (LLM messages, documents, dicts, etc.)
-            span_dir: Span directory
-            name: "input" or "output"
+        """Write content as {name}.yaml with inline trimming.
 
         Returns:
             Metadata dict with type, path, size_bytes
@@ -113,27 +54,24 @@ class ContentWriter:
         if content is None:
             return {"type": "none", "size_bytes": 0}
 
-        # Structure content (recursive processing with externalization)
         structured = self._structure_content(content)
 
-        # Serialize to YAML
         serialized = yaml.dump(
             structured,
             default_flow_style=False,
             allow_unicode=True,
             sort_keys=False,
+            Dumper=_BlockStringDumper,
         )
         serialized = self._redact(serialized)
         size = len(serialized.encode("utf-8"))
 
-        # Truncate with warning if over file size limit
         if size > self._config.max_file_bytes:
             serialized = serialized[: self._config.max_file_bytes]
             max_bytes = self._config.max_file_bytes
             serialized += f"\n\n# [TRUNCATED: original {size} bytes exceeded {max_bytes} limit]\n"
             size = len(serialized.encode("utf-8"))
 
-        # Write file
         file_path = span_dir / f"{name}.yaml"
         file_path.write_text(serialized, encoding="utf-8")
 
@@ -176,7 +114,7 @@ class ContentWriter:
         return all("class_name" in item and "content" in item for item in sample)
 
     def _structure_llm_messages(self, messages: list[Any]) -> dict[str, Any]:
-        """Structure LLM messages preserving ALL parts losslessly."""
+        """Structure LLM messages with inline trimming."""
         message_entries: list[dict[str, Any]] = []
 
         total_text_bytes = 0
@@ -193,7 +131,6 @@ class ContentWriter:
             }
 
             if isinstance(content, list):
-                # Multimodal: preserve each part separately
                 content_parts = cast(list[Any], content)
                 msg_parts: list[dict[str, Any]] = []
                 msg_entry["parts"] = msg_parts
@@ -208,7 +145,6 @@ class ContentWriter:
                     elif part_type in {"tool_use", "tool_result"}:
                         total_tool_bytes += part_bytes
             elif isinstance(content, str):
-                # Simple text message
                 text_entry = self._structure_text_element(content, 0)
                 msg_entry["parts"] = [text_entry]
                 total_text_bytes += text_entry.get("size_bytes", 0)
@@ -217,7 +153,6 @@ class ContentWriter:
             else:
                 msg_entry["parts"] = [{"type": "unknown", "sequence": 0, "raw": str(content)}]
 
-            # Preserve tool_calls at message level (OpenAI format)
             if "tool_calls" in msg:
                 msg_entry["tool_calls"] = self._convert_types(msg["tool_calls"])
             if "function_call" in msg:
@@ -243,7 +178,7 @@ class ContentWriter:
         }
 
     def _structure_message_part(self, part: dict[str, Any], sequence: int) -> tuple[dict[str, Any], int]:
-        """Structure a single message part losslessly.
+        """Structure a single message part.
 
         Returns:
             Tuple of (structured_dict, size_bytes)
@@ -290,7 +225,7 @@ class ContentWriter:
             else:
                 entry["content"] = self._convert_types(result_content)
             return entry, size
-        # Unknown type — preserve raw data, never drop
+        # Unknown type — preserve raw data
         raw = self._convert_types(part)
         raw_str = json.dumps(raw)
         size = len(raw_str.encode("utf-8"))
@@ -301,44 +236,8 @@ class ContentWriter:
             "raw_data": raw,
         }, size
 
-    def _store_or_inline_text(self, text: str, entry: dict[str, Any], mime_type: str, excerpt_len: int) -> None:
-        """Store text in artifact store if oversized, otherwise inline in entry."""
-        text_bytes = len(text.encode("utf-8"))
-        if text_bytes > self._config.max_element_bytes and self._artifact_store:
-            ref = self._artifact_store.store(text.encode("utf-8"), mime_type)
-            entry["content_ref"] = {
-                "hash": ref.hash,
-                "path": ref.path,
-                "mime_type": ref.mime_type,
-                "encoding": ref.encoding,
-            }
-            entry["excerpt"] = text[:excerpt_len] + "\n[TRUNCATED - see artifact for full content]"
-        else:
-            entry["content"] = text
-
-    def _store_or_inline_image(self, b64_data: str, mime_type: str, ext: str, entry: dict[str, Any]) -> None:
-        """Store base64 image in artifact store or mark as not extracted."""
-        if self._config.extract_base64_images and self._artifact_store and b64_data:
-            try:
-                image_bytes = base64.b64decode(b64_data)
-                ref = self._artifact_store.store(image_bytes, mime_type)
-                entry["content_ref"] = {
-                    "hash": ref.hash,
-                    "path": ref.path,
-                    "mime_type": ref.mime_type,
-                    "encoding": ref.encoding,
-                }
-                estimated_size = entry.get("size_bytes", len(b64_data) * 3 // 4)
-                entry["preview"] = f"[{ext.upper()} image, {estimated_size} bytes]"
-                entry["extracted"] = True
-            except Exception as e:
-                entry["extract_error"] = str(e)
-                entry["extracted"] = False
-        else:
-            entry["extracted"] = False
-
     def _structure_text_element(self, text: str, sequence: int) -> dict[str, Any]:
-        """Structure a text element, optionally externalizing large content."""
+        """Structure a text element with inline trimming."""
         text = self._redact(text)
         text_bytes = len(text.encode("utf-8"))
 
@@ -348,19 +247,17 @@ class ContentWriter:
             "size_bytes": text_bytes,
         }
 
-        self._store_or_inline_text(text, entry, "text/plain", self._config.element_excerpt_bytes)
-
-        # When no artifact store is available, truncate oversized content with marker
-        if "content" in entry and text_bytes > self._config.max_element_bytes:
-            entry["content"] = text[: self._config.max_element_bytes]
+        if text_bytes > _CONTENT_TRIM_THRESHOLD:
+            entry["content"] = _trim_content_string(text)
             entry["truncated"] = True
             entry["original_size_bytes"] = text_bytes
+        else:
+            entry["content"] = text
 
         return entry
 
     def _structure_image(self, part: dict[str, Any], part_type: str, sequence: int) -> dict[str, Any]:
-        """Structure image part for both OpenAI and Anthropic formats."""
-        # Extract base64 data and metadata per provider format
+        """Structure image part as metadata-only placeholder."""
         if part_type == "image_url":
             url = part.get("image_url", {}).get("url", "")
             detail = part.get("image_url", {}).get("detail", "auto")
@@ -373,7 +270,6 @@ class ContentWriter:
                 return {"type": "image_parse_error", "sequence": sequence, "url_preview": url[:100], "size_bytes": 0}
 
             ext, b64_data = match.groups()
-            mime_type = f"image/{ext}"
         else:
             detail = None
             source = part.get("source", {})
@@ -385,94 +281,64 @@ class ContentWriter:
 
             b64_data = source.get("data", "")
 
-        # Common: hash, size, store
         estimated_size = len(b64_data) * 3 // 4 if b64_data else 0
-        content_hash = hashlib.sha256(b64_data.encode()).hexdigest() if b64_data else "empty"
+        content_hash = hashlib.sha256(b64_data.encode()).hexdigest()[:16] if b64_data else "empty"
 
         entry: dict[str, Any] = {
             "type": "image",
             "sequence": sequence,
             "format": ext,
             "size_bytes": estimated_size,
-            "hash": content_hash[:16],
+            "hash": content_hash,
+            "preview": f"[{ext.upper()} image, {estimated_size} bytes]",
         }
         if detail is not None:
             entry["detail"] = detail
-
-        self._store_or_inline_image(b64_data, mime_type, ext, entry)
-        return entry
-
-    def _externalize_content(self, content: str, name: str, mime_type: str) -> dict[str, Any]:
-        """Externalize a single content value (text or data URI binary).
-
-        Returns a dict with size_bytes plus either content, content_ref+excerpt, or content_ref+preview.
-        """
-        entry: dict[str, Any] = {}
-        is_data_uri = content.startswith("data:")
-
-        if is_data_uri:
-            # Binary content encoded as data URI
-            try:
-                _, payload = content.split(",", 1)
-                binary_data = base64.b64decode(payload)
-                size = len(binary_data)
-                entry["size_bytes"] = size
-                entry["encoding"] = "binary"
-
-                if size > self._config.max_element_bytes and self._artifact_store:
-                    ref = self._artifact_store.store(binary_data, mime_type)
-                    entry["content_ref"] = {"hash": ref.hash, "path": ref.path, "mime_type": ref.mime_type, "encoding": ref.encoding}
-                    entry["preview"] = f"[Binary content, {size} bytes]"
-                else:
-                    entry["content"] = content
-            except Exception:
-                logger.debug("Failed to decode data URI for %s: %s", name, mime_type, exc_info=True)
-                entry["content"] = "[binary content - decode failed]"
-                entry["size_bytes"] = 0
-        else:
-            # Text content
-            text = self._redact(str(content))
-            entry["size_bytes"] = len(text.encode("utf-8"))
-            self._store_or_inline_text(text, entry, mime_type, self._config.element_excerpt_bytes)
-
         return entry
 
     def _structure_documents(self, docs: list[Any]) -> dict[str, Any]:
-        """Structure document list with attachment externalization."""
+        """Structure document list with inline trimming."""
         doc_entries: list[dict[str, Any]] = []
 
         for i, doc in enumerate(docs):
             doc_name = doc.get("name", f"doc_{i}")
             class_name = doc.get("class_name", "Document")
             content = doc.get("content", "")
-            mime_type = doc.get("mime_type", "application/octet-stream")
 
             doc_entry: dict[str, Any] = {
                 "index": i,
                 "name": doc_name,
                 "class_name": class_name,
-                **self._externalize_content(content, doc_name, mime_type),
             }
 
-            # Structure attachments if present
+            if _is_binary_content(content):
+                doc_entry["content"] = "[binary content removed]"
+                doc_entry["size_bytes"] = 0
+            elif isinstance(content, str):
+                doc_entry["size_bytes"] = len(content.encode("utf-8"))
+                doc_entry["content"] = self._redact(_trim_content_string(content))
+            else:
+                doc_entry["content"] = self._redact(str(content))
+                doc_entry["size_bytes"] = len(str(content).encode("utf-8"))
+
             raw_attachments = doc.get("attachments")
             if isinstance(raw_attachments, list) and raw_attachments:
                 att_entries: list[dict[str, Any]] = []
-                attachments_list = cast(list[Any], raw_attachments)
-                for j, att in enumerate(attachments_list):
+                for j, att in enumerate(cast(list[Any], raw_attachments)):
                     if not isinstance(att, dict):
                         continue
                     att_dict = cast(dict[str, Any], att)
-                    att_name = att_dict.get("name", f"attachment_{j}")
                     att_content = att_dict.get("content", "")
-                    att_mime = att_dict.get("mime_type", "application/octet-stream")
-
-                    att_entry: dict[str, Any] = {"index": j, "name": att_name}
+                    att_entry: dict[str, Any] = {"index": j, "name": att_dict.get("name", f"attachment_{j}")}
                     if att_dict.get("description"):
                         att_entry["description"] = att_dict["description"]
-                    att_entry.update(self._externalize_content(att_content, att_name, att_mime))
+                    if _is_binary_content(att_content):
+                        att_entry["content"] = "[binary content removed]"
+                        att_entry["size_bytes"] = 0
+                    elif isinstance(att_content, str):
+                        att_entry["size_bytes"] = len(att_content.encode("utf-8"))
+                        att_entry["content"] = self._redact(_trim_content_string(att_content))
                     att_entries.append(att_entry)
-
                 doc_entry["attachment_count"] = len(att_entries)
                 doc_entry["attachments"] = att_entries
 
@@ -506,7 +372,6 @@ class ContentWriter:
 
     def _convert_types(self, value: Any, seen: set[int] | None = None) -> Any:  # noqa: PLR0911
         """Convert non-serializable types recursively with cycle detection."""
-        # Cycle detection
         if seen is None:
             seen = set()
 
@@ -551,7 +416,6 @@ class ContentWriter:
                 seen.discard(obj_id)
                 return result
             case _:
-                # Try str() as fallback
                 try:
                     return str(value)
                 except Exception:

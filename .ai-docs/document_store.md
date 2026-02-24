@@ -2,7 +2,7 @@
 # CLASSES: DocumentReader, FlowCompletion, DocumentNode
 # DEPENDS: Protocol
 # PURPOSE: Document store protocol and backends for AI pipeline flows.
-# VERSION: 0.10.0
+# VERSION: 0.10.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -238,7 +238,7 @@ def test_set_and_get_document_store():
 
 ## Error Examples
 
-**Create document store rejects non settings** (`tests/document_store/test_local.py:417`)
+**Create document store rejects non settings** (`tests/document_store/test_local.py:419`)
 
 ```python
 def test_create_document_store_rejects_non_settings(self):

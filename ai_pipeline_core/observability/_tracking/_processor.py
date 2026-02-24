@@ -94,7 +94,7 @@ class TrackingSpanProcessor(SpanProcessor):
             cost = float(attrs.get("gen_ai.usage.cost", 0.0))
             tokens_input = int(attrs.get("gen_ai.usage.input_tokens", 0))
             tokens_output = int(attrs.get("gen_ai.usage.output_tokens", 0))
-            llm_model = str(attrs.get("gen_ai.request.model", "")) or None
+            llm_model = str(attrs.get("gen_ai.request.model") or attrs.get("gen_ai.request_model") or "") or None
 
             # Extract document SHA256 arrays set by track_task_io
             raw_input_sha256s = attrs.get(ATTR_INPUT_DOCUMENT_SHA256S)

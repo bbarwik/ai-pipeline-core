@@ -1,15 +1,17 @@
 """Tests for LocalDocumentStore."""
 
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from ai_pipeline_core.document_store._factory import create_document_store
 from ai_pipeline_core.document_store._protocol import DocumentStore, set_document_store
 from ai_pipeline_core.document_store._models import DocumentNode, walk_provenance
-from ai_pipeline_core.document_store._local import LocalDocumentStore, _safe_filename
+from ai_pipeline_core.document_store._local import LocalDocumentStore, _safe_filename, _atomic_write_text
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._hashing import compute_document_sha256
 from ai_pipeline_core.documents.types import DocumentSha256, RunScope
@@ -34,7 +36,7 @@ def store(tmp_path: Path) -> LocalDocumentStore:
     return LocalDocumentStore(base_path=tmp_path)
 
 
-def _make(cls: type[Document], name: str, content: str = "test", **kwargs) -> Document:
+def _make(cls: type[Document], name: str, content: str = "test", **kwargs: Any) -> Document:
     if "derived_from" in kwargs or "triggered_by" in kwargs:
         return cls.create(name=name, content=content, **kwargs)
     return cls.create_root(name=name, content=content, reason="test fixture", **kwargs)
@@ -142,7 +144,7 @@ class TestCrashRecovery:
     async def test_content_without_meta_is_ignored(self, store: LocalDocumentStore, tmp_path: Path):
         """Content file without meta.json should be skipped during load."""
         # Create a content file without corresponding meta
-        doc_dir = tmp_path / "run1" / ReportDoc.__name__
+        doc_dir = tmp_path / ReportDoc.__name__
         doc_dir.mkdir(parents=True)
         (doc_dir / "orphan.md").write_text("orphaned content")
 
@@ -152,7 +154,7 @@ class TestCrashRecovery:
     @pytest.mark.asyncio
     async def test_meta_without_content_is_skipped(self, store: LocalDocumentStore, tmp_path: Path):
         """Meta file without content file should be skipped with warning."""
-        doc_dir = tmp_path / "run1" / ReportDoc.__name__
+        doc_dir = tmp_path / ReportDoc.__name__
         doc_dir.mkdir(parents=True)
         meta = {"document_sha256": "X" * 52, "content_sha256": "Y" * 52, "class_name": "ReportDoc"}
         (doc_dir / "missing.md.meta.json").write_text(json.dumps(meta))
@@ -163,7 +165,7 @@ class TestCrashRecovery:
     @pytest.mark.asyncio
     async def test_corrupted_meta_is_skipped(self, store: LocalDocumentStore, tmp_path: Path):
         """Invalid JSON in meta file should be skipped."""
-        doc_dir = tmp_path / "run1" / ReportDoc.__name__
+        doc_dir = tmp_path / ReportDoc.__name__
         doc_dir.mkdir(parents=True)
         (doc_dir / "bad.md").write_text("content")
         (doc_dir / "bad.md.meta.json").write_text("not valid json{{{")
@@ -261,8 +263,8 @@ class TestFileLayout:
         await store.save(doc, RunScope("run1"))
 
         class_name = ReportDoc.__name__
-        assert (tmp_path / "run1" / class_name / safe_name).exists()
-        assert (tmp_path / "run1" / class_name / f"{safe_name}.meta.json").exists()
+        assert (tmp_path / class_name / safe_name).exists()
+        assert (tmp_path / class_name / f"{safe_name}.meta.json").exists()
 
     @pytest.mark.asyncio
     async def test_meta_json_content(self, store: LocalDocumentStore, tmp_path: Path):
@@ -272,7 +274,7 @@ class TestFileLayout:
         await store.save(doc, RunScope("run1"))
 
         class_name = ReportDoc.__name__
-        meta_path = tmp_path / "run1" / class_name / f"{safe_name}.meta.json"
+        meta_path = tmp_path / class_name / f"{safe_name}.meta.json"
         meta = json.loads(meta_path.read_text())
 
         assert meta["name"] == "report.md"
@@ -292,7 +294,7 @@ class TestFileLayout:
         await store.save(doc, RunScope("run1"))
 
         class_name = ReportDoc.__name__
-        att_dir = tmp_path / "run1" / class_name / f"{safe_name}.att"
+        att_dir = tmp_path / class_name / f"{safe_name}.att"
         assert att_dir.is_dir()
         assert (att_dir / "img.png").exists()
 
@@ -373,7 +375,7 @@ class TestCollisionSafeFilenames:
     @pytest.mark.asyncio
     async def test_backward_compat_load_without_name_in_meta(self, store: LocalDocumentStore, tmp_path: Path):
         """Old meta.json files without 'name' field should fall back to filesystem name."""
-        doc_dir = tmp_path / "run1" / ReportDoc.__name__
+        doc_dir = tmp_path / ReportDoc.__name__
         doc_dir.mkdir(parents=True)
         (doc_dir / "old_doc.md").write_bytes(b"old content")
         meta = {
@@ -475,10 +477,12 @@ class TestLoadBySha256s:
         assert loaded.attachments[0].content == att.content
 
     @pytest.mark.asyncio
-    async def test_returns_empty_for_nonexistent_scope(self, store: LocalDocumentStore):
+    async def test_scope_ignored_for_path(self, store: LocalDocumentStore):
+        """run_scope is accepted but ignored — doc saved with one scope is found with another."""
         doc = _make(ReportDoc, "report.md", "content")
         await store.save(doc, RunScope("run1"))
-        assert await store.load_by_sha256s([doc.sha256], ReportDoc, RunScope("run2")) == {}
+        result = await store.load_by_sha256s([doc.sha256], ReportDoc, RunScope("run2"))
+        assert doc.sha256 in result
 
     @pytest.mark.asyncio
     async def test_cross_scope_lookup_without_run_scope(self, store: LocalDocumentStore):
@@ -694,27 +698,24 @@ class TestCrossPipelineProvenanceGraph:
         assert doc1.sha256 in await store.load_by_sha256s([doc1.sha256], DataDoc)
 
 
-class TestLocalStoreSummaryAcrossScopes:
+class TestLocalStoreSummary:
     @pytest.mark.asyncio
-    async def test_summary_update_writes_all_scope_copies(self, store: LocalDocumentStore):
-        """update_summary writes to ALL meta.json files across scopes."""
+    async def test_summary_update_writes_meta(self, store: LocalDocumentStore):
+        """update_summary writes to the meta.json file."""
         import json
 
         doc = _make(ReportDoc, "shared.md", "shared content")
         await store.save(doc, RunScope("scope_a"))
-        await store.save(doc, RunScope("scope_b"))
         await store.update_summary(doc.sha256, "global summary")
 
-        # Verify both meta files have the summary
         meta_files = list(store.base_path.rglob("*.meta.json"))
-        assert len(meta_files) == 2
-        for mf in meta_files:
-            meta = json.loads(mf.read_text())
-            assert meta["summary"] == "global summary"
+        assert len(meta_files) == 1
+        meta = json.loads(meta_files[0].read_text())
+        assert meta["summary"] == "global summary"
 
     @pytest.mark.asyncio
     async def test_summary_visible_from_load_summaries(self, store: LocalDocumentStore):
-        """load_summaries returns summary for docs across all scopes."""
+        """load_summaries returns summary for saved doc."""
         doc = _make(ReportDoc, "shared.md", "shared content")
         await store.save(doc, RunScope("scope_a"))
         await store.update_summary(doc.sha256, "test summary")
@@ -748,9 +749,9 @@ class TestFlowCompletion:
 
     @pytest.mark.asyncio
     async def test_file_layout(self, store: LocalDocumentStore):
-        """Completion records are stored in .flow_completions/ subdirectory."""
+        """Completion records are stored in .flow_completions/{scope}/ subdirectory."""
         await store.save_flow_completion(RunScope("proj/run1"), "my_flow", (), ())
-        expected = store.base_path / "proj" / "run1" / ".flow_completions" / "my_flow.json"
+        expected = store.base_path / ".flow_completions" / "proj__run1" / "my_flow.json"
         assert expected.exists()
         data = json.loads(expected.read_text())
         assert data["flow_name"] == "my_flow"
@@ -761,7 +762,7 @@ class TestFlowCompletion:
         scope = RunScope("proj/run1")
         await store.save_flow_completion(scope, "flow_a", (), ())
         # Manually backdate the stored_at in the file
-        path = store.base_path / "proj" / "run1" / ".flow_completions" / "flow_a.json"
+        path = store.base_path / ".flow_completions" / "proj__run1" / "flow_a.json"
         data = json.loads(path.read_text())
         old_time = datetime(2020, 1, 1, tzinfo=UTC)
         data["stored_at"] = old_time.isoformat()
@@ -778,7 +779,131 @@ class TestFlowCompletion:
         """Corrupt JSON file returns None instead of crashing."""
         scope = RunScope("proj/run1")
         await store.save_flow_completion(scope, "flow_a", (), ())
-        path = store.base_path / "proj" / "run1" / ".flow_completions" / "flow_a.json"
+        path = store.base_path / ".flow_completions" / "proj__run1" / "flow_a.json"
         path.write_text("{invalid json")
         result = await store.get_flow_completion(scope, "flow_a")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_different_run_scopes_are_isolated(self, store: LocalDocumentStore):
+        """Flow completions under different run_scopes must not interfere.
+
+        ClickHouse and MemoryDocumentStore both scope by (run_scope, flow_name).
+        LocalDocumentStore must do the same — a completion saved for scope A
+        must not be returned when querying scope B.
+        """
+        scope_a = RunScope("project_a/run1")
+        scope_b = RunScope("project_b/run1")
+
+        await store.save_flow_completion(scope_a, "shared_flow", ("inp_a",), ("out_a",))
+
+        # Querying scope_a should find it
+        result_a = await store.get_flow_completion(scope_a, "shared_flow")
+        assert result_a is not None
+        assert result_a.output_sha256s == ("out_a",)
+
+        # Querying scope_b must NOT find scope_a's completion
+        result_b = await store.get_flow_completion(scope_b, "shared_flow")
+        assert result_b is None
+
+    @pytest.mark.asyncio
+    async def test_save_preserves_both_scopes(self, store: LocalDocumentStore):
+        """Saving the same flow_name under two run_scopes must keep both records.
+
+        If scope is ignored, the second save overwrites the first and the first
+        scope's data is lost.
+        """
+        scope_a = RunScope("project_a/run1")
+        scope_b = RunScope("project_b/run1")
+
+        await store.save_flow_completion(scope_a, "flow_x", ("inp_a",), ("out_a",))
+        await store.save_flow_completion(scope_b, "flow_x", ("inp_b",), ("out_b",))
+
+        result_a = await store.get_flow_completion(scope_a, "flow_x")
+        result_b = await store.get_flow_completion(scope_b, "flow_x")
+
+        assert result_a is not None, "scope_a completion was lost after scope_b save"
+        assert result_b is not None, "scope_b completion was not saved"
+        assert result_a.input_sha256s == ("inp_a",)
+        assert result_b.input_sha256s == ("inp_b",)
+
+    @pytest.mark.asyncio
+    async def test_cross_scope_does_not_skip_flow(self, store: LocalDocumentStore):
+        """Simulate the resume-logic scenario: a flow completed in scope A must
+        not cause scope B to skip it.
+
+        This is the user-facing manifestation of the bug — resume logic calls
+        get_flow_completion(scope_b, flow_name) and if it returns a result from
+        scope_a, the flow is incorrectly skipped for scope_b's inputs.
+        """
+        scope_old = RunScope("project/old_run")
+        scope_new = RunScope("project/new_run")
+
+        # Old run completed flow_a with old inputs/outputs
+        await store.save_flow_completion(scope_old, "flow_a", ("old_in",), ("old_out",))
+
+        # New run queries flow_a — must NOT find old run's completion
+        result = await store.get_flow_completion(scope_new, "flow_a")
+        assert result is None, "get_flow_completion returned a completion from a different run_scope — resume logic would incorrectly skip this flow"
+
+
+class TestNonAtomicWriteRace:
+    """Non-atomic Path.write_text() creates a window where concurrent readers
+    see truncated (empty) files. This is the root cause of the
+    'Expecting value: line 1 column 1 (char 0)' warnings in production.
+    """
+
+    @pytest.mark.asyncio
+    async def test_concurrent_read_during_write_sees_valid_json(self, store: LocalDocumentStore):
+        """A reader must never observe empty or truncated JSON from a meta file.
+
+        Reproduces the race: one thread writes a .meta.json file repeatedly
+        while another reads it. With non-atomic write_text(), the reader sees
+        an empty file during the truncation window.
+        """
+        scope = RunScope("proj/race_test")
+        doc = _make(ReportDoc, "race.txt", content="x" * 500)
+        await store.save(doc, scope)
+
+        # Find the meta file — local store saves under {base_path}/{ClassName}/
+        meta_dir = store.base_path / "ReportDoc"
+        meta_paths = list(meta_dir.glob("*.meta.json"))
+        assert len(meta_paths) == 1
+        meta_path = meta_paths[0]
+
+        corrupt_reads: list[str] = []
+        iterations = 500
+        barrier = threading.Barrier(2)
+
+        def writer():
+            barrier.wait()
+            valid_json = json.dumps({"document_sha256": doc.sha256, "test": True}, indent=2)
+            for _ in range(iterations):
+                _atomic_write_text(meta_path, valid_json)
+
+        def reader():
+            barrier.wait()
+            for _ in range(iterations):
+                try:
+                    text = meta_path.read_text(encoding="utf-8")
+                    if not text:
+                        corrupt_reads.append("empty file")
+                    else:
+                        json.loads(text)
+                except json.JSONDecodeError as e:
+                    corrupt_reads.append(str(e))
+                except OSError:
+                    pass  # file may not exist momentarily
+
+        t_write = threading.Thread(target=writer)
+        t_read = threading.Thread(target=reader)
+        t_write.start()
+        t_read.start()
+        t_write.join()
+        t_read.join()
+
+        assert not corrupt_reads, (
+            f"Reader observed {len(corrupt_reads)} corrupt reads during concurrent writes. "
+            f"First: {corrupt_reads[0]}. "
+            f"Writes must be atomic (tempfile + os.replace) to prevent truncation window."
+        )

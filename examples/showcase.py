@@ -179,7 +179,7 @@ async def extract_insights(
     analysis: AnalysisDocument,
     *,
     fast_model: str,
-    reasoning_effort: Literal["low", "medium", "high"],
+    reasoning_effort: str,
     original_input_sha256: str,
 ) -> InsightDocument:
     """Structured extraction from analysis text."""

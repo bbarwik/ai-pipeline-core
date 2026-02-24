@@ -40,9 +40,9 @@ def _init_debug_tracing(wd: Path) -> LocalDebugSpanProcessor | None:
     try:
         trace_path = wd / ".trace"
         trace_path.mkdir(parents=True, exist_ok=True)
-        debug_config = TraceDebugConfig(path=trace_path, max_traces=20)
+        debug_config = TraceDebugConfig(path=trace_path)
         debug_writer = LocalTraceWriter(debug_config)
-        processor = LocalDebugSpanProcessor(debug_writer)
+        processor = LocalDebugSpanProcessor(debug_writer, verbose=debug_config.verbose)
         provider: Any = otel_trace.get_tracer_provider()
         if hasattr(provider, "add_span_processor"):
             provider.add_span_processor(processor)
@@ -153,9 +153,9 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
             # Close publisher if it supports closing
             if hasattr(publisher, "close"):
                 asyncio.run(publisher.close())
-            # Shut down background workers (debug tracing, document summaries, tracking)
-            if debug_processor is not None:
-                debug_processor.shutdown()
+            # Shut down document store and tracking (but NOT debug processor —
+            # it must shut down after ExitStack exits so the Laminar root span
+            # gets its on_end before the writer finalizes)
             active_store = get_document_store()
             if active_store:
                 active_store.shutdown()
@@ -163,6 +163,11 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
             tracking_svc = get_tracking_service()
             if tracking_svc:
                 tracking_svc.shutdown()
+
+    # Shut down debug processor after ExitStack exits — the Laminar root span
+    # context manager has now closed, so on_end was called for all spans.
+    if debug_processor is not None:
+        debug_processor.shutdown()
 
     result_file = wd / "result.json"
     result_file.write_text(result.model_dump_json(indent=2))

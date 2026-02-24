@@ -13,9 +13,11 @@ Issues covered:
 7. Blocking I/O in async context - NOT YET FIXED
 8. Missing slots=True on dataclasses - FIXED
 9. Magic number inconsistency (1000 vs 1080) - FIXED
+10. PydanticSerializationUnexpectedValue on bare ModelResponse in Conversation.messages
 """
 
 import inspect
+from typing import Any
 
 import pytest
 
@@ -57,10 +59,10 @@ class TestBooleanTruthinessBugFixed:
 
     def test_stop_empty_list_is_included(self):
         """stop=[] should be passed to API."""
-        options = ModelOptions(stop=[])
+        options = ModelOptions(stop=())
         kwargs = options.to_openai_completion_kwargs()
 
-        assert "stop" in kwargs, "stop=[] should be included in kwargs"
+        assert "stop" in kwargs, "stop=() should be included in kwargs"
         assert kwargs["stop"] == []
 
     def test_positive_temperature_included(self):
@@ -81,7 +83,7 @@ class TestSubstitutorStatePersistenceFixed:
     """Tests verifying enable_substitutor flag persists across send() calls."""
 
     @pytest.mark.asyncio
-    async def test_enable_substitutor_preserved_through_send(self, monkeypatch):
+    async def test_enable_substitutor_preserved_through_send(self, monkeypatch: pytest.MonkeyPatch):
         """enable_substitutor flag should be preserved through send() calls."""
         mock_response = ModelResponse[str](
             content="Response",
@@ -97,7 +99,7 @@ class TestSubstitutorStatePersistenceFixed:
             provider_specific_fields=None,
         )
 
-        async def fake_generate(*args, **kwargs):
+        async def fake_generate(*args: Any, **kwargs: Any) -> ModelResponse[str]:
             return mock_response
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
@@ -317,7 +319,7 @@ class TestMagicNumberFixed:
         png_data = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 
         doc = ConcreteDocument.create_root(name="test.png", content=png_data, reason="test input")
-        conv = Conversation(model="gpt-5.1", context=[doc])
+        conv = Conversation(model="gpt-5.1", context=(doc,))
 
         # The approximate token count should use 1080 per image
         token_count = conv.approximate_tokens_count
@@ -344,3 +346,66 @@ class TestSubstitutorBackwardCompatRemoved:
         import ai_pipeline_core.llm._substitutor as sub_module
 
         assert not hasattr(sub_module, "PATTERNS"), "PATTERNS dict should be removed"
+
+
+# =============================================================================
+# Issue 10: PydanticSerializationUnexpectedValue on Conversation.messages
+#
+# ModelResponse (bare) vs ModelResponse[Any] (parameterized) are different
+# runtime classes in Pydantic v2. The _AnyMessage union expects ModelResponse[Any],
+# but client.py creates bare ModelResponse. model_copy() bypasses validation,
+# so bare ModelResponse lands in messages. On model_dump(), Pydantic's union
+# serializer fails to match any member and emits 4 warnings per message.
+# =============================================================================
+
+
+class TestModelResponseSerializationWarning:
+    """Bare ModelResponse in Conversation.messages must not emit serialization warnings."""
+
+    def test_parameterized_model_response_serializes_without_warnings(self):
+        """ModelResponse[Any](...) in Conversation.messages must serialize without warnings.
+
+        The fix: client.py must create ModelResponse[Any](...) — not bare ModelResponse(...).
+        ModelResponse[Any] matches the _AnyMessage union member, so Pydantic's union
+        serializer recognizes it immediately without fallback warnings.
+        """
+        import warnings
+
+        # Create ModelResponse[Any] — the FIXED code path (client.py:326)
+        response = ModelResponse[Any](
+            content="test",
+            parsed="test",
+            reasoning_content="",
+            citations=(),
+            usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            cost=None,
+            model="test-model",
+            response_id="test-id",
+            metadata={},
+        )
+
+        # Insert into Conversation via model_copy (same path as send())
+        conv = Conversation(model="test-model")
+        conv_with_msg = conv.model_copy(update={"messages": (response,)})
+
+        # model_dump() must NOT emit any warnings
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            conv_with_msg.model_dump(mode="json")
+
+        pydantic_warnings = [w for w in caught if "PydanticSerializationUnexpectedValue" in str(w.message)]
+        assert not pydantic_warnings, (
+            f"model_dump() emitted {len(pydantic_warnings)} PydanticSerializationUnexpectedValue warnings. "
+            f"ModelResponse[Any] should be recognized by the union serializer."
+        )
+
+    def test_bare_model_response_is_different_class(self):
+        """Verify bare ModelResponse and ModelResponse[Any] are different runtime classes.
+
+        This is the root cause: Pydantic v2 treats GenericModel and GenericModel[Any]
+        as distinct classes. If code creates bare ModelResponse(...), it won't match
+        a union member typed as ModelResponse[Any].
+        """
+        assert ModelResponse is not ModelResponse[Any], (
+            "ModelResponse and ModelResponse[Any] must be different classes — this is the Pydantic v2 generic behavior that causes the bug"
+        )

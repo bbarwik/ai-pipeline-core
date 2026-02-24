@@ -811,32 +811,30 @@ python -m ai_pipeline_core.prompt_compiler inspect AnalysisSpec
 When running via `run_cli()`, trace spans are automatically saved to `<working_dir>/.trace/` for
 LLM-assisted debugging. Disable with `--no-trace`.
 
-The directory structure mirrors the execution flow:
+The directory structure mirrors the execution flow. Each new run overwrites the previous trace:
 
 ```
 .trace/
-  20260128_152932_abc12345_my_flow/
-  |-- _trace.yaml           # Trace metadata
-  |-- _tree.yaml            # Lightweight tree structure
-  |-- _llm_calls.yaml       # LLM-specific details (tokens, cost, purpose)
-  |-- _errors.yaml          # Failed spans only (written only if errors exist)
-  |-- _summary.md           # Static execution summary (always generated)
-  |-- artifacts/            # Deduplicated content storage
-  |   +-- sha256/
-  |       +-- abcdef...1234.txt  # Flat storage, deduped by hash
-  +-- 0001_my_flow/         # Root span (numbered for execution order)
-      |-- _span.yaml        # Span metadata (timing, status, attributes, I/O refs)
-      |-- input.yaml
-      |-- output.yaml
-      |-- events.yaml       # OTel span events (log records, etc.)
-      +-- 0002_task_1/
-          +-- 0003_llm_call/
-              |-- _span.yaml
-              |-- input.yaml
-              +-- output.yaml
+  summary.md              # Execution tree, timing, LLM stats
+  llm_calls.yaml          # All LLM calls with model, tokens, cost
+  errors.yaml             # Failed spans with parent chain (only if errors exist)
+  costs.md                # Cost aggregation by task
+  001_my_flow/            # Root span (3-digit prefix, max 20 char name)
+      span.yaml           # Span metadata (timing, status, type, I/O refs)
+      input.yaml          # Span input (block scalar YAML for multiline)
+      output.yaml         # Span output
+      events.yaml         # OTel span events (log records)
+      002_task_1/
+          span.yaml
+          input.yaml
+          output.yaml
+          003_analyze/
+              span.yaml
+              input.yaml
+              output.yaml
 ```
 
-Up to 20 traces are kept (oldest are automatically cleaned up).
+Duplicate LLM spans are filtered by default (every `Conversation` call creates both a DEFAULT and an inner LLM span). Use `verbose=True` in `TraceDebugConfig` to include all spans.
 
 ## Configuration
 

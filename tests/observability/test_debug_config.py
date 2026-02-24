@@ -15,13 +15,8 @@ class TestTraceDebugConfig:
         config = TraceDebugConfig(path=tmp_path)
 
         assert config.max_file_bytes == 500_000
-        assert config.max_element_bytes == 10_000
-        assert config.element_excerpt_bytes == 2_000
-        assert config.extract_base64_images is True
+        assert config.verbose is False
         assert config.merge_wrapper_spans is True
-        assert config.include_llm_index is True
-        assert config.include_error_index is True
-        assert config.max_traces is None  # Unlimited by default
         assert config.generate_summary is True
 
     def test_redact_patterns_default(self, tmp_path: Path) -> None:
@@ -39,15 +34,11 @@ class TestTraceDebugConfig:
         """Test custom configuration values."""
         config = TraceDebugConfig(
             path=tmp_path,
-            max_element_bytes=5000,
-            max_traces=10,
-            extract_base64_images=False,
+            verbose=True,
             redact_patterns=("custom_pattern",),
         )
 
-        assert config.max_element_bytes == 5000
-        assert config.max_traces == 10
-        assert config.extract_base64_images is False
+        assert config.verbose is True
         assert config.redact_patterns == ("custom_pattern",)
 
     def test_frozen_config(self, tmp_path: Path) -> None:
@@ -55,4 +46,4 @@ class TestTraceDebugConfig:
         config = TraceDebugConfig(path=tmp_path)
 
         with pytest.raises(Exception):  # Pydantic raises ValidationError for frozen models
-            config.max_element_bytes = 999
+            config.verbose = True  # type: ignore[misc]

@@ -18,45 +18,21 @@ class TraceDebugConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     path: Path = Field(description="Directory for debug traces")
-    # Content size limits
     max_file_bytes: int = Field(
         default=500_000,
-        description="Max bytes for input.yaml or output.yaml. Elements externalized to stay under.",
+        description="Max bytes for input.yaml or output.yaml. Truncated to stay under.",
     )
-    max_element_bytes: int = Field(
-        default=10_000,
-        description="Max bytes for single element. Above this, partial + artifact ref.",
-    )
-    element_excerpt_bytes: int = Field(
-        default=2_000,
-        description="Bytes of content to keep inline when element exceeds max_element_bytes.",
-    )
-    # Image handling
-    extract_base64_images: bool = Field(
-        default=True,
-        description="Extract base64 images to artifact files",
+
+    # Span filtering
+    verbose: bool = Field(
+        default=False,
+        description="Write all spans including LLM-type. When False, filters duplicate LLM spans.",
     )
 
     # Span optimization
     merge_wrapper_spans: bool = Field(
         default=True,
         description="Merge Prefect wrapper spans with inner traced function spans",
-    )
-
-    # Indexes
-    include_llm_index: bool = Field(
-        default=True,
-        description="Generate _llm_calls.yaml with LLM-specific details",
-    )
-    include_error_index: bool = Field(
-        default=True,
-        description="Generate _errors.yaml with failed span details",
-    )
-
-    # Cleanup
-    max_traces: int | None = Field(
-        default=None,
-        description="Max number of traces to keep. None for unlimited.",
     )
 
     # Security - default redaction patterns for common secrets
@@ -78,7 +54,7 @@ class TraceDebugConfig(BaseModel):
     )
 
     # Summary
-    generate_summary: bool = Field(default=True, description="Generate _summary.md")
+    generate_summary: bool = Field(default=True, description="Generate summary.md")
 
 
 @dataclass(frozen=True, slots=True)

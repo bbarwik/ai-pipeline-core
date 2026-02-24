@@ -9,14 +9,12 @@ Disable with ``--no-trace``.
 """
 
 from ._config import SpanInfo, TraceDebugConfig, TraceState, WriteJob
-from ._content import ArtifactStore, ContentRef, ContentWriter
+from ._content import ContentWriter
 from ._processor import LocalDebugSpanProcessor
-from ._summary import generate_summary
+from ._summary import generate_costs, generate_summary
 from ._writer import LocalTraceWriter
 
 __all__ = [
-    "ArtifactStore",
-    "ContentRef",
     "ContentWriter",
     "LocalDebugSpanProcessor",
     "LocalTraceWriter",
@@ -24,5 +22,6 @@ __all__ = [
     "TraceDebugConfig",
     "TraceState",
     "WriteJob",
+    "generate_costs",
     "generate_summary",
 ]

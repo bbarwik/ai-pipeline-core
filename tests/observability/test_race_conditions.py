@@ -188,7 +188,7 @@ class TestLocalWriterShutdownRace:
     """Issue 5: LocalTraceWriter on_span_end after shutdown drops span data.
 
     If on_span_end is called after _shutdown=True, the job is silently dropped.
-    The span directory exists (from on_span_start) but has no _span.yaml.
+    The span directory exists (from on_span_start) but has no span.yaml.
     """
 
     def test_span_end_during_shutdown_is_processed(self, tmp_path):
@@ -196,8 +196,6 @@ class TestLocalWriterShutdownRace:
         config = TraceDebugConfig(
             path=tmp_path,
             generate_summary=False,
-            include_llm_index=False,
-            include_error_index=False,
         )
         writer = LocalTraceWriter(config)
 
@@ -225,22 +223,17 @@ class TestLocalWriterShutdownRace:
         )
         writer.shutdown(timeout=5.0)
 
-        trace_dirs = list(tmp_path.iterdir())
-        assert len(trace_dirs) == 1
-
-        span_dirs = [d for d in trace_dirs[0].iterdir() if d.is_dir() and "test_task" in d.name]
+        span_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and "test_task" in d.name]
         assert len(span_dirs) == 1
 
-        # _span.yaml SHOULD exist because on_span_end was processed before shutdown
-        assert (span_dirs[0] / "_span.yaml").exists()
+        # span.yaml SHOULD exist because on_span_end was processed before shutdown
+        assert (span_dirs[0] / "span.yaml").exists()
 
     def test_span_end_queued_after_sentinel_is_orphaned(self, tmp_path):
         """Span end job arriving after shutdown sentinel is never processed."""
         config = TraceDebugConfig(
             path=tmp_path,
             generate_summary=False,
-            include_llm_index=False,
-            include_error_index=False,
         )
         writer = LocalTraceWriter(config)
 
@@ -275,15 +268,12 @@ class TestLocalWriterShutdownRace:
         # Now shutdown — child_task is still "running"
         writer.shutdown(timeout=5.0)
 
-        trace_dirs = list(tmp_path.iterdir())
-        t = trace_dirs[0]
-
-        # Root span should have _span.yaml (ended before shutdown)
-        root_dirs = [d for d in t.iterdir() if d.is_dir() and "root_flow" in d.name]
+        # Root span should have span.yaml (ended before shutdown)
+        root_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and "root_flow" in d.name]
         assert len(root_dirs) == 1
-        assert (root_dirs[0] / "_span.yaml").exists()
+        assert (root_dirs[0] / "span.yaml").exists()
 
-        # Child span directory exists but may not have _span.yaml
+        # Child span directory exists but may not have span.yaml
         # (it was finalized during shutdown as "running")
         child_dirs = [d for d in root_dirs[0].iterdir() if d.is_dir() and "child_task" in d.name]
         assert len(child_dirs) == 1

@@ -1,11 +1,10 @@
 """Integration tests for local debug trace writing to real filesystem.
 
-Tests LocalTraceWriter, ArtifactStore, ContentWriter, and summary generation
+Tests LocalTraceWriter, ContentWriter, and summary generation
 with real filesystem I/O. No mocking.
 """
 
 import json
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Generator
@@ -14,9 +13,7 @@ import pytest
 import yaml
 
 from ai_pipeline_core.observability._debug._config import TraceDebugConfig
-from ai_pipeline_core.observability._debug._content import ArtifactStore, ContentWriter
-
-from tests.observability.test_helpers import reconstruct_span_content
+from ai_pipeline_core.observability._debug._content import ContentWriter
 from ai_pipeline_core.observability._debug._summary import generate_summary
 from ai_pipeline_core.observability._debug._config import SpanInfo, TraceState, WriteJob
 from ai_pipeline_core.observability._debug._writer import LocalTraceWriter
@@ -33,12 +30,8 @@ def config(trace_dir: Path) -> TraceDebugConfig:
     """Create a TraceDebugConfig for testing."""
     return TraceDebugConfig(
         path=trace_dir,
-        max_element_bytes=500,
-        element_excerpt_bytes=100,
         max_file_bytes=50_000,
         generate_summary=True,
-        include_llm_index=True,
-        include_error_index=True,
         merge_wrapper_spans=False,
     )
 
@@ -74,14 +67,8 @@ class TestLocalTraceWriterLifecycle:
         writer.on_span_end(job)
         writer.shutdown(timeout=5.0)
 
-        # Find the trace directory
-        trace_dirs = list(trace_dir.iterdir())
-        assert len(trace_dirs) == 1
-
-        t = trace_dirs[0]
-        assert (t / "_trace.yaml").exists()
-        assert (t / "_tree.yaml").exists()
-        assert (t / "_summary.md").exists()
+        assert (trace_dir / "summary.md").exists()
+        assert (trace_dir / "llm_calls.yaml").exists()
 
     def test_span_directory_contains_expected_files(self, writer, trace_dir):
         trace_id = "c" * 32
@@ -103,20 +90,15 @@ class TestLocalTraceWriterLifecycle:
         writer.on_span_end(job)
         writer.shutdown(timeout=5.0)
 
-        trace_dirs = list(trace_dir.iterdir())
-        t = trace_dirs[0]
-
-        # Find the span directory (format: 0001_process)
-        span_dirs = [d for d in t.iterdir() if d.is_dir() and d.name.startswith("0001_")]
+        span_dirs = [d for d in trace_dir.iterdir() if d.is_dir() and d.name.startswith("001_")]
         assert len(span_dirs) == 1
 
         span_dir = span_dirs[0]
-        assert (span_dir / "_span.yaml").exists()
+        assert (span_dir / "span.yaml").exists()
         assert (span_dir / "input.yaml").exists()
         assert (span_dir / "output.yaml").exists()
 
-        # Verify _span.yaml content
-        span_meta = yaml.safe_load((span_dir / "_span.yaml").read_text())
+        span_meta = yaml.safe_load((span_dir / "span.yaml").read_text())
         assert span_meta["name"] == "process"
         assert span_meta["status"] == "completed"
         assert span_meta["span_id"] == span_id
@@ -131,7 +113,6 @@ class TestLocalTraceWriterLifecycle:
         writer.on_span_start(trace_id, parent_id, None, "parent_flow")
         writer.on_span_start(trace_id, child_id, parent_id, "child_task")
 
-        # End child first, then parent
         writer.on_span_end(
             WriteJob(
                 trace_id=trace_id,
@@ -162,14 +143,9 @@ class TestLocalTraceWriterLifecycle:
         )
         writer.shutdown(timeout=5.0)
 
-        trace_dirs = list(trace_dir.iterdir())
-        t = trace_dirs[0]
-
-        # Find parent dir
-        parent_dirs = [d for d in t.iterdir() if d.is_dir() and "parent_flow" in d.name]
+        parent_dirs = [d for d in trace_dir.iterdir() if d.is_dir() and "parent_flow" in d.name]
         assert len(parent_dirs) == 1
 
-        # Child should be nested inside parent
         child_dirs = [d for d in parent_dirs[0].iterdir() if d.is_dir() and "child_task" in d.name]
         assert len(child_dirs) == 1
 
@@ -195,19 +171,11 @@ class TestLocalTraceWriterLifecycle:
         )
         writer.shutdown(timeout=5.0)
 
-        trace_dirs = list(trace_dir.iterdir())
-        t = trace_dirs[0]
-
-        # _errors.yaml should exist
-        errors_path = t / "_errors.yaml"
+        errors_path = trace_dir / "errors.yaml"
         assert errors_path.exists()
         errors = yaml.safe_load(errors_path.read_text())
         assert errors["error_count"] == 1
         assert errors["errors"][0]["name"] == "failing_task"
-
-        # _trace.yaml should show failed status
-        trace_meta = yaml.safe_load((t / "_trace.yaml").read_text())
-        assert trace_meta["status"] == "failed"
 
     def test_llm_span_recorded_in_llm_index(self, writer, trace_dir):
         trace_id = "i" * 32
@@ -239,10 +207,7 @@ class TestLocalTraceWriterLifecycle:
         )
         writer.shutdown(timeout=5.0)
 
-        trace_dirs = list(trace_dir.iterdir())
-        t = trace_dirs[0]
-
-        llm_path = t / "_llm_calls.yaml"
+        llm_path = trace_dir / "llm_calls.yaml"
         assert llm_path.exists()
         llm_data = yaml.safe_load(llm_path.read_text())
         assert llm_data["llm_call_count"] == 1
@@ -251,108 +216,11 @@ class TestLocalTraceWriterLifecycle:
         assert llm_data["calls"][0]["purpose"] == "summarize"
 
 
-class TestArtifactStoreIntegration:
-    """Test ArtifactStore deduplication with real filesystem."""
-
-    def test_text_deduplication(self, tmp_path):
-        store = ArtifactStore(tmp_path)
-
-        ref1 = store.store(b"Hello, world!", "text/plain")
-        ref2 = store.store(b"Hello, world!", "text/plain")
-        ref3 = store.store(b"Different content", "text/plain")
-
-        assert ref1.hash == ref2.hash
-        assert ref1.path == ref2.path
-        assert ref1.hash != ref3.hash
-
-    def test_binary_deduplication(self, tmp_path):
-        store = ArtifactStore(tmp_path)
-
-        data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-        ref1 = store.store(data, "image/png")
-        ref2 = store.store(data, "image/png")
-
-        assert ref1.hash == ref2.hash
-        assert ref1.path.endswith(".png")
-
-        # Verify file exists and content matches
-        artifact_path = tmp_path / ref1.path
-        assert artifact_path.exists()
-        assert artifact_path.read_bytes() == data
-
-    def test_flat_directory_structure(self, tmp_path):
-        store = ArtifactStore(tmp_path)
-        ref = store.store(b"test content for sharding", "text/plain")
-
-        # Path should have format: artifacts/sha256/<hash>.txt
-        parts = Path(ref.path).parts
-        assert parts[0] == "artifacts"
-        assert parts[1] == "sha256"
-        assert len(parts) == 3
-        assert parts[2].endswith(".txt")
-
-
-class TestContentWriterExternalization:
-    """Test ContentWriter with artifact externalization."""
-
-    def test_large_text_externalized_via_llm_messages(self, tmp_path, config):
-        store = ArtifactStore(tmp_path)
-        cw = ContentWriter(config, store)
-
-        span_dir = tmp_path / "span"
-        span_dir.mkdir()
-
-        # ContentWriter externalizes text inside LLM messages or document lists
-        large_text = "x" * 1000  # Exceeds max_element_bytes=500
-        messages = [{"role": "user", "content": large_text}]
-        ref = cw.write(messages, span_dir, "input")
-
-        assert ref["type"] == "file"
-        assert (span_dir / "input.yaml").exists()
-
-        content = yaml.safe_load((span_dir / "input.yaml").read_text())
-        # The text part inside the message should have a content_ref
-        parts = content["messages"][0]["parts"]
-        assert any("content_ref" in p for p in parts)
-
-    def test_small_text_stays_inline(self, tmp_path, config):
-        store = ArtifactStore(tmp_path)
-        cw = ContentWriter(config, store)
-
-        span_dir = tmp_path / "span"
-        span_dir.mkdir()
-
-        small_text = "short"
-        cw.write(small_text, span_dir, "input")
-
-        content = yaml.safe_load((span_dir / "input.yaml").read_text())
-        assert content.get("content") == "short"
-
-    def test_reconstruct_span_content_resolves_refs(self, tmp_path, config):
-        store = ArtifactStore(tmp_path)
-        cw = ContentWriter(config, store)
-
-        span_dir = tmp_path / "span"
-        span_dir.mkdir()
-
-        large_text = "y" * 1000
-        messages = [{"role": "assistant", "content": large_text}]
-        cw.write(messages, span_dir, "output")
-
-        reconstructed = reconstruct_span_content(tmp_path, span_dir, "output")
-        # The text part should have its content resolved from artifact
-        parts = reconstructed["messages"][0]["parts"]
-        text_part = parts[0]
-        assert "content" in text_part
-        assert len(text_part["content"]) == 1000
-
-
 class TestRedaction:
     """Test secret redaction in content writing."""
 
     def test_api_key_redacted(self, tmp_path, config):
-        store = ArtifactStore(tmp_path)
-        cw = ContentWriter(config, store)
+        cw = ContentWriter(config)
 
         span_dir = tmp_path / "span"
         span_dir.mkdir()
@@ -378,11 +246,12 @@ class TestSummaryGeneration:
             span_type="task",
             status="completed",
             start_time=now,
-            path=tmp_path / "0001_root_task",
+            path=tmp_path / "001_root_task",
             end_time=now,
             duration_ms=150,
+            order=1,
         )
-        (tmp_path / "0001_root_task").mkdir()
+        (tmp_path / "001_root_task").mkdir()
         trace.spans["s1"] = span
         trace.root_span_id = "s1"
 
@@ -391,7 +260,7 @@ class TestSummaryGeneration:
         assert "root_task" in summary
         assert "Execution Tree" in summary
 
-    def test_summary_includes_llm_calls_table(self, tmp_path):
+    def test_summary_shows_llm_info_in_tree(self, tmp_path):
         now = datetime.now(UTC)
         trace = TraceState(trace_id="bbb", name="llm_flow", path=tmp_path, start_time=now)
 
@@ -402,9 +271,10 @@ class TestSummaryGeneration:
             span_type="flow",
             status="completed",
             start_time=now,
-            path=tmp_path / "0001_flow",
+            path=tmp_path / "001_flow",
             end_time=now,
             duration_ms=500,
+            order=1,
         )
         llm = SpanInfo(
             span_id="l1",
@@ -413,13 +283,22 @@ class TestSummaryGeneration:
             span_type="llm",
             status="completed",
             start_time=now,
-            path=tmp_path / "0001_flow" / "0002_generate",
+            path=tmp_path / "001_flow" / "002_generate",
             end_time=now,
             duration_ms=300,
-            llm_info={"model": "gpt-5.1", "input_tokens": 1000, "output_tokens": 200, "total_tokens": 1200, "cost": 0.01, "purpose": "research"},
+            order=2,
+            llm_info={
+                "model": "gpt-5.1",
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cached_tokens": 0,
+                "total_tokens": 1200,
+                "cost": 0.01,
+                "purpose": "research",
+            },
         )
-        (tmp_path / "0001_flow").mkdir()
-        (tmp_path / "0001_flow" / "0002_generate").mkdir()
+        (tmp_path / "001_flow").mkdir()
+        (tmp_path / "001_flow" / "002_generate").mkdir()
 
         trace.spans["r1"] = root
         trace.spans["l1"] = llm
@@ -430,11 +309,12 @@ class TestSummaryGeneration:
         trace.total_cost = 0.01
 
         summary = generate_summary(trace)
-        assert "LLM Calls" in summary
-        assert "gpt-5.1" in summary
-        assert "research" in summary
+        # LLM info appears in compact tree format: token counts and cost
+        assert "1K IN" in summary
+        assert "200 OUT" in summary
+        assert "$0.010" in summary
 
-    def test_summary_includes_error_section(self, tmp_path):
+    def test_summary_shows_error_status(self, tmp_path):
         now = datetime.now(UTC)
         trace = TraceState(trace_id="ccc", name="error_flow", path=tmp_path, start_time=now)
         span = SpanInfo(
@@ -444,42 +324,16 @@ class TestSummaryGeneration:
             span_type="task",
             status="failed",
             start_time=now,
-            path=tmp_path / "0001_failing",
+            path=tmp_path / "001_failing",
             end_time=now,
             duration_ms=50,
+            order=1,
         )
-        (tmp_path / "0001_failing").mkdir()
+        (tmp_path / "001_failing").mkdir()
         trace.spans["e1"] = span
         trace.root_span_id = "e1"
 
         summary = generate_summary(trace)
-        assert "Errors" in summary
+        assert "Failed" in summary
+        assert "ERROR" in summary
         assert "failing_task" in summary
-
-
-class TestMaxTracesCleanup:
-    """Test old trace cleanup when max_traces is set."""
-
-    def test_old_traces_cleaned_up(self, trace_dir):
-        # Create 3 existing trace dirs
-        trace_dir.mkdir(parents=True)
-        for i in range(3):
-            d = trace_dir / f"20250101_00000{i}_aaaa_trace{i}"
-            d.mkdir()
-            (d / "_trace.yaml").write_text(f"trace_id: trace{i}")
-            # Stagger modification times
-            time.sleep(0.05)
-
-        config = TraceDebugConfig(
-            path=trace_dir,
-            max_traces=2,
-            generate_summary=False,
-            include_llm_index=False,
-            include_error_index=False,
-        )
-        writer = LocalTraceWriter(config)
-        writer.shutdown(timeout=2.0)
-
-        # Only max_traces (2) should remain
-        remaining = [d for d in trace_dir.iterdir() if d.is_dir() and (d / "_trace.yaml").exists()]
-        assert len(remaining) <= 2

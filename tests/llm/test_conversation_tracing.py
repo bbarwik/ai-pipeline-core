@@ -271,7 +271,7 @@ class TestConversationTracing:
             await conv.send("test", purpose="verify_source")
 
         call_args = mock_laminar.start_as_current_span.call_args
-        assert call_args[0][0] == "verify_source"
+        assert call_args[0][0] == "verify_source:test-model"
 
     @pytest.mark.asyncio
     async def test_span_name_defaults_to_send(self, monkeypatch):
@@ -287,7 +287,7 @@ class TestConversationTracing:
             await conv.send("test")
 
         call_args = mock_laminar.start_as_current_span.call_args
-        assert call_args[0][0] == "conversation.send"
+        assert call_args[0][0] == "conversation.send:test-model"
 
     @pytest.mark.asyncio
     async def test_span_name_defaults_to_send_structured(self, monkeypatch):
@@ -305,4 +305,4 @@ class TestConversationTracing:
             await conv.send_structured("test", ItemList)
 
         call_args = mock_laminar.start_as_current_span.call_args
-        assert call_args[0][0] == "conversation.send_structured"
+        assert call_args[0][0] == "conversation.send_structured:test-model"
