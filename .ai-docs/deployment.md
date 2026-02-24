@@ -2,7 +2,7 @@
 # CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.10.1
+# VERSION: 0.10.2
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
