@@ -369,7 +369,7 @@ class TestBuildBundle:
             # Simulate side effects of each command:
             # After wheel build, create a .whl file; after download, create dep wheels
             if "build --wheel" in cmd:
-                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].strip().strip("'\"")
+                outdir = cmd.rsplit("--out-dir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
             elif "pip download" in cmd:
                 dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
@@ -385,7 +385,7 @@ class TestBuildBundle:
         assert len(commands_run) == 3, f"Expected 3 commands, got {len(commands_run)}: {commands_run}"
 
         # Command 1: build wheel
-        assert "python -m build --wheel" in commands_run[0]
+        assert "uv build --wheel" in commands_run[0]
 
         # Command 2: compile lock (must target worker platform)
         assert "uv pip compile" in commands_run[1]
@@ -406,7 +406,7 @@ class TestBuildBundle:
 
         def mock_run(cmd: str, *, check: bool = True) -> str:
             if "build --wheel" in cmd:
-                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].strip().strip("'\"")
+                outdir = cmd.rsplit("--out-dir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"project wheel")
             elif "pip download" in cmd:
                 dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
@@ -493,7 +493,7 @@ class TestPlatformTargeting:
         def mock_run(cmd: str, *, check: bool = True) -> str:
             commands_run.append(cmd)
             if "build --wheel" in cmd:
-                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].strip().strip("'\"")
+                outdir = cmd.rsplit("--out-dir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
             elif "pip download" in cmd:
                 dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
@@ -521,7 +521,7 @@ class TestPlatformTargeting:
 
         def mock_run(cmd: str, *, check: bool = True) -> str:
             if "build --wheel" in cmd:
-                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].strip().strip("'\"")
+                outdir = cmd.rsplit("--out-dir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
             elif "pip download" in cmd:
                 dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
@@ -626,7 +626,7 @@ class TestVendorPackages:
         def mock_run(cmd: str, *, check: bool = True) -> str:
             commands_run.append(cmd)
             if "build --wheel" in cmd:
-                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
+                outdir = cmd.rsplit("--out-dir ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 Path(outdir).mkdir(parents=True, exist_ok=True)
                 if "common" in cmd:
                     (Path(outdir) / "lib_common-0.2.0-py3-none-any.whl").write_bytes(b"vendor")
@@ -658,7 +658,7 @@ class TestVendorPackages:
         def mock_run(cmd: str, *, check: bool = True) -> str:
             commands_run.append(cmd)
             if "build --wheel" in cmd:
-                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].strip().strip("'\"")
+                outdir = cmd.rsplit("--out-dir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
             elif "pip download" in cmd:
                 dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
@@ -683,7 +683,7 @@ class TestVendorPackages:
 
         def mock_run(cmd: str, *, check: bool = True) -> str:
             if "build --wheel" in cmd:
-                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
+                outdir = cmd.rsplit("--out-dir ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 Path(outdir).mkdir(parents=True, exist_ok=True)
                 (Path(outdir) / "lib_common-0.2.0-py3-none-any.whl").write_bytes(b"vendor")
             return ""

@@ -63,7 +63,7 @@ _HEX_IN_BROADER = re.compile(r"0x[a-fA-F0-9]{40,}")
 # ── Protection patterns ───────────────────────────────────────────────────────
 _JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
 _CONTENT_ADDRESSED_SCHEMES = ("ipfs://", "ipns://", "magnet:", "data:")
-_CODE_KEYWORDS = ("install ", "npm ", "yarn ", "pnpm ", "pip ", "require(", "import ")
+_CODE_KEYWORDS = ("install ", "npm ", "yarn ", "pnpm ", "pip ", "uv ", "uvx ", "require(", "import ")
 _DELIMITER_PAIRS: dict[str, str] = {"(": ")", "[": "]", '"': '"', "'": "'", ">": "<"}
 
 # ── Fuzzy restore config ─────────────────────────────────────────────────────

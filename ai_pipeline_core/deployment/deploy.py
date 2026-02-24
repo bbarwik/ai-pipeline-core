@@ -164,7 +164,7 @@ class _Deployer:
             vendor_path = Path(vendor_path_str)
             if not vendor_path.exists():
                 self._die(f"Vendor package not found: {vendor_path_str}")
-            self._run(f"python -m build --wheel --outdir {shlex.quote(str(wheels_dir))} {shlex.quote(str(vendor_path))}")
+            self._run(f"uv build --wheel --out-dir {shlex.quote(str(wheels_dir))} {shlex.quote(str(vendor_path))}")
 
         vendor_names = {whl.name.split("-")[0].replace("_", "-").lower() for whl in wheels_dir.iterdir()}
         self._success(f"Built vendor wheels: {', '.join(sorted(vendor_names))}")
@@ -196,7 +196,7 @@ class _Deployer:
 
             # 2. Build project wheel
             self._info("Building project wheel...")
-            self._run(f"python -m build --wheel --outdir {shlex.quote(str(tmp_path))}")
+            self._run(f"uv build --wheel --out-dir {shlex.quote(str(tmp_path))}")
             project_wheels = list(tmp_path.glob("*.whl"))
             if not project_wheels:
                 self._die("Wheel build produced no output. Check pyproject.toml build configuration.")
