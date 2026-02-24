@@ -1,12 +1,18 @@
 # MODULE: settings
 # CLASSES: Settings
 # DEPENDS: BaseSettings
-# SIZE: ~7KB
+# VERSION: 0.10.0
+# AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
-# === IMPORTS ===
+## Imports
+
+```python
 from ai_pipeline_core import Settings
-# === PUBLIC API ===
+```
 
+## Public API
+
+```python
 class Settings(BaseSettings):
     """Base configuration class for AI Pipeline applications.
 
@@ -60,7 +66,7 @@ Configuration sources:
 
 Empty strings are used as defaults to allow optional services.
 Check for empty values before using service-specific settings."""
-    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore', frozen=True)
+    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore', frozen=True)  # Settings are immutable after initialization
     openai_base_url: str = ''
     openai_api_key: str = ''
     prefect_api_url: str = ''
@@ -71,7 +77,7 @@ Check for empty values before using service-specific settings."""
     prefect_gcs_bucket: str = ''
     lmnr_project_api_key: str = ''
     lmnr_debug: str = ''
-    gcs_service_account_file: str = ''
+    gcs_service_account_file: str = ''  # Path to GCS service account JSON file
     clickhouse_host: str = ''
     clickhouse_port: int = 8443
     clickhouse_database: str = 'default'
@@ -79,15 +85,20 @@ Check for empty values before using service-specific settings."""
     clickhouse_password: str = ''
     clickhouse_secure: bool = True
     tracking_enabled: bool = True
-    tracking_summary_model: str = 'gemini-3-flash'
     doc_summary_enabled: bool = True
     doc_summary_model: str = 'gemini-3-flash'
+    pubsub_project_id: str = ''
+    pubsub_topic_id: str = ''
+    service_type: str = ''
 
 
-# === EXAMPLES (from tests/) ===
+```
 
-# Example: Settings singleton
-# Source: tests/test_settings.py:52
+## Examples
+
+**Settings singleton** (`tests/test_settings.py:52`)
+
+```python
 def test_settings_singleton(self):
     """Test that the module provides a settings singleton."""
     # The module exports a pre-created instance
@@ -97,18 +108,22 @@ def test_settings_singleton(self):
     from ai_pipeline_core.settings import settings as settings2
 
     assert settings is settings2
+```
 
-# Example: Model config attributes
-# Source: tests/test_settings.py:114
+**Model config attributes** (`tests/test_settings.py:114`)
+
+```python
 def test_model_config_attributes(self):
     """Test that model_config is properly set."""
     assert Settings.model_config.get("env_file") == ".env"
     assert Settings.model_config.get("env_file_encoding") == "utf-8"
     assert Settings.model_config.get("extra") == "ignore"
     assert Settings.model_config.get("frozen") is True
+```
 
-# Example: Partial configuration
-# Source: tests/test_settings.py:96
+**Partial configuration** (`tests/test_settings.py:96`)
+
+```python
 def test_partial_configuration(self):
     """Test that partial configuration works."""
     # Only some settings provided
@@ -117,9 +132,11 @@ def test_partial_configuration(self):
 
         assert s.openai_api_key == "test-key"
         assert s.openai_base_url == ""  # Default
+```
 
-# Example: Env file loading
-# Source: tests/test_settings.py:62
+**Env file loading** (`tests/test_settings.py:62`)
+
+```python
 def test_env_file_loading(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Test loading from .env file."""
     # Create a temporary .env file
@@ -139,9 +156,11 @@ LMNR_PROJECT_API_KEY=lmnr-from-file
     assert s.openai_api_key == "from-env-file"
     assert s.prefect_api_url == "http://localhost:4200"
     assert s.lmnr_project_api_key == "lmnr-from-file"
+```
 
-# Example: Env variable loading
-# Source: tests/test_settings.py:26
+**Env variable loading** (`tests/test_settings.py:26`)
+
+```python
 @patch.dict(
     os.environ,
     {
@@ -160,9 +179,11 @@ def test_env_variable_loading(self):
     assert s.prefect_api_url == "https://api.prefect.io"
     assert s.prefect_api_key == "pf-key456"
     assert s.lmnr_project_api_key == "lmnr-key789"
+```
 
-# Example: Extra env ignored
-# Source: tests/test_settings.py:43
+**Extra env ignored** (`tests/test_settings.py:43`)
+
+```python
 @patch.dict(
     os.environ,
     {
@@ -179,9 +200,11 @@ def test_extra_env_ignored(self):
     # Unknown vars are not added as attributes
     assert not hasattr(s, "unknown_setting")
     assert not hasattr(s, "random_var")
+```
 
-# Example: Env var overrides env file
-# Source: tests/test_settings.py:83
+**Env var overrides env file** (`tests/test_settings.py:83`)
+
+```python
 @patch.dict(os.environ, {"OPENAI_API_KEY": "from-env-var"})
 def test_env_var_overrides_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that environment variables override .env file."""
@@ -195,11 +218,14 @@ def test_env_var_overrides_env_file(self, tmp_path: Path, monkeypatch: pytest.Mo
 
     # Environment variable should win
     assert s.openai_api_key == "from-env-var"
+```
 
-# === ERROR EXAMPLES (What NOT to Do) ===
 
-# Error: Settings immutable config
-# Source: tests/test_settings.py:105
+## Error Examples
+
+**Settings immutable config** (`tests/test_settings.py:105`)
+
+```python
 def test_settings_immutable_config(self):
     """Test that Settings uses proper Pydantic configuration."""
     s = Settings()
@@ -208,3 +234,4 @@ def test_settings_immutable_config(self):
     with pytest.raises(ValidationError) as exc_info:
         s.openai_api_key = "new-key"
     assert "frozen" in str(exc_info.value).lower()
+```

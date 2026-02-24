@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ai_pipeline_core.observability import LocalDebugSpanProcessor, LocalTraceWriter, TraceDebugConfig
+from ai_pipeline_core.observability._debug import LocalDebugSpanProcessor, LocalTraceWriter, TraceDebugConfig
 
 
 @pytest.fixture

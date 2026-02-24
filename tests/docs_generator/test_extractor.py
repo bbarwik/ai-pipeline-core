@@ -79,8 +79,8 @@ def test_parse_module_extracts_class_variables(tmp_path):
     module = parse_module(src)
     cls = module.classes[0]
     assert len(cls.class_vars) == 2
-    assert cls.class_vars[0] == ("name", "str", "'default'")
-    assert cls.class_vars[1] == ("count", "int", "")
+    assert cls.class_vars[0] == ("name", "str", "'default'", "")
+    assert cls.class_vars[1] == ("count", "int", "", "")
 
 
 def test_parse_module_extracts_method_info(tmp_path):
@@ -333,8 +333,8 @@ def test_parse_module_extracts_plain_assign_class_vars(tmp_path):
     src.write_text('class Color:\n    """Color enum."""\n    RED = "red"\n    GREEN = "green"\n')
     cls = parse_module(src).classes[0]
     assert len(cls.class_vars) == 2
-    assert cls.class_vars[0] == ("RED", "", "'red'")
-    assert cls.class_vars[1] == ("GREEN", "", "'green'")
+    assert cls.class_vars[0] == ("RED", "", "'red'", "")
+    assert cls.class_vars[1] == ("GREEN", "", "'green'", "")
 
 
 def test_parse_module_extracts_plain_assign_with_call(tmp_path):
@@ -342,10 +342,11 @@ def test_parse_module_extracts_plain_assign_with_call(tmp_path):
     src.write_text('class Cfg:\n    """Config."""\n    model_config = SettingsConfigDict(env_prefix="APP_")\n')
     cls = parse_module(src).classes[0]
     assert len(cls.class_vars) == 1
-    name, type_ann, default = cls.class_vars[0]
+    name, type_ann, default, description = cls.class_vars[0]
     assert name == "model_config"
     assert type_ann == ""
     assert "SettingsConfigDict" in default
+    assert description == ""
 
 
 def test_parse_module_skips_private_plain_assign(tmp_path):
@@ -361,9 +362,9 @@ def test_parse_module_mixed_annotated_and_plain_assigns(tmp_path):
     src.write_text('class Mixed:\n    """Mixed."""\n    name: str = "default"\n    CONST = 42\n    count: int\n')
     cls = parse_module(src).classes[0]
     assert len(cls.class_vars) == 3
-    assert cls.class_vars[0] == ("name", "str", "'default'")
-    assert cls.class_vars[1] == ("CONST", "", "42")
-    assert cls.class_vars[2] == ("count", "int", "")
+    assert cls.class_vars[0] == ("name", "str", "'default'", "")
+    assert cls.class_vars[1] == ("CONST", "", "42", "")
+    assert cls.class_vars[2] == ("count", "int", "", "")
 
 
 def test_parse_module_skips_multi_target_assign(tmp_path):
@@ -472,3 +473,24 @@ def test_parse_module_values_make_module_public(tmp_path):
     src.write_text("MAX_SIZE = 1024\n")
     module = parse_module(src)
     assert module.is_public is True
+
+
+def test_parse_module_extracts_field_descriptions(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text(
+        "from pydantic import BaseModel, Field\n"
+        "class Model(BaseModel):\n"
+        '    from_field: str = Field(description="Field description value")\n'
+        "    inline_comment: int = 1  # Inline comment value\n"
+        "    below_docstring: bool = False\n"
+        '    """Below docstring value.\n'
+        '    Extra detail that should not be rendered."""\n'
+    )
+    cls = parse_module(src).classes[0]
+
+    assert cls.class_vars[0][0] == "from_field"
+    assert cls.class_vars[0][3] == "Field description value"
+    assert cls.class_vars[1][0] == "inline_comment"
+    assert cls.class_vars[1][3] == "Inline comment value"
+    assert cls.class_vars[2][0] == "below_docstring"
+    assert cls.class_vars[2][3] == "Below docstring value."

@@ -84,23 +84,6 @@ class TestSharedStatus:
         status = _SharedStatus()
         assert status.prefect_available is True
 
-    def test_fallback_semaphore_creation(self):
-        status = _SharedStatus()
-        sem = status.get_fallback_semaphore("test", 5)
-        assert isinstance(sem, asyncio.Semaphore)
-
-    def test_fallback_semaphore_reuse(self):
-        status = _SharedStatus()
-        sem1 = status.get_fallback_semaphore("test", 5)
-        sem2 = status.get_fallback_semaphore("test", 5)
-        assert sem1 is sem2
-
-    def test_fallback_semaphore_per_name(self):
-        status = _SharedStatus()
-        sem_a = status.get_fallback_semaphore("a", 5)
-        sem_b = status.get_fallback_semaphore("b", 10)
-        assert sem_a is not sem_b
-
 
 # ---------------------------------------------------------------------------
 # _slot_decay_per_second
@@ -109,7 +92,7 @@ class TestSharedStatus:
 
 class TestSlotDecay:
     def test_concurrent_returns_zero(self):
-        assert _slot_decay_per_second(PipelineLimit(100, LimitKind.CONCURRENT)) == 0.0
+        assert _slot_decay_per_second(PipelineLimit(100, LimitKind.CONCURRENT)) == pytest.approx(0.0)
 
     def test_per_minute(self):
         result = _slot_decay_per_second(PipelineLimit(60, LimitKind.PER_MINUTE))
@@ -238,50 +221,6 @@ class TestPipelineConcurrencyLocalFallback:
             async with pipeline_concurrency("test"):
                 entered = True
             assert entered
-        finally:
-            _reset_limits_state(token)
-
-    async def test_semaphore_limits_concurrency(self):
-        """Verify semaphore actually limits concurrent operations."""
-        status = _SharedStatus()
-        status.prefect_available = False
-        limits = {"test": PipelineLimit(1, LimitKind.CONCURRENT, timeout=2)}
-        state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
-            max_concurrent = 0
-            current = 0
-
-            async def worker():
-                nonlocal max_concurrent, current
-                async with pipeline_concurrency("test"):
-                    current += 1
-                    max_concurrent = max(max_concurrent, current)
-                    await asyncio.sleep(0.05)
-                    current -= 1
-
-            await asyncio.gather(worker(), worker(), worker())
-            assert max_concurrent == 1
-        finally:
-            _reset_limits_state(token)
-
-    async def test_semaphore_timeout_raises(self):
-        """Verify semaphore respects timeout."""
-        status = _SharedStatus()
-        status.prefect_available = False
-        limits = {"test": PipelineLimit(1, LimitKind.CONCURRENT, timeout=1)}
-        state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
-            # Acquire the only slot
-            sem = status.get_fallback_semaphore("test", 1)
-            await sem.acquire()
-            try:
-                with pytest.raises(AcquireConcurrencySlotTimeoutError, match="Local semaphore timeout"):
-                    async with pipeline_concurrency("test", timeout=1):
-                        pass
-            finally:
-                sem.release()
         finally:
             _reset_limits_state(token)
 
@@ -496,7 +435,7 @@ class TestEnsureConcurrencyLimits:
             assert mock_client.upsert_global_concurrency_limit_by_name.call_count == 3
             calls = {call.kwargs["name"]: call.kwargs for call in mock_client.upsert_global_concurrency_limit_by_name.call_args_list}
             assert calls["bd"]["limit"] == 500
-            assert calls["bd"]["slot_decay_per_second"] == 0.0
+            assert calls["bd"]["slot_decay_per_second"] == pytest.approx(0.0)
             assert calls["sf"]["limit"] == 15
             assert calls["sf"]["slot_decay_per_second"] == pytest.approx(0.25)
             assert calls["hourly"]["limit"] == 3600

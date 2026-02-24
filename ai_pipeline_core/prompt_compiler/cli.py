@@ -3,8 +3,10 @@
 import argparse
 import ast
 import importlib
+import shutil
 import sys
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -52,18 +54,35 @@ def _file_may_contain_specs(file: Path) -> bool:
         return False
 
 
-def _all_prompt_spec_subclasses() -> set[type[PromptSpec[Any]]]:
-    """Collect all registered PromptSpec subclasses, excluding Pydantic-generated parameterized classes."""
-    discovered: set[type[PromptSpec[Any]]] = set()
+def _all_prompt_spec_subclasses() -> list[type[PromptSpec[Any]]]:
+    """Collect all registered PromptSpec subclasses, deduplicated by module + qualname."""
+    seen: dict[tuple[str, str], type[PromptSpec[Any]]] = {}
     stack = list(PromptSpec.__subclasses__())
     while stack:
         cls = stack.pop()
-        if cls not in discovered:
-            # Skip Pydantic-generated parameterized classes (e.g. PromptSpec[str])
-            if "[" not in cls.__name__:
-                discovered.add(cls)
-            stack.extend(cls.__subclasses__())
-    return discovered
+        # Skip Pydantic-generated parameterized classes (e.g. PromptSpec[str])
+        if "[" not in cls.__name__:
+            seen.setdefault((cls.__module__, cls.__qualname__), cls)
+        stack.extend(cls.__subclasses__())
+    return list(seen.values())
+
+
+def _import_matching_modules(root: Path, file_filter: Callable[[Path], bool]) -> list[str]:
+    """Import modules whose files match the filter. Returns list of import error messages."""
+    errors: list[str] = []
+    for py_file in _iter_python_files(root):
+        if not file_filter(py_file):
+            continue
+        module_name = _module_name_from_path(py_file, root)
+        if module_name is None:
+            continue
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                importlib.import_module(module_name)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{module_name}: {e}")
+    return errors
 
 
 def _resolve_spec_class(ref: str, root: Path) -> type[PromptSpec[Any]]:
@@ -84,18 +103,7 @@ def _resolve_spec_class(ref: str, root: Path) -> type[PromptSpec[Any]]:
         return cast(type[PromptSpec[Any]], obj)
 
     class_name = ref
-    for py_file in _iter_python_files(root):
-        if not _file_defines_class(py_file, class_name):
-            continue
-        module_name = _module_name_from_path(py_file, root)
-        if module_name is None:
-            continue
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", SyntaxWarning)
-                importlib.import_module(module_name)
-        except Exception:  # noqa: BLE001, S112 — best-effort discovery, errors are not actionable
-            continue
+    _import_matching_modules(root, lambda f: _file_defines_class(f, class_name))
 
     matches = sorted(
         (cls for cls in _all_prompt_spec_subclasses() if cls.__name__ == class_name),
@@ -114,41 +122,28 @@ def _discover_all_specs(root: Path) -> tuple[list[type[PromptSpec[Any]]], list[s
 
     Returns (sorted_specs, import_errors).
     """
-    errors: list[str] = []
-    for py_file in _iter_python_files(root):
-        if not _file_may_contain_specs(py_file):
-            continue
-        module_name = _module_name_from_path(py_file, root)
-        if module_name is None:
-            continue
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", SyntaxWarning)
-                importlib.import_module(module_name)
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"{module_name}: {e}")
-
-    specs = sorted(_all_prompt_spec_subclasses(), key=lambda c: (c.__module__, c.__name__))
+    errors = _import_matching_modules(root, _file_may_contain_specs)
+    all_specs = _all_prompt_spec_subclasses()
+    specs = sorted(all_specs, key=lambda c: (c.__module__, c.__name__))
     return specs, errors
 
 
 def _output_label(spec_cls: type[PromptSpec[Any]]) -> str:
-    """Build output type label like 'str', 'str [xml]', or 'RiskVerdict'."""
+    """Build output type label like 'str', 'str [structure]', or 'RiskVerdict'."""
     if spec_cls.output_type is str:
-        tags: list[str] = []
-        if spec_cls.xml_wrapped:
-            tags.append("xml")
         if spec_cls.output_structure:
-            tags.append("structure")
-        return f"str [{','.join(tags)}]" if tags else "str"
+            return "str [structure]"
+        return "str"
     return spec_cls.output_type.__name__
 
 
 def _ensure_importable(root: Path) -> None:
-    """Ensure project root is on sys.path."""
-    root_str = str(root)
-    if root_str not in sys.path:
-        sys.path.insert(0, root_str)
+    """Ensure project root is on sys.path, avoiding duplicates."""
+    root_resolved = root.resolve()
+    for entry in sys.path:
+        if entry and Path(entry).resolve() == root_resolved:
+            return
+    sys.path.insert(0, str(root))
 
 
 def _print_table(headers: list[str], rows: list[list[str]]) -> None:
@@ -169,43 +164,6 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _cmd_list(args: argparse.Namespace) -> int:
-    """List all discovered PromptSpec subclasses."""
-    _ensure_importable(args.root)
-    specs, errors = _discover_all_specs(args.root)
-
-    if not specs:
-        print("No PromptSpec subclasses found.")
-        if errors:
-            print(f"\n{len(errors)} import error(s):", file=sys.stderr)
-            for err in errors:
-                print(f"  {err}", file=sys.stderr)
-        return 0
-
-    headers = ["Name", "Phase", "Docs", "Fields", "Output", "Module"]
-    rows = [
-        [
-            cls.__name__,
-            cls.phase,
-            str(len(cls.input_documents)),
-            str(len(cls.model_fields)),
-            _output_label(cls),
-            cls.__module__,
-        ]
-        for cls in specs
-    ]
-
-    print(f"{len(specs)} spec(s) found:\n")
-    _print_table(headers, rows)
-
-    if errors:
-        print(f"\n{len(errors)} import error(s):", file=sys.stderr)
-        for err in errors:
-            print(f"  {err}", file=sys.stderr)
-
-    return 0
-
-
 def _cmd_inspect(args: argparse.Namespace) -> int:
     """Show detailed anatomy of a single spec."""
     _ensure_importable(args.root)
@@ -220,11 +178,16 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     doc_first_line = (spec_cls.__doc__ or "").strip().splitlines()[0]
     print(f"{spec_cls.__name__}")
     print(f"  {doc_first_line}")
-    print(f"  Phase: {spec_cls.phase} | Module: {spec_cls.__module__}")
+    print(f"  Module: {spec_cls.__module__}")
+    if spec_cls.follows is not None:
+        print(f"  Follows: {spec_cls.follows.__name__}")
 
     # Role
-    print(f"\n  Role: {spec_cls.role.__name__}")
-    print(f'    "{spec_cls.role.text}"')
+    if spec_cls.role is not None:
+        print(f"\n  Role: {spec_cls.role.__name__}")
+        print(f'    "{spec_cls.role.text}"')
+    else:
+        print("\n  Role: (none — follow-up spec)")
 
     # Input Documents
     docs = spec_cls.input_documents
@@ -270,8 +233,6 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     # Output
     print("\n  Output:")
     print(f"    Type: {_output_label(spec_cls)}")
-    if spec_cls.xml_wrapped:
-        print("    XML Wrapped: yes")
     if spec_cls.output_structure:
         print("    Structure:")
         for line in spec_cls.output_structure.splitlines():
@@ -308,22 +269,40 @@ _PROMPTS_DIR = ".prompts"
 
 
 def _cmd_compile(args: argparse.Namespace) -> int:
-    """Compile all discovered specs to .prompts/ directory as markdown files."""
+    """Discover, list, and compile all specs to .prompts/ directory as markdown files."""
     _ensure_importable(args.root)
     specs, errors = _discover_all_specs(args.root)
 
+    # Clean output directory before writing (removes stale files even when no specs found)
+    out_dir = args.root / _PROMPTS_DIR
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir()
+
     if not specs:
         print("No PromptSpec subclasses found.")
+        if errors:
+            print(f"\n{len(errors)} import error(s):", file=sys.stderr)
+            for err in errors:
+                print(f"  {err}", file=sys.stderr)
         return 0
 
-    out_dir = args.root / _PROMPTS_DIR
-    out_dir.mkdir(exist_ok=True)
-
-    # Remove stale files not matching any discovered spec
-    current_names = {f"{cls.__name__}.md" for cls in specs}
-    for existing in out_dir.glob("*.md"):
-        if existing.name not in current_names:
-            existing.unlink()
+    # Print discovery table (merged from old `list` command)
+    headers = ["Name", "Follows", "Docs", "Fields", "Output", "Module"]
+    rows = [
+        [
+            cls.__name__,
+            cls.follows.__name__ if cls.follows else "",
+            str(len(cls.input_documents)),
+            str(len(cls.model_fields)),
+            _output_label(cls),
+            cls.__module__,
+        ]
+        for cls in specs
+    ]
+    print(f"{len(specs)} spec(s) found:\n")
+    _print_table(headers, rows)
+    print()
 
     written = 0
     for spec_cls in specs:
@@ -351,10 +330,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="prompt_compiler", description="Prompt compiler CLI")
     subparsers = parser.add_subparsers(dest="command")
 
-    # list
-    list_parser = subparsers.add_parser("list", help="List all discovered PromptSpec subclasses")
-    list_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
-
     # inspect
     inspect_parser = subparsers.add_parser("inspect", help="Show detailed anatomy of a single spec")
     inspect_parser.add_argument("spec", help="Spec class name or module.path:ClassName")
@@ -366,13 +341,13 @@ def main(argv: list[str] | None = None) -> int:
     render_parser.add_argument("--no-input-documents", action="store_true", help="Hide input document listing")
     render_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
 
-    # compile
-    compile_parser = subparsers.add_parser("compile", help="Compile all specs to .prompts/ directory")
+    # compile (also discovers and lists specs)
+    compile_parser = subparsers.add_parser("compile", help="Discover, list, and compile all specs to .prompts/")
     compile_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
 
     args = parser.parse_args(argv)
 
-    handlers = {"list": _cmd_list, "inspect": _cmd_inspect, "render": _cmd_render, "compile": _cmd_compile}
+    handlers = {"inspect": _cmd_inspect, "render": _cmd_render, "compile": _cmd_compile}
     handler = handlers.get(args.command)
     if handler is None:
         parser.print_help()

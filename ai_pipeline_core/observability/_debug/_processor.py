@@ -1,12 +1,19 @@
 """OpenTelemetry SpanProcessor for local trace debugging."""
 
-import contextlib
-
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.trace import StatusCode
 
+from ai_pipeline_core.logging import get_pipeline_logger
+
 from ._writer import LocalTraceWriter, WriteJob
+
+logger = get_pipeline_logger(__name__)
+
+# Span processors must never raise — exceptions here would break tracing for the
+# entire application.  We catch the broad set of exceptions that can occur from
+# filesystem I/O, serialization, and formatting operations in the trace writer.
+_PROCESSOR_ERRORS = (OSError, ValueError, TypeError, RuntimeError, AttributeError)
 
 
 class LocalDebugSpanProcessor(SpanProcessor):
@@ -14,11 +21,6 @@ class LocalDebugSpanProcessor(SpanProcessor):
 
     Integrates with the OpenTelemetry SDK to capture all spans and write them
     to a structured directory hierarchy for debugging.
-
-    Usage:
-        writer = LocalTraceWriter(config)
-        processor = LocalDebugSpanProcessor(writer)
-        tracer_provider.add_span_processor(processor)
     """
 
     def __init__(self, writer: LocalTraceWriter):
@@ -31,7 +33,7 @@ class LocalDebugSpanProcessor(SpanProcessor):
         Creates the span directory early so we can see "running" spans.
         Input/output data is not available yet - will be captured in on_end().
         """
-        with contextlib.suppress(Exception):
+        try:
             if span.context is None:
                 return
             trace_id = format(span.context.trace_id, "032x")
@@ -39,6 +41,8 @@ class LocalDebugSpanProcessor(SpanProcessor):
             parent_id = self._get_parent_span_id(span)
 
             self._writer.on_span_start(trace_id, span_id, parent_id, span.name)
+        except _PROCESSOR_ERRORS as e:
+            logger.debug("Failed to process span start for '%s': %s", getattr(span, "name", "?"), e)
 
     def on_end(self, span: ReadableSpan) -> None:
         """Handle span end - queue full span data for background write.
@@ -46,14 +50,14 @@ class LocalDebugSpanProcessor(SpanProcessor):
         All data (input, output, attributes, events) is captured here because
         Laminar sets these attributes after span start.
         """
-        with contextlib.suppress(Exception):
+        try:
             if span.context is None or span.start_time is None or span.end_time is None:
                 return
             job = WriteJob(
                 trace_id=format(span.context.trace_id, "032x"),
                 span_id=format(span.context.span_id, "016x"),
                 name=span.name,
-                parent_id=self._get_parent_span_id_from_readable(span),
+                parent_id=self._get_parent_span_id(span),
                 attributes=dict(span.attributes) if span.attributes else {},
                 events=list(span.events) if span.events else [],
                 status_code=self._get_status_code(span),
@@ -62,6 +66,8 @@ class LocalDebugSpanProcessor(SpanProcessor):
                 end_time_ns=span.end_time,
             )
             self._writer.on_span_end(job)
+        except _PROCESSOR_ERRORS as e:
+            logger.debug("Failed to process span end for '%s': %s", getattr(span, "name", "?"), e)
 
     def shutdown(self) -> None:
         """Shutdown the processor and writer."""
@@ -72,19 +78,11 @@ class LocalDebugSpanProcessor(SpanProcessor):
         return self._writer.flush(timeout=timeout_millis / 1000)
 
     @staticmethod
-    def _get_parent_span_id(span: Span) -> str | None:
-        """Extract parent span ID from a writable Span."""
-        if hasattr(span, "parent") and span.parent:
-            parent_ctx = span.parent
-            if hasattr(parent_ctx, "span_id") and parent_ctx.span_id:
-                return format(parent_ctx.span_id, "016x")
-        return None
-
-    @staticmethod
-    def _get_parent_span_id_from_readable(span: ReadableSpan) -> str | None:
-        """Extract parent span ID from a ReadableSpan."""
-        if span.parent and hasattr(span.parent, "span_id") and span.parent.span_id:
-            return format(span.parent.span_id, "016x")
+    def _get_parent_span_id(span: Span | ReadableSpan) -> str | None:
+        """Extract parent span ID as hex string, or None."""
+        parent = getattr(span, "parent", None)
+        if parent is not None and hasattr(parent, "span_id") and parent.span_id:
+            return format(parent.span_id, "016x")
         return None
 
     @staticmethod

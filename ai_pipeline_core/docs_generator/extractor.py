@@ -8,8 +8,23 @@ import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 
+__all__ = [
+    "EXTERNAL_STUBS",
+    "ClassInfo",
+    "FunctionInfo",
+    "MethodInfo",
+    "ModuleInfo",
+    "SymbolTable",
+    "ValueInfo",
+    "build_symbol_table",
+    "get_source",
+    "is_public_name",
+    "parse_module",
+    "resolve_dependencies",
+]
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, slots=True)
 class MethodInfo:
     """Extracted method/property metadata from a class body."""
 
@@ -25,7 +40,7 @@ class MethodInfo:
     inherited_from: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ClassInfo:
     """Extracted class metadata including methods, validators, and class variables."""
 
@@ -33,14 +48,14 @@ class ClassInfo:
     bases: tuple[str, ...]
     docstring: str
     is_public: bool
-    class_vars: tuple[tuple[str, str, str], ...]  # (name, type_annotation, default_value)
+    class_vars: tuple[tuple[str, str, str, str], ...]  # (name, type_annotation, default_value, description)
     methods: tuple[MethodInfo, ...]
     validators: tuple[MethodInfo, ...]
     module_path: str
     decorators: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FunctionInfo:
     """Extracted module-level function metadata."""
 
@@ -54,7 +69,7 @@ class FunctionInfo:
     module_path: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ValueInfo:
     """Extracted module-level value: NewType, type alias, or constant."""
 
@@ -65,7 +80,7 @@ class ValueInfo:
     module_path: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ModuleInfo:
     """Parsed module containing its classes and functions."""
 
@@ -231,7 +246,7 @@ def _parse_dunder_all(init_file: Path) -> set[str]:
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == "__all__" and isinstance(node.value, ast.List):
+            if isinstance(target, ast.Name) and target.id == "__all__" and isinstance(node.value, ast.List | ast.Tuple):
                 return {elt.value for elt in node.value.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)}
     return set()
 
@@ -384,9 +399,9 @@ def _extract_class(node: ast.ClassDef, source_lines: list[str], module_path: str
 
     methods: list[MethodInfo] = []
     validators: list[MethodInfo] = []
-    class_vars: list[tuple[str, str, str]] = []
+    class_vars: list[tuple[str, str, str, str]] = []
 
-    for item in node.body:
+    for index, item in enumerate(node.body):
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
             method = _extract_method(item, source_lines)
             methods.append(method)
@@ -397,12 +412,14 @@ def _extract_class(node: ast.ClassDef, source_lines: list[str], module_path: str
             if is_public_name(name):
                 type_ann = ast.unparse(item.annotation) if item.annotation else ""
                 default = ast.unparse(item.value) if item.value else ""
-                class_vars.append((name, type_ann, default))
+                description = _extract_class_var_description(item, index, node.body, source_lines)
+                class_vars.append((name, type_ann, default, description))
         elif isinstance(item, ast.Assign) and len(item.targets) == 1 and isinstance(item.targets[0], ast.Name):
             name = item.targets[0].id
             if is_public_name(name):
                 default = ast.unparse(item.value)
-                class_vars.append((name, "", default))
+                description = _extract_class_var_description(item, index, node.body, source_lines)
+                class_vars.append((name, "", default, description))
 
     return ClassInfo(
         name=node.name,
@@ -415,6 +432,100 @@ def _extract_class(node: ast.ClassDef, source_lines: list[str], module_path: str
         module_path=module_path,
         decorators=tuple(ast.unparse(d) for d in node.decorator_list),
     )
+
+
+def _extract_class_var_description(
+    item: ast.AnnAssign | ast.Assign,
+    index: int,
+    class_body: list[ast.stmt],
+    source_lines: list[str],
+) -> str:
+    """Extract one-line class field description from supported sources."""
+    field_description = _extract_field_description(item)
+    if field_description:
+        return field_description
+
+    inline_comment = _extract_inline_comment(item, source_lines)
+    if inline_comment:
+        return inline_comment
+
+    docstring_below = _extract_docstring_below(index, class_body)
+    if docstring_below:
+        return docstring_below
+
+    return ""
+
+
+def _extract_field_description(item: ast.AnnAssign | ast.Assign) -> str:
+    """Extract Pydantic Field(description=...) text from a class field default."""
+    value = item.value
+    if not isinstance(value, ast.Call):
+        return ""
+    if not _is_field_call(value):
+        return ""
+
+    for keyword in value.keywords:
+        if keyword.arg != "description":
+            continue
+        literal = _as_string_literal(keyword.value)
+        if literal:
+            return _first_line(literal)
+    return ""
+
+
+def _is_field_call(node: ast.Call) -> bool:
+    """Return True when node is a call to Field(...)."""
+    if isinstance(node.func, ast.Name):
+        return node.func.id == "Field"
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr == "Field"
+    return False
+
+
+def _as_string_literal(node: ast.expr) -> str:
+    """Convert an AST expression to a plain string when possible."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return ""
+
+
+def _first_line(text: str) -> str:
+    """Return the first non-empty line from text, stripped."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _extract_inline_comment(item: ast.AnnAssign | ast.Assign, source_lines: list[str]) -> str:
+    """Extract inline # comment on any line of the field declaration."""
+    start = item.lineno
+    end = item.end_lineno or item.lineno
+    for line_no in range(start, end + 1):
+        line = source_lines[line_no - 1]
+        hash_index = line.find("#")
+        if hash_index < 0:
+            continue
+        comment = line[hash_index + 1 :].strip()
+        if comment:
+            return _first_line(comment)
+    return ""
+
+
+def _extract_docstring_below(index: int, class_body: list[ast.stmt]) -> str:
+    """Extract first line from an immediate docstring-style literal below a field."""
+    next_index = index + 1
+    if next_index >= len(class_body):
+        return ""
+    next_item = class_body[next_index]
+    if not isinstance(next_item, ast.Expr):
+        return ""
+    if not isinstance(next_item.value, ast.Constant):
+        return ""
+    if not isinstance(next_item.value.value, str):
+        return ""
+    return _first_line(next_item.value.value)
 
 
 def _extract_function(

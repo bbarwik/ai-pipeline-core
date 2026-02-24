@@ -8,6 +8,7 @@ For app code, use the llm module's Conversation class instead.
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import time
@@ -19,13 +20,17 @@ from openai.lib.streaming.chat import ChunkEvent, ContentDeltaEvent, ContentDone
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, ValidationError
 
-from ai_pipeline_core.exceptions import LLMError
+from ai_pipeline_core.exceptions import LLMError, OutputDegenerationError
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.settings import settings
 
+from ._degeneration import detect_output_degeneration
+from ._validation import validate_image_content as _validate_image
+from .model_config import get_cache_min_tokens, get_openrouter_provider, supports_stop_sequences
 from .model_options import ModelOptions
 from .model_response import Citation, ModelResponse
 from .types import (
+    TOKENS_PER_IMAGE,
     ContentPart,
     CoreMessage,
     ImageContent,
@@ -43,36 +48,6 @@ T = TypeVar("T", bound=BaseModel)
 _VALID_FINISH_REASONS = frozenset({"stop", "length", "tool_calls", "content_filter", "function_call"})
 
 
-from ai_pipeline_core._llm_core._validators import validate_image_content as _validate_image  # noqa: E402
-
-
-def _validate_pdf(data: bytes, name: str = "pdf") -> str | None:
-    """Validate PDF content. Returns error message or None if valid."""
-    if not data:
-        return f"empty PDF content in '{name}'"
-    if not data.lstrip().startswith(b"%PDF-"):
-        return f"invalid PDF header in '{name}' (missing %PDF- signature)"
-    return None
-
-
-def _looks_like_text(content: bytes) -> bool:
-    """Check if content is valid UTF-8 text (not binary)."""
-    if not content:
-        return True
-    if b"\x00" in content:
-        return False
-    try:
-        content.decode("utf-8")
-        return True
-    except UnicodeDecodeError:
-        return False
-
-
-def _has_pdf_signature(content: bytes) -> bool:
-    """Check if content starts with PDF magic bytes (%PDF-)."""
-    return content.lstrip().startswith(b"%PDF-")
-
-
 def _content_to_api_parts(content: str | ContentPart | tuple[ContentPart, ...]) -> list[dict[str, Any]]:
     """Convert content to OpenAI API format.
 
@@ -85,12 +60,10 @@ def _content_to_api_parts(content: str | ContentPart | tuple[ContentPart, ...]) 
         return [{"type": "text", "text": content.text}]
 
     if isinstance(content, ImageContent):
-        # Validate image
         if err := _validate_image(content.data):
-            logger.warning(f"Skipping invalid image: {err}")
+            logger.warning("Skipping invalid image: %s", err)
             return []
 
-        # Encode pre-processed image (splitting done by llm layer)
         b64 = base64.b64encode(content.data).decode("utf-8")
         return [
             {
@@ -101,20 +74,21 @@ def _content_to_api_parts(content: str | ContentPart | tuple[ContentPart, ...]) 
 
     if isinstance(content, PDFContent):
         # Check if "PDF" is actually text (misnamed file)
-        if _looks_like_text(content.data) and not _has_pdf_signature(content.data):
-            logger.debug("PDF content is actually text - sending as text")
-            return [{"type": "text", "text": content.data.decode("utf-8")}]
-
-        # Validate PDF
-        if err := _validate_pdf(content.data):
-            logger.warning(f"Skipping invalid PDF: {err}")
+        if content.data and b"\x00" not in content.data and not content.data.lstrip().startswith(b"%PDF-"):
+            try:
+                return [{"type": "text", "text": content.data.decode("utf-8")}]
+            except UnicodeDecodeError:
+                pass
+        # Validate PDF header
+        if not content.data or not content.data.lstrip().startswith(b"%PDF-"):
+            logger.warning("Skipping invalid PDF: invalid header or empty content")
             return []
 
         b64 = base64.b64encode(content.data).decode("utf-8")
         return [{"type": "file", "file": {"file_data": f"data:application/pdf;base64,{b64}"}}]
 
     # Tuple of parts
-    result = []
+    result: list[dict[str, Any]] = []
     for part in content:
         result.extend(_content_to_api_parts(part))
     return result
@@ -144,7 +118,7 @@ def _remove_cache_control(messages: list[ChatCompletionMessageParam]) -> list[Ch
     for message in messages:
         if (content := message.get("content")) and isinstance(content, list):
             for item in content:
-                if isinstance(item, dict) and "cache_control" in item:
+                if isinstance(item, dict) and "cache_control" in item:  # pyright: ignore[reportUnnecessaryIsInstance]
                     del item["cache_control"]
         if "cache_control" in message:
             del message["cache_control"]
@@ -166,10 +140,10 @@ def _estimate_token_count(messages: list[ChatCompletionMessageParam]) -> int:
             total += len(content) // 4
         elif isinstance(content, list):
             for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
+                if isinstance(part, dict) and part.get("type") == "text":  # pyright: ignore[reportUnnecessaryIsInstance]
                     total += len(part.get("text", "")) // 4
-                elif isinstance(part, dict) and part.get("type") in {"image_url", "file"}:
-                    total += 1000  # Images/PDFs are ~1000 tokens
+                elif isinstance(part, dict) and part.get("type") in {"image_url", "file"}:  # pyright: ignore[reportUnnecessaryIsInstance]
+                    total += TOKENS_PER_IMAGE
     return total
 
 
@@ -197,11 +171,11 @@ def _extract_usage(response: Any) -> TokenUsage:
     )
 
 
-def _extract_cost(response: Any) -> float | None:
-    """Extract cost from API response if available."""
+def _extract_cost(response: Any, header_cost: float | None = None) -> float | None:
+    """Extract cost from API response usage, falling back to header cost."""
     if (usage := response.usage) and hasattr(usage, "cost"):
         return float(usage.cost)  # type: ignore[attr-defined]
-    return None
+    return header_cost
 
 
 def _model_name_to_openrouter_model(model: str) -> str:
@@ -210,22 +184,9 @@ def _model_name_to_openrouter_model(model: str) -> str:
         return "perplexity/sonar-pro-search"
     if model.endswith("-search"):
         model = model.replace("-search", ":online")
-    if model.startswith("gemini"):
-        return f"google/{model}"
-    if model.startswith("gpt"):
-        return f"openai/{model}"
-    if model.startswith("grok"):
-        return f"x-ai/{model}"
-    if model.startswith("claude"):
-        return f"anthropic/{model}"
-    if model.startswith("qwen3"):
-        return f"qwen/{model}"
-    if model.startswith("deepseek-"):
-        return f"deepseek/{model}"
-    if model.startswith("glm-"):
-        return f"z-ai/{model}"
-    if model.startswith("kimi-"):
-        return f"moonshotai/{model}"
+    provider = get_openrouter_provider(model)
+    if provider:
+        return f"{provider}/{model}"
     return model
 
 
@@ -235,7 +196,7 @@ async def _generate_streaming(
     messages: list[ChatCompletionMessageParam],
     completion_kwargs: dict[str, Any],
 ) -> tuple[Any, dict[str, Any], Any]:
-    """Execute streaming LLM API call. Returns (response, metadata)."""
+    """Execute streaming LLM API call. Returns (response, metadata, stream_usage)."""
     start_time = time.time()
     first_token_time = None
     usage = None
@@ -271,32 +232,110 @@ async def _generate_non_streaming(
     messages: list[ChatCompletionMessageParam],
     completion_kwargs: dict[str, Any],
 ) -> tuple[Any, dict[str, Any], Any]:
-    """Execute non-streaming LLM API call. Returns (response, metadata).
-
-    Uses non-streaming to avoid OpenAI SDK delta accumulation issues with
-    some providers (e.g., Grok annotation deltas crash the SDK).
-    """
+    """Execute non-streaming LLM API call. Returns (response, metadata, None)."""
     start_time = time.time()
     kwargs = {k: v for k, v in completion_kwargs.items() if k != "stream_options"}
 
     response_format = kwargs.get("response_format")
     if isinstance(response_format, type) and issubclass(response_format, BaseModel):
-        response = await client.chat.completions.parse(
+        raw = await client.chat.completions.with_raw_response.parse(
             model=model,
             messages=messages,
             **kwargs,
         )
     else:
-        response = await client.chat.completions.create(
+        raw = await client.chat.completions.with_raw_response.create(
             model=model,
             messages=messages,
             stream=False,
             **kwargs,
         )
 
+    response = raw.parse()
+
+    # Extract cost from x-litellm-response-cost header as fallback
+    header_cost: float | None = None
+    if raw_cost := raw.headers.get("x-litellm-response-cost"):
+        with contextlib.suppress(ValueError, TypeError):
+            header_cost = float(raw_cost)
+
     elapsed = round(time.time() - start_time, 2)
-    metadata = {"time_taken": elapsed, "first_token_time": elapsed}
+    metadata = {"time_taken": elapsed, "first_token_time": elapsed, "header_cost": header_cost}
     return response, metadata, None
+
+
+def _build_model_response(
+    response: Any,
+    metadata: dict[str, Any],
+    stream_usage: Any,
+    model: str,
+    response_format: type[BaseModel] | None,
+) -> ModelResponse[Any]:
+    """Build ModelResponse from raw API response. Raises ValueError/ValidationError on failure."""
+    # Normalize response to fix provider bugs
+    for choice in response.choices:
+        if hasattr(choice.message, "role") and choice.message.role != "assistant":
+            object.__setattr__(choice.message, "role", "assistant")
+        if choice.finish_reason not in _VALID_FINISH_REASONS:
+            object.__setattr__(choice, "finish_reason", "stop")
+
+    content = response.choices[0].message.content or ""
+    if "</think>" in content:
+        content = content.split("</think>")[-1].strip()
+
+    reasoning_content = ""
+    msg = response.choices[0].message
+    if rc := getattr(msg, "reasoning_content", None):
+        reasoning_content = rc
+    elif "</think>" in (msg.content or ""):
+        reasoning_content = (msg.content or "").split("</think>")[0].strip()
+
+    thinking_blocks: tuple[dict[str, Any], ...] | None = None
+    provider_specific_fields: dict[str, Any] | None = None
+    if hasattr(msg, "thinking_blocks") and msg.thinking_blocks:
+        thinking_blocks = tuple(tb if isinstance(tb, dict) else tb.__dict__ for tb in msg.thinking_blocks)  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]
+    if hasattr(msg, "provider_specific_fields") and msg.provider_specific_fields:
+        provider_specific_fields = dict(msg.provider_specific_fields)
+
+    usage = _extract_usage(response)
+    if stream_usage:
+        usage = TokenUsage(
+            prompt_tokens=stream_usage.prompt_tokens,
+            completion_tokens=stream_usage.completion_tokens,
+            total_tokens=stream_usage.total_tokens,
+            cached_tokens=usage.cached_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+        )
+    cost = _extract_cost(response, header_cost=metadata.get("header_cost"))
+
+    if not content:
+        raise ValueError("Empty response content")
+
+    parsed: Any = content
+    if response_format is not None:
+        parsed = response_format.model_validate_json(content)
+
+    citations: tuple[Citation, ...] = ()
+    if annotations := response.choices[0].message.annotations:
+        url_citations = [a for a in annotations if getattr(a, "type", None) == "url_citation" and a.url_citation]
+        citations = tuple(
+            Citation(title=a.url_citation.title, url=a.url_citation.url, start_index=a.url_citation.start_index, end_index=a.url_citation.end_index)
+            for a in url_citations
+        )
+
+    return ModelResponse(
+        content=content,
+        parsed=parsed,
+        reasoning_content=reasoning_content,
+        citations=citations,
+        usage=usage,
+        cost=cost,
+        model=model,
+        response_id=response.id or "",
+        metadata=metadata,
+        thinking_blocks=thinking_blocks,
+        provider_specific_fields=provider_specific_fields,
+    )
 
 
 async def _generate_impl(
@@ -304,6 +343,7 @@ async def _generate_impl(
     *,
     model: str,
     model_options: ModelOptions,
+    response_format: type[BaseModel] | None = None,
     purpose: str | None = None,
     expected_cost: float | None = None,
     context_count: int = 0,
@@ -330,19 +370,23 @@ async def _generate_impl(
     # Apply caching
     cache_ttl = model_options.cache_ttl
     if cache_ttl and effective_context_count > 0:
-        if "gemini" in model.lower() and _estimate_token_count(api_messages[:effective_context_count]) < 10000:
+        min_tokens = get_cache_min_tokens(model)
+        if min_tokens > 0 and _estimate_token_count(api_messages[:effective_context_count]) < min_tokens:
             cache_ttl = None
-            logger.debug("Disabling cache for Gemini with <10k context tokens")
+            logger.debug("Disabling cache: context tokens below model minimum (%d)", min_tokens)
         if cache_ttl:
             _apply_cache_control(api_messages, cache_ttl, effective_context_count)
 
     completion_kwargs: dict[str, Any] = {**model_options.to_openai_completion_kwargs()}
+    if "stop" in completion_kwargs and not supports_stop_sequences(model):
+        del completion_kwargs["stop"]
+    if response_format is not None:
+        completion_kwargs["response_format"] = response_format
     if cache_ttl and effective_context_count > 0:
         completion_kwargs["prompt_cache_key"] = _compute_cache_key(api_messages[:effective_context_count], model_options.system_prompt)
 
-    response_format = model_options.response_format
-
-    for attempt in range(model_options.retries):
+    total_attempts = 1 + model_options.retries
+    for attempt in range(total_attempts):
         try:
             async with AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url) as client:
                 with Laminar.start_as_current_span(purpose or model, span_type="LLM", input=api_messages) as span:
@@ -351,76 +395,7 @@ async def _generate_impl(
                     else:
                         response, metadata, stream_usage = await _generate_non_streaming(client, model, api_messages, completion_kwargs)
 
-                    # Normalize response to fix provider bugs
-                    for choice in response.choices:
-                        if hasattr(choice.message, "role") and choice.message.role != "assistant":
-                            object.__setattr__(choice.message, "role", "assistant")
-                        if choice.finish_reason not in _VALID_FINISH_REASONS:
-                            object.__setattr__(choice, "finish_reason", "stop")
-
-                    content = response.choices[0].message.content or ""
-                    if "</think>" in content:
-                        content = content.split("</think>")[-1].strip()
-
-                    reasoning_content = ""
-                    msg = response.choices[0].message
-                    if rc := getattr(msg, "reasoning_content", None):
-                        reasoning_content = rc
-                    elif "</think>" in (msg.content or ""):
-                        reasoning_content = (msg.content or "").split("</think>")[0].strip()
-
-                    thinking_blocks: tuple[dict[str, Any], ...] | None = None
-                    provider_specific_fields: dict[str, Any] | None = None
-                    if hasattr(msg, "thinking_blocks") and msg.thinking_blocks:
-                        thinking_blocks = tuple(tb if isinstance(tb, dict) else tb.__dict__ for tb in msg.thinking_blocks)
-                    if hasattr(msg, "provider_specific_fields") and msg.provider_specific_fields:
-                        provider_specific_fields = dict(msg.provider_specific_fields)
-
-                    usage = _extract_usage(response)
-                    if stream_usage:
-                        usage = TokenUsage(
-                            prompt_tokens=stream_usage.prompt_tokens,
-                            completion_tokens=stream_usage.completion_tokens,
-                            total_tokens=stream_usage.total_tokens,
-                            cached_tokens=usage.cached_tokens,
-                            reasoning_tokens=usage.reasoning_tokens,
-                        )
-                    cost = _extract_cost(response)
-
-                    if not content:
-                        raise ValueError("Empty response content")
-
-                    # For structured output, parse and validate inside the retry loop
-                    parsed: Any = content
-                    if response_format is not None:
-                        parsed = response_format.model_validate_json(content)
-
-                    citations: tuple[Citation, ...] = ()
-                    if annotations := response.choices[0].message.annotations:
-                        url_citations = [a for a in annotations if getattr(a, "type", None) == "url_citation" and a.url_citation]
-                        citations = tuple(
-                            Citation(
-                                title=a.url_citation.title,
-                                url=a.url_citation.url,
-                                start_index=a.url_citation.start_index,
-                                end_index=a.url_citation.end_index,
-                            )
-                            for a in url_citations
-                        )
-
-                    model_response: ModelResponse[Any] = ModelResponse(
-                        content=content,
-                        parsed=parsed,
-                        reasoning_content=reasoning_content,
-                        citations=citations,
-                        usage=usage,
-                        cost=cost,
-                        model=model,
-                        response_id=response.id or "",
-                        metadata=metadata,
-                        thinking_blocks=thinking_blocks,
-                        provider_specific_fields=provider_specific_fields,
-                    )
+                    model_response = _build_model_response(response, metadata, stream_usage, model, response_format)
 
                     span_attrs = model_response.get_laminar_metadata()
                     if expected_cost is not None:
@@ -429,21 +404,27 @@ async def _generate_impl(
                         span_attrs["purpose"] = purpose
                     span.set_attributes(span_attrs)  # pyright: ignore[reportArgumentType]
 
-                    outputs = [o for o in (reasoning_content, content) if o]
-                    Laminar.set_span_output(outputs if len(outputs) > 1 else content)
+                    # Detect output degeneration (token repetition loops)
+                    if explanation := detect_output_degeneration(model_response.content):
+                        raise OutputDegenerationError(
+                            f"model={model}, tokens={model_response.usage.completion_tokens}, content_length={len(model_response.content)}: {explanation}"
+                        )
+
+                    outputs = [o for o in (model_response.reasoning_content, model_response.content) if o]
+                    Laminar.set_span_output(outputs if len(outputs) > 1 else model_response.content)
 
                     return model_response
 
         except TimeoutError:
-            logger.warning(f"LLM generation timeout (attempt {attempt + 1}/{model_options.retries})")
-            if attempt == model_options.retries - 1:
+            logger.warning("LLM generation timeout (attempt %d/%d)", attempt + 1, total_attempts)
+            if attempt == total_attempts - 1:
                 raise LLMError("Exhausted all retry attempts for LLM generation.") from None
         except Exception as e:
             if isinstance(e, ValidationError):
-                logger.warning(f"Structured output validation failed (attempt {attempt + 1}/{model_options.retries}): {e}")
-                final_error_msg = f"Structured output validation failed after {model_options.retries} attempts"
+                logger.warning("Structured output validation failed (attempt %d/%d): %s", attempt + 1, total_attempts, e)
+                final_error_msg = f"Structured output validation failed after {total_attempts} attempts"
             else:
-                logger.warning(f"LLM generation failed (attempt {attempt + 1}/{model_options.retries}): {e}")
+                logger.warning("LLM generation failed (attempt %d/%d): %s", attempt + 1, total_attempts, e)
                 final_error_msg = "Exhausted all retry attempts for LLM generation."
 
             completion_kwargs.setdefault("extra_body", {})
@@ -451,7 +432,7 @@ async def _generate_impl(
             completion_kwargs.pop("prompt_cache_key", None)
             api_messages = _remove_cache_control(api_messages)
 
-            if attempt == model_options.retries - 1:
+            if attempt == total_attempts - 1:
                 raise LLMError(final_error_msg) from e
 
         await asyncio.sleep(model_options.retry_delay_seconds)
@@ -468,31 +449,14 @@ async def generate(
     expected_cost: float | None = None,
     context_count: int = 0,
 ) -> ModelResponse[str]:
-    """Primitive LLM generation - NO Document dependency.
+    """Primitive LLM generation — no Document dependency.
 
-    This is the Layer 1 function used by internal modules. For app code,
-    use the llm.Conversation class instead.
-
-    Args:
-        messages: List of CoreMessage objects.
-        model: Model identifier (e.g., "gpt-5.1", "gemini-3-flash").
-        model_options: Optional configuration for the model.
-        purpose: Optional semantic label for tracing span name.
-        expected_cost: Optional expected cost for cost-tracking attributes.
-        context_count: Number of messages from start to apply cache_control to.
-
-    Returns:
-        ModelResponse[str] with content, parsed (same as content), usage, cost, etc.
-
-    Raises:
-        ValueError: If messages is empty or model is not provided.
-        LLMError: If generation fails after all retries.
+    Layer 1 function for internal modules. App code should use llm.Conversation instead.
     """
-    options = model_options.model_copy() if model_options else ModelOptions()
     return await _generate_impl(
         messages,
         model=model,
-        model_options=options,
+        model_options=model_options or ModelOptions(),
         purpose=purpose,
         expected_cost=expected_cost,
         context_count=context_count,
@@ -509,33 +473,15 @@ async def generate_structured(
     expected_cost: float | None = None,
     context_count: int = 0,
 ) -> ModelResponse[T]:
-    """Primitive structured LLM generation - NO Document dependency.
+    """Primitive structured LLM generation — no Document dependency.
 
-    This is the Layer 1 function used by internal modules. For app code,
-    use the llm.Conversation class instead.
-
-    Args:
-        messages: List of CoreMessage objects.
-        response_format: Pydantic model class for structured output.
-        model: Model identifier.
-        model_options: Optional configuration for the model.
-        purpose: Optional semantic label for tracing span name.
-        expected_cost: Optional expected cost for cost-tracking attributes.
-        context_count: Number of messages from start to apply cache_control to.
-
-    Returns:
-        ModelResponse[T] with .parsed returning the typed model instance.
-
-    Raises:
-        ValueError: If messages is empty or model is not provided.
-        LLMError: If generation and parsing fail after all retries.
+    Layer 1 function for internal modules. App code should use llm.Conversation instead.
     """
-    options = model_options.model_copy() if model_options else ModelOptions()
-    options.response_format = response_format
     return await _generate_impl(
         messages,
         model=model,
-        model_options=options,
+        model_options=model_options or ModelOptions(),
+        response_format=response_format,
         purpose=purpose,
         expected_cost=expected_cost,
         context_count=context_count,

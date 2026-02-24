@@ -1,0 +1,51 @@
+rules:
+  # Conversation.send() returns a NEW Conversation — discarding it loses state
+  - id: conversation-send-must-capture
+    patterns:
+      - pattern: await $CONV.send(...)
+      - pattern-not-inside: $X = await $CONV.send(...)
+      - pattern-not-inside: return await $CONV.send(...)
+      - pattern-not-inside: yield await $CONV.send(...)
+      - pattern-not-inside: ($X, ...) = await asyncio.gather(..., $CONV.send(...), ...)
+    message: "Conversation.send() returns a NEW Conversation — capture the return value. The original is unchanged."
+    severity: ERROR
+    languages: [python]
+    paths:
+      exclude:
+        - "**/tests/**"
+
+  # Conversation.send_structured() returns a NEW Conversation — discarding it loses state
+  - id: conversation-send-structured-must-capture
+    patterns:
+      - pattern: await $CONV.send_structured(...)
+      - pattern-not-inside: $X = await $CONV.send_structured(...)
+      - pattern-not-inside: return await $CONV.send_structured(...)
+      - pattern-not-inside: yield await $CONV.send_structured(...)
+      - pattern-not-inside: ($X, ...) = await asyncio.gather(..., $CONV.send_structured(...), ...)
+    message: "Conversation.send_structured() returns a NEW Conversation — capture the return value. The original is unchanged."
+    severity: ERROR
+    languages: [python]
+    paths:
+      exclude:
+        - "**/tests/**"
+
+  # persist parameter was removed from @pipeline_task
+  - id: no-persist-parameter
+    pattern-either:
+      - pattern: pipeline_task(..., persist=$V, ...)
+      - pattern: pipeline_task(persist=$V)
+    message: >
+      The 'persist' parameter was removed from @pipeline_task.
+      All pipeline tasks must return Document types or None.
+      For non-document functions, use plain async def with @trace.
+    severity: ERROR
+    languages: [python]
+
+  # PromptManager was removed — use PromptSpec + send_spec() from prompt_compiler
+  - id: no-prompt-manager-import
+    pattern-either:
+      - pattern: from ai_pipeline_core import ..., PromptManager, ...
+      - pattern: from ai_pipeline_core.prompt_manager import ...
+    message: "PromptManager was removed. Use PromptSpec + send_spec() from prompt_compiler instead."
+    severity: ERROR
+    languages: [python]

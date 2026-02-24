@@ -4,7 +4,6 @@ Provides ``initialize_observability()`` as the single entry point for
 setting up Laminar and ClickHouse tracking.
 """
 
-import importlib
 from typing import Any
 
 from opentelemetry import trace as otel_trace
@@ -46,7 +45,6 @@ class ObservabilityConfig(BaseModel):
 
     # Tracking behavior
     tracking_enabled: bool = True
-    tracking_summary_model: str = "gemini-3-flash"
 
     @property
     def has_clickhouse(self) -> bool:
@@ -61,18 +59,7 @@ class ObservabilityConfig(BaseModel):
 
 def _build_config_from_settings() -> ObservabilityConfig:
     """Build ObservabilityConfig from framework Settings."""
-    return ObservabilityConfig(
-        lmnr_project_api_key=getattr(settings, "lmnr_project_api_key", ""),
-        lmnr_debug=getattr(settings, "lmnr_debug", ""),
-        clickhouse_host=getattr(settings, "clickhouse_host", ""),
-        clickhouse_port=getattr(settings, "clickhouse_port", 8443),
-        clickhouse_database=getattr(settings, "clickhouse_database", "default"),
-        clickhouse_user=getattr(settings, "clickhouse_user", "default"),
-        clickhouse_password=getattr(settings, "clickhouse_password", ""),
-        clickhouse_secure=getattr(settings, "clickhouse_secure", True),
-        tracking_enabled=getattr(settings, "tracking_enabled", True),
-        tracking_summary_model=getattr(settings, "tracking_summary_model", "gemini-3-flash"),
-    )
+    return ObservabilityConfig(**{field: getattr(settings, field) for field in ObservabilityConfig.model_fields})
 
 
 def _setup_tracking(config: ObservabilityConfig) -> TrackingService | None:
@@ -88,12 +75,7 @@ def _setup_tracking(config: ObservabilityConfig) -> TrackingService | None:
         password=config.clickhouse_password,
         secure=config.clickhouse_secure,
     )
-    summary_mod = importlib.import_module("ai_pipeline_core.observability._summary")
-    service = TrackingService(
-        client,
-        summary_model=config.tracking_summary_model,
-        span_summary_fn=summary_mod.generate_span_summary,
-    )
+    service = TrackingService(client)
 
     # Register span processor with OTel
     try:
@@ -103,7 +85,7 @@ def _setup_tracking(config: ObservabilityConfig) -> TrackingService | None:
             provider.add_span_processor(processor)
             logger.info("ClickHouse tracking initialized")
     except Exception as e:
-        logger.warning(f"Failed to register TrackingSpanProcessor: {e}")
+        logger.warning("Failed to register TrackingSpanProcessor: %s", e)
 
     return service
 
@@ -130,7 +112,7 @@ def initialize_observability(config: ObservabilityConfig | None = None) -> None:
             tracing._initialise_laminar()
             logger.info("Laminar initialized")
         except Exception as e:
-            logger.warning(f"Laminar initialization failed: {e}")
+            logger.warning("Laminar initialization failed: %s", e)
 
     # 2. ClickHouse tracking
     _tracking_service = _setup_tracking(config)

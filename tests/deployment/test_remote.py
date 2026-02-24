@@ -28,7 +28,7 @@ class SampleOutputDoc(Document):
 
 
 @pipeline_flow()
-async def sample_flow(project_name: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+async def sample_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
     """Sample flow for testing."""
     return []
 
@@ -45,7 +45,7 @@ class SamplePipeline(PipelineDeployment[FlowOptions, SampleResult]):
     flows = [sample_flow]  # type: ignore[reportAssignmentType]
 
     @staticmethod
-    def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+    def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
         """Build result from pipeline output."""
         return SampleResult(success=True, report="done")
 
@@ -112,9 +112,7 @@ class TestIsAlreadyTraced:
 
     def test_false_for_untraced(self):
         """Test returns False for untraced function."""
-        from ai_pipeline_core.deployment.remote import (
-            _is_already_traced,  # type: ignore[reportPrivateUsage]
-        )
+        from ai_pipeline_core.pipeline._type_validation import is_already_traced as _is_already_traced
 
         async def my_func() -> None:
             pass
@@ -123,9 +121,7 @@ class TestIsAlreadyTraced:
 
     def test_true_for_traced(self):
         """Test returns True for traced function."""
-        from ai_pipeline_core.deployment.remote import (
-            _is_already_traced,  # type: ignore[reportPrivateUsage]
-        )
+        from ai_pipeline_core.pipeline._type_validation import is_already_traced as _is_already_traced
 
         @trace(level="always")
         async def my_func() -> None:
@@ -135,9 +131,7 @@ class TestIsAlreadyTraced:
 
     def test_detects_nested_trace(self):
         """Test detects trace with double decoration."""
-        from ai_pipeline_core.deployment.remote import (
-            _is_already_traced,  # type: ignore[reportPrivateUsage]
-        )
+        from ai_pipeline_core.pipeline._type_validation import is_already_traced as _is_already_traced
 
         @trace(level="always")
         @trace(level="always")
@@ -148,9 +142,7 @@ class TestIsAlreadyTraced:
 
     def test_deep_wrapped_chain(self):
         """Test detects trace through __wrapped__ chain."""
-        from ai_pipeline_core.deployment.remote import (
-            _is_already_traced,  # type: ignore[reportPrivateUsage]
-        )
+        from ai_pipeline_core.pipeline._type_validation import is_already_traced as _is_already_traced
 
         @trace(level="always")
         async def base_func() -> None:
@@ -293,9 +285,9 @@ class TestPollRemoteFlowRun:
 
         # First call: waiting (0.0), second call: completion (1.0)
         assert callback.call_count == 2
-        assert callback.call_args_list[0].args[0] == 0.0
+        assert callback.call_args_list[0].args[0] == pytest.approx(0.0)
         assert "Waiting to start" in callback.call_args_list[0].args[1]
-        assert callback.call_args_list[1].args[0] == 1.0
+        assert callback.call_args_list[1].args[0] == pytest.approx(1.0)
 
     async def test_api_error_retries(self):
         """Prefect API error on poll → logged, continues polling, returns result."""

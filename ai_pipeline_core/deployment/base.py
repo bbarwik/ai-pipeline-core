@@ -4,23 +4,22 @@ Provides the PipelineDeployment base class and related types for
 creating unified, type-safe pipeline deployments with:
 - Per-flow resume (skip if outputs exist in DocumentStore)
 - Per-flow uploads (immediate, not just at end)
-- Prefect state hooks (on_running, on_completion, etc.)
+- Prefect flow-run label updates for progress tracking
 - Upload on failure (partial results saved)
 """
 
 import asyncio
+import contextlib
 import hashlib
 import os
 from abc import abstractmethod
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
 from uuid import UUID, uuid4
 
-import httpx
 from lmnr import Laminar
 from prefect import flow, get_client, runtime
 from prefect.logging import disable_run_logger
@@ -28,13 +27,16 @@ from prefect.testing.utilities import prefect_test_harness
 from pydantic import BaseModel, ConfigDict
 from pydantic_settings import BaseSettings
 
-from ai_pipeline_core.document_store import SummaryGenerator, create_document_store, get_document_store, set_document_store
-from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+from ai_pipeline_core.document_store._factory import create_document_store
+from ai_pipeline_core.document_store._memory import MemoryDocumentStore
+from ai_pipeline_core.document_store._protocol import get_document_store, set_document_store
+from ai_pipeline_core.document_store._summary_worker import SummaryGenerator
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._types import RunScope
 from ai_pipeline_core.documents.context import RunContext, reset_run_context, set_run_context
+from ai_pipeline_core.documents.types import RunScope
+from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
 from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.observability._initialization import get_tracking_service, initialize_observability
+from ai_pipeline_core.observability._initialization import get_tracking_service
 from ai_pipeline_core.observability._tracking._models import RunStatus
 from ai_pipeline_core.pipeline.limits import (
     PipelineLimit,
@@ -46,27 +48,83 @@ from ai_pipeline_core.pipeline.limits import (
     _validate_concurrency_limits,
 )
 from ai_pipeline_core.pipeline.options import FlowOptions
-from ai_pipeline_core.settings import settings
+from ai_pipeline_core.settings import Settings, settings
 
 from ._helpers import (
-    StatusPayload,
     class_name_to_deployment_name,
     extract_generic_params,
-    send_webhook,
+    init_observability_best_effort,
 )
+from ._publishers import NoopPublisher
 from ._resolve import DocumentInput, OutputDocument, build_output_document, resolve_document_inputs
-from .contract import CompletedRun, DeploymentResultData, FailedRun, FlowStatus, ProgressRun, RunState
-from .progress import _ZERO_UUID, _safe_uuid, flow_context
+from ._types import (
+    CompletedEvent,
+    ErrorCode,
+    FailedEvent,
+    ProgressEvent,
+    ResultPublisher,
+    StartedEvent,
+)
+from .contract import FlowStatus
+from .progress import _flow_context, _safe_uuid
 
 logger = get_pipeline_logger(__name__)
 
 
-def _build_summary_generator() -> SummaryGenerator | None:
+def _classify_error(exc: BaseException) -> ErrorCode:
+    """Map exception to ErrorCode enum value."""
+    if isinstance(exc, LLMError):
+        return ErrorCode.PROVIDER_ERROR
+    if isinstance(exc, asyncio.CancelledError):
+        return ErrorCode.CANCELLED
+    if isinstance(exc, TimeoutError):
+        return ErrorCode.DURATION_EXCEEDED
+    if isinstance(exc, (ValueError, TypeError)):
+        return ErrorCode.INVALID_INPUT
+    if isinstance(exc, PipelineCoreError):
+        return ErrorCode.PIPELINE_ERROR
+    return ErrorCode.UNKNOWN
+
+
+def _create_publisher(settings_obj: Settings) -> ResultPublisher:
+    """Create publisher based on environment configuration.
+
+    Returns PubSubPublisher when Pub/Sub is configured, NoopPublisher otherwise.
+    """
+    if settings_obj.pubsub_project_id and settings_obj.pubsub_topic_id:
+        if not settings_obj.clickhouse_host:
+            raise ValueError("PubSubPublisher requires CLICKHOUSE_HOST for task_results durability")
+        if not settings_obj.service_type:
+            raise ValueError("PubSubPublisher requires SERVICE_TYPE for CloudEvents source identification")
+        from ._pubsub import PubSubPublisher
+        from ._task_results import ClickHouseTaskResultStore
+
+        result_store = ClickHouseTaskResultStore(
+            host=settings_obj.clickhouse_host,
+            port=settings_obj.clickhouse_port,
+            database=settings_obj.clickhouse_database,
+            username=settings_obj.clickhouse_user,
+            password=settings_obj.clickhouse_password,
+            secure=settings_obj.clickhouse_secure,
+        )
+        return PubSubPublisher(
+            project_id=settings_obj.pubsub_project_id,
+            topic_id=settings_obj.pubsub_topic_id,
+            service_type=settings_obj.service_type,
+            result_store=result_store,
+        )
+    return NoopPublisher()
+
+
+HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+def build_summary_generator() -> SummaryGenerator | None:
     """Build a summary generator callable from settings, or None if disabled/unavailable."""
     if not settings.doc_summary_enabled:
         return None
 
-    from ai_pipeline_core.observability._summary import generate_document_summary
+    from ai_pipeline_core.document_store._summary_llm import generate_document_summary
 
     model = settings.doc_summary_model
 
@@ -77,39 +135,39 @@ def _build_summary_generator() -> SummaryGenerator | None:
 
 
 # Fields added by run_cli()'s _CliOptions that should not affect the run scope fingerprint
-_CLI_FIELDS: frozenset[str] = frozenset({"working_directory", "project_name", "start", "end", "no_trace"})
+_CLI_FIELDS: frozenset[str] = frozenset({"working_directory", "run_id", "start", "end", "no_trace"})
 
 
-def _compute_run_scope(project_name: str, documents: list[Document], options: FlowOptions) -> RunScope:
+def _compute_run_scope(run_id: str, documents: list[Document], options: FlowOptions) -> RunScope:
     """Compute a run scope that fingerprints inputs and options.
 
     Different inputs or options produce a different scope, preventing
-    stale cache hits when re-running with the same project name.
+    stale cache hits when re-running with the same run_id.
     """
     exclude = set(_CLI_FIELDS & set(type(options).model_fields))
     options_json = options.model_dump_json(exclude=exclude, exclude_none=True)
 
     if not documents:
         fingerprint = hashlib.sha256(options_json.encode()).hexdigest()[:16]
-        return RunScope(f"{project_name}:{fingerprint}")
+        return RunScope(f"{run_id}:{fingerprint}")
 
     sha256s = sorted(doc.sha256 for doc in documents)
     fingerprint = hashlib.sha256(f"{':'.join(sha256s)}|{options_json}".encode()).hexdigest()[:16]
-    return RunScope(f"{project_name}:{fingerprint}")
+    return RunScope(f"{run_id}:{fingerprint}")
+
+
+async def _heartbeat_loop(publisher: ResultPublisher, run_id: str) -> None:
+    """Publish heartbeat signals at regular intervals until cancelled."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        try:
+            await publisher.publish_heartbeat(run_id)
+        except Exception as e:
+            logger.warning("Heartbeat publish failed: %s", e)
 
 
 class DeploymentContext(BaseModel):
-    """Infrastructure configuration for deployments.
-
-    Webhooks are optional - provide URLs to enable:
-    - progress_webhook_url: Per-flow progress (started/completed/cached)
-    - status_webhook_url: Prefect state transitions (RUNNING/FAILED/etc)
-    - completion_webhook_url: Final result when deployment ends
-    """
-
-    progress_webhook_url: str = ""
-    status_webhook_url: str = ""
-    completion_webhook_url: str = ""
+    """Infrastructure configuration for deployments. Progress is tracked via Prefect labels (pub/sub)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -127,42 +185,7 @@ class DeploymentResult(BaseModel):
 TOptions = TypeVar("TOptions", bound=FlowOptions)
 TResult = TypeVar("TResult", bound=DeploymentResult)
 
-
-def _reattach_flow_metadata(original: Any, target: Any) -> None:
-    """Reattach custom flow attributes that Prefect's with_options() may strip."""
-    for attr in ("input_document_types", "output_document_types", "estimated_minutes"):
-        if hasattr(original, attr) and not hasattr(target, attr):
-            setattr(target, attr, getattr(original, attr))
-
-
-@dataclass(slots=True)
-class _StatusWebhookHook:
-    """Prefect hook that sends status webhooks on state transitions."""
-
-    webhook_url: str
-    flow_run_id: str
-    project_name: str
-    step: int
-    total_steps: int
-    flow_name: str
-
-    async def __call__(self, flow: Any, flow_run: Any, state: Any) -> None:
-        payload: StatusPayload = {
-            "type": "status",
-            "flow_run_id": str(flow_run.id),
-            "project_name": self.project_name,
-            "step": self.step,
-            "total_steps": self.total_steps,
-            "flow_name": self.flow_name,
-            "state": state.type.value if hasattr(state.type, "value") else str(state.type),
-            "state_name": state.name or "",
-            "timestamp": datetime.now(UTC).isoformat(),
-        }
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                await client.post(self.webhook_url, json=payload)
-        except Exception as e:
-            logger.warning("Status webhook failed: %s", e)
+_LABEL_RUN_ID = "pipeline.run_id"
 
 
 def _validate_flow_chain(deployment_name: str, flows: list[Any]) -> None:
@@ -204,7 +227,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     Features enabled by default:
     - Per-flow resume: Skip flows if outputs exist in DocumentStore
     - Per-flow uploads: Upload documents after each flow
-    - Prefect hooks: Attach state hooks if status_webhook_url provided
+    - Progress tracking via Prefect labels (pub/sub)
     - Upload on failure: Save partial results if pipeline fails
     """
 
@@ -226,9 +249,10 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
         cls.name = class_name_to_deployment_name(cls.__name__)
 
-        options_type, result_type = extract_generic_params(cls, PipelineDeployment)
-        if options_type is None or result_type is None:
+        generic_args = extract_generic_params(cls, PipelineDeployment)
+        if len(generic_args) < 2:
             raise TypeError(f"{cls.__name__} must specify Generic parameters: class {cls.__name__}(PipelineDeployment[MyOptions, MyResult])")
+        options_type, result_type = generic_args[0], generic_args[1]
 
         cls.options_type = options_type
         cls.result_type = result_type
@@ -258,9 +282,21 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
     @staticmethod
     @abstractmethod
-    def build_result(project_name: str, documents: list[Document], options: TOptions) -> TResult:
-        """Extract typed result from pipeline documents loaded from DocumentStore."""
+    def build_result(run_id: str, documents: list[Document], options: TOptions) -> TResult:
+        """Extract typed result from pipeline documents loaded from DocumentStore.
+
+        Only called when the pipeline runs to completion (last step included).
+        For partial runs (--start/--end that don't reach the last step), this method
+        is NOT called — the pipeline returns a default partial result instead.
+        """
         ...
+
+    def _build_partial_result(self, run_id: str, documents: list[Document], options: TOptions) -> TResult:
+        """Build a result for partial pipeline runs (--start/--end that don't reach the last step).
+
+        Override this method to customize partial run results. Default delegates to build_result.
+        """
+        return self.build_result(run_id, documents, options)
 
     def _all_document_types(self) -> list[type[Document]]:
         """Collect all document types from all flows (inputs + outputs), deduplicated."""
@@ -272,37 +308,10 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 types[t.__name__] = t
         return list(types.values())
 
-    def _build_status_hooks(
+    async def _update_progress_labels(
         self,
-        context: DeploymentContext,
         flow_run_id: str,
-        project_name: str,
-        step: int,
-        total_steps: int,
-        flow_name: str,
-    ) -> dict[str, list[Callable[..., Any]]]:
-        """Build Prefect hooks for status webhooks."""
-        hook = _StatusWebhookHook(
-            webhook_url=context.status_webhook_url,
-            flow_run_id=flow_run_id,
-            project_name=project_name,
-            step=step,
-            total_steps=total_steps,
-            flow_name=flow_name,
-        )
-        return {
-            "on_running": [hook],
-            "on_completion": [hook],
-            "on_failure": [hook],
-            "on_crashed": [hook],
-            "on_cancellation": [hook],
-        }
-
-    async def _send_progress(
-        self,
-        context: DeploymentContext,
-        flow_run_id: str,
-        project_name: str,
+        run_id: str,
         step: int,
         total_steps: int,
         flow_name: str,
@@ -310,8 +319,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         step_progress: float = 0.0,
         message: str = "",
     ) -> None:
-        """Send progress webhook and update flow run labels."""
-        # Use estimated_minutes for weighted progress calculation
+        """Update Prefect flow run labels with progress information."""
         flow_minutes = [getattr(f, "estimated_minutes", 1) for f in self.flows]
         total_minutes = sum(flow_minutes) or 1
         completed_minutes = sum(flow_minutes[: max(step - 1, 0)])
@@ -319,107 +327,82 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         progress = round(max(0.0, min(1.0, (completed_minutes + current_flow_minutes * step_progress) / total_minutes)), 4)
 
         run_uuid = _safe_uuid(flow_run_id) if flow_run_id else None
-
-        if context.progress_webhook_url:
-            if run_uuid is None:
-                logger.warning("Invalid or missing flow_run_id, using zero UUID for progress webhook")
-            payload = ProgressRun(
-                flow_run_id=run_uuid or _ZERO_UUID,
-                project_name=project_name,
-                state=RunState.RUNNING,
-                timestamp=datetime.now(UTC),
-                step=step,
-                total_steps=total_steps,
-                flow_name=flow_name,
-                status=status,
-                progress=progress,
-                step_progress=round(step_progress, 4),
-                message=message,
-            )
-            try:
-                await send_webhook(context.progress_webhook_url, payload)
-            except Exception as e:
-                logger.warning("Progress webhook failed: %s", e)
-
-        if run_uuid is not None:
-            try:
-                async with get_client() as client:
-                    await client.update_flow_run_labels(
-                        flow_run_id=run_uuid,
-                        labels={
-                            "progress.step": step,
-                            "progress.total_steps": total_steps,
-                            "progress.flow_name": flow_name,
-                            "progress.status": status,
-                            "progress.progress": progress,
-                            "progress.step_progress": round(step_progress, 4),
-                            "progress.message": message,
-                        },
-                    )
-            except Exception as e:
-                logger.warning("Progress label update failed: %s", e)
-
-    async def _send_completion(
-        self,
-        context: DeploymentContext,
-        flow_run_id: str,
-        project_name: str,
-        result: TResult | None,
-        error: str | None,
-    ) -> None:
-        """Send completion webhook."""
-        if not context.completion_webhook_url:
+        if run_uuid is None:
             return
+
         try:
-            now = datetime.now(UTC)
-            frid = _safe_uuid(flow_run_id) if flow_run_id else None
-            if frid is None:
-                logger.warning("Invalid or missing flow_run_id, using zero UUID for completion webhook")
-                frid = _ZERO_UUID
-            payload: CompletedRun | FailedRun
-            if result is not None:
-                payload = CompletedRun(
-                    flow_run_id=frid,
-                    project_name=project_name,
-                    timestamp=now,
-                    state=RunState.COMPLETED,
-                    result=DeploymentResultData.model_validate(result.model_dump()),
+            async with get_client() as client:
+                await client.update_flow_run_labels(
+                    flow_run_id=run_uuid,
+                    labels={
+                        "progress.step": step,
+                        "progress.total_steps": total_steps,
+                        "progress.flow_name": flow_name,
+                        "progress.status": status,
+                        "progress.progress": progress,
+                        "progress.step_progress": round(step_progress, 4),
+                        "progress.message": message,
+                    },
                 )
-            else:
-                payload = FailedRun(
-                    flow_run_id=frid,
-                    project_name=project_name,
-                    timestamp=now,
-                    state=RunState.FAILED,
-                    error=error or "Unknown error",
-                )
-            await send_webhook(context.completion_webhook_url, payload)
         except Exception as e:
-            logger.warning("Completion webhook failed: %s", e)
+            logger.warning("Progress label update failed: %s", e)
+
+    def _build_progress_event(
+        self,
+        run_id: str,
+        flow_run_id: str,
+        flow_name: str,
+        step: int,
+        total_steps: int,
+        flow_minutes: tuple[float, ...],
+        status: FlowStatus,
+        step_progress: float,
+        message: str,
+    ) -> ProgressEvent:
+        """Build a ProgressEvent with computed overall progress."""
+        total_mins = sum(flow_minutes) or 1
+        completed_mins = sum(flow_minutes[: max(step - 1, 0)])
+        current_flow_mins = flow_minutes[step - 1] if step - 1 < len(flow_minutes) else 1
+        progress = round(max(0.0, min(1.0, (completed_mins + current_flow_mins * step_progress) / total_mins)), 4)
+        return ProgressEvent(
+            run_id=run_id,
+            flow_run_id=flow_run_id,
+            flow_name=flow_name,
+            step=step,
+            total_steps=total_steps,
+            progress=progress,
+            step_progress=round(step_progress, 4),
+            status=status,
+            message=message,
+        )
 
     @final
     async def run(
         self,
-        project_name: str,
+        run_id: str,
         documents: list[Document],
         options: TOptions,
         context: DeploymentContext,
+        publisher: ResultPublisher | None = None,
         start_step: int = 1,
         end_step: int | None = None,
     ) -> TResult:
-        """Execute flows with resume, per-flow uploads, webhooks, and step control.
+        """Execute flows with resume, per-flow uploads, and step control.
 
         Args:
-            project_name: Unique identifier for this pipeline run (used as run_scope).
+            run_id: Unique identifier for this pipeline run (used as run_scope).
             documents: Initial input documents for the first flow.
             options: Flow options passed to each flow.
-            context: Deployment context with webhook URLs and document upload config.
+            context: Deployment context.
+            publisher: Lifecycle event publisher (defaults to NoopPublisher).
             start_step: First flow to execute (1-indexed, default 1).
             end_step: Last flow to execute (inclusive, default all flows).
 
         Returns:
             Typed deployment result built from all pipeline documents.
         """
+        if publisher is None:
+            publisher = NoopPublisher()
         store = get_document_store()
         total_steps = len(self.flows)
 
@@ -430,7 +413,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         if end_step < start_step or end_step > total_steps:
             raise ValueError(f"end_step must be {start_step}-{total_steps}, got {end_step}")
 
-        flow_run_id: str = (runtime.flow_run.get_id() or "") if runtime.flow_run else ""  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+        flow_run_id: str = str(runtime.flow_run.get_id() or "") if runtime.flow_run else ""  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
 
         # Write identity labels for polling endpoint
         flow_run_uuid = _safe_uuid(flow_run_id) if flow_run_id else None
@@ -439,18 +422,16 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 async with get_client() as client:
                     await client.update_flow_run_labels(
                         flow_run_id=flow_run_uuid,
-                        labels={"pipeline.project_name": project_name},
+                        labels={_LABEL_RUN_ID: run_id},
                     )
             except Exception as e:
                 logger.warning("Identity label update failed: %s", e)
 
         input_docs = list(documents)
-        run_scope = _compute_run_scope(project_name, input_docs, options)
+        run_scope = _compute_run_scope(run_id, input_docs, options)
 
         if not store and total_steps > 1:
             logger.warning("No DocumentStore configured for multi-step pipeline — intermediate outputs will not accumulate between flows")
-
-        completion_sent = False
 
         # Tracking lifecycle
         tracking_svc = None
@@ -460,68 +441,95 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             tracking_svc = get_tracking_service()
             if tracking_svc:
                 run_uuid = (_safe_uuid(flow_run_id) if flow_run_id else None) or uuid4()
-                tracking_svc.set_run_context(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
-                tracking_svc.track_run_start(run_id=run_uuid, project_name=project_name, flow_name=self.name, run_scope=run_scope)
+                tracking_svc.set_run_context(execution_id=run_uuid, run_id=run_id, flow_name=self.name, run_scope=run_scope)
+                tracking_svc.track_run_start(execution_id=run_uuid, run_id=run_id, flow_name=self.name, run_scope=run_scope)
         except Exception as e:
             logger.warning("Tracking service initialization failed: %s", e)
             tracking_svc = None
 
         # Set concurrency limits and RunContext for the entire pipeline run
+        failed_published = False
+        heartbeat_task: asyncio.Task[None] | None = None
         limits_token = _set_limits_state(_LimitsState(limits=self.concurrency_limits, status=_SharedStatus()))
         run_token = set_run_context(RunContext(run_scope=run_scope))
         try:
+            # Publish task.started event (inside try so failures still hit finally cleanup)
+            await publisher.publish_started(StartedEvent(run_id=run_id, flow_run_id=flow_run_id, run_scope=str(run_scope)))
+
+            # Start heartbeat background task
+            heartbeat_task = asyncio.create_task(_heartbeat_loop(publisher, run_id))
+
             await _ensure_concurrency_limits(self.concurrency_limits)
 
             # Save initial input documents to store
             if store and input_docs:
                 await store.save_batch(input_docs, run_scope)
 
+            # Precompute flow minutes for progress calculation
+            flow_minutes = tuple(getattr(f, "estimated_minutes", 1) for f in self.flows)
+
             for i in range(start_step - 1, end_step):
                 step = i + 1
                 flow_fn = self.flows[i]
                 flow_name = getattr(flow_fn, "name", flow_fn.__name__)
                 # Re-read flow_run_id in case Prefect subflow changes it
-                flow_run_id = (runtime.flow_run.get_id() or "") if runtime.flow_run else flow_run_id  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+                flow_run_id = str(runtime.flow_run.get_id() or "") if runtime.flow_run else flow_run_id  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
 
-                # Resume check: skip if output documents already exist in store
-                output_types = getattr(flow_fn, "output_document_types", [])
-                if store and output_types:
-                    all_outputs_exist = all([await store.has_documents(run_scope, ot, max_age=self.cache_ttl) for ot in output_types])
-                    if all_outputs_exist:
-                        logger.info("[%d/%d] Resume: skipping %s (outputs exist)", step, total_steps, flow_name)
-                        await self._send_progress(
-                            context,
+                # Resume check: skip if flow completed successfully in a previous run
+                if store:
+                    completion = await store.get_flow_completion(run_scope, flow_name, max_age=self.cache_ttl)
+                    if completion is not None:
+                        logger.info("[%d/%d] Resume: skipping %s (completion record found)", step, total_steps, flow_name)
+                        cached_msg = f"Resumed from store: {flow_name}"
+                        await self._update_progress_labels(
                             flow_run_id,
-                            project_name,
+                            run_id,
                             step,
                             total_steps,
                             flow_name,
                             FlowStatus.CACHED,
                             step_progress=1.0,
-                            message=f"Resumed from store: {flow_name}",
+                            message=cached_msg,
+                        )
+                        await publisher.publish_progress(
+                            self._build_progress_event(
+                                run_id,
+                                flow_run_id,
+                                flow_name,
+                                step,
+                                total_steps,
+                                flow_minutes,
+                                FlowStatus.CACHED,
+                                1.0,
+                                cached_msg,
+                            )
                         )
                         continue
 
-                # Prefect state hooks (conditional on status_webhook_url)
-                active_flow = flow_fn
-                if context.status_webhook_url:
-                    hooks = self._build_status_hooks(context, flow_run_id, project_name, step, total_steps, flow_name)
-                    active_flow = flow_fn.with_options(**hooks)
-                    _reattach_flow_metadata(flow_fn, active_flow)
-
-                # Progress: started
-                await self._send_progress(
-                    context,
+                started_msg = f"Starting: {flow_name}"
+                await self._update_progress_labels(
                     flow_run_id,
-                    project_name,
+                    run_id,
                     step,
                     total_steps,
                     flow_name,
                     FlowStatus.STARTED,
                     step_progress=0.0,
-                    message=f"Starting: {flow_name}",
+                    message=started_msg,
                 )
-
+                await publisher.publish_progress(
+                    self._build_progress_event(
+                        run_id,
+                        flow_run_id,
+                        flow_name,
+                        step,
+                        total_steps,
+                        flow_minutes,
+                        FlowStatus.STARTED,
+                        0.0,
+                        started_msg,
+                    )
+                )
                 logger.info("[%d/%d] Starting: %s", step, total_steps, flow_name)
 
                 # Load input documents from store
@@ -532,40 +540,52 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     current_docs = input_docs
 
                 # Set up intra-flow progress context so progress_update() works inside flows
-                flow_minutes = tuple(getattr(f, "estimated_minutes", 1) for f in self.flows)
                 completed_mins = sum(flow_minutes[: max(step - 1, 0)])
-                wh_url = context.progress_webhook_url or ""
 
-                with flow_context(
-                    webhook_url=wh_url,
-                    project_name=project_name,
+                with _flow_context(
+                    run_id=run_id,
                     flow_run_id=flow_run_id,
                     flow_name=flow_name,
                     step=step,
                     total_steps=total_steps,
                     flow_minutes=flow_minutes,
                     completed_minutes=completed_mins,
+                    publisher=publisher,
                 ):
-                    try:
-                        await active_flow(project_name, current_docs, options)
-                    except Exception as e:
-                        await self._send_completion(context, flow_run_id, project_name, result=None, error=str(e))
-                        completion_sent = True
-                        raise
+                    await flow_fn(run_id, current_docs, options)
 
-                # Progress: completed
-                await self._send_progress(
-                    context,
+                # Record flow completion for resume (only after successful execution)
+                if store:
+                    output_types = getattr(flow_fn, "output_document_types", [])
+                    input_sha256s = tuple(d.sha256 for d in current_docs)
+                    output_docs = await store.load(run_scope, output_types) if output_types else []
+                    output_sha256s = tuple(d.sha256 for d in output_docs)
+                    await store.save_flow_completion(run_scope, flow_name, input_sha256s, output_sha256s)
+
+                completed_msg = f"Completed: {flow_name}"
+                await self._update_progress_labels(
                     flow_run_id,
-                    project_name,
+                    run_id,
                     step,
                     total_steps,
                     flow_name,
                     FlowStatus.COMPLETED,
                     step_progress=1.0,
-                    message=f"Completed: {flow_name}",
+                    message=completed_msg,
                 )
-
+                await publisher.publish_progress(
+                    self._build_progress_event(
+                        run_id,
+                        flow_run_id,
+                        flow_name,
+                        step,
+                        total_steps,
+                        flow_minutes,
+                        FlowStatus.COMPLETED,
+                        1.0,
+                        completed_msg,
+                    )
+                )
                 logger.info("[%d/%d] Completed: %s", step, total_steps, flow_name)
 
             # Build result from all documents in store
@@ -573,21 +593,66 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 all_docs = await store.load(run_scope, self._all_document_types())
             else:
                 all_docs = input_docs
-            result = self.build_result(project_name, all_docs, options)
+
+            is_partial_run = end_step < total_steps
+            if is_partial_run:
+                logger.info("Partial run (steps %d-%d of %d) — skipping build_result", start_step, end_step, total_steps)
+                result = self._build_partial_result(run_id, all_docs, options)
+            else:
+                result = self.build_result(run_id, all_docs, options)
 
             # Populate output documents
             output_docs = tuple(build_output_document(doc) for doc in all_docs)
-            result = result.model_copy(update={"documents": output_docs})
+            result = result.model_copy(update={"documents": output_docs})  # nosemgrep: no-document-model-copy
 
-            await self._send_completion(context, flow_run_id, project_name, result=result, error=None)
+            # Compute chain_context from final flow output documents
+            final_output_docs: list[Document] = []
+            if store:
+                last_flow = self.flows[end_step - 1]
+                last_output_types = getattr(last_flow, "output_document_types", [])
+                if last_output_types:
+                    final_output_docs = await store.load(run_scope, last_output_types)
+
+            chain_context = {
+                "version": 1,
+                "run_scope": str(run_scope),
+                "output_document_refs": [doc.sha256 for doc in final_output_docs],
+            }
+
+            # Publish task.completed event
+            await publisher.publish_completed(
+                CompletedEvent(
+                    run_id=run_id,
+                    flow_run_id=flow_run_id,
+                    result=result.model_dump(),
+                    chain_context=chain_context,
+                    actual_cost=0.0,
+                )
+            )
+
             return result
 
-        except Exception as e:
+        except (Exception, asyncio.CancelledError) as exc:
             run_failed = True
-            if not completion_sent:
-                await self._send_completion(context, flow_run_id, project_name, result=None, error=str(e))
+            if not failed_published:
+                failed_published = True
+                try:
+                    await publisher.publish_failed(
+                        FailedEvent(
+                            run_id=run_id,
+                            flow_run_id=flow_run_id,
+                            error_code=_classify_error(exc),
+                            error_message=str(exc),
+                        )
+                    )
+                except Exception as pub_err:
+                    logger.warning("Failed to publish failure event: %s", pub_err)
             raise
         finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat_task
             reset_run_context(run_token)
             _reset_limits_state(limits_token)
             store = get_document_store()
@@ -598,7 +663,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     logger.warning("Store flush failed: %s", e)
             if (svc := tracking_svc) is not None and run_uuid is not None:
                 try:
-                    svc.track_run_end(run_id=run_uuid, status=RunStatus.FAILED if run_failed else RunStatus.COMPLETED)
+                    svc.track_run_end(execution_id=run_uuid, status=RunStatus.FAILED if run_failed else RunStatus.COMPLETED)
                     svc.flush()
                 except Exception as e:
                     logger.warning("Tracking shutdown failed: %s", e)
@@ -606,19 +671,21 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     @final
     def run_local(
         self,
-        project_name: str,
+        run_id: str,
         documents: list[Document],
         options: TOptions,
         context: DeploymentContext | None = None,
+        publisher: ResultPublisher | None = None,
         output_dir: Path | None = None,
     ) -> TResult:
         """Run locally with Prefect test harness and in-memory document store.
 
         Args:
-            project_name: Pipeline run identifier.
+            run_id: Pipeline run identifier.
             documents: Initial input documents.
             options: Flow options.
             context: Optional deployment context (defaults to empty).
+            publisher: Optional lifecycle event publisher (defaults to NoopPublisher).
             output_dir: Optional directory for writing result.json.
 
         Returns:
@@ -634,7 +701,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         set_document_store(store)
         try:
             with prefect_test_harness(), disable_run_logger():
-                result = asyncio.run(self.run(project_name, documents, options, context))
+                result = asyncio.run(self.run(run_id, documents, options, context, publisher=publisher))
         finally:
             store.shutdown()
             set_document_store(None)
@@ -654,7 +721,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         """Execute pipeline from CLI arguments with --start/--end step control.
 
         Args:
-            initializer: Optional callback returning (project_name, documents) from options.
+            initializer: Optional callback returning (run_id, documents) from options.
             trace_name: Optional Laminar trace span name prefix.
             cli_mixin: Optional BaseSettings subclass with CLI-only fields mixed into options.
         """
@@ -672,37 +739,29 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         deployment = self
 
         async def _deployment_flow(
-            project_name: str,
+            run_id: str,
             documents: list[DocumentInput],
             options: FlowOptions,
             context: DeploymentContext,
         ) -> DeploymentResult:
             # Initialize observability for remote workers
-            try:
-                initialize_observability()
-            except Exception as e:
-                logger.warning("Failed to initialize observability: %s", e)
-                try:
-                    from ai_pipeline_core.observability import tracing
-
-                    tracing._initialise_laminar()
-                except Exception as e2:
-                    logger.warning("Laminar fallback initialization failed: %s", e2)
+            init_observability_best_effort()
 
             # Set session ID from Prefect flow run for trace grouping
             flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else str(uuid4())  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
             os.environ["LMNR_SESSION_ID"] = flow_run_id
 
+            publisher = _create_publisher(settings)
             store = create_document_store(
                 settings,
-                summary_generator=_build_summary_generator(),
+                summary_generator=build_summary_generator(),
             )
             set_document_store(store)
             try:
                 # Create parent span to group all traces under a single deployment trace
                 with Laminar.start_as_current_span(
-                    name=f"{deployment.name}-{project_name}",
-                    input={"project_name": project_name, "options": options.model_dump()},
+                    name=f"{deployment.name}-{run_id}",
+                    input={"run_id": run_id, "options": options.model_dump()},
                     session_id=flow_run_id,
                 ):
                     # Resolve DocumentInput (inline + URL references) into typed Documents
@@ -712,29 +771,30 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                         deployment._all_document_types(),
                         start_step_input_types=start_step_input_types,
                     )
-                    result = await deployment.run(project_name, typed_docs, cast(Any, options), context)
+                    result = await deployment.run(run_id, typed_docs, cast(Any, options), context, publisher=publisher)
                     Laminar.set_span_output(result.model_dump())
                     return result
             finally:
+                await publisher.close()
                 store.shutdown()
                 set_document_store(None)
 
-        # Patch annotations so Prefect generates the parameter schema from the concrete types
+        # Override generic annotations with concrete types for Prefect parameter schema generation
         _deployment_flow.__annotations__["options"] = self.options_type
         _deployment_flow.__annotations__["return"] = self.result_type
 
         return flow(
             name=self.name,
-            flow_run_name=f"{self.name}-{{project_name}}",
+            flow_run_name=f"{self.name}-{{run_id}}",
             persist_result=True,
             result_serializer="json",
         )(_deployment_flow)
 
 
 __all__ = [
+    "HEARTBEAT_INTERVAL_SECONDS",
     "DeploymentContext",
     "DeploymentResult",
-    "DocumentInput",
-    "OutputDocument",
     "PipelineDeployment",
+    "build_summary_generator",
 ]

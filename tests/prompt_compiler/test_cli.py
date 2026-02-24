@@ -21,7 +21,6 @@ from ai_pipeline_core.prompt_compiler.cli import (
 )
 from ai_pipeline_core.prompt_compiler.components import OutputRule, Role, Rule
 from ai_pipeline_core.prompt_compiler.spec import PromptSpec
-from ai_pipeline_core.prompt_compiler.types import Phase
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +59,7 @@ class CliPayload(BaseModel):
 # Module-level specs so _resolve_spec_class can find them via getattr.
 
 
-class MinimalInspectSpec(PromptSpec, phase=Phase("planning")):
+class MinimalInspectSpec(PromptSpec):
     """A minimal spec for inspect testing."""
 
     input_documents = ()
@@ -68,7 +67,7 @@ class MinimalInspectSpec(PromptSpec, phase=Phase("planning")):
     task = "Do the task"
 
 
-class StructuredInspectSpec(PromptSpec[CliPayload], phase=Phase("review")):
+class StructuredInspectSpec(PromptSpec[CliPayload]):
     """Structured output spec."""
 
     input_documents = ()
@@ -178,7 +177,7 @@ def test_file_defines_class_ignores_nested(tmp_path: Path) -> None:
 
 def test_file_may_contain_specs_positive(tmp_path: Path) -> None:
     f = tmp_path / "spec.py"
-    f.write_text('class MySpec(PromptSpec, phase=Phase("review")):\n    pass\n', encoding="utf-8")
+    f.write_text("class MySpec(PromptSpec):\n    pass\n", encoding="utf-8")
     assert _file_may_contain_specs(f) is True
 
 
@@ -198,7 +197,7 @@ def test_file_may_contain_specs_missing_file(tmp_path: Path) -> None:
 
 
 def test_output_label_str_plain() -> None:
-    class Spec(PromptSpec, phase=Phase("review")):
+    class Spec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -208,21 +207,8 @@ def test_output_label_str_plain() -> None:
     assert _output_label(Spec) == "str"
 
 
-def test_output_label_str_xml() -> None:
-    class Spec(PromptSpec, phase=Phase("review")):
-        """Doc."""
-
-        input_documents = ()
-        role = CliRole
-        task = "task"
-
-        xml_wrapped = True
-
-    assert _output_label(Spec) == "str [xml]"
-
-
 def test_output_label_str_structure() -> None:
-    class Spec(PromptSpec, phase=Phase("review")):
+    class Spec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -234,22 +220,8 @@ def test_output_label_str_structure() -> None:
     assert _output_label(Spec) == "str [structure]"
 
 
-def test_output_label_str_xml_and_structure() -> None:
-    class Spec(PromptSpec, phase=Phase("review")):
-        """Doc."""
-
-        input_documents = ()
-        role = CliRole
-        task = "task"
-
-        xml_wrapped = True
-        output_structure = "## Section"
-
-    assert _output_label(Spec) == "str [xml,structure]"
-
-
 def test_output_label_basemodel() -> None:
-    class Spec(PromptSpec[CliPayload], phase=Phase("review")):
+    class Spec(PromptSpec[CliPayload]):
         """Doc."""
 
         input_documents = ()
@@ -362,20 +334,20 @@ def test_main_render_not_found(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# main() — list command
+# main() — compile command (includes discovery listing)
 # ---------------------------------------------------------------------------
 
 
-def test_main_list_finds_specs(capsys: pytest.CaptureFixture[str]) -> None:
-    ret = main(["list", "--root", str(Path.cwd())])
+def test_main_compile_finds_specs(capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["compile", "--root", str(Path.cwd())])
     assert ret == 0
     out = capsys.readouterr().out
     assert "spec(s) found:" in out
     assert "Name" in out  # table header
 
 
-def test_main_list_empty_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    ret = main(["list", "--root", str(tmp_path)])
+def test_main_compile_empty_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["compile", "--root", str(tmp_path)])
     assert ret == 0
     capsys.readouterr()  # Consume output; we only verify it doesn't crash
 
@@ -392,7 +364,7 @@ def test_main_inspect_minimal_spec(capsys: pytest.CaptureFixture[str]) -> None:
     out = capsys.readouterr().out
     assert "MinimalInspectSpec" in out
     assert "A minimal spec for inspect testing." in out
-    assert "Phase: planning" in out
+    assert "Module:" in out
     assert "Role: CliRole" in out
     assert '"experienced analyst"' in out
     assert "Input Documents (0):" in out
@@ -406,19 +378,21 @@ def test_main_inspect_minimal_spec(capsys: pytest.CaptureFixture[str]) -> None:
     assert "Rules (" not in out
     assert "Guides (" not in out
     assert "Output Rules (" not in out
+    # Phase and XML Wrapped removed
+    assert "Phase:" not in out
     assert "XML Wrapped" not in out
 
 
 def test_main_inspect_full_spec(capsys: pytest.CaptureFixture[str]) -> None:
-    """Inspect a spec with all features: docs, fields, rules, guides, xml, structure, output rules."""
-    # Use FinalVerdictSpec from showcase — it has rules, output_rules, guides, xml_wrapped, output_structure
+    """Inspect a spec with all features: docs, fields, rules, guides, output_structure."""
+    # Use FinalVerdictSpec from showcase — it has rules, output_rules, output_structure
     ret = main(["inspect", "examples.showcase_prompt_compiler:FinalVerdictSpec"])
     assert ret == 0
     out = capsys.readouterr().out
 
     # Header
     assert "FinalVerdictSpec" in out
-    assert "Phase: review" in out
+    assert "Module:" in out
 
     # Documents
     assert "Input Documents (3):" in out
@@ -435,8 +409,7 @@ def test_main_inspect_full_spec(capsys: pytest.CaptureFixture[str]) -> None:
     assert "CiteEvidence:" in out
 
     # Output
-    assert "Type: str [xml,structure]" in out
-    assert "XML Wrapped: yes" in out
+    assert "Type: str [structure]" in out
     assert "## Verdict" in out
     assert "Output Rules (1):" in out
     assert "DontUseMarkdownTables" in out
@@ -573,7 +546,6 @@ def test_main_compile_creates_prompts_dir(capsys: pytest.CaptureFixture[str]) ->
     # Each file should be named ClassName.md and contain rendered prompt text
     for md_file in md_files:
         content = md_file.read_text(encoding="utf-8")
-        assert "# Role" in content
         assert "# Task" in content
 
 
@@ -592,7 +564,7 @@ def test_main_compile_file_content_matches_render(capsys: pytest.CaptureFixture[
 
 
 def test_main_compile_removes_stale_files(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Compile removes .md files that no longer correspond to a discovered spec."""
+    """Compile removes stale .prompts/ directory entirely before writing."""
     prompts_dir = tmp_path / ".prompts"
     prompts_dir.mkdir()
     stale_file = prompts_dir / "DeletedSpec.md"

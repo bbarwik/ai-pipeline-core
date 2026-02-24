@@ -1,11 +1,13 @@
 """Integration tests for the debug trace system."""
 
 import time
+
+import pytest
 from pathlib import Path
 
 import yaml
 
-from ai_pipeline_core.observability import (
+from ai_pipeline_core.observability._debug import (
     LocalDebugSpanProcessor,
     LocalTraceWriter,
     TraceDebugConfig,
@@ -176,7 +178,7 @@ class TestFullTraceFlow:
 
         assert trace_meta["stats"]["llm_calls"] == 1
         assert trace_meta["stats"]["total_tokens"] == 6000
-        assert trace_meta["stats"]["total_cost"] == 0.15
+        assert trace_meta["stats"]["total_cost"] == pytest.approx(0.15)
 
         # Verify LLM span metadata using index
         index = yaml.safe_load((trace_dir / "_tree.yaml").read_text())

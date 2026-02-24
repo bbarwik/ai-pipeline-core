@@ -24,10 +24,8 @@ from ai_pipeline_core.docs_generator.guide_builder import (
 from ai_pipeline_core.docs_generator.trimmer import manage_guide_size
 from ai_pipeline_core.docs_generator.validator import (
     ValidationResult,
-    compute_source_hash,
     validate_all,
     validate_completeness,
-    validate_freshness,
     validate_size,
 )
 
@@ -41,7 +39,6 @@ __all__ = [
     "SymbolTable",
     "ValidationResult",
     "build_guide",
-    "compute_source_hash",
     "discover_tests",
     "is_public_name",
     "manage_guide_size",
@@ -49,6 +46,5 @@ __all__ = [
     "select_examples",
     "validate_all",
     "validate_completeness",
-    "validate_freshness",
     "validate_size",
 ]

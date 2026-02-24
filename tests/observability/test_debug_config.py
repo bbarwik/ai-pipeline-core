@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_pipeline_core.observability import TraceDebugConfig
+from ai_pipeline_core.observability._debug import TraceDebugConfig
 
 
 class TestTraceDebugConfig:

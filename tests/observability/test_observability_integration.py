@@ -49,8 +49,8 @@ class TestRunScopeOnModels:
         from datetime import datetime
 
         row = PipelineRunRow(
-            run_id=uuid4(),
-            project_name="proj",
+            execution_id=uuid4(),
+            run_id="proj",
             flow_name="flow",
             status=RunStatus.RUNNING,
             start_time=datetime.now(UTC),
@@ -61,8 +61,8 @@ class TestRunScopeOnModels:
         from datetime import datetime
 
         row = PipelineRunRow(
-            run_id=uuid4(),
-            project_name="proj",
+            execution_id=uuid4(),
+            run_id="proj",
             flow_name="flow",
             run_scope="my-project",
             status=RunStatus.RUNNING,
@@ -77,44 +77,44 @@ class TestRunScopePropagation:
     def test_set_run_context_stores_run_scope(self):
         service, _ = _make_service()
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="proj", flow_name="flow", run_scope="my-scope")
+        service.set_run_context(execution_id=run_id, run_id="proj", flow_name="flow", run_scope="my-scope")
         assert service._run_scope == "my-scope"
 
     def test_set_run_context_default_run_scope(self):
         service, _ = _make_service()
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="proj", flow_name="flow")
+        service.set_run_context(execution_id=run_id, run_id="proj", flow_name="flow")
         assert service._run_scope == ""
 
     def test_clear_run_context_resets_run_scope(self):
         service, _ = _make_service()
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="proj", flow_name="flow", run_scope="my-scope")
+        service.set_run_context(execution_id=run_id, run_id="proj", flow_name="flow", run_scope="my-scope")
         service.clear_run_context()
         assert service._run_scope == ""
 
     def test_track_run_start_includes_run_scope(self):
         service, mock_writer = _make_service()
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="proj", flow_name="flow", run_scope="my-scope")
-        service.track_run_start(run_id=run_id, project_name="proj", flow_name="flow", run_scope="my-scope")
+        service.set_run_context(execution_id=run_id, run_id="proj", flow_name="flow", run_scope="my-scope")
+        service.track_run_start(execution_id=run_id, run_id="proj", flow_name="flow", run_scope="my-scope")
         row = mock_writer.write.call_args[0][1][0]
         assert row.run_scope == "my-scope"
 
     def test_track_run_start_defaults_to_empty_run_scope_when_not_passed(self):
         service, mock_writer = _make_service()
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="proj", flow_name="flow", run_scope="stored-scope")
-        service.track_run_start(run_id=run_id, project_name="proj", flow_name="flow")
+        service.set_run_context(execution_id=run_id, run_id="proj", flow_name="flow", run_scope="stored-scope")
+        service.track_run_start(execution_id=run_id, run_id="proj", flow_name="flow")
         row = mock_writer.write.call_args[0][1][0]
         assert row.run_scope == ""
 
     def test_track_run_end_includes_run_scope(self):
         service, mock_writer = _make_service()
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="proj", flow_name="flow", run_scope="end-scope")
-        service.track_run_start(run_id=run_id, project_name="proj", flow_name="flow", run_scope="end-scope")
-        service.track_run_end(run_id=run_id, status=RunStatus.COMPLETED)
+        service.set_run_context(execution_id=run_id, run_id="proj", flow_name="flow", run_scope="end-scope")
+        service.track_run_start(execution_id=run_id, run_id="proj", flow_name="flow", run_scope="end-scope")
+        service.track_run_end(execution_id=run_id, status=RunStatus.COMPLETED)
         end_call = mock_writer.write.call_args_list[-1]
         row = end_call[0][1][0]
         assert row.run_scope == "end-scope"
@@ -171,7 +171,7 @@ class TestTrackDocumentEvent:
     def test_track_store_saved_event(self):
         service, mock_writer = _make_service()
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="proj", flow_name="flow")
+        service.set_run_context(execution_id=run_id, run_id="proj", flow_name="flow")
         service.track_document_event(
             document_sha256="hash1",
             span_id="span1",
@@ -185,7 +185,7 @@ class TestTrackDocumentEvent:
     def test_track_store_save_failed_event(self):
         service, mock_writer = _make_service()
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="proj", flow_name="flow")
+        service.set_run_context(execution_id=run_id, run_id="proj", flow_name="flow")
         service.track_document_event(
             document_sha256="hash1",
             span_id="span1",
@@ -208,7 +208,7 @@ class TestProtocolUnification:
         assert hasattr(service, "track_run_end")
         assert hasattr(service, "clear_run_context")
         assert hasattr(service, "track_document_event")
-        assert hasattr(service, "schedule_summary")
+        assert hasattr(service, "track_span_events")
 
     def test_get_tracking_service_returns_protocol_compatible(self):
         """Verify get_tracking_service returns without type: ignore."""

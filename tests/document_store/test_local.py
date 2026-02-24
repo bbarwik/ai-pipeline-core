@@ -6,11 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from ai_pipeline_core.document_store import DocumentNode, DocumentStore, create_document_store, set_document_store, walk_provenance
-from ai_pipeline_core.document_store.local import LocalDocumentStore, _safe_filename
+from ai_pipeline_core.document_store._factory import create_document_store
+from ai_pipeline_core.document_store._protocol import DocumentStore, set_document_store
+from ai_pipeline_core.document_store._models import DocumentNode, walk_provenance
+from ai_pipeline_core.document_store._local import LocalDocumentStore, _safe_filename
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._hashing import compute_document_sha256
-from ai_pipeline_core.documents._types import DocumentSha256, RunScope
+from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 
 
 class ReportDoc(Document):
@@ -33,7 +35,9 @@ def store(tmp_path: Path) -> LocalDocumentStore:
 
 
 def _make(cls: type[Document], name: str, content: str = "test", **kwargs) -> Document:
-    return cls.create(name=name, content=content, **kwargs)
+    if "derived_from" in kwargs or "triggered_by" in kwargs:
+        return cls.create(name=name, content=content, **kwargs)
+    return cls.create_root(name=name, content=content, reason="test fixture", **kwargs)
 
 
 class TestProtocolCompliance:
@@ -61,20 +65,20 @@ class TestSaveLoadRoundTrip:
         assert loaded[0].description == "Important report"
 
     @pytest.mark.asyncio
-    async def test_round_trip_preserves_sources(self, store: LocalDocumentStore):
+    async def test_round_trip_preserves_derived_from(self, store: LocalDocumentStore):
         source_doc = _make(ReportDoc, "source.txt", "original")
-        doc = _make(ReportDoc, "derived.txt", "derived", sources=(source_doc.sha256, "https://example.com"))
+        doc = _make(ReportDoc, "derived.txt", "derived", derived_from=(source_doc.sha256, "https://example.com"))
         await store.save(doc, RunScope("run1"))
         loaded = await store.load(RunScope("run1"), [ReportDoc])
-        assert loaded[0].sources == (source_doc.sha256, "https://example.com")
+        assert loaded[0].derived_from == (source_doc.sha256, "https://example.com")
 
     @pytest.mark.asyncio
-    async def test_round_trip_preserves_origins(self, store: LocalDocumentStore):
+    async def test_round_trip_preserves_triggered_by(self, store: LocalDocumentStore):
         parent = _make(ReportDoc, "parent.txt", "parent")
-        doc = ReportDoc.create(name="child.txt", content="child", origins=(parent.sha256,))
+        doc = ReportDoc.create(name="child.txt", content="child", triggered_by=(parent.sha256,))
         await store.save(doc, RunScope("run1"))
         loaded = await store.load(RunScope("run1"), [ReportDoc])
-        assert loaded[0].origins == (parent.sha256,)
+        assert loaded[0].triggered_by == (parent.sha256,)
 
     @pytest.mark.asyncio
     async def test_save_batch(self, store: LocalDocumentStore):
@@ -110,7 +114,7 @@ class TestAttachments:
     @pytest.mark.asyncio
     async def test_round_trip_with_attachments(self, store: LocalDocumentStore):
         att = Attachment(name="screenshot.png", content=b"\x89PNG\r\n\x1a\n" + b"\x00" * 100, description="A screenshot")
-        doc = ReportDoc.create(name="report.md", content="# Report", attachments=(att,))
+        doc = ReportDoc.create_root(name="report.md", content="# Report", attachments=(att,), reason="test input")
         await store.save(doc, RunScope("run1"))
         loaded = await store.load(RunScope("run1"), [ReportDoc])
 
@@ -124,7 +128,7 @@ class TestAttachments:
     async def test_multiple_attachments(self, store: LocalDocumentStore):
         att1 = Attachment(name="a.txt", content=b"attachment A")
         att2 = Attachment(name="b.txt", content=b"attachment B")
-        doc = ReportDoc.create(name="report.md", content="# Report", attachments=(att1, att2))
+        doc = ReportDoc.create_root(name="report.md", content="# Report", attachments=(att1, att2), reason="test input")
         await store.save(doc, RunScope("run1"))
         loaded = await store.load(RunScope("run1"), [ReportDoc])
 
@@ -276,13 +280,13 @@ class TestFileLayout:
         assert meta["description"] == "desc"
         assert meta["document_sha256"] == sha
         assert "content_sha256" in meta
-        assert isinstance(meta["sources"], list)
-        assert isinstance(meta["origins"], list)
+        assert isinstance(meta["derived_from"], list)
+        assert isinstance(meta["triggered_by"], list)
 
     @pytest.mark.asyncio
     async def test_attachment_directory(self, store: LocalDocumentStore, tmp_path: Path):
         att = Attachment(name="img.png", content=b"\x89PNG" + b"\x00" * 50)
-        doc = ReportDoc.create(name="report.md", content="text", attachments=(att,))
+        doc = ReportDoc.create_root(name="report.md", content="text", attachments=(att,), reason="test input")
         sha = compute_document_sha256(doc)
         safe_name = _safe_filename("report.md", sha)
         await store.save(doc, RunScope("run1"))
@@ -313,13 +317,13 @@ class TestEdgeCases:
         assert loaded[0].content == b""
 
     @pytest.mark.asyncio
-    async def test_origins_empty_tuple_round_trip(self, store: LocalDocumentStore):
+    async def test_triggered_by_empty_tuple_round_trip(self, store: LocalDocumentStore):
         """Origins=() should survive round-trip as (), not become None."""
-        doc = ReportDoc.create(name="a.txt", content="test")
-        assert doc.origins == ()
+        doc = ReportDoc.create_root(name="a.txt", content="test", reason="test input")
+        assert doc.triggered_by == ()
         await store.save(doc, RunScope("run1"))
         loaded = await store.load(RunScope("run1"), [ReportDoc])
-        assert loaded[0].origins == ()
+        assert loaded[0].triggered_by == ()
 
 
 class TestCollisionSafeFilenames:
@@ -377,8 +381,8 @@ class TestCollisionSafeFilenames:
             "content_sha256": "Y" * 52,
             "class_name": "ReportDoc",
             "description": None,
-            "sources": [],
-            "origins": [],
+            "derived_from": [],
+            "triggered_by": [],
             "mime_type": "text/markdown",
             "attachments": [],
         }
@@ -439,10 +443,9 @@ class TestLoadBySha256s:
 
     @pytest.mark.asyncio
     async def test_cache_miss_scans_type_dir(self, store: LocalDocumentStore):
-        """When cache is empty, scan type directory for the document."""
+        """Store can find documents by scanning type directory."""
         doc = _make(ReportDoc, "report.md", "content")
         await store.save(doc, RunScope("run1"))
-        store._meta_path_cache.clear()
         result = await store.load_by_sha256s([doc.sha256], ReportDoc, RunScope("run1"))
         assert doc.sha256 in result
         assert result[doc.sha256].sha256 == doc.sha256
@@ -462,7 +465,7 @@ class TestLoadBySha256s:
     @pytest.mark.asyncio
     async def test_with_attachments(self, store: LocalDocumentStore):
         att = Attachment(name="screenshot.png", content=b"\x89PNG" + b"\x00" * 50, description="A screenshot")
-        doc = ReportDoc.create(name="report.md", content="# Report", attachments=(att,))
+        doc = ReportDoc.create_root(name="report.md", content="# Report", attachments=(att,), reason="test input")
         await store.save(doc, RunScope("run1"))
         result = await store.load_by_sha256s([doc.sha256], ReportDoc, RunScope("run1"))
         assert doc.sha256 in result
@@ -558,21 +561,21 @@ class TestLoadScopeMetadata:
         assert metadata[0].summary == "test summary"
 
     @pytest.mark.asyncio
-    async def test_metadata_has_sources_and_origins(self, store: LocalDocumentStore):
+    async def test_metadata_has_derived_from_and_triggered_by(self, store: LocalDocumentStore):
         origin_doc = _make(ReportDoc, "origin.txt", "origin")
         doc = ReportDoc.create(
             name="child.txt",
             content="child",
-            sources=("https://example.com",),
-            origins=(origin_doc.sha256,),
+            derived_from=("https://example.com",),
+            triggered_by=(origin_doc.sha256,),
         )
         await store.save(doc, RunScope("run1"))
         metadata = await store.load_scope_metadata(RunScope("run1"))
         # Filter for the child doc
         child_nodes = [m for m in metadata if m.sha256 == doc.sha256]
         assert len(child_nodes) == 1
-        assert "https://example.com" in child_nodes[0].sources
-        assert origin_doc.sha256 in child_nodes[0].origins
+        assert "https://example.com" in child_nodes[0].derived_from
+        assert origin_doc.sha256 in child_nodes[0].triggered_by
 
 
 class TestLoadNodesBySha256s:
@@ -615,8 +618,8 @@ class TestLoadNodesBySha256s:
             name="child.md",
             content="child",
             description="A child doc",
-            sources=("https://example.com",),
-            origins=(origin.sha256,),
+            derived_from=("https://example.com",),
+            triggered_by=(origin.sha256,),
         )
         await store.save(doc, RunScope("run1"))
         result = await store.load_nodes_by_sha256s([doc.sha256])
@@ -624,8 +627,8 @@ class TestLoadNodesBySha256s:
         assert isinstance(node, DocumentNode)
         assert node.class_name == "ReportDoc"
         assert node.description == "A child doc"
-        assert "https://example.com" in node.sources
-        assert origin.sha256 in node.origins
+        assert "https://example.com" in node.derived_from
+        assert origin.sha256 in node.triggered_by
 
     @pytest.mark.asyncio
     async def test_includes_summaries(self, store: LocalDocumentStore):
@@ -646,20 +649,20 @@ class TestCrossPipelineProvenanceGraph:
         source_a = DataDoc.create(
             name="src_a.json",
             content='{"url": "https://bitcoin.org"}',
-            sources=("https://bitcoin.org",),
-            origins=(task.sha256,),
+            derived_from=("https://bitcoin.org",),
+            triggered_by=(task.sha256,),
         )
         source_b = DataDoc.create(
             name="src_b.json",
             content='{"url": "https://wiki.org"}',
-            sources=("https://wiki.org",),
-            origins=(task.sha256,),
+            derived_from=("https://wiki.org",),
+            triggered_by=(task.sha256,),
         )
         report = ReportDoc.create(
             name="report.md",
             content="# Bitcoin Report",
-            sources=(source_a.sha256, source_b.sha256),
-            origins=(task.sha256,),
+            derived_from=(source_a.sha256, source_b.sha256),
+            triggered_by=(task.sha256,),
         )
         scope = RunScope("research/btc/run1")
         for doc in [task, source_a, source_b, report]:
@@ -671,7 +674,7 @@ class TestCrossPipelineProvenanceGraph:
         assert all(sha in graph for sha in [report.sha256, source_a.sha256, source_b.sha256, task.sha256])
 
         # Extract external URLs
-        urls = {src for node in graph.values() for src in node.sources if "://" in src}
+        urls = {src for node in graph.values() for src in node.derived_from if "://" in src}
         assert "https://bitcoin.org" in urls
         assert "https://wiki.org" in urls
 
@@ -717,3 +720,65 @@ class TestLocalStoreSummaryAcrossScopes:
         await store.update_summary(doc.sha256, "test summary")
         summaries = await store.load_summaries([doc.sha256])
         assert summaries[doc.sha256] == "test summary"
+
+
+class TestFlowCompletion:
+    @pytest.mark.asyncio
+    async def test_save_and_get_round_trip(self, store: LocalDocumentStore):
+        await store.save_flow_completion(RunScope("proj/run1"), "flow_a", ("sha1", "sha2"), ("sha3",))
+        result = await store.get_flow_completion(RunScope("proj/run1"), "flow_a")
+        assert result is not None
+        assert result.flow_name == "flow_a"
+        assert result.input_sha256s == ("sha1", "sha2")
+        assert result.output_sha256s == ("sha3",)
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_returns_none(self, store: LocalDocumentStore):
+        result = await store.get_flow_completion(RunScope("proj/run1"), "nonexistent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_overwrite_on_rerun(self, store: LocalDocumentStore):
+        scope = RunScope("proj/run1")
+        await store.save_flow_completion(scope, "flow_a", ("sha1",), ("sha2",))
+        await store.save_flow_completion(scope, "flow_a", ("sha1",), ("sha2", "sha3"))
+        result = await store.get_flow_completion(scope, "flow_a")
+        assert result is not None
+        assert result.output_sha256s == ("sha2", "sha3")
+
+    @pytest.mark.asyncio
+    async def test_file_layout(self, store: LocalDocumentStore):
+        """Completion records are stored in .flow_completions/ subdirectory."""
+        await store.save_flow_completion(RunScope("proj/run1"), "my_flow", (), ())
+        expected = store.base_path / "proj" / "run1" / ".flow_completions" / "my_flow.json"
+        assert expected.exists()
+        data = json.loads(expected.read_text())
+        assert data["flow_name"] == "my_flow"
+
+    @pytest.mark.asyncio
+    async def test_max_age_filters_expired(self, store: LocalDocumentStore):
+        """Expired completion records are filtered out by max_age."""
+        scope = RunScope("proj/run1")
+        await store.save_flow_completion(scope, "flow_a", (), ())
+        # Manually backdate the stored_at in the file
+        path = store.base_path / "proj" / "run1" / ".flow_completions" / "flow_a.json"
+        data = json.loads(path.read_text())
+        old_time = datetime(2020, 1, 1, tzinfo=UTC)
+        data["stored_at"] = old_time.isoformat()
+        path.write_text(json.dumps(data))
+        # Should be expired with a short max_age
+        result = await store.get_flow_completion(scope, "flow_a", max_age=timedelta(hours=1))
+        assert result is None
+        # Should still be found without max_age
+        result = await store.get_flow_completion(scope, "flow_a")
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_corrupt_json_returns_none(self, store: LocalDocumentStore):
+        """Corrupt JSON file returns None instead of crashing."""
+        scope = RunScope("proj/run1")
+        await store.save_flow_completion(scope, "flow_a", (), ())
+        path = store.base_path / "proj" / "run1" / ".flow_completions" / "flow_a.json"
+        path.write_text("{invalid json")
+        result = await store.get_flow_completion(scope, "flow_a")
+        assert result is None

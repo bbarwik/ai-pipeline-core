@@ -11,12 +11,11 @@ update_summary fans out to both stores via this class's method.
 from datetime import timedelta
 from typing import TypeVar
 
-from ai_pipeline_core.document_store._models import DocumentNode
-from ai_pipeline_core.document_store._summary import SummaryGenerator
-from ai_pipeline_core.document_store._summary_worker import SummaryWorker
-from ai_pipeline_core.document_store.protocol import DocumentStore
-from ai_pipeline_core.documents._types import DocumentSha256, RunScope
+from ai_pipeline_core.document_store._models import DocumentNode, FlowCompletion
+from ai_pipeline_core.document_store._protocol import DocumentStore
+from ai_pipeline_core.document_store._summary_worker import SummaryGenerator, SummaryWorker
 from ai_pipeline_core.documents.document import Document
+from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 from ai_pipeline_core.logging import get_pipeline_logger
 
 _D = TypeVar("_D", bound=Document)
@@ -116,6 +115,30 @@ class DualDocumentStore:
     ) -> dict[str, Document]:
         """Delegate to primary store."""
         return await self._primary.find_by_source(source_values, document_type, max_age=max_age)
+
+    async def save_flow_completion(
+        self,
+        run_scope: RunScope,
+        flow_name: str,
+        input_sha256s: tuple[str, ...],
+        output_sha256s: tuple[str, ...],
+    ) -> None:
+        """Save flow completion to both stores; secondary failures are best-effort."""
+        await self._primary.save_flow_completion(run_scope, flow_name, input_sha256s, output_sha256s)
+        try:
+            await self._secondary.save_flow_completion(run_scope, flow_name, input_sha256s, output_sha256s)
+        except Exception:
+            logger.warning("Secondary store save_flow_completion failed", exc_info=True)
+
+    async def get_flow_completion(
+        self,
+        run_scope: RunScope,
+        flow_name: str,
+        *,
+        max_age: timedelta | None = None,
+    ) -> FlowCompletion | None:
+        """Get flow completion from primary store only."""
+        return await self._primary.get_flow_completion(run_scope, flow_name, max_age=max_age)
 
     def flush(self) -> None:
         """Flush both stores; secondary failures are best-effort."""

@@ -4,7 +4,7 @@ import pytest
 from pydantic import BaseModel
 
 from ai_pipeline_core._llm_core import CoreMessage, Role
-from ai_pipeline_core.llm import URLSubstitutor
+from ai_pipeline_core.llm._substitutor import URLSubstitutor
 from ai_pipeline_core.llm.conversation import Conversation
 from tests.support.helpers import create_test_model_response, create_test_structured_model_response
 
@@ -20,10 +20,20 @@ class ItemList(BaseModel):
 
 
 def _prepare_and_get_short(sub: URLSubstitutor, *originals: str) -> dict[str, str]:
-    """Prepare substitutor with originals and return mapping of original → shortened."""
+    """Prepare substitutor with originals and return mapping of original -> shortened."""
     sub.prepare(list(originals))
     mappings = sub.get_mappings()
     return {orig: mappings[orig] for orig in originals if orig in mappings}
+
+
+def _get_shortened_forms(*originals: str) -> dict[str, str]:
+    """Create a fresh substitutor, prepare it with originals, and return mappings.
+
+    The substitutor algorithm is deterministic, so a standalone instance
+    produces the same shortened forms as the one created inside _execute_send().
+    """
+    sub = URLSubstitutor()
+    return _prepare_and_get_short(sub, *originals)
 
 
 class TestEagerRestoreSend:
@@ -32,7 +42,7 @@ class TestEagerRestoreSend:
     @pytest.mark.asyncio
     async def test_content_restored_after_send(self, monkeypatch):
         conv = Conversation(model="test-model")
-        shorts = _prepare_and_get_short(conv.substitutor, LONG_URL)
+        shorts = _get_shortened_forms(LONG_URL)
         short = shorts[LONG_URL]
 
         async def fake_generate(messages, **kwargs):
@@ -40,14 +50,14 @@ class TestEagerRestoreSend:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        conv2 = await conv.send("test")
+        conv2 = await conv.send(f"Check this: {LONG_URL}")
         assert conv2.content == f"Found: {LONG_URL}"
 
     @pytest.mark.asyncio
     async def test_parsed_string_restored_after_send(self, monkeypatch):
         """For unstructured responses, parsed == content (both restored)."""
         conv = Conversation(model="test-model")
-        shorts = _prepare_and_get_short(conv.substitutor, LONG_URL)
+        shorts = _get_shortened_forms(LONG_URL)
         short = shorts[LONG_URL]
 
         async def fake_generate(messages, **kwargs):
@@ -55,7 +65,7 @@ class TestEagerRestoreSend:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        conv2 = await conv.send("test")
+        conv2 = await conv.send(f"Check this: {LONG_URL}")
         last_response = conv2.messages[-1]
         assert last_response.parsed == f"Link: {LONG_URL}"
         assert last_response.content == last_response.parsed
@@ -63,7 +73,7 @@ class TestEagerRestoreSend:
     @pytest.mark.asyncio
     async def test_multiple_urls_restored(self, monkeypatch):
         conv = Conversation(model="test-model")
-        shorts = _prepare_and_get_short(conv.substitutor, LONG_URL, LONG_URL_2, TX_HASH)
+        shorts = _get_shortened_forms(LONG_URL, LONG_URL_2, TX_HASH)
 
         response_text = " ".join(shorts.values())
 
@@ -72,7 +82,7 @@ class TestEagerRestoreSend:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        conv2 = await conv.send("test")
+        conv2 = await conv.send(f"Check: {LONG_URL} {LONG_URL_2} {TX_HASH}")
         for original in shorts:
             assert original in conv2.content
         for short in shorts.values():
@@ -94,7 +104,7 @@ class TestEagerRestoreSend:
     @pytest.mark.asyncio
     async def test_no_restore_when_substitutor_disabled(self, monkeypatch):
         conv = Conversation(model="test-model", enable_substitutor=False)
-        assert conv.substitutor is None
+        assert conv.enable_substitutor is False
 
         async def fake_generate(messages, **kwargs):
             return create_test_model_response(content="Some~shortened~form")
@@ -123,7 +133,7 @@ class TestEagerRestoreSendStructured:
     @pytest.mark.asyncio
     async def test_structured_content_and_parsed_restored(self, monkeypatch):
         conv = Conversation(model="test-model")
-        shorts = _prepare_and_get_short(conv.substitutor, LONG_URL, LONG_URL_2)
+        shorts = _get_shortened_forms(LONG_URL, LONG_URL_2)
         short_1 = shorts[LONG_URL]
         short_2 = shorts[LONG_URL_2]
 
@@ -135,7 +145,7 @@ class TestEagerRestoreSendStructured:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate_structured", fake_generate_structured)
 
-        conv2 = await conv.send_structured("test", ItemList)
+        conv2 = await conv.send_structured(f"Check: {LONG_URL} {LONG_URL_2}", ItemList)
 
         # Content JSON is restored
         assert LONG_URL in conv2.content
@@ -169,7 +179,7 @@ class TestMultiTurnReShortening:
     async def test_second_turn_sends_shortened_history(self, monkeypatch):
         """Verify that restored content is re-shortened when sent to LLM on next turn."""
         conv = Conversation(model="test-model")
-        shorts = _prepare_and_get_short(conv.substitutor, LONG_URL)
+        shorts = _get_shortened_forms(LONG_URL)
         short = shorts[LONG_URL]
 
         captured_messages: list[list[CoreMessage]] = []
@@ -183,7 +193,7 @@ class TestMultiTurnReShortening:
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
         # Turn 1
-        conv2 = await conv.send("test")
+        conv2 = await conv.send(f"Check this: {LONG_URL}")
         assert conv2.content == f"Found: {LONG_URL}"
 
         # Turn 2
@@ -200,7 +210,7 @@ class TestMultiTurnReShortening:
     async def test_three_turn_conversation(self, monkeypatch):
         """Verify 3-turn conversation: content always restored, history always shortened."""
         conv = Conversation(model="test-model")
-        shorts = _prepare_and_get_short(conv.substitutor, LONG_URL)
+        shorts = _get_shortened_forms(LONG_URL)
         short = shorts[LONG_URL]
 
         call_count = 0
@@ -212,7 +222,7 @@ class TestMultiTurnReShortening:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        conv = await conv.send("msg 1")
+        conv = await conv.send(f"Check: {LONG_URL}")
         assert conv.content == f"Turn 1: {LONG_URL}"
 
         conv = await conv.send("msg 2")

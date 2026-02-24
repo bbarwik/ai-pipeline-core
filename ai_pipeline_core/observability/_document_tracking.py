@@ -4,12 +4,13 @@ Emits document lifecycle events and sets OTel span attributes for
 document lineage. All functions are no-ops when tracking is not initialized.
 """
 
+from collections.abc import Sequence
 from typing import cast
 
 from opentelemetry import trace as otel_trace
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._types import DocumentSha256
+from ai_pipeline_core.documents.types import DocumentSha256
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._initialization import get_tracking_service
 from ai_pipeline_core.observability._tracking._models import ATTR_INPUT_DOCUMENT_SHA256S, ATTR_OUTPUT_DOCUMENT_SHA256S, DocumentEventType
@@ -43,57 +44,50 @@ def _collect_and_track(
         sha256s.append(obj.sha256)
         service.track_document_event(document_sha256=obj.sha256, span_id=span_id, event_type=event_type)
     elif isinstance(obj, (list, tuple)) and obj:
-        if all(isinstance(x, Document) for x in obj):
+        if all(isinstance(x, Document) for x in cast(list[object], obj)):
             for doc in cast(list[Document], obj):
                 sha256s.append(doc.sha256)
                 service.track_document_event(document_sha256=doc.sha256, span_id=span_id, event_type=event_type)
         else:
-            for item in obj:
+            for item in cast(list[object], obj):
                 _collect_and_track(item, sha256s, service, span_id, event_type)
+
+
+def _track_io(
+    inputs: Sequence[object],
+    output: object,
+    input_event: DocumentEventType,
+    output_event: DocumentEventType,
+) -> None:
+    """Shared logic for tracking input/output documents and setting span attributes."""
+    service = get_tracking_service()
+    if service is None:
+        return
+
+    span_id = get_current_span_id()
+    input_sha256s: list[DocumentSha256] = []
+    output_sha256s: list[DocumentSha256] = []
+
+    for arg in inputs:
+        _collect_and_track(arg, input_sha256s, service, span_id, input_event)
+    _collect_and_track(output, output_sha256s, service, span_id, output_event)
+
+    if input_sha256s or output_sha256s:
+        span = otel_trace.get_current_span()
+        if input_sha256s:
+            span.set_attribute(ATTR_INPUT_DOCUMENT_SHA256S, input_sha256s)
+        if output_sha256s:
+            span.set_attribute(ATTR_OUTPUT_DOCUMENT_SHA256S, output_sha256s)
 
 
 def track_task_io(args: tuple[object, ...], kwargs: dict[str, object], result: object) -> None:
     """Track input/output documents for a pipeline task."""
-    service = get_tracking_service()
-    if service is None:
-        return
-
-    span_id = get_current_span_id()
-    input_sha256s: list[DocumentSha256] = []
-    output_sha256s: list[DocumentSha256] = []
-
-    for arg in (*args, *kwargs.values()):
-        _collect_and_track(arg, input_sha256s, service, span_id, DocumentEventType.TASK_INPUT)
-
-    _collect_and_track(result, output_sha256s, service, span_id, DocumentEventType.TASK_OUTPUT)
-
-    if input_sha256s or output_sha256s:
-        span = otel_trace.get_current_span()
-        if input_sha256s:
-            span.set_attribute(ATTR_INPUT_DOCUMENT_SHA256S, input_sha256s)
-        if output_sha256s:
-            span.set_attribute(ATTR_OUTPUT_DOCUMENT_SHA256S, output_sha256s)
+    _track_io(list(args) + list(kwargs.values()), result, DocumentEventType.TASK_INPUT, DocumentEventType.TASK_OUTPUT)
 
 
 def track_flow_io(input_documents: list[Document], output_documents: list[Document]) -> None:
     """Track input/output documents for a pipeline flow."""
-    service = get_tracking_service()
-    if service is None:
-        return
-
-    span_id = get_current_span_id()
-    input_sha256s: list[DocumentSha256] = []
-    output_sha256s: list[DocumentSha256] = []
-
-    _collect_and_track(input_documents, input_sha256s, service, span_id, DocumentEventType.FLOW_INPUT)
-    _collect_and_track(output_documents, output_sha256s, service, span_id, DocumentEventType.FLOW_OUTPUT)
-
-    if input_sha256s or output_sha256s:
-        span = otel_trace.get_current_span()
-        if input_sha256s:
-            span.set_attribute(ATTR_INPUT_DOCUMENT_SHA256S, input_sha256s)
-        if output_sha256s:
-            span.set_attribute(ATTR_OUTPUT_DOCUMENT_SHA256S, output_sha256s)
+    _track_io(input_documents, output_documents, DocumentEventType.FLOW_INPUT, DocumentEventType.FLOW_OUTPUT)
 
 
 def track_llm_documents(context: object | None, messages: object | None) -> None:
@@ -112,7 +106,7 @@ def track_llm_documents(context: object | None, messages: object | None) -> None
 
 
 def _track_docs_from_messages(service: TrackingService, messages: object, span_id: str, event_type: DocumentEventType) -> None:
-    """Extract and track documents from AIMessages or similar containers."""
+    """Extract and track documents from message containers."""
     if not isinstance(messages, list):
         return
     for item in cast(list[object], messages):

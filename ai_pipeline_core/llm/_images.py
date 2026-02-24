@@ -1,19 +1,27 @@
 """Image processing for LLM vision models.
 
-Splits large images, compresses to WebP, and respects model-specific constraints.
-Handles EXIF orientation, vertical splitting with overlap, and width trimming.
-
-This module processes raw image bytes and returns ProcessedImage with ImagePart data.
-The llm/conversation.py is responsible for converting Documents to ContentParts.
+Splits large images vertically with overlap, trims width, and encodes as WebP.
+Respects model-specific constraints via ImagePreset/ImageProcessingConfig.
+Includes bridge functions for converting images to LLM ContentParts.
 """
 
+import base64
 from dataclasses import dataclass
 from enum import StrEnum
 from io import BytesIO
 from math import ceil
+from typing import Literal, cast
 
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
+
+from ai_pipeline_core._llm_core._validation import validate_image_content as _validate_image
+from ai_pipeline_core._llm_core._validation import validate_pdf as _validate_pdf
+from ai_pipeline_core._llm_core.model_config import get_image_preset as _get_image_preset_name
+from ai_pipeline_core._llm_core.types import ContentPart, ImageContent, PDFContent, TextContent
+from ai_pipeline_core.logging import get_pipeline_logger
+
+logger = get_pipeline_logger(__name__)
 
 __all__ = [
     "ImagePart",
@@ -21,11 +29,12 @@ __all__ = [
     "ImageProcessingConfig",
     "ImageProcessingError",
     "ProcessedImage",
+    "get_image_preset",
     "process_image",
+    "validated_binary_parts",
 ]
 
 PIL_MAX_PIXELS = 500_000_000  # 500MP security limit
-Image.MAX_IMAGE_PIXELS = PIL_MAX_PIXELS
 
 
 class ImagePreset(StrEnum):
@@ -84,6 +93,7 @@ class ImagePart(BaseModel):
     model_config = {"frozen": True}
 
     data: bytes = Field(repr=False)
+    mime_type: str
     width: int
     height: int
     index: int = Field(ge=0)
@@ -104,13 +114,13 @@ class ProcessedImage(BaseModel):
 
     model_config = {"frozen": True}
 
-    parts: list[ImagePart]
+    parts: tuple[ImagePart, ...]
     original_width: int
     original_height: int
     original_bytes: int
     output_bytes: int
     was_trimmed: bool
-    warnings: list[str] = Field(default_factory=list)
+    warnings: tuple[str, ...] = ()
 
     @property
     def compression_ratio(self) -> float:
@@ -137,7 +147,7 @@ class ImageProcessingError(Exception):
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _SplitPlan:
     """Describes how to split an image into parts."""
 
@@ -146,7 +156,7 @@ class _SplitPlan:
     step_y: int
     num_parts: int
     trim_width: int | None
-    warnings: list[str]
+    warnings: tuple[str, ...]
 
 
 def _plan_split(
@@ -178,7 +188,7 @@ def _plan_split(
             step_y=0,
             num_parts=1,
             trim_width=trim_width,
-            warnings=warnings,
+            warnings=tuple(warnings),
         )
 
     overlap_px = int(tile_h * overlap_fraction)
@@ -199,7 +209,7 @@ def _plan_split(
         step_y=step,
         num_parts=num_parts,
         trim_width=trim_width,
-        warnings=warnings,
+        warnings=tuple(warnings),
     )
 
 
@@ -229,7 +239,7 @@ def _execute_split(
     plan: _SplitPlan,
     webp_quality: int,
 ) -> list[tuple[bytes, int, int, int, int]]:
-    """Execute a split plan on an image."""
+    """Execute a split plan on an image. Returns list of (data, w, h, y, h)."""
     width, height = img.size
 
     if plan.trim_width is not None and width > plan.trim_width:
@@ -261,12 +271,7 @@ def process_image(
     preset: ImagePreset = ImagePreset.GEMINI,
     config: ImageProcessingConfig | None = None,
 ) -> ProcessedImage:
-    """Process an image for LLM vision models.
-
-    Splits tall images vertically with overlap, trims width if needed,
-    and compresses to WebP. Only accepts bytes - conversion from Document
-    to bytes happens in llm/conversation.py.
-    """
+    """Process image bytes for LLM vision models. Returns ProcessedImage with split/compressed parts."""
     effective = config if config is not None else ImageProcessingConfig.for_preset(preset)
     raw = image
 
@@ -275,10 +280,14 @@ def process_image(
 
     original_bytes = len(raw)
 
+    original_max_pixels = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = PIL_MAX_PIXELS
     try:
         img = _load_and_normalize(raw)
     except (OSError, ValueError, Image.DecompressionBombError) as exc:
         raise ImageProcessingError(f"Failed to decode image: {exc}") from exc
+    finally:
+        Image.MAX_IMAGE_PIXELS = original_max_pixels
 
     original_width, original_height = img.size
 
@@ -293,16 +302,16 @@ def process_image(
 
     raw_parts = _execute_split(img, plan, effective.webp_quality)
 
-    parts: list[ImagePart] = []
     total = len(raw_parts)
     total_output = 0
+    parts_list: list[ImagePart] = []
 
     for idx, (data, w, h, sy, sh) in enumerate(raw_parts):
         total_output += len(data)
-        parts.append(ImagePart(data=data, width=w, height=h, index=idx, total=total, source_y=sy, source_height=sh))
+        parts_list.append(ImagePart(data=data, mime_type="image/webp", width=w, height=h, index=idx, total=total, source_y=sy, source_height=sh))
 
     return ProcessedImage(
-        parts=parts,
+        parts=tuple(parts_list),
         original_width=original_width,
         original_height=original_height,
         original_bytes=original_bytes,
@@ -310,3 +319,77 @@ def process_image(
         was_trimmed=plan.trim_width is not None,
         warnings=plan.warnings,
     )
+
+
+# ---------------------------------------------------------------------------
+# Bridge functions (moved from conversation.py)
+# ---------------------------------------------------------------------------
+
+_LLM_SUPPORTED_IMAGE_FORMATS: frozenset[str | None] = frozenset({"JPEG", "PNG", "GIF", "WEBP"})
+type _ImageMimeType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
+_FORMAT_TO_MIME: dict[str, _ImageMimeType] = {"JPEG": "image/jpeg", "PNG": "image/png", "GIF": "image/gif", "WEBP": "image/webp"}
+
+
+def get_image_preset(model: str) -> ImagePreset:
+    """Get ImagePreset for a model via model family configuration."""
+    preset_name = _get_image_preset_name(model)
+    try:
+        return ImagePreset(preset_name)
+    except ValueError:
+        return ImagePreset.DEFAULT
+
+
+def _image_needs_processing(data: bytes, model: str) -> bool:
+    """Check if image exceeds model limits and needs processing."""
+    preset = get_image_preset(model)
+    config = ImageProcessingConfig.for_preset(preset)
+
+    try:
+        with Image.open(BytesIO(data)) as img:
+            w, h = img.size
+            fmt = img.format
+            return w > config.max_dimension or h > config.max_dimension or w * h > config.max_pixels or fmt not in _LLM_SUPPORTED_IMAGE_FORMATS
+    except (OSError, ValueError):
+        return True
+
+
+def _process_image_to_parts(data: bytes, model: str) -> list[ContentPart]:
+    """Process image bytes and return ContentParts.
+
+    Only re-encodes images that exceed model limits. Adds text labels when
+    images are split into multiple parts.
+    """
+    if not _image_needs_processing(data, model):
+        try:
+            with Image.open(BytesIO(data)) as img:
+                mime_type: _ImageMimeType = _FORMAT_TO_MIME.get(img.format or "", "image/jpeg")
+            return cast(list[ContentPart], [ImageContent(data=base64.b64encode(data), mime_type=mime_type)])
+        except (OSError, ValueError):
+            pass
+
+    preset = get_image_preset(model)
+    result = process_image(data, preset=preset)
+    parts: list[ContentPart] = []
+
+    if len(result.parts) > 1:
+        parts.append(TextContent(text=f"[Image split into {len(result.parts)} sequential parts with overlap]\n"))
+
+    for img_part in result.parts:
+        if img_part.total > 1:
+            parts.append(TextContent(text=f"[{img_part.label}]\n"))
+        parts.append(ImageContent(data=base64.b64encode(img_part.data), mime_type=img_part.mime_type))  # pyright: ignore[reportArgumentType]
+
+    return parts
+
+
+def validated_binary_parts(data: bytes, name: str, is_image: bool, model: str) -> list[ContentPart] | None:
+    """Validate and convert binary content to ContentParts. Returns None and logs if invalid."""
+    if is_image:
+        if err := _validate_image(data, name):
+            logger.warning("Skipping invalid binary content: %s", err)
+            return None
+        return _process_image_to_parts(data, model)
+    if err := _validate_pdf(data, name):
+        logger.warning("Skipping invalid binary content: %s", err)
+        return None
+    return [PDFContent(data=base64.b64encode(data))]

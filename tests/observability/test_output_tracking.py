@@ -40,7 +40,7 @@ class TestTrackTaskIoOutputTypes:
 
     def test_single_document_output_tracked(self) -> None:
         """Baseline: single Document output is tracked correctly."""
-        doc = _DocA.create(name="a.txt", content=b"aaa")
+        doc = _DocA.create_root(name="a.txt", content=b"aaa", reason="test input")
         mock_service, mock_span = _make_tracking_env()
 
         with (
@@ -62,8 +62,8 @@ class TestTrackTaskIoOutputTypes:
     def test_list_document_output_tracked(self) -> None:
         """Baseline: list[Document] output is tracked correctly."""
         docs = [
-            _DocA.create(name="a.txt", content=b"aaa"),
-            _DocB.create(name="b.txt", content=b"bbb"),
+            _DocA.create_root(name="a.txt", content=b"aaa", reason="test input"),
+            _DocB.create_root(name="b.txt", content=b"bbb", reason="test input"),
         ]
         mock_service, mock_span = _make_tracking_env()
 
@@ -83,8 +83,8 @@ class TestTrackTaskIoOutputTypes:
 
     def test_tuple_of_documents_output_tracked(self) -> None:
         """Bug: tuple[DocA, DocB] output — documents must be tracked."""
-        doc_a = _DocA.create(name="a.txt", content=b"aaa")
-        doc_b = _DocB.create(name="b.txt", content=b"bbb")
+        doc_a = _DocA.create_root(name="a.txt", content=b"aaa", reason="test input")
+        doc_b = _DocB.create_root(name="b.txt", content=b"bbb", reason="test input")
         result = (doc_a, doc_b)
 
         mock_service, mock_span = _make_tracking_env()
@@ -107,8 +107,8 @@ class TestTrackTaskIoOutputTypes:
 
     def test_tuple_of_lists_output_tracked(self) -> None:
         """Bug: tuple[list[DocA], list[DocB]] output — documents must be tracked."""
-        docs_a = [_DocA.create(name="a1.txt", content=b"a1"), _DocA.create(name="a2.txt", content=b"a2")]
-        docs_b = [_DocB.create(name="b1.txt", content=b"b1")]
+        docs_a = [_DocA.create_root(name="a1.txt", content=b"a1", reason="test input"), _DocA.create_root(name="a2.txt", content=b"a2", reason="test input")]
+        docs_b = [_DocB.create_root(name="b1.txt", content=b"b1", reason="test input")]
         result = (docs_a, docs_b)
 
         mock_service, mock_span = _make_tracking_env()
@@ -146,7 +146,7 @@ class TestTrackTaskIoOutputTypes:
 
     def test_input_documents_tracked_from_args(self) -> None:
         """Baseline: input documents from args are tracked."""
-        input_doc = _DocA.create(name="input.txt", content=b"input")
+        input_doc = _DocA.create_root(name="input.txt", content=b"input", reason="test input")
         mock_service, mock_span = _make_tracking_env()
 
         with (
@@ -164,8 +164,8 @@ class TestTrackTaskIoOutputTypes:
     def test_input_list_documents_tracked_from_args(self) -> None:
         """Baseline: input list[Document] from args are tracked."""
         input_docs = [
-            _DocA.create(name="i1.txt", content=b"i1"),
-            _DocA.create(name="i2.txt", content=b"i2"),
+            _DocA.create_root(name="i1.txt", content=b"i1", reason="test input"),
+            _DocA.create_root(name="i2.txt", content=b"i2", reason="test input"),
         ]
         mock_service, mock_span = _make_tracking_env()
 
@@ -201,7 +201,7 @@ class TestDeploymentSpanOutput:
 
         # Create a minimal flow
         async def _test_flow(
-            project_name: str,
+            run_id: str,
             documents: list[Document],
             flow_options: _TestOptions,
         ) -> list[Document]:
@@ -217,7 +217,7 @@ class TestDeploymentSpanOutput:
             flows = [_test_flow]
 
             @staticmethod
-            def build_result(project_name: str, documents: list[Document], options: Any) -> _TestResult:
+            def build_result(run_id: str, documents: list[Document], options: Any) -> _TestResult:
                 return _TestResult(success=True, summary="done")
 
         deployment = _TestDeployment()

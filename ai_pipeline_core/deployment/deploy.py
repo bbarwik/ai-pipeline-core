@@ -33,13 +33,18 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from prefect.cli.deploy._storage import _PullStepStorage  # type: ignore
+from prefect.cli.deploy._storage import _PullStepStorage
 from prefect.client.orchestration import get_client
 from prefect.deployments.runner import RunnerDeployment
 from prefect.flows import load_flow_from_entrypoint
 from prefect_gcp.cloud_storage import GcpCredentials, GcsBucket  # pyright: ignore[reportMissingTypeStubs]
 
 from ai_pipeline_core.settings import settings
+
+__all__ = [
+    "Deployer",
+    "main",
+]
 
 UV_TARGET_PLATFORM = "x86_64-unknown-linux-gnu"
 PIP_TARGET_PLATFORMS = ("manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64", "linux_x86_64")
@@ -362,7 +367,7 @@ class Deployer:
         print("=" * 70)
         print()
 
-        bundle = self._build_bundle()
+        bundle = await asyncio.to_thread(self._build_bundle)
         await self._upload_bundle(bundle)
         await self._deploy_via_api()
 

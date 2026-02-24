@@ -1,5 +1,7 @@
 """Integration tests for LLM functionality (requires API keys)."""
 
+import uuid
+
 import pytest
 from pydantic import BaseModel
 
@@ -222,7 +224,7 @@ class TestLLMIntegration:
             model_options=ModelOptions(max_completion_tokens=100),
         )
 
-        json_str = conv.to_json()
+        json_str = conv.model_dump_json()
 
         # Should be valid JSON
         data = json.loads(json_str)
@@ -268,12 +270,8 @@ class TestLLMIntegration:
             "No headers, numbering, or commentary."
         )
 
-        # Substitutor should have created patterns for URLs and addresses
-        assert conv.substitutor is not None
-        assert conv.substitutor.pattern_count > 0
-        mappings = conv.substitutor.get_mappings()
-        assert any(url in mappings for url in urls), "At least one URL should be shortened"
-        assert any(addr in mappings for addr in addresses), "At least one address should be shortened"
+        # Substitutor is enabled, so content should be eagerly restored
+        assert conv.enable_substitutor is True
 
         # LLM response should exist and contain restored (original) URLs
         assert conv.content
@@ -284,8 +282,8 @@ class TestLLMIntegration:
             f"Expected at least {len(all_items) - 2} items in restored content, found {len(found)}/{len(all_items)}. Missing: {set(all_items) - set(found)}"
         )
 
-        # restore_content() on already-restored content should be a no-op
-        assert conv.restore_content(conv.content) == conv.content
+        # Eager restoration means content already has originals
+        assert any(url in conv.content for url in urls[:3])
 
     @pytest.mark.asyncio
     async def test_substitutor_structured_output_roundtrip(self):
@@ -324,8 +322,7 @@ class TestLLMIntegration:
             response_format=ItemList,
         )
 
-        assert conv.substitutor is not None
-        assert conv.substitutor.pattern_count > 0
+        assert conv.enable_substitutor is True
         assert conv.parsed is not None
         assert len(conv.parsed.items) >= 3, f"Expected at least 3 items, got {len(conv.parsed.items)}"
 
@@ -335,3 +332,63 @@ class TestLLMIntegration:
             f"Expected at least {len(all_items) - 1} items in restored parsed output, "
             f"found {len(found)}/{len(all_items)}. Missing: {set(all_items) - set(found)}"
         )
+
+    @pytest.mark.asyncio
+    async def test_with_assistant_message_cross_conversation(self):
+        """Inject assistant response from conv_a into conv_b, then continue conv_b."""
+        conv_a = Conversation(
+            model="gemini-3-flash",
+            model_options=ModelOptions(max_completion_tokens=500),
+            enable_substitutor=False,
+        )
+        conv_a = await conv_a.send("What is the capital of Germany? Answer in one word.")
+        assert "Berlin" in conv_a.content
+
+        # Transfer conv_a's response into conv_b as prior assistant knowledge
+        conv_b = Conversation(
+            model="gemini-3-flash",
+            model_options=ModelOptions(max_completion_tokens=500),
+            enable_substitutor=False,
+        )
+        conv_b = conv_b.with_assistant_message(conv_a.content)
+        conv_b = await conv_b.send("What city did you just mention? Answer in one word.")
+
+        assert "Berlin" in conv_b.content
+
+    @pytest.mark.asyncio
+    async def test_with_assistant_message_multi_turn(self):
+        """Build a synthetic conversation with injected turns, then continue with real LLM."""
+        conv = Conversation(
+            model="gemini-3-flash",
+            model_options=ModelOptions(max_completion_tokens=500),
+            enable_substitutor=False,
+        )
+
+        # Inject a synthetic exchange
+        conv = await conv.send("Remember: the secret word is PINEAPPLE")
+        conv = conv.with_assistant_message("I have noted the secret word: PINEAPPLE.")
+
+        # Now ask about it
+        conv = await conv.send("What is the secret word? Reply with just the word.")
+
+        assert "PINEAPPLE" in conv.content.upper()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gemini-3-flash", "grok-4.1-fast"])
+    async def test_cost_returned_for_all_providers(self, model):
+        """Cost must be non-None and positive for all supported providers.
+
+        Regression test: Gemini via LiteLLM returns cost only in
+        x-litellm-response-cost header, not in the usage JSON body.
+        A random suffix prevents prompt caching (cached calls return cost=0).
+        """
+        nonce = uuid.uuid4().hex[:12]
+        conv = Conversation(
+            model=model,
+            model_options=ModelOptions(max_completion_tokens=100),
+            enable_substitutor=False,
+        )
+        conv = await conv.send(f"Say hello. Nonce: {nonce}")
+
+        assert conv.cost is not None, f"{model}: cost is None — not extracted from response"
+        assert conv.cost > 0, f"{model}: cost is {conv.cost}, expected > 0"

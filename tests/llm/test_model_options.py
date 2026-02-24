@@ -1,6 +1,7 @@
 """Tests for ModelOptions."""
 
-from pydantic import BaseModel
+import pytest
+from pydantic import ValidationError
 
 from ai_pipeline_core.llm import ModelOptions
 
@@ -20,7 +21,6 @@ class TestModelOptions:
         assert options.cache_ttl == "300s"
         assert options.max_completion_tokens is None
         assert options.stop is None
-        assert options.response_format is None
         assert options.verbosity is None
         assert options.usage_tracking is True
         assert options.user is None
@@ -54,22 +54,8 @@ class TestModelOptions:
             kwargs = options.to_openai_completion_kwargs()
             assert kwargs["web_search_options"]["search_context_size"] == size
 
-    def test_response_format_with_pydantic_model(self):
-        """Test response_format with Pydantic model."""
-
-        class TestModel(BaseModel):
-            field: str
-
-        options = ModelOptions(response_format=TestModel)
-        kwargs = options.to_openai_completion_kwargs()
-        assert kwargs["response_format"] == TestModel
-
     def test_all_options_combined(self):
         """Test all options combined."""
-
-        class ResponseModel(BaseModel):
-            result: str
-
         options = ModelOptions(
             system_prompt="You are a helpful assistant",
             search_context_size="high",
@@ -78,7 +64,6 @@ class TestModelOptions:
             retry_delay_seconds=15,
             timeout=600,
             max_completion_tokens=20000,
-            response_format=ResponseModel,
         )
 
         # Test with non-grok model
@@ -88,7 +73,6 @@ class TestModelOptions:
         assert kwargs["web_search_options"]["search_context_size"] == "high"
         assert kwargs["reasoning_effort"] == "medium"
         assert kwargs["max_completion_tokens"] == 20000
-        assert kwargs["response_format"] == ResponseModel
         assert "extra_body" in kwargs
 
         # System prompt is not in kwargs (handled separately)
@@ -110,13 +94,17 @@ class TestModelOptions:
         assert kwargs["reasoning_effort"] == "low"
 
     def test_immutability(self):
-        """Test that ModelOptions is mutable (default Pydantic behavior)."""
+        """Test that ModelOptions is frozen (immutable)."""
         options = ModelOptions()
-        options.timeout = 500
-        assert options.timeout == 500
+        with pytest.raises(ValidationError):
+            options.timeout = 500  # type: ignore[misc]
 
-        options.response_format = None
-        assert options.response_format is None
+    def test_model_copy_update(self):
+        """Test that frozen ModelOptions can be updated via model_copy."""
+        options = ModelOptions(timeout=300)
+        updated = options.model_copy(update={"timeout": 500})
+        assert updated.timeout == 500
+        assert options.timeout == 300  # original unchanged
 
     def test_verbosity_option(self):
         """Test verbosity option."""
@@ -138,17 +126,18 @@ class TestModelOptions:
         assert kwargs["extra_body"]["usage"] == {"include": True}
 
     def test_stop_single_string(self):
-        """Test stop parameter with single string."""
+        """Test stop parameter with single string is normalized to tuple."""
         options = ModelOptions(stop="STOP")
+        assert options.stop == ("STOP",)
         kwargs = options.to_openai_completion_kwargs()
-        assert kwargs["stop"] == "STOP"
+        assert kwargs["stop"] == ["STOP"]
 
     def test_stop_list_of_strings(self):
-        """Test stop parameter with list of strings."""
-        stop_sequences = ["STOP", "END", "\n\n"]
-        options = ModelOptions(stop=stop_sequences)
+        """Test stop parameter with list of strings is normalized to tuple."""
+        options = ModelOptions(stop=["STOP", "END", "\n\n"])
+        assert options.stop == ("STOP", "END", "\n\n")
         kwargs = options.to_openai_completion_kwargs()
-        assert kwargs["stop"] == stop_sequences
+        assert kwargs["stop"] == ["STOP", "END", "\n\n"]
 
     def test_stop_none_not_included(self):
         """Test that stop is not included when None."""
@@ -191,7 +180,7 @@ class TestModelOptions:
         )
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["stop"] == ["STOP", "END"]
-        assert kwargs["temperature"] == 0.7
+        assert kwargs["temperature"] == pytest.approx(0.7)
         assert kwargs["max_completion_tokens"] == 1000
 
     def test_extra_body_preserves_custom_fields_with_usage_tracking(self):
@@ -227,7 +216,7 @@ class TestModelOptions:
         )
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["user"] == "user_abc123"
-        assert kwargs["temperature"] == 0.7
+        assert kwargs["temperature"] == pytest.approx(0.7)
         assert kwargs["max_completion_tokens"] == 1000
         assert kwargs["extra_body"]["usage"] == {"include": True}
 

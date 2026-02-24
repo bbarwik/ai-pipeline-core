@@ -1,7 +1,11 @@
-"""Background worker for asynchronous document summary generation."""
+"""Background worker for asynchronous document summary generation.
+
+Also defines the summary-related type aliases and constants (merged from _summary.py).
+"""
 
 import asyncio
 import contextlib
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from threading import Event, Thread
 
@@ -9,14 +13,68 @@ from lmnr.opentelemetry_lib.tracing import context as laminar_context
 from opentelemetry import context as otel_context
 from opentelemetry.context import Context
 
-from ai_pipeline_core.document_store._summary import SUMMARY_EXCERPT_CHARS, SummaryGenerator, SummaryUpdateFn
-from ai_pipeline_core.documents._types import DocumentSha256
 from ai_pipeline_core.documents.document import Document
+from ai_pipeline_core.documents.types import DocumentSha256
 from ai_pipeline_core.logging import get_pipeline_logger
+
+type SummaryGenerator = Callable[[str, str], Coroutine[None, None, str]]
+"""Async callable: (document_name, content_excerpt) -> summary string.
+Returns empty string on failure. Must handle recursion prevention internally."""
+
+type SummaryUpdateFn = Callable[[DocumentSha256, str], Coroutine[None, None, None]]
+"""Async callable: (document_sha256, summary) -> None. Persists summary to store."""
+
+SUMMARY_EXCERPT_CHARS: int = 30_000
+"""Total character budget for document excerpts (split across start/middle/end sections)."""
+
+EXCERPT_SECTION_CHARS: int = 10_000
+"""Characters per excerpt section (start, middle, end)."""
 
 logger = get_pipeline_logger(__name__)
 
 _SENTINEL = object()
+
+
+def _build_excerpt(document: Document) -> str:
+    """Build a rich excerpt for summary generation using XML structure.
+
+    Mirrors the XML wrapping used in _llm_core for document context:
+    <document>, <name>, <class>, <description>, <content> tags.
+    For long text documents, content samples start, middle, and end sections.
+    """
+    parts: list[str] = ["<document>"]
+    parts.append(f"<name>{document.name}</name>")
+    parts.append(f"<class>{type(document).__name__}</class>")
+    if document.description:
+        parts.append(f"<description>{document.description}</description>")
+
+    if not document.is_text:
+        parts.append(f"<content>[Binary: {document.mime_type}, {len(document.content)} bytes]</content>")
+        parts.append("</document>")
+        return "\n".join(parts)
+
+    text = document.text
+    total_len = len(text)
+
+    parts.append("<content>")
+    if total_len <= SUMMARY_EXCERPT_CHARS:
+        parts.append(text)
+    else:
+        sec = EXCERPT_SECTION_CHARS
+        mid_start = (total_len - sec) // 2
+
+        gap_after_start = mid_start - sec
+        gap_after_middle = (total_len - sec) - (mid_start + sec)
+
+        parts.append(text[:sec])
+        parts.append(f"\n[... {gap_after_start:,} chars truncated ...]\n")
+        parts.append(text[mid_start : mid_start + sec])
+        parts.append(f"\n[... {gap_after_middle:,} chars truncated ...]\n")
+        parts.append(text[-sec:])
+
+    parts.append("</content>")
+    parts.append("</document>")
+    return "\n".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +177,7 @@ class SummaryWorker:
             if summary:
                 await self._update_fn(item.sha256, summary)
         except Exception as e:
-            logger.warning(f"Summary generation failed for '{item.name}': {e}")
+            logger.warning("Summary generation failed for '%s': %s", item.name, e)
         finally:
             self._inflight.discard(item.sha256)
 
@@ -131,10 +189,7 @@ class SummaryWorker:
         if key in self._inflight:
             return
         self._inflight.add(key)
-        if document.is_text:
-            excerpt = document.text[:SUMMARY_EXCERPT_CHARS]
-        else:
-            excerpt = f"[Binary document: {document.mime_type}, {len(document.content)} bytes]"
+        excerpt = _build_excerpt(document)
         item = _SummaryItem(
             sha256=document.sha256,
             name=document.name,

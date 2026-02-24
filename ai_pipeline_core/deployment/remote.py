@@ -19,10 +19,17 @@ from ai_pipeline_core.deployment._resolve import AttachmentInput, DocumentInput
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
+from ai_pipeline_core.pipeline._type_validation import is_already_traced
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
 logger = get_pipeline_logger(__name__)
+
+__all__ = [
+    "ProgressCallback",
+    "RemoteDeployment",
+    "run_remote_deployment",
+]
 
 TDoc = TypeVar("TDoc", bound=Document)
 TOptions = TypeVar("TOptions", bound=FlowOptions)
@@ -38,18 +45,10 @@ def _strip_for_prefect(serialized: dict[str, Any]) -> dict[str, Any]:
     Prefect validates parameters against JSON schema server-side (additionalProperties: false)
     before DocumentInput._strip_serialize_metadata can run on the Python side.
     """
-    d = {k: v for k, v in serialized.items() if k not in DocumentInput._STRIP_KEYS}
+    d = {k: v for k, v in serialized.items() if k not in DocumentInput.STRIP_KEYS}
     if d.get("attachments"):
-        d["attachments"] = [{k: v for k, v in att.items() if k not in AttachmentInput._STRIP_KEYS} for att in d["attachments"]]
+        d["attachments"] = [{k: v for k, v in att.items() if k not in AttachmentInput.STRIP_KEYS} for att in d["attachments"]]
     return d
-
-
-def _is_already_traced(func: Callable[..., Any]) -> bool:
-    """Check if function or its __wrapped__ has __is_traced__ attribute."""
-    if getattr(func, "__is_traced__", False):
-        return True
-    wrapped = getattr(func, "__wrapped__", None)
-    return getattr(wrapped, "__is_traced__", False) if wrapped else False
 
 
 _POLL_INTERVAL = 5.0
@@ -120,7 +119,7 @@ async def run_remote_deployment(
             as_subflow=as_subflow,
             timeout=0,
         )
-        return await _poll_remote_flow_run(client, fr.id, deployment_name, on_progress=on_progress)
+        return await _poll_remote_flow_run(client, cast(UUID, fr.id), deployment_name, on_progress=on_progress)
 
     async with get_client() as client:
         try:
@@ -179,16 +178,14 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         TOptions: FlowOptions subclass for the deployment.
         TResult: DeploymentResult subclass returned by the deployment.
 
-    Usage::
+    Mirror type contract:
+        The client defines local Document subclasses ('mirror types') whose class_name must
+        match the remote pipeline's document types exactly. When the remote returns documents,
+        they are deserialized using the local mirror types. If class names don't match,
+        documents fail to deserialize.
 
-        class AiResearch(RemoteDeployment[
-            ResearchTaskDocument | ContextDocument,
-            FlowOptions,
-            AiResearchResult,
-        ]): pass
-
-        _client = AiResearch()
-        result = await _client.run("project", docs, FlowOptions())
+        Tasks that return mirror-typed remote results should use persist_result=False
+        to avoid polluting the DocumentStore with unknown class_name entries.
     """
 
     name: ClassVar[str]
@@ -207,7 +204,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
 
         # Extract Generic params: (TDoc, TOptions, TResult)
         generic_args = extract_generic_params(cls, RemoteDeployment)
-        if len(generic_args) < 3 or any(a is None for a in generic_args):
+        if len(generic_args) < 3:
             raise TypeError(f"{cls.__name__} must specify 3 Generic parameters: class {cls.__name__}(RemoteDeployment[DocType, OptionsType, ResultType])")
 
         doc_type, options_type, result_type = generic_args
@@ -224,7 +221,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
 
         # Apply @trace to _execute: combined guard prevents no-op and double-wrap
         trace_level = getattr(cls, "trace_level", "always")
-        if trace_level != "off" and not _is_already_traced(cls._execute):
+        if trace_level != "off" and not is_already_traced(cls._execute):
             cls._execute = trace(name=cls.name, level=trace_level)(cls._execute)  # type: ignore[assignment]
 
     @property
@@ -234,7 +231,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
 
     async def _execute(
         self,
-        project_name: str,
+        run_id: str,
         documents: list[TDoc],
         options: TOptions,
         context: DeploymentContext,
@@ -242,7 +239,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
     ) -> TResult:
         """Serialize, call Prefect, deserialize. Wrapped with @trace in __init_subclass__."""
         parameters: dict[str, Any] = {
-            "project_name": project_name,
+            "run_id": run_id,
             "documents": [_strip_for_prefect(doc.serialize_model()) for doc in documents],
             "options": options,
             "context": context,
@@ -266,7 +263,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
     @final
     async def run(
         self,
-        project_name: str,
+        run_id: str,
         documents: list[TDoc],
         options: TOptions,
         context: DeploymentContext | None = None,
@@ -274,7 +271,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
     ) -> TResult:
         """Execute the remote deployment via Prefect."""
         return await self._execute(
-            project_name,
+            run_id,
             documents,
             options,
             context if context is not None else DeploymentContext(),

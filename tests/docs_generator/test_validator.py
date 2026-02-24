@@ -3,12 +3,9 @@ import dataclasses
 import pytest
 
 from ai_pipeline_core.docs_generator.validator import (
-    HASH_FILE,
     ValidationResult,
-    compute_source_hash,
     validate_all,
     validate_completeness,
-    validate_freshness,
     validate_size,
 )
 
@@ -27,71 +24,6 @@ def repo(tmp_path):
     _write_py(src / "mod.py", 'class Foo:\n    """A class."""\n')
     _write_py(tests / "test_mod.py", "def test_foo(): pass\n")
     return tmp_path, src, tests
-
-
-def test_compute_source_hash_deterministic(repo):
-    _, src, tests = repo
-    h1 = compute_source_hash(src, tests)
-    h2 = compute_source_hash(src, tests)
-    assert h1 == h2
-
-
-def test_compute_source_hash_changes_on_content(repo):
-    _, src, tests = repo
-    h1 = compute_source_hash(src, tests)
-    (src / "mod.py").write_text("# changed\n")
-    h2 = compute_source_hash(src, tests)
-    assert h1 != h2
-
-
-def test_compute_source_hash_changes_on_path(repo):
-    _, src, tests = repo
-    h1 = compute_source_hash(src, tests)
-    _write_py(src / "new.py", "x = 1\n")
-    h2 = compute_source_hash(src, tests)
-    assert h1 != h2
-
-
-def test_compute_source_hash_includes_tests(repo):
-    _, src, tests = repo
-    h1 = compute_source_hash(src, tests)
-    _write_py(tests / "test_extra.py", "def test_bar(): pass\n")
-    h2 = compute_source_hash(src, tests)
-    assert h1 != h2
-
-
-def test_compute_source_hash_uses_relative_paths(tmp_path):
-    src = tmp_path / "ai_pipeline_core"
-    src.mkdir()
-    tests = tmp_path / "tests"
-    tests.mkdir()
-    _write_py(src / "a.py", "x = 1\n")
-    h = compute_source_hash(src, tests)
-    assert isinstance(h, str) and len(h) == 64
-
-
-def test_validate_freshness_matching(repo):
-    tmp_path, src, tests = repo
-    ai_docs = tmp_path / ".ai-docs"
-    ai_docs.mkdir()
-    h = compute_source_hash(src, tests)
-    (ai_docs / HASH_FILE).write_text(h + "\n")
-    assert validate_freshness(ai_docs, src, tests) is True
-
-
-def test_validate_freshness_stale(repo):
-    tmp_path, src, tests = repo
-    ai_docs = tmp_path / ".ai-docs"
-    ai_docs.mkdir()
-    (ai_docs / HASH_FILE).write_text("oldhash\n")
-    assert validate_freshness(ai_docs, src, tests) is False
-
-
-def test_validate_freshness_missing_hash_file(repo):
-    tmp_path, src, tests = repo
-    ai_docs = tmp_path / ".ai-docs"
-    ai_docs.mkdir()
-    assert validate_freshness(ai_docs, src, tests) is False
 
 
 def test_validate_completeness_all_covered(repo):
@@ -164,32 +96,17 @@ def test_validate_all_pass(repo):
     tmp_path, src, tests = repo
     ai_docs = tmp_path / ".ai-docs"
     ai_docs.mkdir()
-    h = compute_source_hash(src, tests)
-    (ai_docs / HASH_FILE).write_text(h + "\n")
     (ai_docs / "mod.md").write_text("class Foo:\n    pass\n")
-    result = validate_all(ai_docs, src, tests)
+    result = validate_all(ai_docs, src)
     assert result.is_valid is True
-
-
-def test_validate_all_fail_stale(repo):
-    tmp_path, src, tests = repo
-    ai_docs = tmp_path / ".ai-docs"
-    ai_docs.mkdir()
-    (ai_docs / HASH_FILE).write_text("wrong\n")
-    (ai_docs / "mod.md").write_text("class Foo:\n    pass\n")
-    result = validate_all(ai_docs, src, tests)
-    assert result.is_fresh is False
-    assert result.is_valid is False
 
 
 def test_validate_all_fail_incomplete(repo):
     tmp_path, src, tests = repo
     ai_docs = tmp_path / ".ai-docs"
     ai_docs.mkdir()
-    h = compute_source_hash(src, tests)
-    (ai_docs / HASH_FILE).write_text(h + "\n")
     (ai_docs / "mod.md").write_text("nothing\n")
-    result = validate_all(ai_docs, src, tests)
+    result = validate_all(ai_docs, src)
     assert len(result.missing_symbols) > 0
     assert result.is_valid is False
 
@@ -198,18 +115,16 @@ def test_validate_all_oversized_still_valid(repo):
     tmp_path, src, tests = repo
     ai_docs = tmp_path / ".ai-docs"
     ai_docs.mkdir()
-    h = compute_source_hash(src, tests)
-    (ai_docs / HASH_FILE).write_text(h + "\n")
     (ai_docs / "mod.md").write_text("class Foo:\n" + "x" * 60_000)
-    result = validate_all(ai_docs, src, tests)
+    result = validate_all(ai_docs, src)
     assert len(result.size_violations) > 0
     assert result.is_valid is True
 
 
 def test_validation_result_frozen():
-    result = ValidationResult(is_fresh=True, missing_symbols=(), size_violations=())
+    result = ValidationResult(missing_symbols=(), size_violations=())
     with pytest.raises(dataclasses.FrozenInstanceError):
-        result.is_fresh = False  # type: ignore[misc]
+        result.missing_symbols = ()  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------

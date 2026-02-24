@@ -32,3 +32,6 @@ Makefile text eol=lf
 *.pyd binary
 *.so binary
 *.dll binary
+
+# Auto-generated documentation (hide diffs in PRs)
+.ai-docs/*.md linguist-generated=true

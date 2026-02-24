@@ -1,55 +1,37 @@
-"""Validation utilities for AI documentation freshness, completeness, and size."""
+"""Validation utilities for AI documentation completeness and size."""
 
 import ast
-import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from ai_pipeline_core.docs_generator.extractor import is_public_name
 from ai_pipeline_core.docs_generator.trimmer import MAX_GUIDE_SIZE
 
-HASH_FILE = ".hash"
+__all__ = [
+    "ValidationResult",
+    "validate_all",
+    "validate_completeness",
+    "validate_private_reexports",
+    "validate_size",
+]
+
 # Generic entry-point names that are not part of the public API
 _EXCLUDED_SYMBOLS: frozenset[str] = frozenset({"main"})
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ValidationResult:
     """Aggregated validation result across all checks."""
 
-    is_fresh: bool
     missing_symbols: tuple[str, ...]
     size_violations: tuple[tuple[str, int], ...]
+    private_reexports: tuple[str, ...] = ()
 
     @property
     def is_valid(self) -> bool:
-        """Hard validations pass (freshness + completeness). Size is warning-only."""
-        return self.is_fresh and not self.missing_symbols
-
-
-def compute_source_hash(source_dir: Path, tests_dir: Path) -> str:
-    """SHA256 hash of all .py files (sorted by relative path) under source and test dirs."""
-    repo_root = source_dir.parent
-    all_files: list[Path] = []
-    for directory in (source_dir, tests_dir):
-        if directory.is_dir():
-            all_files.extend(directory.rglob("*.py"))
-
-    sha = hashlib.sha256()
-    for path in sorted(all_files, key=lambda p: p.relative_to(repo_root)):
-        rel = str(path.relative_to(repo_root))
-        sha.update(rel.encode())
-        sha.update(path.read_bytes())
-    return sha.hexdigest()
-
-
-def validate_freshness(ai_docs_dir: Path, source_dir: Path, tests_dir: Path) -> bool:
-    """Check whether .hash matches current source state."""
-    hash_file = ai_docs_dir / HASH_FILE
-    if not hash_file.exists():
-        return False
-    stored = hash_file.read_text().strip()
-    return stored == compute_source_hash(source_dir, tests_dir)
+        """Completeness and private reexport checks must pass. Size is warning-only."""
+        return not self.missing_symbols and not self.private_reexports
 
 
 def validate_completeness(ai_docs_dir: Path, source_dir: Path, excluded_modules: frozenset[str] = frozenset()) -> list[str]:
@@ -59,16 +41,20 @@ def validate_completeness(ai_docs_dir: Path, source_dir: Path, excluded_modules:
     return [
         symbol
         for symbol in sorted(public_symbols)
-        if f"class {symbol}" not in guide_content and f"def {symbol}" not in guide_content and f"{symbol} =" not in guide_content
+        if not re.search(rf"\bclass {re.escape(symbol)}\b", guide_content)
+        and not re.search(rf"\bdef {re.escape(symbol)}\b", guide_content)
+        and not re.search(rf"\b{re.escape(symbol)} =", guide_content)
     ]
 
 
 def validate_size(ai_docs_dir: Path, max_size: int = MAX_GUIDE_SIZE) -> list[tuple[str, int]]:
-    """Return guide files exceeding max_size bytes."""
+    """Return guide files exceeding max_size bytes. Skips README.md (separate thresholds)."""
     violations: list[tuple[str, int]] = []
     if not ai_docs_dir.is_dir():
         return violations
     for guide in sorted(ai_docs_dir.glob("*.md")):
+        if guide.name == "README.md":
+            continue
         size = len(guide.read_bytes())
         if size > max_size:
             violations.append((guide.name, size))
@@ -78,15 +64,117 @@ def validate_size(ai_docs_dir: Path, max_size: int = MAX_GUIDE_SIZE) -> list[tup
 def validate_all(
     ai_docs_dir: Path,
     source_dir: Path,
-    tests_dir: Path,
     excluded_modules: frozenset[str] = frozenset(),
 ) -> ValidationResult:
     """Run all validation checks and return aggregated result."""
     return ValidationResult(
-        is_fresh=validate_freshness(ai_docs_dir, source_dir, tests_dir),
         missing_symbols=tuple(validate_completeness(ai_docs_dir, source_dir, excluded_modules)),
         size_violations=tuple(validate_size(ai_docs_dir)),
+        private_reexports=tuple(validate_private_reexports(source_dir, excluded_modules)),
     )
+
+
+def validate_private_reexports(source_dir: Path, excluded_modules: frozenset[str] = frozenset()) -> list[str]:
+    """Detect symbols in __all__ that are imported from private modules.
+
+    Scans every public .py file with __all__ in the package (not just __init__.py).
+    For each symbol in __all__, traces the import back to its source module. If the
+    source is a _-prefixed module or package, the symbol will appear in IMPORTS but
+    have no definition in the guide — a phantom import.
+
+    For non-__init__.py files, symbols that are also exported from the parent
+    __init__.py are considered legitimate re-exports (the file is a designated
+    public re-export surface like llm/types.py) and are not flagged.
+    """
+    violations: list[str] = []
+
+    for py_file in sorted(source_dir.rglob("*.py")):
+        # Skip _-prefixed files (except __init__.py)
+        if py_file.name.startswith("_") and py_file.name != "__init__.py":
+            continue
+        relative = py_file.relative_to(source_dir)
+        # Skip _-prefixed packages (they're entirely private)
+        if any(part.startswith("_") for part in relative.parent.parts):
+            continue
+        # Skip excluded modules
+        top_module = relative.parts[0] if len(relative.parts) > 1 else None
+        if top_module and top_module in excluded_modules:
+            continue
+
+        relative_path = str(relative)
+
+        all_names = _parse_init_all(py_file)
+        if not all_names:
+            continue
+
+        private_sources = _find_private_import_sources(py_file)
+
+        # For non-__init__.py files, exclude symbols that are also in the parent
+        # __init__.py __all__ (they're legitimate re-export surfaces)
+        if py_file.name != "__init__.py":
+            parent_init = py_file.parent / "__init__.py"
+            parent_all = _parse_init_all(parent_init)
+            private_only = {k: v for k, v in private_sources.items() if k not in parent_all}
+        else:
+            private_only = private_sources
+
+        for name in sorted(all_names & private_only.keys()):
+            source_module = private_only[name]
+            violations.append(
+                f"{relative_path}: '{name}' in __all__ is imported from private module '{source_module}'. "
+                f"Remove it from __all__ — symbols from _-prefixed modules are internal and won't appear in generated docs."
+            )
+
+    return violations
+
+
+def _parse_init_all(init_file: Path) -> set[str]:
+    """Extract __all__ symbol names from an __init__.py."""
+    try:
+        tree = ast.parse(init_file.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return set()
+    for node in tree.body:
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "__all__":
+            value = node.value
+        if isinstance(value, (ast.List, ast.Tuple)):
+            return {elt.value for elt in value.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)}
+    return set()
+
+
+def _find_private_import_sources(init_file: Path) -> dict[str, str]:
+    """Map symbol names to their private source module for imports from _-prefixed modules.
+
+    Returns {symbol_name: source_module_name} only for symbols imported from private modules.
+    """
+    try:
+        tree = ast.parse(init_file.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return {}
+
+    result: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        # Check if the import source is a private module
+        # Relative: from ._images import ... → module="_images"
+        # Relative nested: from ._llm_core import ... → module="_llm_core"
+        # Absolute: from ai_pipeline_core._llm_core import ... → contains "_llm_core"
+        parts = node.module.split(".")
+        is_private = any(part.startswith("_") and part != "__init__" for part in parts)
+        if not is_private:
+            continue
+        # Find the private part for the message
+        private_part = next(part for part in parts if part.startswith("_") and part != "__init__")
+        for alias in node.names:
+            name = alias.asname if alias.asname else alias.name
+            result[name] = private_part
+    return result
 
 
 def _find_public_symbols(source_dir: Path, excluded_modules: frozenset[str] = frozenset()) -> set[str]:
@@ -97,7 +185,7 @@ def _find_public_symbols(source_dir: Path, excluded_modules: frozenset[str] = fr
             continue
         relative = py_file.relative_to(source_dir)
         top_module = relative.parts[0] if len(relative.parts) > 1 else relative.stem
-        if top_module in excluded_modules:
+        if top_module in excluded_modules or (len(relative.parts) > 1 and top_module.startswith("_")):
             continue
         try:
             tree = ast.parse(py_file.read_text(encoding="utf-8"))

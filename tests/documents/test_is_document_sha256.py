@@ -16,7 +16,7 @@ class TestIsDocumentSha256:
         class SampleDoc(Document):
             pass
 
-        doc = SampleDoc.create(name="test.txt", content="test content")
+        doc = SampleDoc.create_root(name="test.txt", content="test content", reason="test input")
         assert is_document_sha256(doc.sha256)
 
     def test_various_real_hashes(self):
@@ -136,14 +136,14 @@ class TestIsDocumentSha256:
         for hash_val in known_hashes:
             assert is_document_sha256(hash_val), f"Known hash rejected: {hash_val}"
 
-    def test_integration_with_document_sources(self):
-        """Test that it works correctly with document sources field."""
+    def test_integration_with_document_derived_from(self):
+        """Test that it works correctly with document derived_from field."""
 
         # Create a document and use its hash
         class SampleDoc(Document):
             pass
 
-        doc = SampleDoc.create(name="test.txt", content="integration test")
+        doc = SampleDoc.create_root(name="test.txt", content="integration test", reason="test input")
 
         # The hash should be valid
         assert is_document_sha256(doc.sha256)
@@ -152,12 +152,12 @@ class TestIsDocumentSha256:
         doc2 = SampleDoc.create(
             name="derived.txt",
             content="derived from first",
-            sources=(doc.sha256, "https://example.com/manual-reference"),
+            derived_from=(doc.sha256, "https://example.com/manual-reference"),
         )
 
         # Check that the source is properly categorized
-        doc_sources = doc2.source_documents
-        ref_sources = doc2.source_references
+        doc_sources = doc2.content_documents
+        ref_sources = doc2.content_references
 
         assert len(doc_sources) == 1
         assert doc_sources[0] == doc.sha256

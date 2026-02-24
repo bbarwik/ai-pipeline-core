@@ -2,9 +2,10 @@
 
 from pathlib import Path
 
+
 import yaml
 
-from ai_pipeline_core.observability import (
+from ai_pipeline_core.observability._debug import (
     ArtifactStore,
     ContentWriter,
     TraceDebugConfig,
@@ -19,7 +20,7 @@ class TestArtifactStore:
     def test_store_text_creates_artifact(self, tmp_path: Path) -> None:
         """Test storing text creates artifact file."""
         store = ArtifactStore(tmp_path)
-        ref = store.store_text("Hello world")
+        ref = store.store(b"Hello world", "text/plain")
 
         assert ref.hash.startswith("sha256:")
         assert ref.path.startswith("artifacts/sha256/")
@@ -36,7 +37,7 @@ class TestArtifactStore:
         """Test storing binary data creates artifact file."""
         store = ArtifactStore(tmp_path)
         binary_data = b"\x89PNG\r\n\x1a\n"
-        ref = store.store_binary(binary_data, "image/png")
+        ref = store.store(binary_data, "image/png")
 
         assert ref.hash.startswith("sha256:")
         assert ref.path.endswith(".png")
@@ -53,8 +54,8 @@ class TestArtifactStore:
         """Test identical content is deduplicated."""
         store = ArtifactStore(tmp_path)
 
-        ref1 = store.store_text("Duplicate content")
-        ref2 = store.store_text("Duplicate content")
+        ref1 = store.store(b"Duplicate content", "text/plain")
+        ref2 = store.store(b"Duplicate content", "text/plain")
 
         # Same hash and path
         assert ref1.hash == ref2.hash
@@ -68,8 +69,8 @@ class TestArtifactStore:
         """Test different content creates different files."""
         store = ArtifactStore(tmp_path)
 
-        ref1 = store.store_text("Content A")
-        ref2 = store.store_text("Content B")
+        ref1 = store.store(b"Content A", "text/plain")
+        ref2 = store.store(b"Content B", "text/plain")
 
         # Different hashes and paths
         assert ref1.hash != ref2.hash
@@ -82,7 +83,7 @@ class TestArtifactStore:
     def test_flat_directory_structure(self, tmp_path: Path) -> None:
         """Test artifacts are stored in flat directory."""
         store = ArtifactStore(tmp_path)
-        ref = store.store_text("Test content")
+        ref = store.store(b"Test content", "text/plain")
 
         # Path should follow pattern: artifacts/sha256/<hash>.txt
         parts = Path(ref.path).parts
@@ -90,19 +91,6 @@ class TestArtifactStore:
         assert parts[1] == "sha256"
         assert len(parts) == 3
         assert parts[2].endswith(".txt")
-
-    def test_get_stats(self, tmp_path: Path) -> None:
-        """Test getting deduplication statistics."""
-        store = ArtifactStore(tmp_path)
-
-        store.store_text("Content 1")
-        store.store_text("Content 2")
-        store.store_text("Content 1")  # Duplicate - returns same ref
-
-        stats = store.get_stats()
-        assert stats["unique_artifacts"] == 2  # Only 2 unique files
-        assert stats["total_references"] == 2  # 2 unique hashes tracked
-        assert stats["dedup_ratio"] == 1.0  # 2/2
 
 
 class TestContentExternalization:

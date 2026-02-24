@@ -2,22 +2,33 @@
 # CLASSES: LimitKind, PipelineLimit, FlowOptions
 # DEPENDS: BaseSettings, StrEnum
 # PURPOSE: Pipeline framework primitives — decorators, flow options, and concurrency limits.
-# SIZE: ~32KB
+# VERSION: 0.10.0
+# AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
-# === IMPORTS ===
-from ai_pipeline_core import FlowOptions, LimitKind, PipelineLimit, pipeline_concurrency, pipeline_flow, pipeline_task
+## Imports
 
-# === TYPES & CONSTANTS ===
+```python
+from ai_pipeline_core import FlowOptions, LimitKind, PipelineLimit, pipeline_concurrency, pipeline_flow, pipeline_task, safe_gather, safe_gather_indexed
+```
 
+## Rules
+
+1. Never inherit from FlowOptions for task-level options, writer configs,
+
+## Types & Constants
+
+```python
 type RetryConditionCallable = Callable[[Any, Any, Any], bool]
 
 type StateHookCallable = Callable[[Any, Any, Any], None]
 
 type TaskRunNameValueOrCallable = str | Callable[[], str]
 
+```
 
-# === INTERNAL TYPES (referenced by public API) ===
+## Internal Types
 
+```python
 # Protocol — implement in concrete class
 class _FlowLike(Protocol[FO_contra]):
     """Protocol for decorated flow objects returned by @pipeline_flow."""
@@ -25,10 +36,11 @@ class _FlowLike(Protocol[FO_contra]):
     input_document_types: list[type[Document]]
     output_document_types: list[type[Document]]
     estimated_minutes: int
+    stub: bool
 
     def __call__(
         self,
-        project_name: str,
+        run_id: str,
         documents: list[Document],
         flow_options: FO_contra,
     ) -> Coroutine[Any, Any, list[Document]]: ...
@@ -49,8 +61,11 @@ class _TaskLike(Protocol[R_co]):
     def __getattr__(self, name: str) -> Any: ...
 
 
-# === PUBLIC API ===
+```
 
+## Public API
+
+```python
 # Enum
 class LimitKind(StrEnum):
     """Kind of concurrency/rate limit.
@@ -88,15 +103,28 @@ timeout: Max seconds to wait for slot acquisition."""
 
 
 class FlowOptions(BaseSettings):
-    """Base configuration for pipeline flows.
+    """Base configuration for pipeline flows. Uses pydantic-settings.
 
-Subclass to add flow-specific parameters. Uses pydantic-settings
-for environment variable overrides. Immutable after creation."""
-    model_config = SettingsConfigDict(frozen=True, extra='allow')
+Every field defined on a FlowOptions subclass is automatically
+overridable via environment variables (e.g., a field named 'mode'
+reads from the MODE env var at instantiation time).
+
+Use FlowOptions for deployment/environment configuration that may
+differ between environments (dev/staging/production).
+
+Never inherit from FlowOptions for task-level options, writer configs,
+or programmatically-constructed parameter objects — use BaseModel instead.
+FlowOptions fields are always subject to env var override, which causes
+silent, hard-to-debug behavior when field names collide with common
+env vars (MODE, HOST, PORT, etc.)."""
+    model_config = SettingsConfigDict(frozen=True, extra='forbid')
 
 
-# === FUNCTIONS ===
+```
 
+## Functions
+
+```python
 def pipeline_task(  # noqa: UP047
     __fn: Callable[..., Coroutine[Any, Any, R_co]] | None = None,
     /,
@@ -111,11 +139,8 @@ def pipeline_task(  # noqa: UP047
     trace_cost: float | None = None,
     expected_cost: float | None = None,
     trace_trim_documents: bool = True,
-    # tracking
-    user_summary: bool | str = False,
     # document lifecycle
     estimated_minutes: int = 1,
-    persist: bool = True,
     # prefect passthrough
     name: str | None = None,
     description: str | None = None,
@@ -148,8 +173,8 @@ def pipeline_task(  # noqa: UP047
     and a DocumentStore + RunContext are available, documents are validated
     for provenance, deduplicated by SHA256, and saved to the store.
 
-    When persist=True (default), the return type annotation is validated at
-    decoration time. Allowed return types::
+    The return type annotation is validated at decoration time.
+    Allowed return types::
 
         -> MyDocument                           # single Document
         -> list[DocA]  /  list[DocA | DocB]     # list of Documents
@@ -159,8 +184,13 @@ def pipeline_task(  # noqa: UP047
         -> None                                 # side-effect tasks
         -> DocA | None                          # optional Document
 
-    Use persist=False for tasks returning non-document values (tracing and
-    retries still apply, but no return type validation or document auto-save).
+    For non-document functions, use plain ``async def`` with ``@trace`` instead.
+
+    Document is the universal container for pipeline data. Any structured data
+    (Pydantic models, dicts, lists) can be wrapped via Document.create():
+    ``MyDoc.create(name='output.json', content=model, derived_from=(input.sha256,))``
+    and retrieved via ``doc.parse(MyModel)``. There is no need for custom return
+    types or ``persist=False`` — wrap everything in a Document.
 
     Args:
         __fn: Function to decorate (when used without parentheses).
@@ -173,9 +203,7 @@ def pipeline_task(  # noqa: UP047
         trace_cost: Optional cost value to track in metadata.
         expected_cost: Optional expected cost budget for this task.
         trace_trim_documents: Trim document content in traces (default True).
-        user_summary: Enable LLM-generated span summaries.
         estimated_minutes: Estimated duration for progress tracking (must be > 0).
-        persist: Auto-save returned documents to the store (default True).
         name: Task name (defaults to function name).
         description: Human-readable task description.
         tags: Tags for organization and filtering.
@@ -207,94 +235,67 @@ def pipeline_task(  # noqa: UP047
     task_decorator: Callable[..., Any] = _prefect_task
 
     def _apply(fn: Callable[..., Coroutine[Any, Any, R_co]]) -> _TaskLike[R_co]:
-        fname = _callable_name(fn, "task")
+        fname = callable_name(fn, "task")
 
         if not inspect.iscoroutinefunction(fn):
             raise TypeError(f"@pipeline_task target '{fname}' must be 'async def'")
 
-        if _is_already_traced(fn):
+        if is_already_traced(fn):
             raise TypeError(
                 f"@pipeline_task target '{fname}' is already decorated "
                 f"with @trace. Remove the @trace decorator - @pipeline_task includes "
                 f"tracing automatically."
             )
 
-        # Reject stale DocumentList references in annotations
-        for ann_name, ann_value in getattr(fn, "__annotations__", {}).items():
-            if "DocumentList" in str(ann_value):
-                label = "return type" if ann_name == "return" else f"parameter '{ann_name}'"
-                raise TypeError(f"@pipeline_task '{fname}' {label} references 'DocumentList' which has been removed. Use 'list[Document]' instead.")
-
-        # Validate return type annotation when persist=True
-        if persist:
-            hints = _resolve_type_hints(fn)
-            if "return" not in hints:
-                raise TypeError(
-                    f"@pipeline_task '{fname}': missing return type annotation. "
-                    f"Persisted tasks must return Document types "
-                    f"(Document, list[Document], tuple[Document, ...], or None). "
-                    f"Add a return annotation or use persist=False."
-                )
-            bad_types = _find_non_document_leaves(hints["return"])
-            if bad_types:
-                bad_names = ", ".join(getattr(t, "__name__", str(t)) for t in bad_types)
-                raise TypeError(
-                    f"@pipeline_task '{fname}': return type contains non-Document types: {bad_names}. "
-                    f"Persisted tasks must return Document, list[Document], "
-                    f"tuple[Document, ...], or None. "
-                    f"Use persist=False for tasks returning non-document values."
-                )
+        # Validate input and return type annotations
+        hints = resolve_type_hints(fn)
+        validate_input_types(fn, hints)
+        if "return" not in hints:
+            raise TypeError(
+                f"@pipeline_task '{fname}': missing return type annotation. "
+                f"Pipeline tasks must return Document types "
+                f"(Document, list[Document], tuple[Document, ...], or None). "
+                f"Add a return type annotation."
+            )
+        bad_types = find_non_document_leaves(hints["return"])
+        if bad_types:
+            bad_names = ", ".join(getattr(t, "__name__", str(t)) for t in bad_types)
+            raise TypeError(
+                f"@pipeline_task '{fname}': return type contains non-Document types: {bad_names}. "
+                f"Pipeline tasks must return Document, list[Document], "
+                f"tuple[Document, ...], or None.\n"
+                f"FIX: Wrap your result in a Document:\n"
+                f"  return MyDocument.create(name='output.json', content=my_data, derived_from=(...))\n"
+                f"Document.create() auto-serializes str, bytes, dict, list, and BaseModel.\n"
+                f"For non-document functions, use plain async def with @trace instead of @pipeline_task."
+            )
 
         @wraps(fn)
         async def _wrapper(*args: Any, **kwargs: Any) -> R_co:
-            attrs: dict[str, Any] = {}
-            if description:
-                attrs["description"] = description
-            if expected_cost is not None:
-                attrs["expected_cost"] = expected_cost
-            if attrs:
-                try:
-                    Laminar.set_span_attributes(attrs)  # pyright: ignore[reportArgumentType]
-                except Exception:
-                    logger.debug("Failed to set span attributes", exc_info=True)
+            _set_span_attrs(description, expected_cost)
 
-            # Set up TaskDocumentContext BEFORE calling fn() so Document.__init__ can register
-            ctx: TaskDocumentContext | None = None
-            task_token = None
-            if persist and get_run_context() is not None and get_document_store() is not None:
-                ctx = TaskDocumentContext()
-                task_token = set_task_context(ctx)
-
+            # Set up task context for document lifecycle tracking
+            task_ctx = TaskContext()
+            task_token = set_task_context(task_ctx)
             try:
                 result = await fn(*args, **kwargs)
             finally:
-                if task_token is not None:
-                    reset_task_context(task_token)
+                reset_task_context(task_token)
 
             if trace_cost is not None and trace_cost > 0:
                 set_trace_cost(trace_cost)
 
-            # Track task I/O and schedule summaries
+            # Track task I/O
             try:
                 track_task_io(args, kwargs, result)
             except Exception:
                 logger.debug("Failed to track task IO", exc_info=True)
 
-            if user_summary:
-                try:
-                    service = get_tracking_service()
-                    if service is not None:
-                        span_id = get_current_span_id()
-                        if span_id:
-                            label = _resolve_label(user_summary, fn, kwargs)
-                            output_hint = _build_output_hint(result)
-                            service.schedule_summary(span_id, label, output_hint)
-                except Exception:
-                    logger.debug("Failed to schedule user summary", exc_info=True)
-
             # Document auto-save
-            if persist and ctx is not None:
-                await _persist_documents(_extract_documents(result), fname, ctx, check_created=True)
+            if get_run_context() is not None and get_document_store() is not None:
+                ctx = TaskDocumentContext(created=task_ctx.created)
+                docs = _extract_documents(result)
+                await _persist_documents(docs, fname, ctx)
 
             return result
 
@@ -355,10 +356,9 @@ def pipeline_flow(
     trace_cost: float | None = None,
     expected_cost: float | None = None,
     trace_trim_documents: bool = True,
-    # tracking
-    user_summary: bool | str = False,
     # document type specification
     estimated_minutes: int = 1,
+    stub: bool = False,
     # prefect passthrough
     name: str | None = None,
     version: str | None = None,
@@ -390,15 +390,15 @@ def pipeline_flow(
 
         @pipeline_flow(estimated_minutes=30)
         async def my_flow(
-            project_name: str,
+            run_id: str,
             documents: list[DocA | DocB],
             flow_options: FlowOptions,
         ) -> list[OutputDoc]:
             ...
 
     Args:
-        user_summary: Enable LLM-generated span summaries.
-        estimated_minutes: Estimated duration for progress tracking (must be >= 1).
+        estimated_minutes: Weight for progress bar calculation only (must be >= 1).
+            Does not affect execution timeout or scheduling.
 
     Returns:
         Decorator that produces a _FlowLike object with ``input_document_types``,
@@ -415,12 +415,12 @@ def pipeline_flow(
     flow_decorator: Callable[..., Any] = _prefect_flow
 
     def _apply(fn: Callable[..., Coroutine[Any, Any, list[Document]]]) -> _FlowLike[Any]:
-        fname = _callable_name(fn, "flow")
+        fname = callable_name(fn, "flow")
 
         if not inspect.iscoroutinefunction(fn):
             raise TypeError(f"@pipeline_flow '{fname}' must be declared with 'async def'")
 
-        if _is_already_traced(fn):
+        if is_already_traced(fn):
             raise TypeError(
                 f"@pipeline_flow target '{fname}' is already decorated "
                 f"with @trace. Remove the @trace decorator - @pipeline_flow includes "
@@ -431,16 +431,21 @@ def pipeline_flow(
         params = list(sig.parameters.values())
         if len(params) != 3:
             raise TypeError(
-                f"@pipeline_flow '{fname}' must have exactly 3 parameters "
-                f"(project_name: str, documents: list[...], flow_options: FlowOptions), got {len(params)}"
+                f"@pipeline_flow '{fname}' must have exactly 3 parameters (run_id: str, documents: list[...], flow_options: FlowOptions), got {len(params)}"
             )
 
-        # Resolve document types from annotations
-        hints = _resolve_type_hints(fn)
+        # Resolve and validate type annotations
+        hints = resolve_type_hints(fn)
+        validate_input_types(fn, hints)
 
         # Validate first parameter is str
         if params[0].name in hints and hints[params[0].name] is not str:
             raise TypeError(f"@pipeline_flow '{fname}': first parameter '{params[0].name}' must be annotated as 'str'")
+
+        # Validate first parameter is named 'run_id' or '_run_id'
+        first_param_name = next(iter(sig.parameters.keys()))
+        if first_param_name not in {"run_id", "_run_id"}:
+            raise TypeError(f"@pipeline_flow '{fname}': first parameter must be named 'run_id' or '_run_id', got '{first_param_name}'")
 
         # Validate third parameter is FlowOptions or subclass
         if params[2].name in hints:
@@ -451,14 +456,14 @@ def pipeline_flow(
         # Extract input types from documents parameter annotation
         resolved_input_types: list[type[Document]]
         if params[1].name in hints:
-            resolved_input_types = _parse_document_types_from_annotation(hints[params[1].name])
+            resolved_input_types = parse_document_types_from_annotation(hints[params[1].name])
         else:
             resolved_input_types = []
 
         # Extract output types from return annotation
         resolved_output_types: list[type[Document]]
         if "return" in hints:
-            resolved_output_types = _parse_document_types_from_annotation(hints["return"])
+            resolved_output_types = parse_document_types_from_annotation(hints["return"])
         else:
             resolved_output_types = []
 
@@ -479,40 +484,26 @@ def pipeline_flow(
 
         @wraps(fn)
         async def _wrapper(
-            project_name: str,
+            run_id: str,
             documents: list[Document],
             flow_options: Any,
         ) -> list[Document]:
-            attrs: dict[str, Any] = {}
-            if description:
-                attrs["description"] = description
-            if expected_cost is not None:
-                attrs["expected_cost"] = expected_cost
-            if attrs:
-                try:
-                    Laminar.set_span_attributes(attrs)  # pyright: ignore[reportArgumentType]
-                except Exception:
-                    logger.debug("Failed to set span attributes", exc_info=True)
+            _set_span_attrs(description, expected_cost)
 
             # Set RunContext for nested tasks (only if not already set by deployment)
             existing_ctx = get_run_context()
             run_token = None
             if existing_ctx is None:
-                run_scope = RunScope(f"{project_name}/{name or fname}")
+                run_scope = RunScope(f"{run_id}/{name or fname}")
                 run_token = set_run_context(RunContext(run_scope=run_scope))
 
-            # Set up TaskDocumentContext for flow-level document lifecycle
-            ctx: TaskDocumentContext | None = None
-            task_token = None
-            if get_run_context() is not None and get_document_store() is not None:
-                ctx = TaskDocumentContext()
-                task_token = set_task_context(ctx)
-
+            # Set up task context for document lifecycle tracking
+            task_ctx = TaskContext()
+            task_token = set_task_context(task_ctx)
             try:
-                result = await fn(project_name, documents, flow_options)
+                result = await fn(run_id, documents, flow_options)
             finally:
-                if task_token is not None:
-                    reset_task_context(task_token)
+                reset_task_context(task_token)
                 if run_token is not None:
                     reset_run_context(run_token)
 
@@ -527,20 +518,9 @@ def pipeline_flow(
             except Exception:
                 logger.debug("Failed to track flow IO", exc_info=True)
 
-            if user_summary:
-                try:
-                    service = get_tracking_service()
-                    if service is not None:
-                        span_id = get_current_span_id()
-                        if span_id:
-                            label = _resolve_label(user_summary, fn, {"project_name": project_name, "flow_options": flow_options})
-                            output_hint = _build_output_hint(result)
-                            service.schedule_summary(span_id, label, output_hint)
-                except Exception:
-                    logger.debug("Failed to schedule user summary", exc_info=True)
-
             # Document auto-save
-            if ctx is not None:
+            if get_run_context() is not None and get_document_store() is not None:
+                ctx = TaskDocumentContext(created=task_ctx.created)
                 await _persist_documents(result, fname, ctx)
 
             return result
@@ -583,9 +563,66 @@ def pipeline_flow(
         flow_obj.input_document_types = resolved_input_types
         flow_obj.output_document_types = resolved_output_types
         flow_obj.estimated_minutes = estimated_minutes
+        flow_obj.stub = stub
         return flow_obj
 
     return _apply
+
+async def safe_gather[T](
+    *coroutines: Coroutine[Any, Any, T],
+    label: str = "",
+    raise_if_all_fail: bool = True,
+) -> list[T]:
+    """Execute coroutines in parallel, returning successes and logging failures.
+
+    Uses return_exceptions=True internally. Filters failures with BaseException
+    (catches CancelledError). Logs each failure with context.
+
+    Returns:
+        List of successful results (failures filtered out). Relative order of
+        successes is preserved, but indices shift. Use safe_gather_indexed
+        for positional correspondence.
+    """
+    if not coroutines:
+        return []
+
+    results, failures = await _execute_gather(*coroutines, label=label)
+    failure_indices = {i for i, _ in failures}
+    successes: list[T] = [r for i, r in enumerate(results) if i not in failure_indices]
+
+    if not successes and raise_if_all_fail and failures:
+        first_error = failures[0][1]
+        raise RuntimeError(f"All {len(failures)} tasks failed{f' in {label!r}' if label else ''}. First error: {first_error}") from first_error
+
+    return successes
+
+async def safe_gather_indexed[T](
+    *coroutines: Coroutine[Any, Any, T],
+    label: str = "",
+    raise_if_all_fail: bool = True,
+) -> list[T | None]:
+    """Execute coroutines in parallel, preserving positional correspondence.
+
+    Like safe_gather, but returns a list with the same length as the input.
+    Failed positions contain None. Useful when results must correspond to
+    specific inputs by index.
+
+    Returns:
+        List matching input length. Successful results at their original index,
+        None at positions where the coroutine failed.
+    """
+    if not coroutines:
+        return []
+
+    results, failures = await _execute_gather(*coroutines, label=label)
+    failure_indices = {i for i, _ in failures}
+    output: list[T | None] = [None if i in failure_indices else r for i, r in enumerate(results)]
+
+    if len(failures) == len(results) and raise_if_all_fail:
+        first_error = failures[0][1]
+        raise RuntimeError(f"All {len(failures)} tasks failed{f' in {label!r}' if label else ''}. First error: {first_error}") from first_error
+
+    return output
 
 @asynccontextmanager
 async def pipeline_concurrency(
@@ -598,7 +635,7 @@ async def pipeline_concurrency(
     For CONCURRENT limits: slot held during block, released on exit.
     For PER_MINUTE/PER_HOUR: slot acquired (decays automatically), exit is no-op.
 
-    Falls back to per-process asyncio.Semaphore when Prefect is unavailable (CONCURRENT only).
+    Proceeds unthrottled when Prefect is unavailable.
     Timeout always raises AcquireConcurrencySlotTimeoutError.
     """
     state = _limits_state.get()
@@ -607,63 +644,69 @@ async def pipeline_concurrency(
         available = ", ".join(sorted(state.limits)) or "(none)"
         raise KeyError(f"pipeline_concurrency({name!r}) not registered. Available limits: {available}. Declare it on PipelineDeployment.concurrency_limits.")
 
-    effective_timeout = timeout if timeout is not None else cfg.timeout
-
-    # Prefect unavailable — use local semaphore fallback
+    # Prefect unavailable — proceed unthrottled
     if not state.status.prefect_available:
-        if cfg.kind == LimitKind.CONCURRENT:
-            async with _acquire_local_semaphore(name, cfg, state.status, effective_timeout):
-                yield
-        else:
-            yield
+        yield
         return
 
+    effective_timeout = timeout if timeout is not None else cfg.timeout
+    t0 = time.monotonic()
+
+    def _warn_if_slow() -> None:
+        wait_seconds = time.monotonic() - t0
+        if wait_seconds > _CACHE_TTL_WARNING_THRESHOLD:
+            logger.warning(
+                "Slot wait for %r took %.1fs — exceeds %ds threshold. "
+                "LLM cache TTL (default 300s) may expire before execution. "
+                "Consider increasing concurrency limit or reducing parallelism.",
+                name,
+                wait_seconds,
+                _CACHE_TTL_WARNING_THRESHOLD,
+            )
+
     # Prefect available — use global concurrency/rate limiting
-    yielded = False
     try:
         match cfg.kind:
             case LimitKind.CONCURRENT:
                 async with concurrency(name, occupy=1, timeout_seconds=effective_timeout, strict=False):
-                    yielded = True
+                    _warn_if_slow()
                     yield
             case LimitKind.PER_MINUTE | LimitKind.PER_HOUR:
                 await rate_limit(name, occupy=1, timeout_seconds=effective_timeout, strict=False)
-                yielded = True
+                _warn_if_slow()
                 yield
     except AcquireConcurrencySlotTimeoutError:
         raise
     except ConcurrencySlotAcquisitionError as e:
-        logger.warning("Prefect concurrency unavailable for %r, falling back to local semaphore: %s", name, e)
+        logger.warning("Prefect concurrency unavailable for %r, proceeding unthrottled: %s", name, e)
         state.status.prefect_available = False
-        if yielded:
-            return
-        # Use local fallback for this call
-        if cfg.kind == LimitKind.CONCURRENT:
-            async with _acquire_local_semaphore(name, cfg, state.status, effective_timeout):
-                yield
-        else:
-            yield
+        yield
 
-# === EXAMPLES (from tests/) ===
+```
 
-# Example: Pipeline flow deduplicates returned documents
-# Source: tests/pipeline/test_flow_storage.py:125
+## Examples
+
+**Pipeline flow deduplicates returned documents** (`tests/pipeline/test_flow_storage.py:125`)
+
+```python
 @pytest.mark.asyncio
 async def test_pipeline_flow_deduplicates_returned_documents(prefect_test_fixture, memory_store: MemoryDocumentStore, run_context):
     """Test that @pipeline_flow deduplicates returned documents by SHA256."""
     doc = StorageOutputDoc(name="output.txt", content=b"test output")
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         return [doc, doc]  # Same document twice
 
     await test_flow("test-project", [], FlowOptions())
 
     loaded = await memory_store.load("test-project", [StorageOutputDoc])
     assert len(loaded) == 1
+```
 
-# Example: Pipeline flow preserves existing run context
-# Source: tests/pipeline/test_flow_storage.py:89
+**Pipeline flow preserves existing run context** (`tests/pipeline/test_flow_storage.py:89`)
+
+```python
 @pytest.mark.asyncio
 async def test_pipeline_flow_preserves_existing_run_context(prefect_test_fixture, memory_store, run_context):
     """Test that pipeline_flow does not override RunContext set by deployment."""
@@ -672,7 +715,7 @@ async def test_pipeline_flow_preserves_existing_run_context(prefect_test_fixture
     captured_ctx = None
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         nonlocal captured_ctx
         captured_ctx = get_run_context()
         return []
@@ -682,15 +725,17 @@ async def test_pipeline_flow_preserves_existing_run_context(prefect_test_fixture
     assert captured_ctx is not None
     # Should use the deployment-level context, not create a new one
     assert captured_ctx.run_scope == "test-project"
+```
 
-# Example: Pipeline flow returns documents with store configured
-# Source: tests/pipeline/test_flow_storage.py:39
+**Pipeline flow returns documents with store configured** (`tests/pipeline/test_flow_storage.py:39`)
+
+```python
 @pytest.mark.asyncio
 async def test_pipeline_flow_returns_documents_with_store_configured(prefect_test_fixture, memory_store, run_context):
     """Test that pipeline_flow returns documents correctly when a store is configured."""
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         return [StorageOutputDoc(name="output.txt", content=b"test output")]
 
     input_docs = [StorageInputDoc(name="input.txt", content=b"test input")]
@@ -699,15 +744,17 @@ async def test_pipeline_flow_returns_documents_with_store_configured(prefect_tes
 
     assert len(result) == 1
     assert isinstance(result[0], StorageOutputDoc)
+```
 
-# Example: Pipeline flow saves returned documents
-# Source: tests/pipeline/test_flow_storage.py:109
+**Pipeline flow saves returned documents** (`tests/pipeline/test_flow_storage.py:109`)
+
+```python
 @pytest.mark.asyncio
 async def test_pipeline_flow_saves_returned_documents(prefect_test_fixture, memory_store: MemoryDocumentStore, run_context):
     """Test that @pipeline_flow saves returned documents to the store."""
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         return [StorageOutputDoc(name="output.txt", content=b"test output")]
 
     input_docs = [StorageInputDoc(name="input.txt", content=b"test input")]
@@ -716,9 +763,11 @@ async def test_pipeline_flow_saves_returned_documents(prefect_test_fixture, memo
     loaded = await memory_store.load("test-project", [StorageOutputDoc])
     assert len(loaded) == 1
     assert loaded[0].name == "output.txt"
+```
 
-# Example: Pipeline flow sets run context when missing
-# Source: tests/pipeline/test_flow_storage.py:70
+**Pipeline flow sets run context when missing** (`tests/pipeline/test_flow_storage.py:70`)
+
+```python
 @pytest.mark.asyncio
 async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture, memory_store):
     """Test that pipeline_flow sets RunContext if none exists."""
@@ -727,7 +776,7 @@ async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture,
     captured_ctx = None
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         nonlocal captured_ctx
         captured_ctx = get_run_context()
         return []
@@ -736,23 +785,28 @@ async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture,
 
     assert captured_ctx is not None
     assert captured_ctx.run_scope == "my-project/test_flow"
+```
 
-# === ERROR EXAMPLES (What NOT to Do) ===
 
-# Error: Pipeline task then trace raises error
-# Source: tests/pipeline/test_decorators.py:879
+## Error Examples
+
+**Pipeline task then trace raises error** (`tests/pipeline/test_decorators.py:840`)
+
+```python
 def test_pipeline_task_then_trace_raises_error(self):
     from ai_pipeline_core import trace
 
     with pytest.raises(TypeError, match=r"already decorated with @pipeline_task"):
 
         @trace
-        @pipeline_task(persist=False)
-        async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-            return x * 2
+        @pipeline_task
+        async def my_task() -> None:  # pyright: ignore[reportUnusedFunction]
+            pass
+```
 
-# Error: Pipeline flow then trace raises error
-# Source: tests/pipeline/test_decorators.py:901
+**Pipeline flow then trace raises error** (`tests/pipeline/test_decorators.py:862`)
+
+```python
 def test_pipeline_flow_then_trace_raises_error(self):
     from ai_pipeline_core import trace
 
@@ -761,12 +815,14 @@ def test_pipeline_flow_then_trace_raises_error(self):
         @trace
         @pipeline_flow()
         async def my_flow(  # pyright: ignore[reportUnusedFunction]
-            project_name: str, documents: list[Document], flow_options: FlowOptions
+            run_id: str, documents: list[Document], flow_options: FlowOptions
         ) -> list[Document]:
             return list([OutputDocument(name="output.txt", content=b"output")])
+```
 
-# Error: Sync function with pipeline task raises error
-# Source: tests/pipeline/test_decorators.py:825
+**Sync function with pipeline task raises error** (`tests/pipeline/test_decorators.py:786`)
+
+```python
 def test_sync_function_with_pipeline_task_raises_error(self):
     from typing import Any, cast
 
@@ -775,9 +831,11 @@ def test_sync_function_with_pipeline_task_raises_error(self):
         @cast(Any, pipeline_task)
         def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
             return x * 2
+```
 
-# Error: Sync function with pipeline task with params raises error
-# Source: tests/pipeline/test_decorators.py:834
+**Sync function with pipeline task with params raises error** (`tests/pipeline/test_decorators.py:795`)
+
+```python
 def test_sync_function_with_pipeline_task_with_params_raises_error(self):
     from typing import Any, cast
 
@@ -786,9 +844,11 @@ def test_sync_function_with_pipeline_task_with_params_raises_error(self):
         @cast(Any, pipeline_task(retries=3, trace_level="debug"))
         def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
             return x * 2
+```
 
-# Error: Trace then pipeline task raises error
-# Source: tests/pipeline/test_decorators.py:869
+**Trace then pipeline task raises error** (`tests/pipeline/test_decorators.py:830`)
+
+```python
 def test_trace_then_pipeline_task_raises_error(self):
     from ai_pipeline_core import trace
 
@@ -798,3 +858,4 @@ def test_trace_then_pipeline_task_raises_error(self):
         @trace
         async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
             return x * 2
+```

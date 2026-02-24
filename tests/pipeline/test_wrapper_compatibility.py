@@ -37,9 +37,9 @@ def test_flow_wrapper_creates_prefect_flow():
 async def test_pipeline_task_creates_prefect_task():
     """Test that pipeline_task creates a proper Prefect Task with tracing."""
 
-    @pipeline_task(persist=False)
-    async def my_task(x: int) -> int:
-        return x * 2
+    @pipeline_task
+    async def my_task() -> None:
+        pass
 
     # Check it's a Prefect Task
     assert hasattr(my_task, "__wrapped__")
@@ -63,8 +63,8 @@ def test_pipeline_flow_with_documents():
         pass
 
     @pipeline_flow()
-    async def my_doc_flow(project_name: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
-        return [OutputDoc.create(name="output.txt", content=b"output")]
+    async def my_doc_flow(run_id: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
+        return [OutputDoc.create_root(name="output.txt", content=b"output", reason="test input")]
 
     # Check it's a Prefect Flow
     assert hasattr(my_doc_flow, "__wrapped__")
@@ -96,15 +96,14 @@ async def test_pipeline_task_with_trace_params():
     """Test that pipeline_task decorator accepts trace parameters."""
 
     @pipeline_task(
-        persist=False,
         trace_level="debug",
         trace_ignore_input=True,
         trace_ignore_output=True,
         trace_ignore_inputs=["password"],
         name="my_task",
     )
-    async def my_task(x: int, password: str) -> int:
-        return x * 2
+    async def my_task(x: int, password: str) -> None:
+        pass
 
     # Should create a valid task
     assert hasattr(my_task, "__wrapped__")

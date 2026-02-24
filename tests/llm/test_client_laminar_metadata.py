@@ -56,14 +56,23 @@ def _make_chat_completion(
     )
 
 
+def _make_raw_response(completion: ChatCompletion, header_cost: float | None = None) -> MagicMock:
+    """Build a fake raw response wrapping a ChatCompletion with headers."""
+    raw = MagicMock()
+    raw.parse.return_value = completion
+    headers = {}
+    if header_cost is not None:
+        headers["x-litellm-response-cost"] = str(header_cost)
+    raw.headers = headers
+    return raw
+
+
 @pytest.fixture
 def mock_openai_and_laminar():
     """Mock OpenAI client and Laminar to capture span attributes."""
     captured_attrs: dict[str, object] = {}
     completion = _make_chat_completion(content="Test response", cost=0.003)
-
-    mock_client = AsyncMock()
-    mock_client.chat.completions.create = AsyncMock(return_value=completion)
+    raw_response = _make_raw_response(completion)
 
     mock_span = MagicMock()
     mock_span.set_attributes = MagicMock(side_effect=lambda attrs: captured_attrs.update(attrs))
@@ -75,7 +84,8 @@ def mock_openai_and_laminar():
         patch("ai_pipeline_core._llm_core.client.Laminar") as mock_laminar,
     ):
         mock_openai_instance = AsyncMock()
-        mock_openai_instance.chat.completions.create = AsyncMock(return_value=completion)
+        mock_openai_instance.chat.completions.with_raw_response.create = AsyncMock(return_value=raw_response)
+        mock_openai_instance.chat.completions.with_raw_response.parse = AsyncMock(return_value=raw_response)
         mock_openai_instance.__aenter__ = AsyncMock(return_value=mock_openai_instance)
         mock_openai_instance.__aexit__ = AsyncMock(return_value=None)
         mock_openai_cls.return_value = mock_openai_instance
@@ -97,8 +107,8 @@ class TestGenerateLaminarMetadata:
         await generate(messages, model="test-model")
 
         # gen_ai.usage.cost is the total cost recognized by Laminar backend
-        assert captured_attrs["gen_ai.usage.cost"] == 0.003
-        assert captured_attrs["gen_ai.usage.output_cost"] == 0.003
+        assert captured_attrs["gen_ai.usage.cost"] == pytest.approx(0.003)
+        assert captured_attrs["gen_ai.usage.output_cost"] == pytest.approx(0.003)
         # gen_ai.cost (without .usage.) is NOT recognized by Laminar — must not be set
         assert "gen_ai.cost" not in captured_attrs
 
@@ -134,15 +144,16 @@ class TestGenerateLaminarMetadata:
         await generate(messages, model="test-model", purpose="test_purpose", expected_cost=0.01)
 
         assert captured_attrs["purpose"] == "test_purpose"
-        assert captured_attrs["expected_cost"] == 0.01
+        assert captured_attrs["expected_cost"] == pytest.approx(0.01)
 
     async def test_no_cost_fields_when_cost_is_none(self, mock_openai_and_laminar):
         """Cost fields must be absent when no cost is available."""
         captured_attrs, mock_client = mock_openai_and_laminar
 
-        # Override with no-cost completion
+        # Override with no-cost completion (no header cost either)
         no_cost_completion = _make_chat_completion(content="Test", cost=None)
-        mock_client.chat.completions.create = AsyncMock(return_value=no_cost_completion)
+        raw_response = _make_raw_response(no_cost_completion, header_cost=None)
+        mock_client.chat.completions.with_raw_response.create = AsyncMock(return_value=raw_response)
 
         messages = [CoreMessage(role=Role.USER, content="Hello")]
         await generate(messages, model="test-model")
@@ -156,7 +167,8 @@ class TestGenerateLaminarMetadata:
         captured_attrs, mock_client = mock_openai_and_laminar
 
         completion = _make_chat_completion(content="Test", cached_tokens=80)
-        mock_client.chat.completions.create = AsyncMock(return_value=completion)
+        raw_response = _make_raw_response(completion)
+        mock_client.chat.completions.with_raw_response.create = AsyncMock(return_value=raw_response)
 
         messages = [CoreMessage(role=Role.USER, content="Hello")]
         await generate(messages, model="test-model")

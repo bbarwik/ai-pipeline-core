@@ -9,7 +9,6 @@ from opentelemetry.trace import StatusCode
 
 from ai_pipeline_core.logging import get_pipeline_logger
 
-from ._internal import is_internal_tracking
 from ._models import ATTR_INPUT_DOCUMENT_SHA256S, ATTR_OUTPUT_DOCUMENT_SHA256S, SpanType
 from ._service import TrackingService
 
@@ -44,10 +43,7 @@ def _classify_span(attrs: dict[str, Any]) -> SpanType:
 
 
 class TrackingSpanProcessor(SpanProcessor):
-    """Forwards completed spans to TrackingService.
-
-    Skips internal tracking spans (summary LLM calls) to prevent recursion.
-    """
+    """Forwards completed spans to TrackingService."""
 
     def __init__(self, service: TrackingService) -> None:
         """Initialize with tracking service."""
@@ -63,8 +59,6 @@ class TrackingSpanProcessor(SpanProcessor):
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         """Record span start."""
-        if is_internal_tracking():
-            return
         try:
             ctx = span.get_span_context()
             if ctx is None:
@@ -78,12 +72,10 @@ class TrackingSpanProcessor(SpanProcessor):
                 span_type=_classify_span(attrs),
             )
         except Exception as e:
-            logger.debug(f"TrackingSpanProcessor.on_start failed: {e}")
+            logger.debug("TrackingSpanProcessor.on_start failed: %s", e)
 
     def on_end(self, span: ReadableSpan) -> None:  # noqa: PLR0914
         """Record span completion with full details."""
-        if is_internal_tracking():
-            return
         try:
             ctx = span.get_span_context()
             if ctx is None:
@@ -146,7 +138,7 @@ class TrackingSpanProcessor(SpanProcessor):
                     events=events,
                 )
         except Exception as e:
-            logger.debug(f"TrackingSpanProcessor.on_end failed: {e}")
+            logger.debug("TrackingSpanProcessor.on_end failed: %s", e)
 
     def shutdown(self) -> None:
         """Shutdown the tracking service."""

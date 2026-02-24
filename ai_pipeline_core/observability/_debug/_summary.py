@@ -2,13 +2,11 @@
 
 Generates _summary.md files with execution tree, LLM calls, cost breakdown,
 and navigation guide. No LLM dependencies — pure text formatting.
-
-For LLM-powered auto-summary, see _auto_summary.py.
 """
 
 from typing import Any
 
-from ._types import SpanInfo, TraceState
+from ._config import SpanInfo, TraceState
 
 
 def generate_summary(trace: TraceState) -> str:  # noqa: PLR0912, PLR0914, PLR0915
@@ -195,31 +193,22 @@ def _aggregate_costs_by_parent(trace: TraceState) -> list[dict[str, Any]]:
 
 def _format_duration(trace: TraceState) -> str:
     """Format trace duration as human-readable string."""
-    # Calculate from spans if we have them
     if not trace.spans:
         return "unknown"
 
-    spans_list = list(trace.spans.values())
-    start = min(s.start_time for s in spans_list)
-    end_times = [s.end_time for s in spans_list if s.end_time]
-
+    spans = trace.spans.values()
+    end_times = [s.end_time for s in spans if s.end_time]
     if not end_times:
         return "running..."
 
-    end = max(end_times)
-    duration = (end - start).total_seconds()
-
-    if duration < 1:
-        return f"{int(duration * 1000)}ms"
-    if duration < 60:
-        return f"{duration:.1f}s"
-    if duration < 3600:
-        minutes = int(duration // 60)
-        seconds = int(duration % 60)
-        return f"{minutes}m {seconds}s"
-    hours = int(duration // 3600)
-    minutes = int((duration % 3600) // 60)
-    return f"{hours}h {minutes}m"
+    secs = (max(end_times) - min(s.start_time for s in spans)).total_seconds()
+    if secs < 1:
+        return f"{int(secs * 1000)}ms"
+    if secs < 60:
+        return f"{secs:.1f}s"
+    if secs < 3600:
+        return f"{int(secs // 60)}m {int(secs % 60)}s"
+    return f"{int(secs // 3600)}h {int((secs % 3600) // 60)}m"
 
 
 def _format_span_line(span: SpanInfo) -> str:
@@ -252,61 +241,18 @@ def _format_span_line(span: SpanInfo) -> str:
     return f"{span.name} ({duration}) {status_icon}{desc_suffix}{llm_suffix}"
 
 
-def _build_tree(trace: TraceState, span_id: str, prefix: str = "") -> list[str]:
+def _build_tree(trace: TraceState, span_id: str, prefix: str = "", continuation: str = "") -> list[str]:
     """Build tree representation of span hierarchy (fully recursive)."""
-    lines: list[str] = []
     span = trace.spans.get(span_id)
     if not span:
-        return lines
+        return []
 
-    # Add this span's line
-    lines.append(f"{prefix}{_format_span_line(span)}")
+    lines = [f"{prefix}{_format_span_line(span)}"]
 
-    # Process children recursively
-    children = span.children
-    for i, child_id in enumerate(children):
-        is_last = i == len(children) - 1
-        child_prefix = prefix + ("\u2514\u2500\u2500 " if is_last else "\u251c\u2500\u2500 ")
-        continuation_prefix = prefix + ("    " if is_last else "\u2502   ")
-
-        child_span = trace.spans.get(child_id)
-        if child_span:
-            # Add child line
-            lines.append(f"{child_prefix}{_format_span_line(child_span)}")
-
-            # Recursively add all descendants
-            for j, grandchild_id in enumerate(child_span.children):
-                gc_is_last = j == len(child_span.children) - 1
-                gc_connector = "\u2514\u2500\u2500 " if gc_is_last else "\u251c\u2500\u2500 "
-                gc_prefix = continuation_prefix + gc_connector
-                gc_continuation = continuation_prefix + ("    " if gc_is_last else "\u2502   ")
-
-                # Recursively build subtree for grandchild and all its descendants
-                subtree = _build_tree_recursive(trace, grandchild_id, gc_prefix, gc_continuation)
-                lines.extend(subtree)
-
-    return lines
-
-
-def _build_tree_recursive(trace: TraceState, span_id: str, prefix: str, continuation: str) -> list[str]:
-    """Recursively build tree for a span and all descendants."""
-    lines: list[str] = []
-    span = trace.spans.get(span_id)
-    if not span:
-        return lines
-
-    # Add this span's line with the given prefix
-    lines.append(f"{prefix}{_format_span_line(span)}")
-
-    # Process children
-    children = span.children
-    for i, child_id in enumerate(children):
-        is_last = i == len(children) - 1
+    for i, child_id in enumerate(span.children):
+        is_last = i == len(span.children) - 1
         child_prefix = continuation + ("\u2514\u2500\u2500 " if is_last else "\u251c\u2500\u2500 ")
-        child_continuation = continuation + ("    " if is_last else "\u2502   ")
-
-        # Recurse for all children
-        subtree = _build_tree_recursive(trace, child_id, child_prefix, child_continuation)
-        lines.extend(subtree)
+        child_cont = continuation + ("    " if is_last else "\u2502   ")
+        lines.extend(_build_tree(trace, child_id, child_prefix, child_cont))
 
     return lines

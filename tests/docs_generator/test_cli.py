@@ -2,16 +2,16 @@ from pathlib import Path
 
 from ai_pipeline_core.docs_generator.cli import (
     EXCLUDED_MODULES,
+    README_FILENAME,
     TEST_DIR_OVERRIDES,
     _discover_modules,
-    _render_index,
+    _render_readme,
     _run_check,
     _run_generate,
     main,
 )
 from ai_pipeline_core.docs_generator.extractor import SymbolTable
 from ai_pipeline_core.docs_generator.guide_builder import GuideData
-from ai_pipeline_core.docs_generator.validator import HASH_FILE
 
 
 def _make_repo(tmp_path):
@@ -71,7 +71,7 @@ def test_generate_writes_guides(tmp_path, monkeypatch):
             data.functions = [func]
         return data
 
-    def mock_render(data):
+    def mock_render(data, *, version=""):
         return f"# GUIDE: {data.module_name}\n"
 
     def mock_manage(data, rendered_content, max_size=51200):
@@ -87,13 +87,12 @@ def test_generate_writes_guides(tmp_path, monkeypatch):
 
     result = _run_generate(src, tests, output, tmp_path)
     assert result == 0
-    guide_files = [f for f in output.glob("*.md") if f.name != "INDEX.md"]
+    guide_files = [f for f in output.glob("*.md") if f.name != README_FILENAME]
     assert len(guide_files) > 0
-    assert (output / "INDEX.md").exists()
-    assert (output / HASH_FILE).exists()
+    assert (output / README_FILENAME).exists()
 
 
-def test_generate_writes_index(tmp_path, monkeypatch):
+def test_generate_writes_intro(tmp_path, monkeypatch):
     src, tests, output = _make_repo(tmp_path)
     table = SymbolTable()
 
@@ -110,29 +109,7 @@ def test_generate_writes_index(tmp_path, monkeypatch):
     monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_guide", mock_build_guide)
 
     _run_generate(src, tests, output, tmp_path)
-    assert (output / "INDEX.md").exists()
-
-
-def test_generate_writes_hash(tmp_path, monkeypatch):
-    src, tests, output = _make_repo(tmp_path)
-    table = SymbolTable()
-
-    def mock_build_symbol_table(source_dir):
-        return table
-
-    def mock_build_guide(module_name, source_dir, tests_dir, tbl, overrides, repo_root=None):
-        return _empty_guide_data(module_name)
-
-    monkeypatch.setattr(
-        "ai_pipeline_core.docs_generator.cli.build_symbol_table",
-        mock_build_symbol_table,
-    )
-    monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_guide", mock_build_guide)
-
-    _run_generate(src, tests, output, tmp_path)
-    assert (output / HASH_FILE).exists()
-    content = (output / HASH_FILE).read_text().strip()
-    assert len(content) == 64
+    assert (output / README_FILENAME).exists()
 
 
 def test_generate_skips_empty_modules(tmp_path, monkeypatch):
@@ -152,8 +129,8 @@ def test_generate_skips_empty_modules(tmp_path, monkeypatch):
     monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_guide", mock_build_guide)
 
     _run_generate(src, tests, output, tmp_path)
-    # All modules are empty, so no guide .md files (only INDEX.md)
-    guide_files = [f for f in output.glob("*.md") if f.name != "INDEX.md"]
+    # All modules are empty, so no guide .md files (only README.md)
+    guide_files = [f for f in output.glob("*.md") if f.name != README_FILENAME]
     assert guide_files == []
 
 
@@ -180,33 +157,27 @@ def test_generate_cleans_stale_files(tmp_path, monkeypatch):
     assert not (output / "old_module.md").exists()
 
 
-def test_check_passes_valid(tmp_path, monkeypatch):
+def test_check_passes_valid(tmp_path):
     src, tests, output = _make_repo(tmp_path)
     output.mkdir()
-
-    from ai_pipeline_core.docs_generator.validator import compute_source_hash
-
-    h = compute_source_hash(src, tests)
-    (output / HASH_FILE).write_text(h + "\n")
     (output / "mod.md").write_text("def foo():\n    pass\n")
 
-    result = _run_check(src, tests, output)
+    result = _run_check(src, output)
     assert result == 0
 
 
-def test_check_fails_stale(tmp_path):
+def test_check_fails_missing_symbols(tmp_path):
     src, tests, output = _make_repo(tmp_path)
     output.mkdir()
-    (output / HASH_FILE).write_text("wrong_hash\n")
-    (output / "mod.md").write_text("def foo():\n    pass\n")
+    (output / "mod.md").write_text("nothing here\n")
 
-    result = _run_check(src, tests, output)
+    result = _run_check(src, output)
     assert result == 1
 
 
 def test_check_fails_missing_dir(tmp_path):
     src, tests, output = _make_repo(tmp_path)
-    result = _run_check(src, tests, output)
+    result = _run_check(src, output)
     assert result == 1
 
 
@@ -259,46 +230,125 @@ def test_test_dir_overrides_correctness():
         assert override_dir.is_dir(), f"Override dir {override_dir} for module {module_name} does not exist"
 
 
-def test_render_index_content():
+def test_render_readme_content():
     generated = [("documents", 5000), ("llm", 3000)]
-    content = _render_index(generated)
-    assert "# AI Documentation Index" in content
+    guide_data_map = {
+        "documents": _empty_guide_data("documents"),
+        "llm": _empty_guide_data("llm"),
+    }
+    content = _render_readme(generated, guide_data_map, {}, {}, "")
+    assert "<!-- Auto-generated by ai_pipeline_core.docs_generator" in content
+    assert "# ai-pipeline-core" in content
     assert "documents" in content
     assert "llm" in content
-    assert "5,000" in content
 
 
-# ---------------------------------------------------------------------------
-# Symbol Index in INDEX.md (#1)
-# ---------------------------------------------------------------------------
-
-
-def test_render_index_with_symbol_index():
-    generated = [("documents", 5000), ("llm", 3000)]
-    symbol_index = [
-        ("Attachment", "class", "documents"),
-        ("Conversation", "class", "llm"),
-        ("generate", "func", "llm"),
-    ]
-    content = _render_index(generated, symbol_index=symbol_index)
-    assert "## Symbol Index" in content
-    assert "| Attachment | class | [documents](documents.md) |" in content
-    assert "| Conversation | class | [llm](llm.md) |" in content
-    assert "| generate | func | [llm](llm.md) |" in content
-
-
-def test_render_index_no_symbol_index_when_empty():
+def test_render_readme_with_version():
     generated = [("documents", 5000)]
-    content = _render_index(generated)
-    assert "## Symbol Index" not in content
+    guide_data_map = {"documents": _empty_guide_data("documents")}
+    content = _render_readme(generated, guide_data_map, {}, {}, "1.2.3")
+    assert "v1.2.3" in content
 
 
-def test_render_index_module_descriptions():
+def test_render_readme_module_descriptions():
     generated = [("documents", 5000), ("llm", 3000)]
     descriptions = {"documents": "Document handling.", "llm": "LLM interaction."}
-    content = _render_index(generated, module_descriptions=descriptions)
+    guide_data_map = {
+        "documents": _empty_guide_data("documents"),
+        "llm": _empty_guide_data("llm"),
+    }
+    content = _render_readme(generated, guide_data_map, descriptions, {}, "")
     assert "documents](documents.md) — Document handling." in content
     assert "llm](llm.md) — LLM interaction." in content
+
+
+def test_render_readme_module_sections():
+    from ai_pipeline_core.docs_generator.extractor import FunctionInfo
+
+    func = FunctionInfo(
+        name="generate",
+        signature="(model: str) -> str",
+        docstring="Generate LLM output.",
+        source="async def generate(model: str) -> str: ...",
+        is_public=True,
+        is_async=True,
+        line_count=1,
+        module_path="llm",
+    )
+    data = _empty_guide_data("llm")
+    data.functions = [func]
+    generated = [("llm", 3000)]
+    guide_data_map = {"llm": data}
+    module_lines = {"llm": 500}
+    content = _render_readme(generated, guide_data_map, {}, module_lines, "")
+    assert "## llm" in content
+    assert "500" in content
+    # Functions rendered as Python code snippets
+    assert "async def generate(model: str) -> str:" in content
+    assert '"""Generate LLM output."""' in content
+
+
+def test_render_readme_class_summary():
+    from ai_pipeline_core.docs_generator.extractor import ClassInfo, MethodInfo
+
+    method = MethodInfo(
+        name="send",
+        signature="(self, content: str) -> Conversation",
+        docstring="Send a message.",
+        source="def send(self, content: str) -> Conversation: ...",
+        is_property=False,
+        is_classmethod=False,
+        is_abstract=False,
+        line_count=1,
+    )
+    cls = ClassInfo(
+        name="Conversation",
+        bases=("BaseModel",),
+        docstring="Immutable conversation manager.",
+        is_public=True,
+        class_vars=(),
+        methods=(method,),
+        validators=(),
+        module_path="llm",
+    )
+    data = _empty_guide_data("llm")
+    data.classes = [cls]
+    generated = [("llm", 3000)]
+    guide_data_map = {"llm": data}
+    content = _render_readme(generated, guide_data_map, {}, {}, "")
+    # Classes rendered as Python code snippets
+    assert "class Conversation(BaseModel):" in content
+    assert '"""Immutable conversation manager."""' in content
+    # Method stubs include docstring
+    assert "def send(self, content: str) -> Conversation:" in content
+    assert '"""Send a message."""' in content
+
+
+def test_render_readme_class_field_descriptions():
+    from ai_pipeline_core.docs_generator.extractor import ClassInfo
+
+    cls = ClassInfo(
+        name="Document",
+        bases=("BaseModel",),
+        docstring="Document model.",
+        is_public=True,
+        class_vars=(
+            ("name", "str", "", "Filename with extension"),
+            ("content", "bytes", "", "Raw binary content"),
+            ("derived_from", "tuple[str, ...]", "()", "Content provenance hashes or URLs"),
+        ),
+        methods=(),
+        validators=(),
+        module_path="documents",
+    )
+    data = _empty_guide_data("documents")
+    data.classes = [cls]
+    generated = [("documents", 3000)]
+    guide_data_map = {"documents": data}
+    content = _render_readme(generated, guide_data_map, {}, {}, "")
+    assert "name: str  # Filename with extension" in content
+    assert "content: bytes  # Raw binary content" in content
+    assert "derived_from: tuple[str, ...] = ()  # Content provenance hashes or URLs" in content
 
 
 # ---------------------------------------------------------------------------
@@ -354,3 +404,21 @@ def test_build_import_map(tmp_path):
     result = _build_import_map(src)
     assert "Document" in result.get("documents", [])
     assert "Conversation" in result.get("llm", [])
+
+
+# ---------------------------------------------------------------------------
+# Version reading
+# ---------------------------------------------------------------------------
+
+
+def test_read_version(tmp_path):
+    from ai_pipeline_core.docs_generator.cli import _read_version
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "test"\nversion = "1.2.3"\n')
+    assert _read_version(tmp_path) == "1.2.3"
+
+
+def test_read_version_missing_file(tmp_path):
+    from ai_pipeline_core.docs_generator.cli import _read_version
+
+    assert _read_version(tmp_path) == ""

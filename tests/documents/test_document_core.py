@@ -2,7 +2,6 @@
 
 import base64
 from enum import StrEnum
-from typing import ClassVar
 
 import pytest
 
@@ -33,7 +32,7 @@ class AllowedDocumentNames(StrEnum):
 class RestrictedDocument(Document):
     """Document with restricted file names."""
 
-    FILES: ClassVar[type[AllowedDocumentNames]] = AllowedDocumentNames
+    FILES = AllowedDocumentNames
 
     def get_type(self) -> str:
         return "restricted"
@@ -307,10 +306,11 @@ class TestDocumentConstructor:
 
     def test_constructor_with_str_content(self):
         text = "Hello ✨"
-        doc = ConcreteTestDocument.create(
+        doc = ConcreteTestDocument.create_root(
             name="greeting.txt",
             description="str content",
             content=text,
+            reason="test input",
         )
         assert isinstance(doc, ConcreteTestDocument)
         assert doc.name == "greeting.txt"
@@ -334,13 +334,13 @@ class TestDocumentConstructor:
     def test_constructor_validation_applies(self):
         # Name validation still applies through constructor
         with pytest.raises(DocumentNameError):
-            ConcreteTestDocument.create(name="../hack.txt", description=None, content="x")
+            ConcreteTestDocument.create_root(name="../hack.txt", description=None, content="x", reason="test input")
 
         # Size validation applies too (using SmallDocument)
-        doc_ok = SmallDocument.create(name="ok.txt", description=None, content="12345")
+        doc_ok = SmallDocument.create_root(name="ok.txt", description=None, content="12345", reason="test input")
         assert doc_ok.size == 5
         with pytest.raises(DocumentSizeError):
-            SmallDocument.create(name="big.txt", description=None, content="12345678901")
+            SmallDocument.create_root(name="big.txt", description=None, content="12345678901", reason="test input")
 
 
 class TestNewDocumentMethods:
@@ -571,7 +571,7 @@ class TestParsedMethod:
     def test_parsed_str_roundtrip(self):
         """Test that str content roundtrips correctly."""
         original = "Hello, World! 🌍"
-        doc = ConcreteTestDocument.create(name="test.txt", content=original)
+        doc = ConcreteTestDocument.create_root(name="test.txt", content=original, reason="test input")
         assert doc.parse(str) == original
 
     def test_parsed_bytes_roundtrip(self):
@@ -630,7 +630,7 @@ class TestParsedMethod:
     def test_parsed_json_string_list_roundtrip(self):
         """Test that string list → JSON → list roundtrips correctly via create()."""
         original = ["First item", "Second item", "Third item"]
-        doc = ConcreteTestDocument.create(name="items.json", content=original)
+        doc = ConcreteTestDocument.create_root(name="items.json", content=original, reason="test input")
         assert doc.parse(list) == original
 
     def test_parsed_pydantic_model_json(self):
@@ -677,7 +677,7 @@ class TestParsedMethod:
 
     def test_parsed_unsupported_type(self):
         """Test that unsupported types raise ValueError."""
-        doc = ConcreteTestDocument.create(name="test.txt", content="text")
+        doc = ConcreteTestDocument.create_root(name="test.txt", content="text", reason="test input")
 
         with pytest.raises(ValueError, match="Unsupported parse type"):
             doc.parse(int)
@@ -687,7 +687,7 @@ class TestParsedMethod:
 
     def test_parsed_wrong_extension_for_type(self):
         """Test that wrong extension for requested type raises error."""
-        doc = ConcreteTestDocument.create(name="test.txt", content="not json")
+        doc = ConcreteTestDocument.create_root(name="test.txt", content="not json", reason="test input")
 
         # .txt file cannot be parsed as dict without being JSON/YAML
         with pytest.raises(ValueError):
@@ -701,7 +701,7 @@ class TestParsedMethod:
     def test_parsed_edge_cases(self):
         """Test edge cases for parsed method."""
         # Empty string
-        doc1 = ConcreteTestDocument.create(name="empty.txt", content="")
+        doc1 = ConcreteTestDocument.create_root(name="empty.txt", content="", reason="test input")
         assert doc1.parse(str) == ""
         assert doc1.parse(bytes) == b""
 
@@ -716,7 +716,7 @@ class TestParsedMethod:
         assert doc3.parse(dict) == {}
 
         # Single item JSON list
-        doc4 = ConcreteTestDocument.create(name="single.json", content=["Only item"])
+        doc4 = ConcreteTestDocument.create_root(name="single.json", content=["Only item"], reason="test input")
         assert doc4.parse(list) == ["Only item"]
 
 
@@ -725,187 +725,187 @@ class TestParseStrictDispatch:
 
     def test_parse_md_as_dict_raises(self):
         """Markdown files cannot be parsed as structured data."""
-        doc = ConcreteTestDocument.create(name="report.md", content="# Hello")
+        doc = ConcreteTestDocument.create_root(name="report.md", content="# Hello", reason="test input")
         with pytest.raises(ValueError, match=r"use .json or .yaml extension"):
             doc.parse(dict)
 
     def test_parse_md_as_list_raises(self):
         """Markdown files cannot be parsed as list."""
-        doc = ConcreteTestDocument.create(name="report.md", content="# Hello")
+        doc = ConcreteTestDocument.create_root(name="report.md", content="# Hello", reason="test input")
         with pytest.raises(ValueError, match=r"use .json or .yaml extension"):
             doc.parse(list)
 
     def test_parse_md_as_str_works(self):
         """Markdown files can still be parsed as string."""
-        doc = ConcreteTestDocument.create(name="report.md", content="# Hello")
+        doc = ConcreteTestDocument.create_root(name="report.md", content="# Hello", reason="test input")
         assert doc.parse(str) == "# Hello"
 
     def test_parse_txt_as_dict_raises(self):
         """Text files cannot be parsed as structured data."""
-        doc = ConcreteTestDocument.create(name="data.txt", content="not json")
+        doc = ConcreteTestDocument.create_root(name="data.txt", content="not json", reason="test input")
         with pytest.raises(ValueError, match=r"use .json or .yaml extension"):
             doc.parse(dict)
 
     def test_create_md_with_dict_raises(self):
         """Cannot create .md document with dict content."""
         with pytest.raises(ValueError, match=r"requires .json or .yaml extension"):
-            ConcreteTestDocument.create(name="report.md", content={"key": "value"})
+            ConcreteTestDocument.create_root(name="report.md", content={"key": "value"}, reason="test input")
 
     def test_create_md_with_list_raises(self):
         """Cannot create .md document with list content."""
         with pytest.raises(ValueError, match=r"requires .json or .yaml extension"):
-            ConcreteTestDocument.create(name="report.md", content=["a", "b"])
+            ConcreteTestDocument.create_root(name="report.md", content=["a", "b"], reason="test input")
 
     def test_create_parse_symmetry_json(self):
         """Create and parse are symmetric for JSON."""
         data = {"key": "value", "nested": [1, 2, 3]}
-        doc = ConcreteTestDocument.create(name="data.json", content=data)
+        doc = ConcreteTestDocument.create_root(name="data.json", content=data, reason="test input")
         assert doc.parse(dict) == data
 
     def test_create_parse_symmetry_yaml(self):
         """Create and parse are symmetric for YAML."""
         data = {"key": "value", "items": ["a", "b"]}
-        doc = ConcreteTestDocument.create(name="config.yaml", content=data)
+        doc = ConcreteTestDocument.create_root(name="config.yaml", content=data, reason="test input")
         assert doc.parse(dict) == data
 
 
-class TestOriginsValidator:
-    """Tests for the origins field validator enforcing SHA256 hashes."""
+class TestTriggeredByValidator:
+    """Tests for the triggered_by field validator enforcing SHA256 hashes."""
 
-    def test_valid_origin_accepted(self):
-        """Valid document SHA256 hashes are accepted as origins."""
-        source = ConcreteTestDocument.create(name="source.txt", content="data")
-        doc = ConcreteTestDocument.create(name="derived.txt", content="result", origins=(source.sha256,))
-        assert doc.origins == (source.sha256,)
+    def test_valid_triggered_by_accepted(self):
+        """Valid document SHA256 hashes are accepted as triggered_by."""
+        source = ConcreteTestDocument.create_root(name="source.txt", content="data", reason="test input")
+        doc = ConcreteTestDocument.create(name="derived.txt", content="result", triggered_by=(source.sha256,))
+        assert doc.triggered_by == (source.sha256,)
 
-    def test_invalid_origin_rejected(self):
-        """Non-SHA256 strings are rejected as origins."""
-        with pytest.raises(ValueError, match="Origin must be a document SHA256 hash"):
-            ConcreteTestDocument.create(name="doc.txt", content="data", origins=("not-a-hash",))
+    def test_invalid_triggered_by_rejected(self):
+        """Non-SHA256 strings are rejected as triggered_by."""
+        with pytest.raises(ValueError, match="triggered_by entry must be a document SHA256 hash"):
+            ConcreteTestDocument.create(name="doc.txt", content="data", triggered_by=("not-a-hash",))
 
-    def test_url_origin_rejected(self):
-        """URLs are rejected as origins (origins must be document hashes)."""
-        with pytest.raises(ValueError, match="Origin must be a document SHA256 hash"):
-            ConcreteTestDocument.create(name="doc.txt", content="data", origins=("https://example.com",))
+    def test_url_triggered_by_rejected(self):
+        """URLs are rejected as triggered_by (triggered_by must be document hashes)."""
+        with pytest.raises(ValueError, match="triggered_by entry must be a document SHA256 hash"):
+            ConcreteTestDocument.create(name="doc.txt", content="data", triggered_by=("https://example.com",))
 
-    def test_empty_origins_accepted(self):
-        """Empty origins tuple is accepted."""
-        doc = ConcreteTestDocument.create(name="doc.txt", content="data", origins=())
-        assert doc.origins == ()
+    def test_empty_triggered_by_accepted(self):
+        """Empty triggered_by tuple is accepted."""
+        doc = ConcreteTestDocument.create_root(name="doc.txt", content="data", reason="test input")
+        assert doc.triggered_by == ()
 
 
-class TestSourceOriginOverlapValidator:
-    """Tests for the validator rejecting same SHA256 in both sources and origins."""
+class TestProvenanceOverlapValidator:
+    """Tests for the validator rejecting same SHA256 in both derived_from and triggered_by."""
 
     def test_overlap_rejected(self):
-        """Same SHA256 in both sources and origins raises ValueError."""
-        source = ConcreteTestDocument.create(name="source.txt", content="data")
-        with pytest.raises(ValueError, match="appears in both sources and origins"):
+        """Same SHA256 in both derived_from and triggered_by raises ValueError."""
+        source = ConcreteTestDocument.create_root(name="source.txt", content="data", reason="test input")
+        with pytest.raises(ValueError, match="appears in both derived_from and triggered_by"):
             ConcreteTestDocument.create(
                 name="doc.txt",
                 content="result",
-                sources=(source.sha256,),
-                origins=(source.sha256,),
+                derived_from=(source.sha256,),
+                triggered_by=(source.sha256,),
             )
 
     def test_no_overlap_accepted(self):
-        """Different SHA256s in sources and origins are accepted."""
-        src = ConcreteTestDocument.create(name="src.txt", content="source")
-        origin = ConcreteTestDocument.create(name="origin.txt", content="origin")
+        """Different SHA256s in derived_from and triggered_by are accepted."""
+        src = ConcreteTestDocument.create_root(name="src.txt", content="source", reason="test input")
+        origin = ConcreteTestDocument.create_root(name="origin.txt", content="origin", reason="test input")
         doc = ConcreteTestDocument.create(
             name="doc.txt",
             content="result",
-            sources=(src.sha256,),
-            origins=(origin.sha256,),
+            derived_from=(src.sha256,),
+            triggered_by=(origin.sha256,),
         )
-        assert doc.sources == (src.sha256,)
-        assert doc.origins == (origin.sha256,)
+        assert doc.derived_from == (src.sha256,)
+        assert doc.triggered_by == (origin.sha256,)
 
     def test_url_source_with_sha256_origin_accepted(self):
-        """URL in sources + SHA256 in origins is fine (no overlap possible)."""
-        origin = ConcreteTestDocument.create(name="plan.txt", content="plan")
+        """URL in derived_from + SHA256 in triggered_by is fine (no overlap possible)."""
+        origin = ConcreteTestDocument.create_root(name="plan.txt", content="plan", reason="test input")
         doc = ConcreteTestDocument.create(
             name="doc.txt",
             content="result",
-            sources=("https://example.com",),
-            origins=(origin.sha256,),
+            derived_from=("https://example.com",),
+            triggered_by=(origin.sha256,),
         )
-        assert len(doc.sources) == 1
-        assert len(doc.origins) == 1
+        assert len(doc.derived_from) == 1
+        assert len(doc.triggered_by) == 1
 
 
-class TestSourcesTuple:
-    """Tests for sources as tuple[str, ...] instead of list[str]."""
+class TestDerivedFromTuple:
+    """Tests for derived_from as tuple[str, ...] instead of list[str]."""
 
-    def test_sources_default_is_empty_tuple(self):
-        """Sources default to empty tuple, not empty list."""
-        doc = ConcreteTestDocument.create(name="doc.txt", content="data")
-        assert doc.sources == ()
-        assert isinstance(doc.sources, tuple)
+    def test_derived_from_default_is_empty_tuple(self):
+        """derived_from defaults to empty tuple, not empty list."""
+        doc = ConcreteTestDocument.create_root(name="doc.txt", content="data", reason="test input")
+        assert doc.derived_from == ()
+        assert isinstance(doc.derived_from, tuple)
 
-    def test_sources_are_tuple(self):
-        """Sources are stored as tuple."""
-        doc = ConcreteTestDocument.create(name="doc.txt", content="data", sources=("https://example.com/ref1", "https://example.com/ref2"))
-        assert isinstance(doc.sources, tuple)
-        assert doc.sources == ("https://example.com/ref1", "https://example.com/ref2")
+    def test_derived_from_is_tuple(self):
+        """derived_from is stored as tuple."""
+        doc = ConcreteTestDocument.create(name="doc.txt", content="data", derived_from=("https://example.com/ref1", "https://example.com/ref2"))
+        assert isinstance(doc.derived_from, tuple)
+        assert doc.derived_from == ("https://example.com/ref1", "https://example.com/ref2")
 
-    def test_source_documents_returns_tuple(self):
-        """source_documents property returns tuple, not list."""
-        source = ConcreteTestDocument.create(name="src.txt", content="x")
+    def test_content_documents_returns_tuple(self):
+        """content_documents property returns tuple, not list."""
+        source = ConcreteTestDocument.create_root(name="src.txt", content="x", reason="test input")
         doc = ConcreteTestDocument.create(
             name="doc.txt",
             content="y",
-            sources=(source.sha256, "https://example.com"),
+            derived_from=(source.sha256, "https://example.com"),
         )
-        assert isinstance(doc.source_documents, tuple)
-        assert doc.source_documents == (source.sha256,)
+        assert isinstance(doc.content_documents, tuple)
+        assert doc.content_documents == (source.sha256,)
 
-    def test_source_references_returns_tuple(self):
-        """source_references property returns tuple, not list."""
-        source = ConcreteTestDocument.create(name="src.txt", content="x")
+    def test_content_references_returns_tuple(self):
+        """content_references property returns tuple, not list."""
+        source = ConcreteTestDocument.create_root(name="src.txt", content="x", reason="test input")
         doc = ConcreteTestDocument.create(
             name="doc.txt",
             content="y",
-            sources=(source.sha256, "https://example.com"),
+            derived_from=(source.sha256, "https://example.com"),
         )
-        assert isinstance(doc.source_references, tuple)
-        assert doc.source_references == ("https://example.com",)
+        assert isinstance(doc.content_references, tuple)
+        assert doc.content_references == ("https://example.com",)
 
 
 class TestFromDictRoundtrip:
     """Tests for from_dict() correctness including edge cases."""
 
-    def test_empty_sources_roundtrip(self):
-        """Empty sources survive serialize → deserialize roundtrip."""
-        doc = ConcreteTestDocument.create(name="doc.txt", content="data")
+    def test_empty_derived_from_roundtrip(self):
+        """Empty derived_from survives serialize → deserialize roundtrip."""
+        doc = ConcreteTestDocument.create_root(name="doc.txt", content="data", reason="test input")
         serialized = doc.serialize_model()
-        assert serialized["sources"] == []  # serialized as list
+        assert serialized["derived_from"] == []  # serialized as list
         restored = ConcreteTestDocument.from_dict(serialized)
-        assert restored.sources == ()  # restored as tuple
-        assert isinstance(restored.sources, tuple)
+        assert restored.derived_from == ()  # restored as tuple
+        assert isinstance(restored.derived_from, tuple)
 
-    def test_sources_roundtrip(self):
-        """Non-empty sources survive serialize → deserialize roundtrip."""
-        doc = ConcreteTestDocument.create(name="doc.txt", content="data", sources=("https://example.com/ref1", "https://example.com/ref2"))
+    def test_derived_from_roundtrip(self):
+        """Non-empty derived_from survives serialize → deserialize roundtrip."""
+        doc = ConcreteTestDocument.create(name="doc.txt", content="data", derived_from=("https://example.com/ref1", "https://example.com/ref2"))
         serialized = doc.serialize_model()
         restored = ConcreteTestDocument.from_dict(serialized)
-        assert restored.sources == ("https://example.com/ref1", "https://example.com/ref2")
+        assert restored.derived_from == ("https://example.com/ref1", "https://example.com/ref2")
 
-    def test_missing_sources_key_in_dict(self):
-        """from_dict with no 'sources' key defaults to empty tuple."""
+    def test_missing_derived_from_key_in_dict(self):
+        """from_dict with no 'derived_from' key defaults to empty tuple."""
         restored = ConcreteTestDocument.from_dict({
             "name": "doc.txt",
             "content": "data",
         })
-        assert restored.sources == ()
+        assert restored.derived_from == ()
 
-    def test_missing_origins_key_in_dict(self):
-        """from_dict with no 'origins' key defaults to empty tuple."""
+    def test_missing_triggered_by_key_in_dict(self):
+        """from_dict with no 'triggered_by' key defaults to empty tuple."""
         restored = ConcreteTestDocument.from_dict({
             "name": "doc.txt",
             "content": "data",
         })
-        assert restored.origins == ()
+        assert restored.triggered_by == ()
 
 
 class TestMimeTypeProperty:
@@ -913,12 +913,12 @@ class TestMimeTypeProperty:
 
     def test_document_mime_type(self):
         """Document.mime_type returns detected MIME type."""
-        doc = ConcreteTestDocument.create(name="data.json", content={"key": "value"})
+        doc = ConcreteTestDocument.create_root(name="data.json", content={"key": "value"}, reason="test input")
         assert doc.mime_type == "application/json"
 
     def test_document_mime_type_text(self):
         """Text documents get text MIME type."""
-        doc = ConcreteTestDocument.create(name="readme.md", content="# Hello")
+        doc = ConcreteTestDocument.create_root(name="readme.md", content="# Hello", reason="test input")
         assert "text" in doc.mime_type
 
     def test_attachment_mime_type(self):
@@ -933,7 +933,7 @@ class TestMimeTypeProperty:
 
     def test_document_no_detected_mime_type(self):
         """Document has no detected_mime_type attribute (renamed to mime_type)."""
-        doc = ConcreteTestDocument.create(name="test.txt", content="hello")
+        doc = ConcreteTestDocument.create_root(name="test.txt", content="hello", reason="test input")
         assert not hasattr(doc, "detected_mime_type")
 
 

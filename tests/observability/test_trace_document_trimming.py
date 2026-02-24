@@ -109,7 +109,7 @@ class TestDocumentTrimming:
     def test_trim_documents_in_data_nested(self):
         """Test trimming documents in nested data structures."""
         from ai_pipeline_core.observability.tracing import (
-            _trim_documents_in_data,
+            trim_documents_in_data,
         )
 
         long_text = "x" * 300
@@ -132,7 +132,7 @@ class TestDocumentTrimming:
             },
         }
 
-        result = _trim_documents_in_data(data)
+        result = trim_documents_in_data(data)
 
         # Both docs should be trimmed (all documents trimmed equally)
         assert "[trimmed" in result["docs"][0]["content"]
@@ -189,7 +189,7 @@ class TestDocumentTrimming:
     def test_trimming_formatter_with_document_list(self):
         """Test that list[Document] is properly handled by trimming formatters."""
         from ai_pipeline_core.observability.tracing import (
-            _trim_documents_in_data,
+            trim_documents_in_data,
         )
 
         doc1 = TracingTestTaskDoc(name="file1.txt", content=b"a" * 300)
@@ -199,7 +199,7 @@ class TestDocumentTrimming:
 
         serialized = [doc.serialize_model() for doc in doc_list]
 
-        result = _trim_documents_in_data(serialized)
+        result = trim_documents_in_data(serialized)
 
         # Both documents should be trimmed (all trimmed equally)
         assert "[trimmed" in result[0]["content"]
@@ -210,7 +210,7 @@ class TestDocumentTrimming:
     def test_trimming_formatter_with_ai_messages(self):
         """Test that AIMessages with documents are properly handled."""
         from ai_pipeline_core.observability.tracing import (
-            _trim_documents_in_data,
+            trim_documents_in_data,
         )
 
         long_content = "message" * 100
@@ -222,7 +222,7 @@ class TestDocumentTrimming:
             "AI response",
         ]
 
-        result = _trim_documents_in_data(messages_data)
+        result = trim_documents_in_data(messages_data)
 
         assert result[0] == "User question"
         assert result[2] == "AI response"
@@ -264,13 +264,13 @@ class TestDocumentTrimming:
     def test_trimming_with_custom_formatter(self):
         """Test that custom formatters work with trimming."""
         from ai_pipeline_core.observability.tracing import (
-            _trim_documents_in_data,
+            trim_documents_in_data,
         )
 
         custom_formatter = Mock(return_value={"doc": {"class_name": "SomeDoc", "content": "a" * 300}})
 
         result = custom_formatter("arg1", "arg2")
-        trimmed = _trim_documents_in_data(result)
+        trimmed = trim_documents_in_data(result)
 
         assert "[trimmed" in trimmed["doc"]["content"]
         assert "chars]" in trimmed["doc"]["content"]

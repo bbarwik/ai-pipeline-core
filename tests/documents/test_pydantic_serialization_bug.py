@@ -37,9 +37,10 @@ class TestDocumentPydanticSerializationBug:
 
     def test_text_content_pydantic_roundtrip_works(self):
         """Text content should roundtrip correctly via Pydantic (sanity check)."""
-        original = ConcreteDocument.create(
+        original = ConcreteDocument.create_root(
             name="test.txt",
             content="Hello, World! 你好世界 🎉",
+            reason="test input",
         )
         original_sha256 = original.sha256
 
@@ -177,10 +178,11 @@ class TestDocumentWithBinaryAttachmentsBug:
 
     def test_document_with_binary_attachment_pydantic_roundtrip_corrupted(self):
         """PROVES BUG: Document with binary attachment is CORRUPTED via Pydantic path."""
-        original = ConcreteDocument.create(
+        original = ConcreteDocument.create_root(
             name="report.md",
             content="# Report\n\nSee attached screenshot.",
             attachments=(Attachment(name="screenshot.png", content=MINIMAL_PNG),),
+            reason="test input",
         )
         original_sha256 = original.sha256
         original_attachment_content = original.attachments[0].content
@@ -194,7 +196,7 @@ class TestDocumentWithBinaryAttachmentsBug:
 
     def test_document_with_multiple_binary_attachments_corrupted(self):
         """PROVES BUG: Multiple binary attachments all get corrupted."""
-        original = ConcreteDocument.create(
+        original = ConcreteDocument.create_root(
             name="gallery.md",
             content="# Gallery",
             attachments=(
@@ -202,6 +204,7 @@ class TestDocumentWithBinaryAttachmentsBug:
                 Attachment(name="img2.jpg", content=MINIMAL_JPEG),
                 Attachment(name="data.bin", content=BINARY_DATA),
             ),
+            reason="test input",
         )
         original_sha256 = original.sha256
 

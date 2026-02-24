@@ -1,14 +1,16 @@
-"""Tests for prompt_compiler.api (send_spec, extract_result, stop sequences)."""
+"""Tests for send_spec(), stop sequences, and Conversation.send_spec()."""
+
+from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel
 
-import ai_pipeline_core.prompt_compiler.api as api
-from ai_pipeline_core._llm_core import ModelOptions
+from ai_pipeline_core._llm_core.model_response import ModelResponse
+from ai_pipeline_core._llm_core.types import TokenUsage
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.llm import Conversation
 from ai_pipeline_core.prompt_compiler.components import Role
 from ai_pipeline_core.prompt_compiler.spec import PromptSpec
-from ai_pipeline_core.prompt_compiler.types import Phase
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +34,7 @@ class StructuredResponse(BaseModel):
     answer: str
 
 
-class PlainSpec(PromptSpec, phase=Phase("review")):
+class PlainSpec(PromptSpec):
     """Plain text output spec."""
 
     input_documents = ()
@@ -40,16 +42,16 @@ class PlainSpec(PromptSpec, phase=Phase("review")):
     task = "Respond briefly"
 
 
-class XmlSpec(PromptSpec, phase=Phase("review")):
-    """XML-wrapped text output spec."""
+class XmlSpec(PromptSpec):
+    """XML-wrapped text output spec (via output_structure)."""
 
     input_documents = ()
     role = ApiRole
     task = "Respond in wrapped text"
-    xml_wrapped = True
+    output_structure = "## Summary"
 
 
-class StructuredSpec(PromptSpec[StructuredResponse], phase=Phase("review")):
+class StructuredSpec(PromptSpec[StructuredResponse]):
     """Structured output spec."""
 
     input_documents = ()
@@ -57,97 +59,12 @@ class StructuredSpec(PromptSpec[StructuredResponse], phase=Phase("review")):
     task = "Return structured data"
 
 
-class FakeConversation:
-    """Test double for Conversation."""
+class SpecWithInputDocs(PromptSpec):
+    """Spec with input_documents declared."""
 
-    created: list["FakeConversation"] = []
-
-    def __init__(self, *, model: str, model_options: ModelOptions | None = None) -> None:
-        self.model = model
-        self.model_options = model_options
-        self.with_context_calls: list[tuple[Document, ...]] = []
-        self.with_model_options_calls: list[ModelOptions] = []
-        self.send_calls: list[dict[str, object]] = []
-        self.send_structured_calls: list[dict[str, object]] = []
-        type(self).created.append(self)
-
-    def with_context(self, *documents: Document) -> "FakeConversation":
-        self.with_context_calls.append(documents)
-        return self
-
-    def with_model_options(self, options: ModelOptions) -> "FakeConversation":
-        self.with_model_options_calls.append(options)
-        self.model_options = options
-        return self
-
-    async def send(self, prompt_text: str, *, purpose: str, expected_cost: float | None = None) -> "FakeConversation":
-        self.send_calls.append({"prompt_text": prompt_text, "purpose": purpose})
-        return self
-
-    async def send_structured(
-        self, prompt_text: str, *, response_format: type[BaseModel], purpose: str, expected_cost: float | None = None
-    ) -> "FakeConversation":
-        self.send_structured_calls.append({"prompt_text": prompt_text, "response_format": response_format, "purpose": purpose})
-        return self
-
-
-@pytest.fixture(autouse=True)
-def _reset_fake_conversations() -> None:
-    FakeConversation.created.clear()
-
-
-@pytest.fixture
-def fake_conversation(monkeypatch: pytest.MonkeyPatch) -> type[FakeConversation]:
-    monkeypatch.setattr(api, "Conversation", FakeConversation)
-    return FakeConversation
-
-
-@pytest.fixture
-def render_spy(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
-    calls: list[dict[str, object]] = []
-
-    def fake_render_text(spec: PromptSpec, *, documents: list[Document] | None = None, include_input_documents: bool = True) -> str:
-        calls.append({"spec": spec, "documents": documents, "include_input_documents": include_input_documents})
-        return "RENDERED_PROMPT"
-
-    monkeypatch.setattr(api, "render_text", fake_render_text)
-    return calls
-
-
-# ---------------------------------------------------------------------------
-# extract_result
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.ai_docs
-def test_extract_result_with_closing_tag() -> None:
-    text = "preamble <result>\n  hello world \n</result> trailing"
-    assert api.extract_result(text) == "hello world"
-
-
-def test_extract_result_without_tags() -> None:
-    text = "plain response"
-    assert api.extract_result(text) == text
-
-
-def test_extract_result_with_incomplete_closing_tag() -> None:
-    text = "prefix <result>partial content"
-    assert api.extract_result(text) == "partial content"
-
-
-def test_extract_result_multiline_content() -> None:
-    text = "<result>\nline1\nline2\n</result>"
-    assert api.extract_result(text) == "line1\nline2"
-
-
-def test_extract_result_empty_content() -> None:
-    text = "<result></result>"
-    assert api.extract_result(text) == ""
-
-
-def test_extract_result_whitespace_stripped() -> None:
-    text = "<result>  \n  content  \n  </result>"
-    assert api.extract_result(text) == "content"
+    input_documents = (ApiDoc,)
+    role = ApiRole
+    task = "Analyze the document"
 
 
 # ---------------------------------------------------------------------------
@@ -167,175 +84,186 @@ def test_extract_result_whitespace_stripped() -> None:
     ],
 )
 def test_supports_stop_sequence(model: str, expected: bool) -> None:
-    assert api._supports_stop_sequence(model) is expected
+    from ai_pipeline_core._llm_core.model_config import supports_stop_sequences
+
+    assert supports_stop_sequences(model) is expected
 
 
 # ---------------------------------------------------------------------------
-# send_spec: text output
+# Conversation.send_spec: helpers
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_send_spec_text_output(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    result = await api.send_spec(PlainSpec(), model="gpt-5")
-    conv = fake_conversation.created[-1]
-
-    assert result is conv
-    assert conv.model == "gpt-5"
-    assert conv.model_options is None
-    assert conv.with_context_calls == []
-    assert len(conv.send_calls) == 1
-    assert conv.send_calls[0]["prompt_text"] == "RENDERED_PROMPT"
-    assert conv.send_calls[0]["purpose"] == "PlainSpec"
-    assert conv.send_structured_calls == []
-    assert render_spy[-1]["documents"] is None
-    assert render_spy[-1]["include_input_documents"] is True
-
-
-@pytest.mark.asyncio
-async def test_send_spec_custom_purpose(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    await api.send_spec(PlainSpec(), model="gpt-5", purpose="custom-purpose")
-    conv = fake_conversation.created[-1]
-    assert conv.send_calls[0]["purpose"] == "custom-purpose"
-
-
-# ---------------------------------------------------------------------------
-# send_spec: structured output
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_send_spec_structured_output(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    doc = ApiDoc(name="input.txt", content=b"data", description="Doc desc")
-    options = ModelOptions(timeout=1)
-
-    result = await api.send_spec(
-        StructuredSpec(),
-        model="gpt-5",
-        documents=[doc],
-        model_options=options,
-        include_input_documents=False,
-        purpose="custom",
+def _make_model_response(content: str) -> ModelResponse[str]:
+    return ModelResponse[str](
+        content=content,
+        parsed=content,
+        model="test-model",
+        usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )
-    conv = fake_conversation.created[-1]
-
-    assert result is conv
-    assert conv.model_options is options
-    assert conv.with_context_calls == [(doc,)]
-    assert conv.send_calls == []
-    assert conv.send_structured_calls[0]["response_format"] is StructuredResponse
-    assert conv.send_structured_calls[0]["purpose"] == "custom"
-    assert render_spy[-1]["documents"] == [doc]
-    assert render_spy[-1]["include_input_documents"] is False
 
 
 # ---------------------------------------------------------------------------
-# send_spec: documents wiring
+# Conversation.send_spec: auto-extraction for output_structure specs
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_send_spec_with_documents(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    doc = ApiDoc(name="input.txt", content=b"data")
-    await api.send_spec(PlainSpec(), model="gpt-5", documents=[doc])
-    conv = fake_conversation.created[-1]
-    assert conv.with_context_calls == [(doc,)]
-    assert render_spy[-1]["documents"] == [doc]
+async def test_send_spec_xml_auto_extracts_result() -> None:
+    """output_structure spec auto-extracts <result> tags — conv.content returns clean text."""
+    raw_content = "preamble <result>\n  extracted content \n</result> trailing"
+    response = _make_model_response(raw_content)
+
+    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+        return conv_after_send
+
+    with (
+        patch.object(Conversation, "send", fake_send),
+        patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
+    ):
+        conv = Conversation[None](model="gpt-5")
+        result = await conv.send_spec(XmlSpec())
+
+    assert result.content == "extracted content"
 
 
 @pytest.mark.asyncio
-async def test_send_spec_empty_documents_skips_with_context(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    await api.send_spec(PlainSpec(), model="gpt-5", documents=[])
-    conv = fake_conversation.created[-1]
-    assert conv.with_context_calls == []
-    assert render_spy[-1]["documents"] == []
+async def test_send_spec_plain_preserves_raw_response() -> None:
+    """Spec without output_structure preserves raw response content."""
+    raw_content = "plain response text"
+    response = _make_model_response(raw_content)
+
+    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+        return conv_after_send
+
+    with (
+        patch.object(Conversation, "send", fake_send),
+        patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
+    ):
+        conv = Conversation[None](model="gpt-5")
+        result = await conv.send_spec(PlainSpec())
+
+    assert result.content == raw_content
 
 
 # ---------------------------------------------------------------------------
-# send_spec: xml_wrapped + stop sequences
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_send_spec_xml_gemini_no_existing_options(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    """xml_wrapped + gemini + model_options=None -> creates ModelOptions with stop via with_model_options."""
-    await api.send_spec(XmlSpec(), model="gemini-3-flash")
-    conv = fake_conversation.created[-1]
-    assert len(conv.with_model_options_calls) == 1
-    assert conv.model_options.stop == [api.RESULT_CLOSE]
-
-
-@pytest.mark.asyncio
-async def test_send_spec_xml_gemini_existing_stop_none(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    """xml_wrapped + gemini + existing options with stop=None -> adds stop."""
-    options = ModelOptions(stop=None)
-    await api.send_spec(XmlSpec(), model="gemini-3-flash", model_options=options)
-    conv = fake_conversation.created[-1]
-    assert conv.model_options.stop == [api.RESULT_CLOSE]
-
-
-@pytest.mark.asyncio
-async def test_send_spec_xml_gemini_existing_stop_string(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    """xml_wrapped + gemini + existing stop as string -> merges both."""
-    options = ModelOptions(stop="DONE")
-    await api.send_spec(XmlSpec(), model="gemini-3-flash", model_options=options)
-    conv = fake_conversation.created[-1]
-    assert conv.model_options.stop == ["DONE", api.RESULT_CLOSE]
-
-
-@pytest.mark.asyncio
-async def test_send_spec_xml_gemini_existing_stop_list(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    """xml_wrapped + gemini + existing stop as list -> appends."""
-    options = ModelOptions(stop=["A", "B"])
-    await api.send_spec(XmlSpec(), model="gemini-3-flash", model_options=options)
-    conv = fake_conversation.created[-1]
-    assert conv.model_options.stop == ["A", "B", api.RESULT_CLOSE]
-
-
-@pytest.mark.asyncio
-async def test_send_spec_xml_non_gemini_no_stop_injection(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    """xml_wrapped + non-gemini model -> options not modified."""
-    options = ModelOptions(stop=["END"])
-    await api.send_spec(XmlSpec(), model="gpt-5", model_options=options)
-    conv = fake_conversation.created[-1]
-    assert conv.model_options is options
-    assert conv.model_options.stop == ["END"]
-
-
-@pytest.mark.asyncio
-async def test_send_spec_non_xml_gemini_no_stop_injection(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    """Non-xml_wrapped spec + gemini -> no stop injection."""
-    options = ModelOptions(stop=None)
-    await api.send_spec(PlainSpec(), model="gemini-3-flash", model_options=options)
-    conv = fake_conversation.created[-1]
-    assert conv.model_options is options
-    assert conv.model_options.stop is None
-
-
-@pytest.mark.asyncio
-async def test_send_spec_xml_non_gemini_no_options(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    """xml_wrapped + non-gemini + no options -> options stays None."""
-    await api.send_spec(XmlSpec(), model="gpt-5")
-    conv = fake_conversation.created[-1]
-    assert conv.model_options is None
-
-
-# ---------------------------------------------------------------------------
-# send_spec: conversation parameter
+# Conversation.send_spec: input_documents warning
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_send_spec_with_conversation(fake_conversation: type[FakeConversation], render_spy: list[dict[str, object]]) -> None:
-    """send_spec with conversation= uses existing conversation."""
-    existing = FakeConversation(model="gemini-3-pro")
-    result = await api.send_spec(PlainSpec(), conversation=existing)
-    assert result is existing
-    assert existing.send_calls[0]["prompt_text"] == "RENDERED_PROMPT"
+async def test_send_spec_logs_missing_documents(caplog: pytest.LogCaptureFixture) -> None:
+    """Warning logged when spec declares input_documents but no documents passed."""
+    response = _make_model_response("response")
+    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+        return conv_after_send
+
+    with (
+        patch.object(Conversation, "send", fake_send),
+        patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
+    ):
+        conv = Conversation[None](model="gpt-5")
+        with caplog.at_level("WARNING"):
+            await conv.send_spec(SpecWithInputDocs())
+
+    assert any("declares input_documents" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_send_spec_requires_model_or_conversation(render_spy: list[dict[str, object]]) -> None:
-    """send_spec without model or conversation raises ValueError."""
-    with pytest.raises(ValueError, match="Either 'model' or 'conversation' must be provided"):
-        await api.send_spec(PlainSpec())
+async def test_send_spec_no_warning_when_documents_provided(caplog: pytest.LogCaptureFixture) -> None:
+    """No warning when documents are actually provided."""
+    doc = ApiDoc(name="test.txt", content=b"data")
+    response = _make_model_response("response")
+    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+        return conv_after_send
+
+    with (
+        patch.object(Conversation, "send", fake_send),
+        patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
+    ):
+        conv = Conversation[None](model="gpt-5")
+        with caplog.at_level("WARNING"):
+            await conv.send_spec(SpecWithInputDocs(), documents=[doc])
+
+    assert not any("declares input_documents" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Conversation.send_spec: follow-up specs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_spec_follow_up_no_warning_for_missing_docs(caplog: pytest.LogCaptureFixture) -> None:
+    """Follow-up specs do not warn about missing documents."""
+
+    class FollowSpec(PromptSpec, follows=PlainSpec):
+        """Follow-up."""
+
+        task = "Continue analysis"
+
+    response = _make_model_response("follow-up response")
+    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+        return conv_after_send
+
+    with (
+        patch.object(Conversation, "send", fake_send),
+        patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
+    ):
+        conv = Conversation[None](model="gpt-5")
+        with caplog.at_level("WARNING"):
+            await conv.send_spec(FollowSpec())
+
+    assert not any("declares input_documents" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_send_spec_follow_up_documents_in_messages() -> None:
+    """Follow-up specs route documents via with_documents() (messages), not with_context()."""
+
+    class FollowWithDocs(PromptSpec, follows=SpecWithInputDocs):
+        """Follow-up that adds docs."""
+
+        input_documents = (ApiDoc,)
+        task = "Continue with new evidence"
+
+    doc = ApiDoc(name="extra.txt", content=b"extra data")
+    response = _make_model_response("follow-up with docs")
+    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+
+    calls: dict[str, int] = {"with_documents": 0, "with_context": 0}
+    original_with_documents = Conversation.with_documents
+    original_with_context = Conversation.with_context
+
+    def tracking_with_documents(self, docs):
+        calls["with_documents"] += 1
+        return original_with_documents(self, docs)
+
+    def tracking_with_context(self, *docs):
+        calls["with_context"] += 1
+        return original_with_context(self, *docs)
+
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+        return conv_after_send
+
+    with (
+        patch.object(Conversation, "send", fake_send),
+        patch.object(Conversation, "with_documents", tracking_with_documents),
+        patch.object(Conversation, "with_context", tracking_with_context),
+        patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
+    ):
+        conv = Conversation[None](model="gpt-5")
+        await conv.send_spec(FollowWithDocs(), documents=[doc])
+
+    assert calls["with_documents"] == 1, "Follow-up should use with_documents()"
+    assert calls["with_context"] == 0, "Follow-up should NOT use with_context()"

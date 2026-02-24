@@ -1,0 +1,20 @@
+rules:
+  - id: no-raw-asyncio-gather
+    patterns:
+      - pattern: asyncio.gather(...)
+      - pattern-not-inside: |
+          async def safe_gather(...):
+              ...
+      - pattern-not-inside: |
+          async def safe_gather_indexed(...):
+              ...
+    message: >
+      Use safe_gather() or safe_gather_indexed() from ai_pipeline_core.pipeline
+      instead of raw asyncio.gather(). safe_gather handles return_exceptions,
+      BaseException filtering, failure logging, and all-fail guards.
+    severity: WARNING
+    languages: [python]
+    paths:
+      exclude:
+        - "ai_pipeline_core/**"
+        - "**/tests/**"

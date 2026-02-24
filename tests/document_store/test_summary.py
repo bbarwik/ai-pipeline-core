@@ -5,10 +5,11 @@ import time
 
 import pytest
 
-from ai_pipeline_core.document_store.local import LocalDocumentStore
-from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+from ai_pipeline_core.document_store._summary_worker import SUMMARY_EXCERPT_CHARS, _build_excerpt
+from ai_pipeline_core.document_store._local import LocalDocumentStore
+from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.documents._types import RunScope
+from ai_pipeline_core.documents.types import RunScope
 
 
 class SummaryTestDocument(Document):
@@ -154,3 +155,77 @@ class TestLocalStoreSummary:
             assert summary == "Summary of report.txt"
         finally:
             store.shutdown()
+
+
+class TestBuildExcerpt:
+    def test_short_text_included_in_full(self):
+        doc = SummaryTestDocument(name="short.txt", content=b"Hello world", description="A greeting")
+        excerpt = _build_excerpt(doc)
+        assert "<name>short.txt</name>" in excerpt
+        assert "<class>SummaryTestDocument</class>" in excerpt
+        assert "<description>A greeting</description>" in excerpt
+        assert "<content>" in excerpt
+        assert "Hello world" in excerpt
+        assert "</content>" in excerpt
+        assert "</document>" in excerpt
+        assert "truncated" not in excerpt
+
+    def test_no_description_omitted(self):
+        doc = SummaryTestDocument(name="short.txt", content=b"Hello world")
+        excerpt = _build_excerpt(doc)
+        assert "<class>SummaryTestDocument</class>" in excerpt
+        assert "<description>" not in excerpt
+
+    def test_long_text_has_truncation_markers(self):
+        text = "A" * 10_000 + "B" * 30_000 + "C" * 10_000
+        doc = SummaryTestDocument(name="long.txt", content=text.encode(), description="Long doc")
+        excerpt = _build_excerpt(doc)
+        assert "truncated" in excerpt
+        assert "<description>Long doc</description>" in excerpt
+        assert "<content>" in excerpt
+        assert "</content>" in excerpt
+
+    def test_long_text_contains_start_and_end_content(self):
+        text = "START_MARKER_" + "x" * 50_000 + "END_MARKER_HERE"
+        doc = SummaryTestDocument(name="long.txt", content=text.encode())
+        excerpt = _build_excerpt(doc)
+        assert "START_MARKER_" in excerpt
+        assert "END_MARKER_HERE" in excerpt
+
+    def test_truncation_marker_shows_char_count(self):
+        total = 60_000
+        text = "x" * total
+        doc = SummaryTestDocument(name="big.txt", content=text.encode())
+        excerpt = _build_excerpt(doc)
+        assert "chars truncated" in excerpt
+
+    def test_binary_document(self):
+        doc = SummaryTestDocument(name="image.png", content=b"\x89PNG\r\n" + b"\x00" * 100)
+        excerpt = _build_excerpt(doc)
+        assert "<class>SummaryTestDocument</class>" in excerpt
+        assert "<content>[Binary:" in excerpt
+        assert "image/png" in excerpt
+        assert "</document>" in excerpt
+
+    def test_binary_document_with_description(self):
+        doc = SummaryTestDocument(name="photo.jpg", content=b"\xff\xd8\xff" + b"\x00" * 100, description="Product photo")
+        excerpt = _build_excerpt(doc)
+        assert "<description>Product photo</description>" in excerpt
+        assert "[Binary:" in excerpt
+
+    def test_exactly_at_threshold_not_split(self):
+        text = "x" * SUMMARY_EXCERPT_CHARS
+        doc = SummaryTestDocument(name="exact.txt", content=text.encode())
+        excerpt = _build_excerpt(doc)
+        assert "truncated" not in excerpt
+
+    def test_one_over_threshold_is_split(self):
+        text = "x" * (SUMMARY_EXCERPT_CHARS + 1)
+        doc = SummaryTestDocument(name="over.txt", content=text.encode())
+        excerpt = _build_excerpt(doc)
+        assert "chars truncated" in excerpt
+
+    def test_document_name_always_in_excerpt(self):
+        doc = SummaryTestDocument(name="report.md", content=b"content")
+        excerpt = _build_excerpt(doc)
+        assert "<name>report.md</name>" in excerpt

@@ -2,17 +2,16 @@
 
 This module provides filesystem-based trace debugging that saves all spans
 with their inputs/outputs for LLM-assisted debugging. Includes static
-summary generation and LLM-powered auto-summary capabilities.
+summary generation.
 
 Enabled automatically in CLI mode (``run_cli``), writing to ``<working_dir>/.trace``.
 Disable with ``--no-trace``.
 """
 
-from ._config import TraceDebugConfig
+from ._config import SpanInfo, TraceDebugConfig, TraceState, WriteJob
 from ._content import ArtifactStore, ContentRef, ContentWriter
 from ._processor import LocalDebugSpanProcessor
 from ._summary import generate_summary
-from ._types import SpanInfo, TraceState, WriteJob
 from ._writer import LocalTraceWriter
 
 __all__ = [

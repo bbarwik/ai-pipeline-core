@@ -1,18 +1,28 @@
-"""Low-level ContextVar declarations for document registration and task context.
+"""Low-level ContextVar declarations for run context and document lifecycle tracking.
 
 Extracted into a separate module to break the circular dependency between
-document.py (which needs suppression/task-context checks) and context.py
-(which defines the full TaskDocumentContext that depends on Document).
+document.py and context.py (which defines TaskDocumentContext that depends on Document).
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from ai_pipeline_core.documents._types import RunScope
+from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 
-# --- Run context ---
+__all__ = [
+    "RunContext",
+    "TaskContext",
+    "_suppress_document_registration",
+    "get_run_context",
+    "get_task_context",
+    "is_registration_suppressed",
+    "reset_run_context",
+    "reset_task_context",
+    "set_run_context",
+    "set_task_context",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,48 +50,45 @@ def reset_run_context(token: Token[RunContext | None]) -> None:
     _run_context.reset(token)
 
 
-# --- Suppression flag ---
+# --- Task-level document lifecycle tracking ---
 
-_suppression_flag: ContextVar[bool] = ContextVar("_document_registration_suppressed", default=False)
+
+@dataclass
+class TaskContext:
+    """Mutable set of document SHA256s created within the current task/flow."""
+
+    created: set[DocumentSha256] = field(default_factory=set)
+
+
+_task_context: ContextVar[TaskContext | None] = ContextVar("_task_context", default=None)
+_suppress_registration: ContextVar[bool] = ContextVar("_suppress_registration", default=False)
+
+
+def get_task_context() -> TaskContext | None:
+    """Get the current task context, or None if not inside a pipeline task/flow."""
+    return _task_context.get()
+
+
+def set_task_context(ctx: TaskContext) -> Token[TaskContext | None]:
+    """Set the task context. Returns a token for restoring the previous value."""
+    return _task_context.set(ctx)
+
+
+def reset_task_context(token: Token[TaskContext | None]) -> None:
+    """Reset the task context to its previous value."""
+    _task_context.reset(token)
+
+
+@contextmanager
+def _suppress_document_registration() -> Generator[None, None, None]:
+    """Suppress document registration during deserialization (store loads, from_dict, etc.)."""
+    token = _suppress_registration.set(True)
+    try:
+        yield
+    finally:
+        _suppress_registration.reset(token)
 
 
 def is_registration_suppressed() -> bool:
     """Check if document registration is currently suppressed."""
-    return _suppression_flag.get()
-
-
-@contextmanager
-def suppress_registration() -> Iterator[None]:
-    """Context manager that suppresses Document registration with TaskDocumentContext.
-
-    Used during model_validate() and other internal Pydantic operations that
-    construct intermediate Document objects that should not be tracked.
-    """
-    token = _suppression_flag.set(True)
-    try:
-        yield
-    finally:
-        _suppression_flag.reset(token)
-
-
-# --- Task document context ContextVar ---
-
-# Forward reference: the actual TaskDocumentContext class lives in context.py.
-# Here we only manage the ContextVar holding it.
-
-_task_context: ContextVar[object | None] = ContextVar("_task_context", default=None)
-
-
-def get_task_context() -> object | None:
-    """Get the current task document context, or None if not inside a pipeline task."""
-    return _task_context.get()
-
-
-def set_task_context(ctx: object) -> Token[object | None]:
-    """Set the task document context. Returns a token for restoring the previous value."""
-    return _task_context.set(ctx)
-
-
-def reset_task_context(token: Token[object | None]) -> None:
-    """Reset the task document context to its previous value."""
-    _task_context.reset(token)
+    return _suppress_registration.get()

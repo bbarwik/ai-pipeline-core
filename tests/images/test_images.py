@@ -5,7 +5,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from ai_pipeline_core import (
+from ai_pipeline_core.llm._images import (
     ImagePart,
     ImagePreset,
     ImageProcessingConfig,
@@ -69,7 +69,7 @@ class TestConfig:
         assert config.max_dimension == 2000
         assert config.max_pixels == 3_000_000
         assert config.webp_quality == 80
-        assert config.overlap_fraction == 0.20
+        assert config.overlap_fraction == pytest.approx(0.20)
         assert config.max_parts == 20
 
     def test_config_is_frozen(self):
@@ -95,7 +95,7 @@ class TestProcessImageSmall:
         assert result.original_bytes == len(raw)
         assert result.output_bytes > 0
         assert not result.was_trimmed
-        assert result.warnings == []
+        assert result.warnings == ()
 
     def test_single_part_properties(self):
         result = process_image(make_image_bytes(800, 600))
@@ -289,4 +289,4 @@ class TestModels:
             output_bytes=0,
             was_trimmed=False,
         )
-        assert result.compression_ratio == 1.0
+        assert result.compression_ratio == pytest.approx(1.0)

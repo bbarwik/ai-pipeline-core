@@ -3,18 +3,35 @@
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 
-from ai_pipeline_core.documents._types import DocumentSha256
+from ai_pipeline_core.documents.types import DocumentSha256
 from ai_pipeline_core.documents.utils import is_document_sha256
 
 __all__ = [
     "MAX_PROVENANCE_GRAPH_NODES",
     "DocumentNode",
+    "FlowCompletion",
     "build_provenance_graph",
     "walk_provenance",
 ]
 
 MAX_PROVENANCE_GRAPH_NODES = 5000
+
+
+@dataclass(frozen=True, slots=True)
+class FlowCompletion:
+    """Record of a successful flow execution for resume cache.
+
+    Written after a flow returns successfully. Resume checks this record
+    instead of inferring completion from document presence (which gives
+    false positives when a flow crashes after partial output).
+    """
+
+    flow_name: str
+    input_sha256s: tuple[str, ...]
+    output_sha256s: tuple[str, ...]
+    stored_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,8 +42,8 @@ class DocumentNode:
     class_name: str
     name: str
     description: str = ""
-    sources: tuple[str, ...] = ()
-    origins: tuple[str, ...] = ()
+    derived_from: tuple[str, ...] = ()
+    triggered_by: tuple[str, ...] = ()
     summary: str = ""
 
 
@@ -34,10 +51,10 @@ def build_provenance_graph(
     root_sha256: DocumentSha256,
     nodes: list[DocumentNode],
 ) -> dict[DocumentSha256, DocumentNode]:
-    """BFS from root following sources + origins. Returns reachable ancestors keyed by SHA256.
+    """BFS from root following derived_from + triggered_by. Returns reachable ancestors keyed by SHA256.
 
     Traverses up to MAX_PROVENANCE_GRAPH_NODES nodes. Uses is_document_sha256() to
-    distinguish document SHA256 references from URL strings in sources.
+    distinguish document SHA256 references from URL strings in derived_from.
     """
     index: dict[DocumentSha256, DocumentNode] = {node.sha256: node for node in nodes}
 
@@ -58,7 +75,7 @@ def build_provenance_graph(
 
         visited[sha256] = node
 
-        for ref in (*node.sources, *node.origins):
+        for ref in (*node.derived_from, *node.triggered_by):
             if ref not in enqueued and is_document_sha256(ref):
                 ref_sha = DocumentSha256(ref)
                 enqueued.add(ref_sha)
@@ -73,7 +90,7 @@ async def walk_provenance(
 ) -> dict[DocumentSha256, DocumentNode]:
     """BFS walk of provenance chain using batch lookups per level.
 
-    Loads root node, then iteratively loads all referenced sources/origins in batches
+    Loads root node, then iteratively loads all referenced derived_from/triggered_by in batches
     until the full reachable graph is resolved (up to MAX_PROVENANCE_GRAPH_NODES).
     Requires no knowledge of run_scope — uses cross-scope batch lookup.
 
@@ -98,7 +115,7 @@ async def walk_provenance(
             if sha256 in visited:
                 continue
             visited[sha256] = node
-            for ref in (*node.sources, *node.origins):
+            for ref in (*node.derived_from, *node.triggered_by):
                 if ref not in visited and ref not in pending and is_document_sha256(ref):
                     pending[DocumentSha256(ref)] = None
 

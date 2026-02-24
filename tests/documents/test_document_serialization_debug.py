@@ -66,7 +66,7 @@ async def test_roundtrip_preserves_content():
         name="test.txt",
         content=b"test content",
         description="Test description",
-        sources=("https://example.com/source1", "https://example.com/source2"),
+        derived_from=("https://example.com/source1", "https://example.com/source2"),
     )
 
     serialized = doc.serialize_model()
@@ -79,7 +79,7 @@ async def test_roundtrip_preserves_content():
     assert restored.name == doc.name
     assert restored.content == doc.content
     assert restored.description == doc.description
-    assert restored.sources == doc.sources
+    assert restored.derived_from == doc.derived_from
 
     re_serialized = restored.serialize_model()
     assert re_serialized["class_name"] == "DebugSampleDocument"

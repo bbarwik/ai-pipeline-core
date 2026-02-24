@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ai_pipeline_core.documents._types import DocumentSha256
+from ai_pipeline_core.documents.types import DocumentSha256
 
 
 class RunStatus(StrEnum):
@@ -60,8 +60,8 @@ class PipelineRunRow(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    run_id: UUID
-    project_name: str
+    execution_id: UUID
+    run_id: str
     flow_name: str
     run_scope: str = ""
     status: RunStatus
@@ -80,7 +80,7 @@ class TrackedSpanRow(BaseModel):
 
     span_id: str
     trace_id: str
-    run_id: UUID
+    execution_id: UUID
     parent_span_id: str | None = None
     name: str
     span_type: SpanType
@@ -92,9 +92,6 @@ class TrackedSpanRow(BaseModel):
     tokens_input: int = 0
     tokens_output: int = 0
     llm_model: str | None = None
-    user_summary: str | None = None
-    user_visible: bool = False
-    user_label: str | None = None
     input_document_sha256s: tuple[DocumentSha256, ...] = Field(default_factory=tuple)
     output_document_sha256s: tuple[DocumentSha256, ...] = Field(default_factory=tuple)
     version: int = 1
@@ -106,7 +103,7 @@ class DocumentEventRow(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     event_id: UUID
-    run_id: UUID
+    execution_id: UUID
     document_sha256: DocumentSha256
     span_id: str
     event_type: DocumentEventType
@@ -120,7 +117,7 @@ class SpanEventRow(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     event_id: UUID
-    run_id: UUID
+    execution_id: UUID
     span_id: str
     name: str
     timestamp: datetime

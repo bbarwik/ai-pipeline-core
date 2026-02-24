@@ -65,7 +65,7 @@ def client(clickhouse_container: ClickHouseContainer) -> ClickHouseClient:
 def service(clickhouse_container: ClickHouseContainer) -> Generator[TrackingService, None, None]:
     """Create a TrackingService backed by real ClickHouse."""
     c = _make_client(clickhouse_container)
-    svc = TrackingService(c, span_summary_fn=None)
+    svc = TrackingService(c)
     yield svc
     svc.shutdown(timeout=5.0)
 
@@ -107,11 +107,11 @@ class TestRunTracking:
 
     def test_run_start_persisted(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="test-project", flow_name="test-flow", run_scope="scope-a")
-        service.track_run_start(run_id=run_id, project_name="test-project", flow_name="test-flow", run_scope="scope-a")
+        service.set_run_context(execution_id=run_id, run_id="test-project", flow_name="test-flow", run_scope="scope-a")
+        service.track_run_start(execution_id=run_id, run_id="test-project", flow_name="test-flow", run_scope="scope-a")
         _wait_for_writer(service)
 
-        rows = _query(client, f"SELECT run_id, project_name, flow_name, status, run_scope FROM {TABLE_PIPELINE_RUNS} FINAL WHERE run_id = '{run_id}'")
+        rows = _query(client, f"SELECT execution_id, run_id, flow_name, status, run_scope FROM {TABLE_PIPELINE_RUNS} FINAL WHERE execution_id = '{run_id}'")
         assert len(rows) == 1
         assert rows[0][1] == "test-project"
         assert rows[0][2] == "test-flow"
@@ -120,12 +120,12 @@ class TestRunTracking:
 
     def test_run_end_updates_status(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_end(run_id=run_id, status=RunStatus.COMPLETED, total_cost=1.23, total_tokens=5000)
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_start(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_end(execution_id=run_id, status=RunStatus.COMPLETED, total_cost=1.23, total_tokens=5000)
         _wait_for_writer(service)
 
-        rows = _query(client, f"SELECT status, total_cost, total_tokens, end_time FROM {TABLE_PIPELINE_RUNS} FINAL WHERE run_id = '{run_id}'")
+        rows = _query(client, f"SELECT status, total_cost, total_tokens, end_time FROM {TABLE_PIPELINE_RUNS} FINAL WHERE execution_id = '{run_id}'")
         assert len(rows) == 1
         assert rows[0][0] == "completed"
         assert abs(rows[0][1] - 1.23) < 0.01
@@ -134,22 +134,22 @@ class TestRunTracking:
 
     def test_run_failed_status(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_end(run_id=run_id, status=RunStatus.FAILED)
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_start(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_end(execution_id=run_id, status=RunStatus.FAILED)
         _wait_for_writer(service)
 
-        rows = _query(client, f"SELECT status FROM {TABLE_PIPELINE_RUNS} FINAL WHERE run_id = '{run_id}'")
+        rows = _query(client, f"SELECT status FROM {TABLE_PIPELINE_RUNS} FINAL WHERE execution_id = '{run_id}'")
         assert rows[0][0] == "failed"
 
     def test_run_metadata_stored_as_json(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_end(run_id=run_id, status=RunStatus.COMPLETED, metadata={"key": "value", "count": 42})
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_start(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_end(execution_id=run_id, status=RunStatus.COMPLETED, metadata={"key": "value", "count": 42})
         _wait_for_writer(service)
 
-        rows = _query(client, f"SELECT metadata FROM {TABLE_PIPELINE_RUNS} FINAL WHERE run_id = '{run_id}'")
+        rows = _query(client, f"SELECT metadata FROM {TABLE_PIPELINE_RUNS} FINAL WHERE execution_id = '{run_id}'")
         import json
 
         meta = json.loads(rows[0][0])
@@ -162,8 +162,8 @@ class TestSpanTracking:
 
     def test_span_start_and_end(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_start(execution_id=run_id, run_id="p", flow_name="f")
 
         now = datetime.now(UTC)
         service.track_span_start(
@@ -207,8 +207,8 @@ class TestSpanTracking:
 
     def test_parent_child_span_relationship(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_start(execution_id=run_id, run_id="p", flow_name="f")
 
         now = datetime.now(UTC)
         # Parent span
@@ -244,38 +244,10 @@ class TestSpanTracking:
         child_row = next(r for r in rows if r[0] == "child01")
         assert child_row[1] == "parent01"
 
-    def test_user_summary_on_span(self, service, client):
-        run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
-
-        now = datetime.now(UTC)
-        service.track_span_end(
-            span_id="summary01",
-            trace_id="ts1",
-            parent_span_id=None,
-            name="summarized_task",
-            span_type=SpanType.TASK,
-            status="completed",
-            start_time=now,
-            end_time=now,
-            duration_ms=100,
-            user_summary="Processed 42 documents successfully.",
-            user_visible=True,
-            user_label="document_processor",
-        )
-        _wait_for_writer(service)
-
-        rows = _query(client, f"SELECT user_summary, user_visible, user_label FROM {TABLE_TRACKED_SPANS} FINAL WHERE span_id = 'summary01'")
-        assert len(rows) == 1
-        assert rows[0][0] == "Processed 42 documents successfully."
-        assert rows[0][1] is True
-        assert rows[0][2] == "document_processor"
-
     def test_document_sha256_arrays_on_span(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_start(execution_id=run_id, run_id="p", flow_name="f")
 
         now = datetime.now(UTC)
         service.track_span_end(
@@ -304,14 +276,15 @@ class TestDocumentEvents:
 
     def test_multiple_document_events(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
 
         service.track_document_event(document_sha256="multi01", span_id="s1", event_type=DocumentEventType.TASK_INPUT)
         service.track_document_event(document_sha256="multi01", span_id="s2", event_type=DocumentEventType.TASK_OUTPUT)
         service.track_document_event(document_sha256="multi01", span_id="s3", event_type=DocumentEventType.STORE_SAVED)
         _wait_for_writer(service)
 
-        rows = _query(client, f"SELECT event_type FROM {TABLE_DOCUMENT_EVENTS} WHERE document_sha256 = 'multi01' AND run_id = '{run_id}' ORDER BY timestamp")
+        query = f"SELECT event_type FROM {TABLE_DOCUMENT_EVENTS} WHERE document_sha256 = 'multi01' AND execution_id = '{run_id}' ORDER BY timestamp"
+        rows = _query(client, query)
         event_types = [r[0] for r in rows]
         assert "task_input" in event_types
         assert "task_output" in event_types
@@ -323,8 +296,8 @@ class TestSpanEvents:
 
     def test_span_events_persisted(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_start(execution_id=run_id, run_id="p", flow_name="f")
 
         now = datetime.now(UTC)
         events = [
@@ -335,7 +308,7 @@ class TestSpanEvents:
         service.track_span_events(span_id="se01", events=events)
         _wait_for_writer(service)
 
-        rows = _query(client, f"SELECT name, level FROM {TABLE_SPAN_EVENTS} WHERE span_id = 'se01' AND run_id = '{run_id}' ORDER BY timestamp")
+        rows = _query(client, f"SELECT name, level FROM {TABLE_SPAN_EVENTS} WHERE span_id = 'se01' AND execution_id = '{run_id}' ORDER BY timestamp")
         assert len(rows) == 3
         assert rows[0][0] == "log"
         assert rows[0][1] == "INFO"
@@ -348,21 +321,21 @@ class TestReplacingMergeTree:
 
     def test_run_version_dedup(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_end(run_id=run_id, status=RunStatus.COMPLETED)
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_start(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_end(execution_id=run_id, status=RunStatus.COMPLETED)
         _wait_for_writer(service)
 
         # With FINAL, should see only the latest version
-        rows = _query(client, f"SELECT status, version FROM {TABLE_PIPELINE_RUNS} FINAL WHERE run_id = '{run_id}'")
+        rows = _query(client, f"SELECT status, version FROM {TABLE_PIPELINE_RUNS} FINAL WHERE execution_id = '{run_id}'")
         assert len(rows) == 1
         assert rows[0][0] == "completed"
         assert rows[0][1] > 1  # end version > start version (nanosecond timestamps)
 
     def test_span_version_dedup(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_start(execution_id=run_id, run_id="p", flow_name="f")
 
         now = datetime.now(UTC)
         service.track_span_start(span_id="vspan01", trace_id="vt1", parent_span_id=None, name="task", span_type=SpanType.TASK)
@@ -379,46 +352,10 @@ class TestReplacingMergeTree:
         )
         _wait_for_writer(service)
 
-        rows = _query(client, f"SELECT status, version FROM {TABLE_TRACKED_SPANS} FINAL WHERE span_id = 'vspan01' AND run_id = '{run_id}'")
+        rows = _query(client, f"SELECT status, version FROM {TABLE_TRACKED_SPANS} FINAL WHERE span_id = 'vspan01' AND execution_id = '{run_id}'")
         assert len(rows) == 1
         assert rows[0][0] == "completed"
         assert rows[0][1] > 1  # end version > start version (nanosecond timestamps)
-
-
-class TestSummaryUpdate:
-    """Test span summary update via build_span_summary_update."""
-
-    def test_summary_update_persisted(self, service, client):
-        run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
-
-        now = datetime.now(UTC)
-        service.track_span_end(
-            span_id="sumspan01",
-            trace_id="st1",
-            parent_span_id=None,
-            name="summarizable_task",
-            span_type=SpanType.TASK,
-            status="completed",
-            start_time=now,
-            end_time=now,
-            duration_ms=200,
-        )
-        _wait_for_writer(service)
-
-        # Simulate what the writer would do for a summary job
-        updated_row = service.build_span_summary_update("sumspan01", "Task completed: processed 100 items.")
-        assert updated_row is not None
-        assert updated_row.user_summary == "Task completed: processed 100 items."
-
-        # Insert the updated row directly
-        client.update_span(updated_row)
-
-        rows = _query(client, f"SELECT user_summary, version FROM {TABLE_TRACKED_SPANS} FINAL WHERE span_id = 'sumspan01' AND run_id = '{run_id}'")
-        assert len(rows) == 1
-        assert rows[0][0] == "Task completed: processed 100 items."
-        assert rows[0][1] > 1  # summary version > original span end version
 
 
 class TestNoRunContextGuards:
@@ -438,8 +375,8 @@ class TestConcurrentSpans:
 
     def test_multiple_spans_same_run(self, service, client):
         run_id = uuid4()
-        service.set_run_context(run_id=run_id, project_name="p", flow_name="f")
-        service.track_run_start(run_id=run_id, project_name="p", flow_name="f")
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_run_start(execution_id=run_id, run_id="p", flow_name="f")
 
         now = datetime.now(UTC)
         span_count = 20
@@ -459,5 +396,5 @@ class TestConcurrentSpans:
             )
         _wait_for_writer(service)
 
-        rows = _query(client, f"SELECT count() FROM {TABLE_TRACKED_SPANS} FINAL WHERE run_id = '{run_id}' AND trace_id = 'ct1'")
+        rows = _query(client, f"SELECT count() FROM {TABLE_TRACKED_SPANS} FINAL WHERE execution_id = '{run_id}' AND trace_id = 'ct1'")
         assert rows[0][0] == span_count

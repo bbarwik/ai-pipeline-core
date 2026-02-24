@@ -10,7 +10,7 @@ import sys
 from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, cast
 
 from lmnr import Laminar
 from opentelemetry import trace as otel_trace
@@ -18,37 +18,21 @@ from prefect.logging import disable_run_logger
 from prefect.testing.utilities import prefect_test_harness
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
-from ai_pipeline_core.document_store import create_document_store, get_document_store, set_document_store
 from ai_pipeline_core.document_store._dual_store import DualDocumentStore
-from ai_pipeline_core.document_store._summary import SummaryGenerator
-from ai_pipeline_core.document_store.local import LocalDocumentStore
+from ai_pipeline_core.document_store._factory import create_document_store
+from ai_pipeline_core.document_store._local import LocalDocumentStore
+from ai_pipeline_core.document_store._protocol import get_document_store, set_document_store
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger, setup_logging
-from ai_pipeline_core.observability import tracing
 from ai_pipeline_core.observability._debug import LocalDebugSpanProcessor, LocalTraceWriter, TraceDebugConfig
-from ai_pipeline_core.observability._initialization import get_tracking_service, initialize_observability
+from ai_pipeline_core.observability._initialization import get_tracking_service
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
-from .base import DeploymentContext, DeploymentResult, PipelineDeployment, _build_summary_generator
+from ._helpers import init_observability_best_effort
+from .base import DeploymentContext, DeploymentResult, PipelineDeployment, _create_publisher, build_summary_generator
 
 logger = get_pipeline_logger(__name__)
-
-TOptions = TypeVar("TOptions", bound=FlowOptions)
-TResult = TypeVar("TResult", bound=DeploymentResult)
-
-
-def _init_observability() -> None:
-    """Best-effort observability initialization with Laminar fallback."""
-    try:
-        initialize_observability()
-        logger.info("Observability initialized.")
-    except (OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError, ImportError) as e:
-        logger.warning("Failed to initialize observability: %s", e)
-        try:
-            tracing._initialise_laminar()
-        except (OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError, ImportError) as e2:
-            logger.warning("Laminar fallback initialization failed: %s", e2)
 
 
 def _init_debug_tracing(wd: Path) -> LocalDebugSpanProcessor | None:
@@ -69,29 +53,7 @@ def _init_debug_tracing(wd: Path) -> LocalDebugSpanProcessor | None:
         return None
 
 
-def _create_document_store(wd: Path, summary_generator: SummaryGenerator | None) -> Any:
-    """Create document store — DualDocumentStore (ClickHouse + local) when configured, local-only otherwise."""
-    if settings.clickhouse_host:
-        primary = create_document_store(settings)
-        secondary = LocalDocumentStore(base_path=wd)
-        return DualDocumentStore(primary=primary, secondary=secondary, summary_generator=summary_generator)
-    return LocalDocumentStore(base_path=wd, summary_generator=summary_generator)
-
-
-def _shutdown_workers(debug_processor: LocalDebugSpanProcessor | None) -> None:
-    """Shut down background workers (debug tracing, document summaries, tracking)."""
-    if debug_processor is not None:
-        debug_processor.shutdown()
-    store = get_document_store()
-    if store:
-        store.shutdown()
-        set_document_store(None)
-    tracking_svc = get_tracking_service()
-    if tracking_svc:
-        tracking_svc.shutdown()
-
-
-def run_cli_for_deployment(
+def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
     deployment: PipelineDeployment[TOptions, TResult],
     initializer: Callable[[TOptions], tuple[str, list[Document]]] | None = None,
     trace_name: str | None = None,
@@ -102,7 +64,7 @@ def run_cli_for_deployment(
         sys.argv.append("--help")
 
     setup_logging()
-    _init_observability()
+    init_observability_best_effort()
 
     options_base = deployment.options_type
     if cli_mixin is not None:
@@ -121,7 +83,7 @@ def run_cli_for_deployment(
         cli_use_class_docs_for_groups=True,
     ):
         working_directory: CliPositionalArg[Path]
-        project_name: str | None = None
+        run_id: str | None = None
         start: int = 1
         end: int | None = None
         no_trace: bool = False
@@ -133,27 +95,37 @@ def run_cli_for_deployment(
     wd = cast(Path, opts.working_directory)  # pyright: ignore[reportAttributeAccessIssue]
     wd.mkdir(parents=True, exist_ok=True)
 
-    project_name = cast(str, opts.project_name or wd.name)  # pyright: ignore[reportAttributeAccessIssue]
+    run_id = cast(str, opts.run_id or wd.name)  # pyright: ignore[reportAttributeAccessIssue]
     start_step = getattr(opts, "start", 1)
     end_step = getattr(opts, "end", None)
 
     debug_processor = _init_debug_tracing(wd) if not getattr(opts, "no_trace", False) else None
 
-    summary_generator = _build_summary_generator()
-    store = _create_document_store(wd, summary_generator)
+    # Create document store — DualDocumentStore (ClickHouse + local) when configured, local-only otherwise
+    summary_generator = build_summary_generator()
+    if settings.clickhouse_host:
+        primary = create_document_store(settings)
+        secondary = LocalDocumentStore(base_path=wd)
+        store = DualDocumentStore(primary=primary, secondary=secondary, summary_generator=summary_generator)
+    else:
+        store = LocalDocumentStore(base_path=wd, summary_generator=summary_generator)
     set_document_store(store)
 
     initial_documents: list[Document] = []
     if initializer:
-        _, initial_documents = initializer(opts)
+        init_name, initial_documents = initializer(opts)
+        run_id = cast(str | None, opts.run_id) or init_name or wd.name  # pyright: ignore[reportAttributeAccessIssue]
+    else:
+        run_id = cast(str, opts.run_id or wd.name)  # pyright: ignore[reportAttributeAccessIssue]
 
     context = DeploymentContext()
+    publisher = _create_publisher(settings)
 
     with ExitStack() as stack:
         if trace_name:
             stack.enter_context(
                 Laminar.start_as_current_span(
-                    name=f"{trace_name}-{project_name}",
+                    name=f"{trace_name}-{run_id}",
                     input=[opts.model_dump_json()],
                 )
             )
@@ -166,10 +138,11 @@ def run_cli_for_deployment(
         try:
             result = asyncio.run(
                 deployment.run(
-                    project_name=project_name,
+                    run_id=run_id,
                     documents=initial_documents,
                     options=opts,
                     context=context,
+                    publisher=publisher,
                     start_step=start_step,
                     end_step=end_step,
                 )
@@ -177,7 +150,19 @@ def run_cli_for_deployment(
             if trace_name:
                 Laminar.set_span_output(result.model_dump())
         finally:
-            _shutdown_workers(debug_processor)
+            # Close publisher if it supports closing
+            if hasattr(publisher, "close"):
+                asyncio.run(publisher.close())
+            # Shut down background workers (debug tracing, document summaries, tracking)
+            if debug_processor is not None:
+                debug_processor.shutdown()
+            active_store = get_document_store()
+            if active_store:
+                active_store.shutdown()
+                set_document_store(None)
+            tracking_svc = get_tracking_service()
+            if tracking_svc:
+                tracking_svc.shutdown()
 
     result_file = wd / "result.json"
     result_file.write_text(result.model_dump_json(indent=2))

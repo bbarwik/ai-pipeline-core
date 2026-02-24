@@ -3,7 +3,8 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from ai_pipeline_core.llm import ModelResponse, TokenUsage
+from ai_pipeline_core._llm_core.model_response import ModelResponse
+from ai_pipeline_core._llm_core.types import TokenUsage
 from ai_pipeline_core._llm_core.model_response import Citation
 from tests.support.helpers import create_test_model_response, create_test_structured_model_response
 
@@ -80,8 +81,8 @@ class TestModelResponse:
         response = create_test_model_response(content="test", cost=0.05)
 
         metadata = response.get_laminar_metadata()
-        assert metadata["gen_ai.usage.cost"] == 0.05
-        assert metadata["gen_ai.usage.cost"] == 0.05
+        assert metadata["gen_ai.usage.cost"] == pytest.approx(0.05)
+        assert metadata["gen_ai.usage.cost"] == pytest.approx(0.05)
 
     def test_usage_property(self):
         """Test usage property works directly."""
@@ -247,8 +248,8 @@ class TestStructuredModelResponse:
 
         assert response.model == "gpt-5.1"
         assert response.response_id == "test-id"
-        assert response.cost == 0.02
+        assert response.cost == pytest.approx(0.02)
 
         metadata = response.get_laminar_metadata()
         assert metadata["gen_ai.response.id"] == "test-id"
-        assert metadata["gen_ai.usage.cost"] == 0.02
+        assert metadata["gen_ai.usage.cost"] == pytest.approx(0.02)

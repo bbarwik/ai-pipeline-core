@@ -2,12 +2,18 @@
 # CLASSES: TraceInfo
 # DEPENDS: BaseModel
 # PURPOSE: Observability system for AI pipelines.
-# SIZE: ~22KB
+# VERSION: 0.10.0
+# AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
-# === IMPORTS ===
-from ai_pipeline_core import TraceInfo, TraceLevel, set_trace_cost, trace
-# === PUBLIC API ===
+## Imports
 
+```python
+from ai_pipeline_core import TraceInfo, set_trace_cost, trace
+```
+
+## Public API
+
+```python
 class TraceInfo(BaseModel):
     """Container for propagating trace context through the pipeline.
 
@@ -37,36 +43,12 @@ consistent tracing context."""
     tags: list[str] = Field(default_factory=list)
 
     def get_observe_kwargs(self) -> dict[str, Any]:
-        """Convert TraceInfo to kwargs for Laminar's observe decorator.
-
-        Transforms the TraceInfo fields into the format expected by
-        the lmnr.observe() decorator, applying environment variable
-        fallbacks for session_id and user_id.
-
-        Returns:
-            Dictionary with keys:
-            - session_id: From field or environment variable fallback
-            - user_id: From field or environment variable fallback
-            - metadata: Dictionary of custom metadata (if set)
-            - tags: List of tags (if set)
-
-            Only non-empty values are included in the output.
-
-        Called internally by the trace decorator to configure Laminar
-        observation parameters.
-        """
+        """Build kwargs for ``lmnr.observe()``, with env-var fallbacks for session/user ID."""
         kwargs: dict[str, Any] = {}
-
-        # Use environment variable fallback for session_id
-        session_id = self.session_id or os.getenv("LMNR_SESSION_ID")
-        if session_id:
-            kwargs["session_id"] = session_id
-
-        # Use environment variable fallback for user_id
-        user_id = self.user_id or os.getenv("LMNR_USER_ID")
-        if user_id:
-            kwargs["user_id"] = user_id
-
+        if sid := (self.session_id or os.getenv("LMNR_SESSION_ID")):
+            kwargs["session_id"] = sid
+        if uid := (self.user_id or os.getenv("LMNR_USER_ID")):
+            kwargs["user_id"] = uid
         if self.metadata:
             kwargs["metadata"] = self.metadata
         if self.tags:
@@ -74,8 +56,11 @@ consistent tracing context."""
         return kwargs
 
 
-# === FUNCTIONS ===
+```
 
+## Functions
+
+```python
 def trace(  # noqa: UP047
     func: Callable[P, R] | None = None,
     *,
@@ -97,86 +82,17 @@ def trace(  # noqa: UP047
 ) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
     """Add Laminar observability tracing to any function.
 
-    The trace decorator integrates functions with Laminar (LMNR) for
-    distributed tracing, performance monitoring, and debugging. It
-    automatically handles both sync and async functions, propagates
-    trace context, and provides fine-grained control over what gets traced.
+    Use WITHOUT parameters for most cases — defaults are production-ready.
 
-    USAGE GUIDELINE - Defaults First:
-        By default, use WITHOUT any parameters unless instructed otherwise.
-        The defaults are optimized for most use cases.
+    level controls when tracing is active: "always" (default), "debug" (only when
+    LMNR_DEBUG=="true"), or "off" (returns original function unchanged).
 
-    Args:
-        func: Function to trace (when used without parentheses: @trace).
-
-        level: Controls when tracing is active:
-            - "always": Always trace (default, production mode)
-            - "debug": Only trace when LMNR_DEBUG == "true"
-            - "off": Disable tracing completely
-
-        name: Custom span name in traces (defaults to function.__name__).
-             Use descriptive names for better trace readability.
-
-        session_id: Override session ID for this function's traces.
-                   Typically propagated via TraceInfo instead.
-
-        user_id: Override user ID for this function's traces.
-                Typically propagated via TraceInfo instead.
-
-        metadata: Additional key-value metadata attached to spans.
-                 Searchable in LMNR dashboard. Merged with TraceInfo metadata.
-
-        tags: List of tags for categorizing spans (e.g., ["api", "critical"]).
-             Merged with TraceInfo tags.
-
-        span_type: Semantic type of the span (e.g., "LLM", "CHAIN", "TOOL").
-                  Affects visualization in LMNR dashboard.
-
-        ignore_input: Don't record function inputs in trace (privacy/size).
-
-        ignore_output: Don't record function output in trace (privacy/size).
-
-        ignore_inputs: List of parameter names to exclude from trace.
-                      Useful for sensitive data like API keys.
-
-        input_formatter: Custom function to format inputs for tracing.
-                        Receives all function args, returns display string.
-
-        output_formatter: Custom function to format output for tracing.
-                         Receives function result, returns display string.
-
-        ignore_exceptions: Don't record exceptions in traces (default False).
-
-        preserve_global_context: Maintain Laminar's global context across
-                                calls (default True). Set False for isolated traces.
-
-        trim_documents: Automatically trim document content in traces (default True).
-                       When enabled, text content is trimmed to
-                       first/last 100 chars, and all binary content is removed.
-                       Binary content is removed, text content is trimmed.
-                       Attachment content follows the same trimming rules.
-                       Helps reduce trace size for large documents.
-
-    Returns:
-        Decorated function with same signature but added tracing.
-
-    TraceInfo propagation:
-        If the decorated function has a 'trace_info' parameter, the decorator
-        automatically creates or propagates a TraceInfo instance, ensuring
-        consistent session/user tracking across the call chain.
-
-    Environment variables:
-        - LMNR_DEBUG: Set to "true" to enable debug-level traces
-        - LMNR_PROJECT_API_KEY: Required for trace submission
-
-    Performance:
-        - Tracing overhead is minimal (~1-2ms per call)
-        - When level="off", decorator returns original function unchanged
-        - Large inputs/outputs can be excluded with ignore_* parameters
+    If the decorated function has a 'trace_info' parameter, the decorator
+    automatically creates or propagates a TraceInfo instance for consistent
+    session/user tracking across the call chain.
 
     Automatically initializes Laminar on first use. Works with both sync and
-    async functions. Preserves function signature and metadata. Thread-safe
-    and async-safe.
+    async functions.
     """
     if level == "off":
         if func:
@@ -235,70 +151,36 @@ def trace(  # noqa: UP047
         bound_preserve_global_context = preserve_global_context
         bound_trim_documents = trim_documents
 
-        # Create document trimming formatters if needed
+        # Shared trimming logic for input/output formatters
+        def _trim_formatted(formatted: Any) -> str:
+            """Apply document trimming to formatter output (str or data)."""
+            if isinstance(formatted, str):
+                try:
+                    data = json.loads(formatted)
+                    return json.dumps(trim_documents_in_data(data))
+                except (json.JSONDecodeError, TypeError):
+                    return formatted
+            trimmed = trim_documents_in_data(formatted)
+            return json.dumps(trimmed) if not isinstance(trimmed, str) else trimmed
+
+        def _serialize_and_trim(obj: Any) -> str:
+            """Serialize to JSON, parse, trim documents, re-serialize."""
+            serialized = json.dumps(obj, default=_serialize_for_tracing)
+            return json.dumps(trim_documents_in_data(json.loads(serialized)))
+
         def _create_trimming_input_formatter(*args: Any, **kwargs: Any) -> str:
-            # First, let any custom formatter process the data
             if bound_input_formatter:
-                result = bound_input_formatter(*args, **kwargs)
-                # If formatter returns string, try to parse and trim
-                if isinstance(result, str):  # type: ignore[reportUnknownArgumentType]
-                    try:
-                        data = json.loads(result)
-                        trimmed = _trim_documents_in_data(data)
-                        return json.dumps(trimmed)
-                    except (json.JSONDecodeError, TypeError):
-                        return result
-                else:
-                    # If formatter returns dict/list, trim it
-                    trimmed = _trim_documents_in_data(result)
-                    return json.dumps(trimmed) if not isinstance(trimmed, str) else trimmed
-            else:
-                # No custom formatter - mimic Laminar's get_input_from_func_args
-                # Build a dict with parameter names as keys (like Laminar does)
-                params = list(sig.parameters.keys())
-                data: dict[str, Any] = {}
-
-                # Map args to parameter names
-                for i, arg in enumerate(args):
-                    if i < len(params):
-                        data[params[i]] = arg
-
-                # Add kwargs
-                data.update(kwargs)
-
-                # Serialize with our helper function
-                serialized = json.dumps(data, default=_serialize_for_tracing)
-                parsed = json.loads(serialized)
-
-                # Trim documents in the serialized data
-                trimmed = _trim_documents_in_data(parsed)
-                return json.dumps(trimmed)
+                return _trim_formatted(bound_input_formatter(*args, **kwargs))
+            # No custom formatter — build dict from parameter names (like Laminar)
+            params = list(sig.parameters.keys())
+            data: dict[str, Any] = {params[i]: arg for i, arg in enumerate(args) if i < len(params)}
+            data.update(kwargs)
+            return _serialize_and_trim(data)
 
         def _create_trimming_output_formatter(result: Any) -> str:
-            # First, let any custom formatter process the data
             if bound_output_formatter:
-                formatted = bound_output_formatter(result)
-                # If formatter returns string, try to parse and trim
-                if isinstance(formatted, str):  # type: ignore[reportUnknownArgumentType]
-                    try:
-                        data = json.loads(formatted)
-                        trimmed = _trim_documents_in_data(data)
-                        return json.dumps(trimmed)
-                    except (json.JSONDecodeError, TypeError):
-                        return formatted
-                else:
-                    # If formatter returns dict/list, trim it
-                    trimmed = _trim_documents_in_data(formatted)
-                    return json.dumps(trimmed) if not isinstance(trimmed, str) else trimmed
-            else:
-                # No custom formatter, serialize result with smart defaults
-                # Serialize with our extracted helper function
-                serialized = json.dumps(result, default=_serialize_for_tracing)
-                parsed = json.loads(serialized)
-
-                # Trim documents in the serialized data
-                trimmed = _trim_documents_in_data(parsed)
-                return json.dumps(trimmed)
+                return _trim_formatted(bound_output_formatter(result))
+            return _serialize_and_trim(result)
 
         # --- Helper function for runtime logic ---
         def _prepare_and_get_observe_params(runtime_kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -404,31 +286,9 @@ def trace(  # noqa: UP047
 def set_trace_cost(cost: float | str) -> None:
     """Set cost attributes for the current trace span.
 
-    Sets cost metadata in the current LMNR trace span for tracking expenses
-    of custom operations. This function should be called within a traced
-    function to dynamically set or update the cost associated with the
-    current operation. Particularly useful for tracking costs of external
-    API calls, compute resources, or custom billing scenarios.
-
-    The cost is stored in three metadata fields for observability tool consumption:
-    - gen_ai.usage.output_cost: OpenTelemetry GenAI semantic convention
-    - gen_ai.usage.cost: Aggregated cost field
-    - cost: Short-form cost field
-
-    Args:
-        cost: The cost value to set. Can be:
-              - float: Cost in dollars (e.g., 0.05 for 5 cents)
-              - str: USD format with dollar sign (e.g., "$0.05" or "$1.25")
-              Only positive values will be set; zero or negative values are ignored.
-
-    Raises:
-        ValueError: If string format is invalid (not a valid USD amount).
-
-    Only works within a traced context (function decorated with @trace,
-    @pipeline_task, or @pipeline_flow). LLM costs are tracked automatically via
-    ModelResponse; use this for non-LLM costs. Multiple calls overwrite the
-    previous cost (not cumulative). If called outside a traced context, it has
-    no effect and does not raise an error.
+    Only positive values are set; zero or negative values are ignored.
+    Only works within a traced context (@trace, @pipeline_task, @pipeline_flow).
+    Use for non-LLM costs; LLM costs are tracked automatically via ModelResponse.
     """
     # Parse string format if provided
     if isinstance(cost, str):
@@ -453,69 +313,90 @@ def set_trace_cost(cost: float | str) -> None:
             "cost": cost_value,
         }
 
-        with contextlib.suppress(Exception):
+        try:
             Laminar.set_span_attributes(attributes)
+        except Exception as e:
+            logger.debug("Failed to set trace cost attributes: %s", e)
 
-# === EXAMPLES (from tests/) ===
+```
 
-# Example: Set trace cost negative
-# Source: tests/observability/test_trace_decorator.py:309
+## Examples
+
+**Set trace cost negative** (`tests/observability/test_trace_decorator.py:309`)
+
+```python
 @patch("ai_pipeline_core.observability.tracing.Laminar.set_span_attributes")
 def test_set_trace_cost_negative(self, mock_set_attrs: Mock) -> None:
     """Test set_trace_cost with negative cost (should not call Laminar)."""
     set_trace_cost(-0.05)
     mock_set_attrs.assert_not_called()
+```
 
-# Example: Set trace cost usd string negative
-# Source: tests/observability/test_trace_decorator.py:343
+**Set trace cost usd string negative** (`tests/observability/test_trace_decorator.py:343`)
+
+```python
 @patch("ai_pipeline_core.observability.tracing.Laminar.set_span_attributes")
 def test_set_trace_cost_usd_string_negative(self, mock_set_attrs: Mock) -> None:
     """Test set_trace_cost with negative USD string (should not call Laminar)."""
     set_trace_cost("$-0.50")
     mock_set_attrs.assert_not_called()
+```
 
-# Example: Set trace cost usd string zero
-# Source: tests/observability/test_trace_decorator.py:337
+**Set trace cost usd string zero** (`tests/observability/test_trace_decorator.py:337`)
+
+```python
 @patch("ai_pipeline_core.observability.tracing.Laminar.set_span_attributes")
 def test_set_trace_cost_usd_string_zero(self, mock_set_attrs: Mock) -> None:
     """Test set_trace_cost with USD string format of zero (should not call Laminar)."""
     set_trace_cost("$0.00")
     mock_set_attrs.assert_not_called()
+```
 
-# Example: Set trace cost zero
-# Source: tests/observability/test_trace_decorator.py:303
+**Set trace cost zero** (`tests/observability/test_trace_decorator.py:303`)
+
+```python
 @patch("ai_pipeline_core.observability.tracing.Laminar.set_span_attributes")
 def test_set_trace_cost_zero(self, mock_set_attrs: Mock) -> None:
     """Test set_trace_cost with zero cost (should not call Laminar)."""
     set_trace_cost(0.0)
     mock_set_attrs.assert_not_called()
+```
 
-# === ERROR EXAMPLES (What NOT to Do) ===
 
-# Error: Set trace cost invalid string empty after dollar
-# Source: tests/observability/test_trace_decorator.py:358
+## Error Examples
+
+**Set trace cost invalid string empty after dollar** (`tests/observability/test_trace_decorator.py:358`)
+
+```python
 def test_set_trace_cost_invalid_string_empty_after_dollar(self) -> None:
     """Test set_trace_cost with invalid string (empty after dollar)."""
     with pytest.raises(ValueError, match=r"Invalid USD format.*Must be a valid number"):
         set_trace_cost("$")
+```
 
-# Error: Set trace cost invalid string no dollar
-# Source: tests/observability/test_trace_decorator.py:348
+**Set trace cost invalid string no dollar** (`tests/observability/test_trace_decorator.py:348`)
+
+```python
 def test_set_trace_cost_invalid_string_no_dollar(self) -> None:
     """Test set_trace_cost with invalid string (no dollar sign)."""
     with pytest.raises(ValueError, match=r"Invalid USD format.*Must start with"):
         set_trace_cost("0.50")
+```
 
-# Error: Set trace cost invalid string not number
-# Source: tests/observability/test_trace_decorator.py:353
+**Set trace cost invalid string not number** (`tests/observability/test_trace_decorator.py:353`)
+
+```python
 def test_set_trace_cost_invalid_string_not_number(self) -> None:
     """Test set_trace_cost with invalid string (not a number)."""
     with pytest.raises(ValueError, match=r"Invalid USD format.*Must be a valid number"):
         set_trace_cost("$abc")
+```
 
-# Error: Config is frozen
-# Source: tests/observability/test_initialization.py:26
+**Config is frozen** (`tests/observability/test_initialization.py:26`)
+
+```python
 def test_config_is_frozen(self):
     config = ObservabilityConfig()
     with pytest.raises(ValidationError):
         config.clickhouse_host = "changed"  # type: ignore[misc]
+```

@@ -24,7 +24,7 @@ from ai_pipeline_core._llm_core.model_response import Citation, ModelResponse
 from ai_pipeline_core._llm_core.types import TextContent, TokenUsage
 from ai_pipeline_core.documents import Attachment
 from ai_pipeline_core.llm.conversation import Conversation, _document_to_content_parts, _escape_xml_content, _escape_xml_metadata
-from ai_pipeline_core.llm import URLSubstitutor
+from ai_pipeline_core.llm._substitutor import URLSubstitutor
 
 from tests.support.helpers import ConcreteDocument
 
@@ -45,7 +45,7 @@ class TestBooleanTruthinessBugFixed:
         kwargs = options.to_openai_completion_kwargs()
 
         assert "temperature" in kwargs, "temperature=0.0 should be included in kwargs"
-        assert kwargs["temperature"] == 0.0
+        assert kwargs["temperature"] == pytest.approx(0.0)
 
     def test_max_completion_tokens_zero_is_included(self):
         """max_completion_tokens=0 should be passed to API."""
@@ -68,7 +68,7 @@ class TestBooleanTruthinessBugFixed:
         options = ModelOptions(temperature=0.7)
         kwargs = options.to_openai_completion_kwargs()
         assert "temperature" in kwargs
-        assert kwargs["temperature"] == 0.7
+        assert kwargs["temperature"] == pytest.approx(0.7)
 
 
 # =============================================================================
@@ -78,11 +78,11 @@ class TestBooleanTruthinessBugFixed:
 
 
 class TestSubstitutorStatePersistenceFixed:
-    """Tests verifying substitutor state persists across send() calls."""
+    """Tests verifying enable_substitutor flag persists across send() calls."""
 
     @pytest.mark.asyncio
-    async def test_substitutor_passed_through_constructor(self, monkeypatch):
-        """Substitutor should be passed through constructor, not via object.__setattr__."""
+    async def test_enable_substitutor_preserved_through_send(self, monkeypatch):
+        """enable_substitutor flag should be preserved through send() calls."""
         mock_response = ModelResponse[str](
             content="Response",
             parsed="Response",
@@ -102,33 +102,24 @@ class TestSubstitutorStatePersistenceFixed:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        # Create conversation with a document that has a long URL
-        doc = ConcreteDocument.create(
-            name="test.txt",
-            content="Visit https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page",
-        )
-        conv1 = Conversation(model="gpt-5.1", context=[doc])
-
-        # Verify substitutor exists
-        assert conv1.substitutor is not None
-
-        # Add mappings by calling prepare
-        conv1.substitutor.prepare(["https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page"])
-        initial_count = conv1.substitutor.pattern_count
+        # Create conversation with enable_substitutor=True (default)
+        conv1 = Conversation(model="gpt-5.1")
+        assert conv1.enable_substitutor is True
 
         # Send and get new conversation
         conv2 = await conv1.send("Follow up")
 
-        # Verify same substitutor instance is shared (state persisted)
-        assert conv2.substitutor is not None
-        assert conv2.substitutor is conv1.substitutor, "Substitutor should be the same instance"
-        assert conv2.substitutor.pattern_count == initial_count, "Mappings should be preserved"
+        # Verify enable_substitutor is preserved
+        assert conv2.enable_substitutor is True
 
-    def test_substitutor_is_regular_field(self):
-        """Substitutor should be a regular Field, not PrivateAttr."""
-        # Check that 'substitutor' is in model_fields (regular field)
-        # and not in __private_attributes__ (PrivateAttr)
-        assert "substitutor" in Conversation.model_fields, "substitutor should be a model field"
+        # Also verify explicitly disabled substitutor is preserved
+        conv3 = Conversation(model="gpt-5.1", enable_substitutor=False)
+        conv4 = await conv3.send("Follow up")
+        assert conv4.enable_substitutor is False
+
+    def test_enable_substitutor_is_regular_field(self):
+        """enable_substitutor should be a regular model field."""
+        assert "enable_substitutor" in Conversation.model_fields, "enable_substitutor should be a model field"
 
 
 # =============================================================================
@@ -188,7 +179,7 @@ class TestXmlInjectionFixed:
 
     def test_document_content_wrapper_tags_escaped(self):
         """Wrapper tags in document content are escaped, other content preserved."""
-        doc = ConcreteDocument.create(name="test.txt", content="Hello </content> & friends <world>")
+        doc = ConcreteDocument.create_root(name="test.txt", content="Hello </content> & friends <world>", reason="test input")
 
         parts = _document_to_content_parts(doc, "gpt-5.1")
         combined = "".join(p.text for p in parts if isinstance(p, TextContent))
@@ -199,7 +190,7 @@ class TestXmlInjectionFixed:
 
     def test_document_description_is_escaped(self):
         """Document description should have < and > escaped."""
-        doc = ConcreteDocument.create(name="test.txt", content="Hello", description="A <test> description")
+        doc = ConcreteDocument.create_root(name="test.txt", content="Hello", description="A <test> description", reason="test input")
 
         parts = _document_to_content_parts(doc, "gpt-5.1")
         combined = "".join(p.text for p in parts if isinstance(p, TextContent))
@@ -218,10 +209,11 @@ class TestAttachmentsInsideWrapperFixed:
 
     def test_text_attachment_inside_document(self):
         """Text attachments should be inside the <document>...</document> wrapper."""
-        doc = ConcreteDocument.create(
+        doc = ConcreteDocument.create_root(
             name="main.txt",
             content="Main content",
             attachments=(Attachment(name="extra.txt", content=b"Attachment content"),),
+            reason="test input",
         )
 
         parts = _document_to_content_parts(doc, "gpt-5.1")
@@ -324,7 +316,7 @@ class TestMagicNumberFixed:
         # Create minimal valid PNG
         png_data = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 
-        doc = ConcreteDocument.create(name="test.png", content=png_data)
+        doc = ConcreteDocument.create_root(name="test.png", content=png_data, reason="test input")
         conv = Conversation(model="gpt-5.1", context=[doc])
 
         # The approximate token count should use 1080 per image

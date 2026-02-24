@@ -9,7 +9,16 @@ from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
 
+__all__ = [
+    "MAX_GUIDE_SIZE",
+    "README_ERROR_SIZE",
+    "README_WARN_SIZE",
+    "manage_guide_size",
+]
+
 MAX_GUIDE_SIZE = 51_200  # 50KB in bytes
+README_WARN_SIZE = 51_200  # 50KB — warn threshold for README.md
+README_ERROR_SIZE = 102_400  # 100KB — error threshold for README.md
 
 
 def manage_guide_size(

@@ -9,7 +9,7 @@ from uuid import UUID
 import pytest
 import yaml
 
-from ai_pipeline_core.observability import ContentWriter, TraceDebugConfig
+from ai_pipeline_core.observability._debug import ContentWriter, TraceDebugConfig
 
 
 @pytest.fixture

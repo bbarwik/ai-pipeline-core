@@ -16,6 +16,8 @@ on:
 jobs:
   quality-checks:
     uses: ./.github/workflows/reusable-quality-checks.yml
+    with:
+      skip_integration_tests: ${{ inputs.skip_integration_tests }}
     secrets: inherit  # Pass secrets for integration tests
 
   integration-tests-check:

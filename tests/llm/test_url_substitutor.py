@@ -8,7 +8,7 @@ New two-tier design:
 
 import pytest
 
-from ai_pipeline_core.llm import URLSubstitutor
+from ai_pipeline_core.llm._substitutor import URLSubstitutor
 
 # Standard Tier 1 test values (0x + 64 hex = 66 chars, meets _T1_MIN_LENGTH)
 TX_HASH = "0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1"

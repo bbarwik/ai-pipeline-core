@@ -12,9 +12,7 @@ RESULT_TAG = "result"
 RESULT_OPEN = f"<{RESULT_TAG}>"
 RESULT_CLOSE = f"</{RESULT_TAG}>"
 
-_XML_WRAP_INSTRUCTION = (
-    f"Write your complete response inside {RESULT_OPEN} tags. Do not add any XML tags inside {RESULT_OPEN}.\n\n{RESULT_OPEN}your response content{RESULT_CLOSE}"
-)
+_RESULT_TAG_RULE = f"Write your complete response inside {RESULT_OPEN} tags. Do not add any XML tags inside {RESULT_OPEN}."
 
 
 def _role_sentence(text: str) -> str:
@@ -30,36 +28,34 @@ def _pascal_to_title(name: str) -> str:
 
 def _format_numbered_rule(index: int, text: str) -> str:
     """Format a numbered rule with 3-space indent on continuation lines."""
-    lines = text.splitlines()
-    first = f"{index}. {lines[0]}"
-    rest = [f"   {line}" for line in lines[1:]]
-    return "\n".join([first, *rest])
+    return f"{index}. {text}".replace("\n", "\n   ")
+
+
+def _render_document_listing(items: list[tuple[str, str]]) -> str:
+    """Render document listing from (header, description) pairs."""
+    blocks: list[str] = []
+    for header, desc in items:
+        if desc:
+            indented = "\n".join(f"  {line}" for line in desc.strip().splitlines())
+            blocks.append(f"{header}\n{indented}")
+        else:
+            blocks.append(header)
+    return "Documents provided in context:\n\n" + "\n\n".join(blocks)
 
 
 def _render_documents_preview(spec_cls: type[PromptSpec]) -> str:
     """Render document listing from class-level info (for preview / no-documents mode)."""
-    doc_blocks: list[str] = []
-    for doc_cls in spec_cls.input_documents:
-        lines = (doc_cls.__doc__ or "").strip().splitlines()
-        desc = lines[0] if lines else "No description"
-        block = f"{doc_cls.__name__}\n  {desc}"
-        doc_blocks.append(block)
-    return "Documents provided in context:\n\n" + "\n\n".join(doc_blocks)
+    items = [
+        (doc_cls.__name__, (doc_cls.__doc__ or "").strip().splitlines()[0] if (doc_cls.__doc__ or "").strip() else "No description")
+        for doc_cls in spec_cls.input_documents
+    ]
+    return _render_document_listing(items)
 
 
 def _render_documents_actual(documents: list[Document]) -> str:
     """Render document listing from actual Document instances."""
-    doc_blocks: list[str] = []
-    for doc in documents:
-        header = f"[{doc.id}] {doc.name}"
-        if doc.description:
-            desc_lines = doc.description.strip().splitlines()
-            indented = "\n".join(f"  {line}" for line in desc_lines)
-            block = f"{header}\n{indented}"
-        else:
-            block = header
-        doc_blocks.append(block)
-    return "Documents provided in context:\n\n" + "\n\n".join(doc_blocks)
+    items = [(f"[{doc.id}] {doc.name}", doc.description or "") for doc in documents]
+    return _render_document_listing(items)
 
 
 def render_text(
@@ -79,8 +75,9 @@ def render_text(
     spec_cls = type(spec)
     sections: list[str] = []
 
-    # 1. Role
-    sections.append(f"# Role\n\n{_role_sentence(spec_cls.role.text)}")
+    # 1. Role (skipped when None, e.g. follow-up specs without explicit role)
+    if spec_cls.role is not None:
+        sections.append(f"# Role\n\n{_role_sentence(spec_cls.role.text)}")
 
     # 2. Context: document listing + dynamic parameter values
     context_parts: list[str] = []
@@ -117,18 +114,15 @@ def render_text(
         sections.append(f"# Reference: {title}\n\n{content}")
 
     # 6. Output rules (before structure — tell the LLM constraints before format)
-    if spec_cls.output_rules:
-        or_lines = [_format_numbered_rule(i, rule_cls.text) for i, rule_cls in enumerate(spec_cls.output_rules, 1)]
+    or_lines = [_format_numbered_rule(i, rule_cls.text) for i, rule_cls in enumerate(spec_cls.output_rules, 1)]
+    if spec_cls.output_structure is not None:
+        or_lines.append(_format_numbered_rule(len(or_lines) + 1, _RESULT_TAG_RULE))
+    if or_lines:
         sections.append("# Output Rules\n\n" + "\n".join(or_lines))
 
     # 7. Output structure
-    structure_parts: list[str] = []
-    if spec_cls.xml_wrapped:
-        structure_parts.append(_XML_WRAP_INSTRUCTION)
     if spec_cls.output_structure:
-        structure_parts.append(spec_cls.output_structure)
-    if structure_parts:
-        sections.append("# Output Structure\n\n" + "\n\n".join(structure_parts))
+        sections.append("# Output Structure\n\n" + spec_cls.output_structure)
 
     return "\n\n".join(sections)
 
@@ -141,7 +135,19 @@ def render_preview(spec_class: type[PromptSpec], *, include_input_documents: boo
     """
     placeholders = {field_name: f"{{{field_name}}}" for field_name in spec_class.model_fields}
     instance = spec_class.model_construct(**placeholders)  # pyright: ignore[reportArgumentType] — placeholders are intentionally untyped strings
-    return render_text(instance, include_input_documents=include_input_documents)
+    text = render_text(instance, include_input_documents=include_input_documents)
+    if spec_class.follows is not None:
+        return f"[Follows: {spec_class.follows.__name__}]\n\n{text}"
+    return text
+
+
+_EXTRACT_PATTERN = re.compile(rf"<{RESULT_TAG}>(.*?)(?:</{RESULT_TAG}>|$)", re.DOTALL)
+
+
+def _extract_result(text: str) -> str:  # pyright: ignore[reportUnusedFunction]  # used by conversation.py
+    """Extract content from <result> tags. Returns text as-is if no tags found."""
+    match = _EXTRACT_PATTERN.search(text)
+    return match.group(1).strip() if match else text
 
 
 __all__ = ["render_preview", "render_text"]

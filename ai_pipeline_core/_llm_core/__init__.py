@@ -7,18 +7,18 @@ the llm module's Conversation class instead.
 Exports:
     Types: Role, TextContent, ImageContent, PDFContent, ContentPart, CoreMessage, TokenUsage
     Model config: ModelOptions, ModelName
-    Response types: ModelResponse, StructuredModelResponse, Citation
+    Response types: ModelResponse, Citation
     Functions: generate, generate_structured
 """
 
 from .client import generate, generate_structured
 from .model_options import ModelOptions
 from .model_response import Citation, ModelResponse
-from .model_types import ModelName
 from .types import (
     ContentPart,
     CoreMessage,
     ImageContent,
+    ModelName,
     PDFContent,
     Role,
     TextContent,

@@ -3,8 +3,8 @@
 import pytest
 
 from ai_pipeline_core import pipeline_flow
-from ai_pipeline_core.document_store import set_document_store
-from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+from ai_pipeline_core.document_store._protocol import set_document_store
+from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents.context import RunContext, reset_run_context, set_run_context
 from ai_pipeline_core.pipeline.options import FlowOptions
@@ -40,7 +40,7 @@ async def test_pipeline_flow_returns_documents_with_store_configured(prefect_tes
     """Test that pipeline_flow returns documents correctly when a store is configured."""
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         return [StorageOutputDoc(name="output.txt", content=b"test output")]
 
     input_docs = [StorageInputDoc(name="input.txt", content=b"test input")]
@@ -57,7 +57,7 @@ async def test_pipeline_flow_works_without_store(prefect_test_fixture):
     set_document_store(None)
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         return [StorageOutputDoc(name="output.txt", content=b"test output")]
 
     result = await test_flow("test-project", [], FlowOptions())
@@ -74,7 +74,7 @@ async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture,
     captured_ctx = None
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         nonlocal captured_ctx
         captured_ctx = get_run_context()
         return []
@@ -93,7 +93,7 @@ async def test_pipeline_flow_preserves_existing_run_context(prefect_test_fixture
     captured_ctx = None
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         nonlocal captured_ctx
         captured_ctx = get_run_context()
         return []
@@ -110,7 +110,7 @@ async def test_pipeline_flow_saves_returned_documents(prefect_test_fixture, memo
     """Test that @pipeline_flow saves returned documents to the store."""
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         return [StorageOutputDoc(name="output.txt", content=b"test output")]
 
     input_docs = [StorageInputDoc(name="input.txt", content=b"test input")]
@@ -127,7 +127,7 @@ async def test_pipeline_flow_deduplicates_returned_documents(prefect_test_fixtur
     doc = StorageOutputDoc(name="output.txt", content=b"test output")
 
     @pipeline_flow()
-    async def test_flow(project_name: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         return [doc, doc]  # Same document twice
 
     await test_flow("test-project", [], FlowOptions())

@@ -4,6 +4,14 @@ This module defines the exception hierarchy used throughout the AI Pipeline Core
 All exceptions inherit from PipelineCoreError, providing a consistent error handling interface.
 """
 
+__all__ = [
+    "DocumentNameError",
+    "DocumentSizeError",
+    "DocumentValidationError",
+    "LLMError",
+    "PipelineCoreError",
+]
+
 
 class PipelineCoreError(Exception):
     """Base exception for all AI Pipeline Core errors."""
@@ -25,13 +33,5 @@ class LLMError(PipelineCoreError):
     """Raised when LLM generation fails after all retries."""
 
 
-class PromptError(PipelineCoreError):
-    """Base exception for prompt template errors."""
-
-
-class PromptRenderError(PromptError):
-    """Raised when Jinja2 template rendering fails."""
-
-
-class PromptNotFoundError(PromptError):
-    """Raised when prompt template file is not found in search paths."""
+class OutputDegenerationError(LLMError):
+    """LLM output contains degeneration patterns (e.g., token repetition loops)."""

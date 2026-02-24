@@ -71,17 +71,17 @@ class TestPipelineTraceTrimDocuments:
         mock_trace.return_value = mock_decorator
 
         async def mock_wrapper(*args, **kwargs):
-            return list([OutputFlowDoc.create(name="out.txt", content="test")])
+            return list([OutputFlowDoc.create_root(name="out.txt", content="test")], reason="test input")
 
         mock_decorator.return_value = mock_wrapper
 
         @pipeline_flow(trace_trim_documents=True, name="test_flow")
         async def flow_func(  # pyright: ignore[reportUnusedFunction]
-            project_name: str,
+            run_id: str,
             documents: list[Document],
             flow_options: FlowOptions,
         ) -> list[Document]:
-            return [OutputFlowDoc.create(name=f"output_{doc.name}", content=doc.content) for doc in documents]
+            return [OutputFlowDoc.create_root(name=f"output_{doc.name}", content=doc.content, reason="test input") for doc in documents]
 
         mock_trace.assert_called_once()
         call_kwargs = mock_trace.call_args.kwargs
@@ -94,17 +94,17 @@ class TestPipelineTraceTrimDocuments:
         mock_trace.return_value = mock_decorator
 
         async def mock_wrapper(*args, **kwargs):
-            return list([OutputFlowDoc.create(name="out.txt", content="test")])
+            return list([OutputFlowDoc.create_root(name="out.txt", content="test")], reason="test input")
 
         mock_decorator.return_value = mock_wrapper
 
         @pipeline_flow(trace_trim_documents=False, name="test_flow")
         async def flow_func(  # pyright: ignore[reportUnusedFunction]
-            project_name: str,
+            run_id: str,
             documents: list[Document],
             flow_options: FlowOptions,
         ) -> list[Document]:
-            return [OutputFlowDoc.create(name=f"output_{doc.name}", content=doc.content) for doc in documents]
+            return [OutputFlowDoc.create_root(name=f"output_{doc.name}", content=doc.content, reason="test input") for doc in documents]
 
         mock_trace.assert_called_once()
         call_kwargs = mock_trace.call_args.kwargs
@@ -116,17 +116,17 @@ class TestPipelineTraceTrimDocuments:
         mock_trace.return_value = mock_decorator
 
         async def mock_wrapper(*args, **kwargs):
-            return list([OutputFlowDoc.create(name="out.txt", content="test")])
+            return list([OutputFlowDoc.create_root(name="out.txt", content="test")], reason="test input")
 
         mock_decorator.return_value = mock_wrapper
 
         @pipeline_flow(name="test_flow")
         async def flow_func(  # pyright: ignore[reportUnusedFunction]
-            project_name: str,
+            run_id: str,
             documents: list[Document],
             flow_options: FlowOptions,
         ) -> list[Document]:
-            return [OutputFlowDoc.create(name=f"output_{doc.name}", content=doc.content) for doc in documents]
+            return [OutputFlowDoc.create_root(name=f"output_{doc.name}", content=doc.content, reason="test input") for doc in documents]
 
         mock_trace.assert_called_once()
         call_kwargs = mock_trace.call_args.kwargs
@@ -138,33 +138,33 @@ class TestPipelineTraceTrimDocuments:
             return WorkTaskDoc.create(
                 name=f"processed_{doc.name}",
                 content=f"Processed: {doc.text[:50]}",
-                sources=(doc.sha256,),
+                derived_from=(doc.sha256,),
             )
 
-        doc = WorkTaskDoc.create(name="input.txt", content="x" * 1000)
+        doc = WorkTaskDoc.create_root(name="input.txt", content="x" * 1000, reason="test input")
         result = await process_doc(doc)
 
         assert result.name == "processed_input.txt"
         assert "Processed:" in result.text
-        assert doc.sha256 in result.sources
+        assert doc.sha256 in result.derived_from
 
     async def test_pipeline_flow_functional_with_trim(self):
         @pipeline_flow(trace_trim_documents=True)
         async def process_flow(
-            project_name: str,
+            run_id: str,
             documents: list[Document],
             flow_options: FlowOptions,
         ) -> list[Document]:
             return [
                 OutputFlowDoc.create(
-                    name=f"{project_name}_{doc.name}",
+                    name=f"{run_id}_{doc.name}",
                     content=f"Flow processed: {doc.text[:100]}",
-                    sources=(doc.sha256,),
+                    derived_from=(doc.sha256,),
                 )
                 for doc in documents
             ]
 
-        input_doc = InputFlowDoc.create(name="input.txt", content="y" * 1000)
+        input_doc = InputFlowDoc.create_root(name="input.txt", content="y" * 1000, reason="test input")
         docs = [input_doc]
         options = FlowOptions()
 
@@ -173,31 +173,32 @@ class TestPipelineTraceTrimDocuments:
         assert len(result) == 1
         assert result[0].name == "test_project_input.txt"
         assert "Flow processed:" in result[0].text
-        assert input_doc.sha256 in result[0].sources
+        assert input_doc.sha256 in result[0].derived_from
 
     async def test_pipeline_decorators_combined(self):
         @pipeline_task(trace_trim_documents=True)
         async def trim_task(doc: WorkTaskDoc) -> WorkTaskDoc:
-            return WorkTaskDoc.create(name=f"trimmed_{doc.name}", content=doc.content[:100])
+            return WorkTaskDoc.create_root(name=f"trimmed_{doc.name}", content=doc.content[:100], reason="test input")
 
         @pipeline_flow(trace_trim_documents=False)
         async def full_flow(
-            project_name: str,
+            run_id: str,
             documents: list[Document],
             flow_options: FlowOptions,
         ) -> list[Document]:
-            task_doc = WorkTaskDoc.create(name="task.txt", content="a" * 500)
+            task_doc = WorkTaskDoc.create_root(name="task.txt", content="a" * 500, reason="test input")
             trimmed = await trim_task(task_doc)
 
             return [
-                OutputFlowDoc.create(
+                OutputFlowDoc.create_root(
                     name=f"output_{doc.name}",
                     content=f"{doc.text}\nTask result: {trimmed.text}",
+                    reason="test input",
                 )
                 for doc in documents
             ]
 
-        input_doc = InputFlowDoc.create(name="input.txt", content="Original content")
+        input_doc = InputFlowDoc.create_root(name="input.txt", content="Original content", reason="test input")
         docs = [input_doc]
         options = FlowOptions()
 

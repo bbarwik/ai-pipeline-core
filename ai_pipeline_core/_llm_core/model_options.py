@@ -4,110 +4,26 @@ Provides the ModelOptions class for configuring model behavior,
 retry logic, and advanced features like web search and reasoning.
 """
 
-from typing import Any, Literal
+from collections.abc import Mapping
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ModelOptions(BaseModel):
     r"""Configuration options for LLM generation requests.
 
-    ModelOptions encapsulates all configuration parameters for model
-    generation, including model behavior settings, retry logic, and
-    advanced features. All fields are optional with sensible defaults.
-    Extra fields are forbidden to catch typos and incorrect usage.
+    All fields are optional with sensible defaults. Extra fields are forbidden.
 
-    Attributes:
-        temperature: Controls randomness in generation (0.0-2.0).
-                    Lower values = more deterministic, higher = more creative.
-                    If None, the parameter is omitted from the API call,
-                    causing the provider to use its own default (often 1.0).
-
-        system_prompt: System-level instructions for the model.
-                      Sets the model's behavior and persona.
-
-        search_context_size: Web search result depth for search-enabled models.
-                           Literal["low", "medium", "high"] | None
-                           "low": Minimal context (~1-2 results)
-                           "medium": Moderate context (~3-5 results)
-                           "high": Extensive context (~6+ results)
-
-        reasoning_effort: Reasoning intensity for models that support explicit reasoning.
-                         Literal["low", "medium", "high"] | None
-                         "low": Quick reasoning
-                         "medium": Balanced reasoning
-                         "high": Deep, thorough reasoning
-                         Note: Availability and effect vary by provider and model. Only models
-                         that expose an explicit reasoning control will honor this parameter.
-
-        retries: Number of retry attempts on failure (default: 3).
-
-        retry_delay_seconds: Seconds to wait between retries (default: 20).
-
-        timeout: Maximum seconds to wait for response (default: 600).
-
-        cache_ttl: Cache TTL for context messages (default: "300s").
-                   String format like "60s", "5m", or None to disable caching.
-                   Applied to the last context message for efficient token reuse.
-
-        service_tier: API tier selection for performance/cost trade-offs.
-                     "auto": Let API choose
-                     "default": Standard tier
-                     "flex": Flexible (cheaper, may be slower)
-                     "scale": Scaled performance
-                     "priority": Priority processing
-                     Note: Service tiers are correct as of Q3 2025. Only OpenAI models
-                     support this parameter. Other providers (Anthropic, Google, Grok)
-                     silently ignore it.
-
-        max_completion_tokens: Maximum tokens to generate.
-                              None uses model default.
-
-        stop: Stop sequences that halt generation when encountered.
-             Can be a single string or list of strings.
-             When the model generates any of these sequences, it stops immediately.
-             Maximum of 4 stop sequences supported by most providers.
-
-        response_format: Pydantic model class for structured output.
-                        Pass a Pydantic model; the client converts it to JSON Schema.
-                        Set automatically by generate_structured().
-                        Structured output support varies by provider and model.
-
-        verbosity: Controls output verbosity for models that support it.
-                  Literal["low", "medium", "high"] | None
-                  "low": Minimal output
-                  "medium": Standard output
-                  "high": Detailed output
-                  Note: Only some models support verbosity control.
-
-        usage_tracking: Enable token usage tracking in API responses (default: True).
-                       When enabled, adds {"usage": {"include": True}} to extra_body.
-                       Disable for providers that don't support usage tracking.
-
-        user: User identifier for cost tracking and monitoring.
-             A unique identifier representing the end-user, which can help track costs
-             and detect abuse. Maximum length is typically 256 characters.
-             Useful for multi-tenant applications or per-user billing.
-
-        metadata: Custom metadata tags for tracking and observability.
-                 Dictionary of string key-value pairs for tagging requests.
-                 Useful for tracking experiments, versions, or custom attributes.
-                 Maximum of 16 key-value pairs, each key/value max 64 characters.
-                 Passed through to LMNR tracing and API provider metadata.
-
-        extra_body: Additional provider-specific parameters to pass in request body.
-                   Dictionary of custom parameters not covered by standard options.
-                   Merged with usage_tracking if both are set.
-                   Useful for beta features or provider-specific capabilities.
-
-    Not all options apply to all models. search_context_size only works with search models,
-    reasoning_effort only works with models that support explicit reasoning, and
-    response_format is set internally by generate_structured(). cache_ttl accepts formats
-    like "120s", "5m", "1h" or None (default: "300s"). Stop sequences are limited to 4 by
-    most providers.
+    Non-obvious behaviors:
+    - cache_ttl: string format ("60s", "5m", "1h") or None to disable. Default "300s".
+    - service_tier: only OpenAI models honor this; other providers silently ignore it.
+    - stop: accepts a single string or list; coerced to tuple. Max 4 by most providers.
+    - usage_tracking: when True (default), injects {"usage": {"include": True}} into extra_body.
+    - extra_body: merged with usage_tracking dict if both are set.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     temperature: float | None = None
     system_prompt: str | None = None
@@ -119,88 +35,48 @@ class ModelOptions(BaseModel):
     cache_ttl: str | None = "300s"
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
     max_completion_tokens: int | None = None
-    stop: str | list[str] | None = None
-    response_format: type[BaseModel] | None = None
+    stop: tuple[str, ...] | None = None
     verbosity: Literal["low", "medium", "high"] | None = None
     stream: bool = False
     usage_tracking: bool = True
     user: str | None = None
-    metadata: dict[str, str] | None = None
-    extra_body: dict[str, Any] | None = None
+    metadata: Mapping[str, str] | None = None
+    extra_body: Mapping[str, Any] | None = None
 
-    def to_openai_completion_kwargs(self) -> dict[str, Any]:  # noqa: C901
+    @field_validator("stop", mode="before")
+    @classmethod
+    def _coerce_stop(cls, v: Any) -> tuple[str, ...] | None:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return (v,)
+        if isinstance(v, (list, tuple)):
+            return tuple(str(s) for s in cast(list[Any], v))
+        return v
+
+    def to_openai_completion_kwargs(self) -> dict[str, Any]:
         """Convert options to OpenAI API completion parameters.
 
-        Transforms ModelOptions fields into the format expected by
-        the OpenAI completion API. Only includes non-None values.
-
-        Returns:
-            Dictionary with OpenAI API parameters:
-            - Always includes 'timeout' and 'extra_body'
-            - Conditionally includes other parameters if set
-            - Maps search_context_size to web_search_options
-            - Passes reasoning_effort directly
-
-        API parameter mapping:
-            - temperature -> temperature
-            - max_completion_tokens -> max_completion_tokens
-            - stop -> stop (string or list of strings)
-            - reasoning_effort -> reasoning_effort
-            - search_context_size -> web_search_options.search_context_size
-            - response_format -> response_format
-            - service_tier -> service_tier
-            - verbosity -> verbosity
-            - user -> user (for cost tracking)
-            - metadata -> metadata (for tracking/observability)
-            - extra_body -> extra_body (merged with usage tracking)
-
-        Web Search Structure:
-            When search_context_size is set, creates:
-            {"web_search_options": {"search_context_size": "low|medium|high"}}
-            Non-search models silently ignore this parameter.
-
-        system_prompt is handled separately in _process_messages().
-        retries and retry_delay_seconds are used by retry logic.
-        extra_body always includes usage tracking for cost monitoring.
+        Only includes non-None values. Framework-only fields (system_prompt,
+        retries, retry_delay_seconds, cache_ttl, stream) are excluded.
         """
         kwargs: dict[str, Any] = {
             "timeout": self.timeout,
-            "extra_body": {},
+            "extra_body": dict(self.extra_body) if self.extra_body else {},
         }
 
-        if self.extra_body:
-            kwargs["extra_body"] = self.extra_body
+        # Direct 1:1 field mappings (field name == API kwarg name)
+        for attr in ("temperature", "max_completion_tokens", "reasoning_effort", "service_tier", "verbosity", "user"):
+            if (v := getattr(self, attr)) is not None:
+                kwargs[attr] = v
 
-        if self.temperature is not None:
-            kwargs["temperature"] = self.temperature
-
-        if self.max_completion_tokens is not None:
-            kwargs["max_completion_tokens"] = self.max_completion_tokens
-
+        # Fields needing transformation
         if self.stop is not None:
-            kwargs["stop"] = self.stop
-
-        if self.reasoning_effort:
-            kwargs["reasoning_effort"] = self.reasoning_effort
-
+            kwargs["stop"] = list(self.stop)
         if self.search_context_size:
             kwargs["web_search_options"] = {"search_context_size": self.search_context_size}
-
-        if self.response_format:
-            kwargs["response_format"] = self.response_format
-
-        if self.service_tier:
-            kwargs["service_tier"] = self.service_tier
-
-        if self.verbosity:
-            kwargs["verbosity"] = self.verbosity
-
-        if self.user:
-            kwargs["user"] = self.user
-
         if self.metadata:
-            kwargs["metadata"] = self.metadata
-
+            kwargs["metadata"] = dict(self.metadata)
         if self.usage_tracking:
             kwargs["extra_body"]["usage"] = {"include": True}
             kwargs["stream_options"] = {"include_usage": True}

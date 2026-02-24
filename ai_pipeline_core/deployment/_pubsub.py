@@ -1,0 +1,241 @@
+"""Google Cloud Pub/Sub ResultPublisher with CloudEvents 1.0 envelope.
+
+Publishes pipeline lifecycle events directly from workers to a Pub/Sub topic.
+Critical events (started, completed, failed) use exponential backoff retries.
+Non-critical events (progress, heartbeat) use single-attempt fire-and-forget.
+"""
+
+import asyncio
+import json
+import time
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+from ai_pipeline_core.exceptions import PipelineCoreError
+from ai_pipeline_core.logging import get_pipeline_logger
+
+from ._types import (
+    CompletedEvent,
+    EventType,
+    FailedEvent,
+    ProgressEvent,
+    StartedEvent,
+    TaskResultStore,
+)
+
+logger = get_pipeline_logger(__name__)
+
+MAX_PUBSUB_MESSAGE_BYTES = 8_388_608
+NONCRITICAL_TIMEOUT_SECONDS = 5
+CRITICAL_TIMEOUT_SECONDS = 30
+CRITICAL_MAX_RETRIES = 10
+CRITICAL_BACKOFF_CAP_SECONDS = 60
+SEQ_MICROSECOND_MULTIPLIER = 1_000_000
+CLOUDEVENTS_SPEC_VERSION = "1.0"
+
+
+class ResultTooLargeError(PipelineCoreError):
+    """Raised when a Pub/Sub message exceeds the size limit."""
+
+
+class TimestampSequencer:
+    """Monotonic microsecond timestamp sequencer.
+
+    Guarantees strict ordering within a single worker process.
+    Restart-safe: wall-clock time after restart exceeds any prior seq.
+    """
+
+    def __init__(self) -> None:
+        self._last_seq = 0
+
+    def next(self) -> int:
+        """Return the next monotonically increasing sequence value."""
+        seq = max(int(time.time() * SEQ_MICROSECOND_MULTIPLIER), self._last_seq + 1)
+        self._last_seq = seq
+        return seq
+
+
+class PubSubPublisher:
+    """Publishes pipeline lifecycle events to Google Cloud Pub/Sub.
+
+    All messages follow the CloudEvents 1.0 envelope format. Critical events
+    (started, completed, failed) retry with exponential backoff. Non-critical
+    events (progress, heartbeat) use single-attempt delivery.
+    """
+
+    def __init__(
+        self,
+        project_id: str,
+        topic_id: str,
+        service_type: str,
+        result_store: TaskResultStore,
+    ) -> None:
+        try:
+            from google.cloud import pubsub_v1  # pyright: ignore[reportAttributeAccessIssue, reportMissingTypeStubs, reportUnknownVariableType]
+        except ImportError:
+            raise ImportError("google-cloud-pubsub required. Install: pip install ai-pipeline-core[pubsub]") from None
+
+        self._client = pubsub_v1.PublisherClient()  # pyright: ignore[reportUnknownMemberType]
+        self._topic_path: str = self._client.topic_path(project_id, topic_id)  # pyright: ignore[reportUnknownMemberType]
+        self._service_type = service_type
+        self._result_store = result_store
+        self._sequencer = TimestampSequencer()
+
+    def _build_envelope(self, event_type: EventType, run_id: str, data: dict[str, Any]) -> bytes:
+        """Build a CloudEvents 1.0 JSON envelope."""
+        envelope = {
+            "id": str(uuid.uuid4()),
+            "source": f"ai-{self._service_type}-worker",
+            "type": event_type,
+            "specversion": CLOUDEVENTS_SPEC_VERSION,
+            "time": datetime.now(UTC).isoformat(),
+            "subject": run_id,
+            "datacontenttype": "application/json",
+            "data": {"run_id": run_id, "seq": self._sequencer.next(), **data},
+        }
+        return json.dumps(envelope, default=str).encode()
+
+    async def _publish(self, data: bytes, attributes: dict[str, str], *, critical: bool) -> None:
+        """Publish to Pub/Sub with strategy based on criticality.
+
+        Args:
+            data: Serialized CloudEvents envelope.
+            attributes: Pub/Sub message attributes.
+            critical: If True, retry with exponential backoff. If False, single attempt.
+        """
+        if critical:
+            await self._publish_critical(data, attributes)
+        else:
+            await self._publish_noncritical(data, attributes)
+
+    async def _publish_critical(self, data: bytes, attributes: dict[str, str]) -> None:
+        """Publish with exponential backoff retries for critical events."""
+        last_error: Exception | None = None
+        for attempt in range(CRITICAL_MAX_RETRIES):
+            try:
+                future = self._client.publish(self._topic_path, data, **attributes)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+                await asyncio.wait_for(
+                    asyncio.wrap_future(future),  # pyright: ignore[reportUnknownArgumentType]
+                    timeout=CRITICAL_TIMEOUT_SECONDS,
+                )
+                return
+            except Exception as e:
+                last_error = e
+                delay = min(2**attempt, CRITICAL_BACKOFF_CAP_SECONDS)
+                logger.warning("Pub/Sub publish attempt %d failed: %s (retry in %ds)", attempt + 1, e, delay)
+                await asyncio.sleep(delay)
+        msg = f"Pub/Sub publish failed after {CRITICAL_MAX_RETRIES} attempts"
+        raise RuntimeError(msg) from last_error
+
+    async def _publish_noncritical(self, data: bytes, attributes: dict[str, str]) -> None:
+        """Single-attempt publish for non-critical events."""
+        try:
+            future = self._client.publish(self._topic_path, data, **attributes)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            await asyncio.wait_for(
+                asyncio.wrap_future(future),  # pyright: ignore[reportUnknownArgumentType]
+                timeout=NONCRITICAL_TIMEOUT_SECONDS,
+            )
+        except Exception as e:
+            logger.warning("Non-critical Pub/Sub publish failed: %s", e)
+
+    def _make_attributes(self, event_type: EventType, run_id: str) -> dict[str, str]:
+        """Build Pub/Sub message attributes."""
+        return {
+            "service_type": self._service_type,
+            "event_type": event_type,
+            "run_id": run_id,
+        }
+
+    async def publish_started(self, event: StartedEvent) -> None:
+        """Publish task.started event (critical)."""
+        data = self._build_envelope(
+            EventType.STARTED,
+            event.run_id,
+            {"flow_run_id": event.flow_run_id, "run_scope": event.run_scope},
+        )
+        await self._publish(data, self._make_attributes(EventType.STARTED, event.run_id), critical=True)
+
+    async def publish_progress(self, event: ProgressEvent) -> None:
+        """Publish task.progress event (non-critical)."""
+        data = self._build_envelope(
+            EventType.PROGRESS,
+            event.run_id,
+            {
+                "flow_run_id": event.flow_run_id,
+                "flow_name": event.flow_name,
+                "step": event.step,
+                "total_steps": event.total_steps,
+                "progress": event.progress,
+                "step_progress": event.step_progress,
+                "status": event.status,
+                "message": event.message,
+            },
+        )
+        await self._publish(data, self._make_attributes(EventType.PROGRESS, event.run_id), critical=False)
+
+    async def publish_heartbeat(self, run_id: str) -> None:
+        """Publish task.heartbeat event (non-critical)."""
+        data = self._build_envelope(
+            EventType.HEARTBEAT,
+            run_id,
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+            },
+        )
+        await self._publish(data, self._make_attributes(EventType.HEARTBEAT, run_id), critical=False)
+
+    async def publish_completed(self, event: CompletedEvent) -> None:
+        """Publish task.completed event (critical). Writes to result store first."""
+        result_json = json.dumps(event.result, default=str)
+        chain_context_json = json.dumps(event.chain_context, default=str)
+
+        data = self._build_envelope(
+            EventType.COMPLETED,
+            event.run_id,
+            {
+                "flow_run_id": event.flow_run_id,
+                "result": event.result,
+                "chain_context": event.chain_context,
+                "actual_cost": event.actual_cost,
+            },
+        )
+
+        if len(data) > MAX_PUBSUB_MESSAGE_BYTES:
+            raise ResultTooLargeError(f"Completed event ({len(data)} bytes) exceeds {MAX_PUBSUB_MESSAGE_BYTES} byte Pub/Sub limit")
+
+        # Best-effort write to durable store — ClickHouse failure must not block event delivery
+        try:
+            await self._result_store.write_result(event.run_id, result_json, chain_context_json)
+        except Exception as e:
+            logger.warning("Task result store write failed for %s (non-blocking): %s", event.run_id, e)
+
+        await self._publish(data, self._make_attributes(EventType.COMPLETED, event.run_id), critical=True)
+
+    async def publish_failed(self, event: FailedEvent) -> None:
+        """Publish task.failed event (critical)."""
+        data = self._build_envelope(
+            EventType.FAILED,
+            event.run_id,
+            {
+                "flow_run_id": event.flow_run_id,
+                "error_code": event.error_code,
+                "error_message": event.error_message,
+            },
+        )
+        await self._publish(data, self._make_attributes(EventType.FAILED, event.run_id), critical=True)
+
+    async def close(self) -> None:
+        """Shut down the result store executor and close the Pub/Sub client."""
+        self._result_store.shutdown()
+        try:
+            self._client.stop()  # pyright: ignore[reportUnknownMemberType]
+        except Exception as e:
+            logger.warning("Pub/Sub client stop failed: %s", e)
+
+
+__all__ = [
+    "PubSubPublisher",
+    "ResultTooLargeError",
+    "TimestampSequencer",
+]

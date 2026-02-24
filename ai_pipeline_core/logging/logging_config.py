@@ -3,6 +3,7 @@
 Provides logging configuration management that integrates with Prefect's logging system.
 """
 
+import logging
 import logging.config
 import os
 import threading
@@ -11,6 +12,13 @@ from typing import Any
 
 import yaml
 from prefect.logging import get_logger
+
+__all__ = [
+    "DEFAULT_LOG_LEVELS",
+    "LoggingConfig",
+    "get_pipeline_logger",
+    "setup_logging",
+]
 
 # Default log levels for different components
 DEFAULT_LOG_LEVELS = {
@@ -117,7 +125,7 @@ class LoggingConfig:
             },
         }
 
-    def apply(self):
+    def apply(self) -> None:
         """Apply the logging configuration."""
         config = self.load_config()
         logging.config.dictConfig(config)
@@ -133,13 +141,12 @@ _logging_config: LoggingConfig | None = None
 _setup_lock = threading.Lock()
 
 
-def setup_logging(config_path: Path | None = None, level: str | None = None):
+def setup_logging(config_path: Path | None = None, level: str | None = None) -> None:
     """Setup logging for the AI Pipeline Core library.
 
     Initializes logging configuration for the pipeline system.
-
-    IMPORTANT: Call setup_logging exactly once in your application entry point
-    (for example, in main()). Do not call at import time or in library modules.
+    Call once at your application entry point. If not called explicitly,
+    ``get_pipeline_logger()`` will auto-initialize with defaults on first use.
 
     Args:
         config_path: Optional path to YAML logging configuration file.
@@ -163,7 +170,7 @@ def setup_logging(config_path: Path | None = None, level: str | None = None):
             os.environ["PREFECT_LOGGING_LEVEL"] = level
 
 
-def get_pipeline_logger(name: str):
+def get_pipeline_logger(name: str) -> logging.Logger:
     """Get a logger for pipeline components.
 
     Returns a Prefect-integrated logger with the OTel span-event bridge

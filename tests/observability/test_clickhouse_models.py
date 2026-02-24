@@ -45,13 +45,13 @@ class TestRowModels:
 
     def test_pipeline_run_row_defaults(self):
         row = PipelineRunRow(
-            run_id=uuid4(),
-            project_name="test",
+            execution_id=uuid4(),
+            run_id="test",
             flow_name="my_flow",
             status=RunStatus.RUNNING,
             start_time=datetime.now(UTC),
         )
-        assert row.total_cost == 0.0
+        assert row.total_cost == pytest.approx(0.0)
         assert row.total_tokens == 0
         assert row.metadata == "{}"
         assert row.version == 1
@@ -60,7 +60,7 @@ class TestRowModels:
         row = TrackedSpanRow(
             span_id="abcdef1234567890",
             trace_id="0" * 32,
-            run_id=uuid4(),
+            execution_id=uuid4(),
             name="my_task",
             span_type=SpanType.TASK,
             status="running",
@@ -68,15 +68,13 @@ class TestRowModels:
         )
         assert row.input_document_sha256s == ()
         assert row.output_document_sha256s == ()
-        assert row.user_summary is None
-        assert row.user_visible is False
 
     def test_tracked_span_row_mutable_defaults_safe(self):
         """Verify that list defaults don't share state between instances."""
         row1 = TrackedSpanRow(
             span_id="a" * 16,
             trace_id="0" * 32,
-            run_id=uuid4(),
+            execution_id=uuid4(),
             name="t1",
             span_type=SpanType.TASK,
             status="running",
@@ -85,7 +83,7 @@ class TestRowModels:
         row2 = TrackedSpanRow(
             span_id="b" * 16,
             trace_id="0" * 32,
-            run_id=uuid4(),
+            execution_id=uuid4(),
             name="t2",
             span_type=SpanType.TASK,
             status="running",
@@ -96,7 +94,7 @@ class TestRowModels:
     def test_document_event_row(self):
         row = DocumentEventRow(
             event_id=uuid4(),
-            run_id=uuid4(),
+            execution_id=uuid4(),
             document_sha256="a" * 64,
             span_id="b" * 16,
             event_type=DocumentEventType.TASK_INPUT,
@@ -107,7 +105,7 @@ class TestRowModels:
     def test_span_event_row(self):
         row = SpanEventRow(
             event_id=uuid4(),
-            run_id=uuid4(),
+            execution_id=uuid4(),
             span_id="c" * 16,
             name="log",
             timestamp=datetime.now(UTC),
@@ -117,28 +115,28 @@ class TestRowModels:
 
     def test_row_models_are_frozen(self):
         row = PipelineRunRow(
-            run_id=uuid4(),
-            project_name="test",
+            execution_id=uuid4(),
+            run_id="test",
             flow_name="flow",
             status=RunStatus.RUNNING,
             start_time=datetime.now(UTC),
         )
         with pytest.raises(ValidationError):
-            row.project_name = "changed"  # type: ignore[misc]
+            row.run_id = "changed"  # type: ignore[misc]
 
     def test_model_copy_with_update(self):
         """Test ReplacingMergeTree update pattern via model_copy."""
         row = TrackedSpanRow(
             span_id="a" * 16,
             trace_id="0" * 32,
-            run_id=uuid4(),
+            execution_id=uuid4(),
             name="task",
             span_type=SpanType.TASK,
             status="completed",
             start_time=datetime.now(UTC),
             version=1,
         )
-        updated = row.model_copy(update={"user_summary": "Did something", "version": 2})
-        assert updated.user_summary == "Did something"
+        updated = row.model_copy(update={"status": "failed", "version": 2})
+        assert updated.status == "failed"
         assert updated.version == 2
-        assert row.user_summary is None  # original unchanged
+        assert row.status == "completed"  # original unchanged

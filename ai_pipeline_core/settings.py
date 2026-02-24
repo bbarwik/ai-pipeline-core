@@ -35,6 +35,11 @@ ensure consistency during execution.
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+__all__ = [
+    "Settings",
+    "settings",
+]
+
 
 class Settings(BaseSettings):
     """Base configuration class for AI Pipeline applications.
@@ -127,11 +132,15 @@ class Settings(BaseSettings):
 
     # Tracking behavior
     tracking_enabled: bool = True
-    tracking_summary_model: str = "gemini-3-flash"
 
     # Document summary generation (store-level)
     doc_summary_enabled: bool = True
     doc_summary_model: str = "gemini-3-flash"
+
+    # Pub/Sub event delivery
+    pubsub_project_id: str = ""
+    pubsub_topic_id: str = ""
+    service_type: str = ""
 
 
 settings = Settings()

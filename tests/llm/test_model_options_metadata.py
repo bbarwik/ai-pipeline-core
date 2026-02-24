@@ -1,5 +1,7 @@
 """Tests for ModelOptions metadata field."""
 
+import pytest
+
 from ai_pipeline_core.llm import ModelOptions
 
 
@@ -85,7 +87,7 @@ class TestModelOptionsMetadata:
         )
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["metadata"] == metadata
-        assert kwargs["temperature"] == 0.7
+        assert kwargs["temperature"] == pytest.approx(0.7)
         assert kwargs["max_completion_tokens"] == 1000
         assert kwargs["user"] == "user_123"
 
@@ -139,7 +141,7 @@ class TestModelOptionsMetadata:
         )
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["metadata"] == metadata
-        assert kwargs["temperature"] == 0.8
+        assert kwargs["temperature"] == pytest.approx(0.8)
         assert kwargs["max_completion_tokens"] == 2000
 
     def test_metadata_keys_are_strings(self):

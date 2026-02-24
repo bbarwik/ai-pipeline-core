@@ -1,5 +1,6 @@
 """AI Pipeline Core - Production-ready framework for building AI pipelines with LLMs."""
 
+import importlib.metadata
 import os
 import sys
 
@@ -18,7 +19,7 @@ if "prefect" in sys.modules and get_current_settings().cloud.enable_orchestratio
 from . import llm
 from .deployment import DeploymentContext, DeploymentResult, PipelineDeployment, progress
 from .deployment.remote import RemoteDeployment, run_remote_deployment
-from .document_store import DocumentStore, SummaryGenerator, create_document_store, get_document_store, set_document_store
+from .document_store import DocumentReader, get_document_store
 from .documents import (
     Attachment,
     Document,
@@ -26,44 +27,41 @@ from .documents import (
     RunContext,
     RunScope,
     TaskDocumentContext,
+    ensure_extension,
+    find_document,
     get_run_context,
     is_document_sha256,
+    replace_extension,
     reset_run_context,
     sanitize_url,
     set_run_context,
+)
+from .exceptions import (
+    DocumentNameError,
+    DocumentSizeError,
+    DocumentValidationError,
+    LLMError,
+    PipelineCoreError,
 )
 from .llm import (
     Citation,
     Conversation,
     ConversationContent,
-    ImagePart,
-    ImagePreset,
-    ImageProcessingConfig,
-    ImageProcessingError,
     ModelName,
     ModelOptions,
-    ModelResponse,
-    ProcessedImage,
-    TokenUsage,
-    URLSubstitutor,
-    generate,
-    generate_structured,
-    process_image,
 )
 from .logging import (
     LoggingConfig,
     get_pipeline_logger,
     setup_logging,
 )
-from .logging import get_pipeline_logger as get_logger
 from .observability.tracing import TraceInfo, TraceLevel, set_trace_cost, trace
-from .pipeline import FlowOptions, LimitKind, PipelineLimit, pipeline_concurrency, pipeline_flow, pipeline_task
-from .prompt_compiler import Guide, OutputRule, OutputT, Phase, PromptSpec, Role, Rule, extract_result, render_preview, render_text, send_spec
-from .prompt_manager import PromptManager
+from .pipeline import FlowOptions, LimitKind, PipelineLimit, pipeline_concurrency, pipeline_flow, pipeline_task, safe_gather, safe_gather_indexed
+from .prompt_compiler import Guide, OutputRule, OutputT, PromptSpec, Role, Rule, render_preview, render_text
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
 
-__version__ = "0.9.3"
+__version__ = importlib.metadata.version("ai-pipeline-core")
 
 __all__ = [
     "Attachment",
@@ -73,26 +71,23 @@ __all__ = [
     "DeploymentContext",
     "DeploymentResult",
     "Document",
+    "DocumentNameError",
+    "DocumentReader",
     "DocumentSha256",
-    "DocumentStore",
+    "DocumentSizeError",
+    "DocumentValidationError",
     "FlowOptions",
     "Guide",
-    "ImagePart",
-    "ImagePreset",
-    "ImageProcessingConfig",
-    "ImageProcessingError",
+    "LLMError",
     "LimitKind",
     "LoggingConfig",
     "ModelName",
     "ModelOptions",
-    "ModelResponse",
     "OutputRule",
     "OutputT",
-    "Phase",
+    "PipelineCoreError",
     "PipelineDeployment",
     "PipelineLimit",
-    "ProcessedImage",
-    "PromptManager",
     "PromptSpec",
     "RemoteDeployment",
     "Role",
@@ -100,19 +95,13 @@ __all__ = [
     "RunContext",
     "RunScope",
     "Settings",
-    "SummaryGenerator",
     "TaskDocumentContext",
-    "TokenUsage",
     "TraceInfo",
     "TraceLevel",
-    "URLSubstitutor",
-    "create_document_store",
     "disable_run_logger",
-    "extract_result",
-    "generate",
-    "generate_structured",
+    "ensure_extension",
+    "find_document",
     "get_document_store",
-    "get_logger",
     "get_pipeline_logger",
     "get_run_context",
     "is_document_sha256",
@@ -121,15 +110,15 @@ __all__ = [
     "pipeline_flow",
     "pipeline_task",
     "prefect_test_harness",
-    "process_image",
     "progress",
     "render_preview",
     "render_text",
+    "replace_extension",
     "reset_run_context",
     "run_remote_deployment",
+    "safe_gather",
+    "safe_gather_indexed",
     "sanitize_url",
-    "send_spec",
-    "set_document_store",
     "set_run_context",
     "set_trace_cost",
     "setup_logging",

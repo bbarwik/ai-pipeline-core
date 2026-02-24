@@ -1,4 +1,4 @@
-"""Tests for Document.model_convert method."""
+"""Tests for Document.retype method."""
 
 from enum import StrEnum
 
@@ -31,42 +31,42 @@ class RestrictedFlowDoc(Document):
 
 
 class TestModelConvert:
-    """Test suite for Document.model_convert method."""
+    """Test suite for Document.retype method."""
 
     def test_convert_between_types(self):
         """Test converting between Document subclasses."""
-        task_doc = SampleTaskDoc.create(name="temp.json", content={"data": "value"}, description="Task data")
+        task_doc = SampleTaskDoc.create_root(name="temp.json", content={"data": "value"}, description="Task data", reason="test input")
 
-        flow_doc = task_doc.model_convert(SampleFlowDoc)
+        flow_doc = task_doc.retype(SampleFlowDoc, preserve_provenance=True)
 
         assert isinstance(flow_doc, SampleFlowDoc)
         assert flow_doc.name == "temp.json"
         assert flow_doc.content == task_doc.content
         assert flow_doc.description == "Task data"
-        assert flow_doc.sources == ()
+        assert flow_doc.derived_from == ()
 
-    def test_convert_preserves_sources(self):
-        """Test conversion preserves sources."""
+    def test_convert_preserves_derived_from(self):
+        """Test conversion preserves derived_from."""
         flow_doc = SampleFlowDoc.create(
             name="permanent.yaml",
             content={"key": "value"},
             description="Flow data",
-            sources=("https://example.com/source1", "https://example.com/source2"),
+            derived_from=("https://example.com/source1", "https://example.com/source2"),
         )
 
-        task_doc = flow_doc.model_convert(SampleTaskDoc)
+        task_doc = flow_doc.retype(SampleTaskDoc, preserve_provenance=True)
 
         assert isinstance(task_doc, SampleTaskDoc)
         assert task_doc.name == "permanent.yaml"
         assert task_doc.content == flow_doc.content
         assert task_doc.description == "Flow data"
-        assert task_doc.sources == ("https://example.com/source1", "https://example.com/source2")
+        assert task_doc.derived_from == ("https://example.com/source1", "https://example.com/source2")
 
     def test_convert_to_different_type(self):
         """Test converting between different Document types."""
-        doc1 = SampleFlowDoc.create(name="data.json", content=[1, 2, 3], description="Numbers")
+        doc1 = SampleFlowDoc.create_root(name="data.json", content=[1, 2, 3], description="Numbers", reason="test input")
 
-        doc2 = doc1.model_convert(AnotherFlowDoc)
+        doc2 = doc1.retype(AnotherFlowDoc, preserve_provenance=True)
 
         assert isinstance(doc2, AnotherFlowDoc)
         assert type(doc2) is not type(doc1)
@@ -74,9 +74,9 @@ class TestModelConvert:
 
     def test_convert_with_updates(self):
         """Test converting with attribute updates."""
-        original = SampleTaskDoc.create(name="original.json", content={"old": "data"}, description="Original")
+        original = SampleTaskDoc.create_root(name="original.json", content={"old": "data"}, description="Original", reason="test input")
 
-        converted = original.model_convert(SampleFlowDoc, update={"name": "updated.json", "description": "Updated description"})
+        converted = original.retype(SampleFlowDoc, preserve_provenance=True, update={"name": "updated.json", "description": "Updated description"})
 
         assert converted.name == "updated.json"
         assert converted.description == "Updated description"
@@ -84,118 +84,107 @@ class TestModelConvert:
 
     def test_convert_with_content_update(self):
         """Test converting with content update."""
-        original = SampleTaskDoc.create(name="data.json", content={"old": "value"})
+        original = SampleTaskDoc.create_root(name="data.json", content={"old": "value"}, reason="test input")
 
         new_content = {"new": "value", "extra": "field"}
-        converted = original.model_convert(SampleFlowDoc, update={"content": new_content.copy()})
+        converted = original.retype(SampleFlowDoc, preserve_provenance=True, update={"content": new_content.copy()})
 
         assert converted.parse(dict) == new_content
         assert converted.content != original.content
 
-    def test_convert_with_sources_update(self):
-        """Test updating sources during conversion."""
-        source_doc = SampleFlowDoc.create(name="source.txt", content="Source data")
+    def test_convert_with_derived_from_update(self):
+        """Test updating derived_from during conversion."""
+        source_doc = SampleFlowDoc.create_root(name="source.txt", content="Source data", reason="test input")
 
-        derived = SampleTaskDoc.create(name="derived.txt", content="Processed data")
+        derived = SampleTaskDoc.create_root(name="derived.txt", content="Processed data", reason="test input")
 
-        final = derived.model_convert(AnotherFlowDoc, update={"sources": (source_doc.sha256, "https://api.example.com")})
+        final = derived.retype(AnotherFlowDoc, preserve_provenance=True, update={"derived_from": (source_doc.sha256, "https://api.example.com")})
 
-        assert source_doc.sha256 in final.sources
-        assert "https://api.example.com" in final.sources
-        assert final.has_source(source_doc)
+        assert source_doc.sha256 in final.derived_from
+        assert "https://api.example.com" in final.derived_from
+        assert final.has_derived_from(source_doc)
 
     def test_convert_preserves_sha256(self):
         """Test that converting preserves SHA256 when content and name unchanged."""
-        doc = SampleTaskDoc.create(name="data.json", content={"test": "data"})
+        doc = SampleTaskDoc.create_root(name="data.json", content={"test": "data"}, reason="test input")
 
-        converted = doc.model_convert(SampleFlowDoc)
+        converted = doc.retype(SampleFlowDoc, preserve_provenance=True)
 
         assert converted.sha256 == doc.sha256
         assert converted.id == doc.id
 
-    def test_sources_tuple_preserved(self):
-        """Test that sources tuple is preserved through conversion."""
-        original_sources = ("https://example.com/source1", "https://example.com/source2")
-        doc = SampleTaskDoc.create(name="data.json", content="data", sources=original_sources)
-        converted = doc.model_convert(SampleFlowDoc)
-        assert converted.sources == original_sources
+    def test_derived_from_tuple_preserved(self):
+        """Test that derived_from tuple is preserved through conversion."""
+        original_derived_from = ("https://example.com/source1", "https://example.com/source2")
+        doc = SampleTaskDoc.create(name="data.json", content="data", derived_from=original_derived_from)
+        converted = doc.retype(SampleFlowDoc, preserve_provenance=True)
+        assert converted.derived_from == original_derived_from
 
     def test_convert_with_files_restriction(self):
         """Test converting to document with FILES restriction."""
-        doc = SampleTaskDoc.create(name="config.json", content={"setting": "value"})
+        doc = SampleTaskDoc.create_root(name="config.json", content={"setting": "value"}, reason="test input")
 
-        converted = doc.model_convert(RestrictedFlowDoc)
+        converted = doc.retype(RestrictedFlowDoc, preserve_provenance=True)
         assert converted.name == "config.json"
 
-        doc2 = SampleTaskDoc.create(name="invalid.json", content={"data": "value"})
+        doc2 = SampleTaskDoc.create_root(name="invalid.json", content={"data": "value"}, reason="test input")
 
         with pytest.raises(DocumentNameError):
-            doc2.model_convert(RestrictedFlowDoc)
+            doc2.retype(RestrictedFlowDoc, preserve_provenance=True)
 
     def test_convert_with_name_update_to_restricted(self):
         """Test updating name when converting to restricted document."""
-        doc = SampleTaskDoc.create(name="whatever.json", content={"data": "value"})
+        doc = SampleTaskDoc.create_root(name="whatever.json", content={"data": "value"}, reason="test input")
 
-        converted = doc.model_convert(RestrictedFlowDoc, update={"name": "data.yaml"})
+        converted = doc.retype(RestrictedFlowDoc, preserve_provenance=True, update={"name": "data.yaml"})
         assert converted.name == "data.yaml"
 
         with pytest.raises(DocumentNameError):
-            doc.model_convert(RestrictedFlowDoc, update={"name": "invalid.txt"})
+            doc.retype(RestrictedFlowDoc, preserve_provenance=True, update={"name": "invalid.txt"})
 
     def test_cannot_convert_to_document(self):
         """Test that converting to base Document class raises error."""
-        doc = SampleTaskDoc.create(name="test.json", content={})
+        doc = SampleTaskDoc.create_root(name="test.json", content={}, reason="test input")
 
         with pytest.raises(TypeError):
-            doc.model_convert(Document)
+            doc.retype(Document, preserve_provenance=True)
 
     def test_cannot_convert_to_non_document(self):
         """Test that converting to non-Document class raises error."""
-        doc = SampleTaskDoc.create(name="test.json", content={})
+        doc = SampleTaskDoc.create_root(name="test.json", content={}, reason="test input")
 
         with pytest.raises(TypeError, match="must be a subclass of Document"):
-            doc.model_convert(dict)  # type: ignore
+            doc.retype(dict, preserve_provenance=True)  # type: ignore
 
         with pytest.raises(TypeError, match="must be a subclass of Document"):
-            doc.model_convert(str)  # type: ignore
-
-    def test_model_copy_still_works(self):
-        """Test that standard model_copy still works for same-type copying."""
-        doc = SampleFlowDoc.create(name="test.json", content={"data": "value"}, description="Test")
-
-        copied = doc.model_copy(update={"description": "Copied"})
-
-        assert isinstance(copied, SampleFlowDoc)
-        assert copied.name == doc.name
-        assert copied.content == doc.content
-        assert copied.description == "Copied"
+            doc.retype(str, preserve_provenance=True)  # type: ignore
 
     def test_convert_preserves_binary_content(self):
         """Test that binary content is preserved during conversion."""
         binary_data = b"\x00\x01\x02\x03\xff"
         doc = SampleTaskDoc(name="binary.bin", content=binary_data)
 
-        converted = doc.model_convert(SampleFlowDoc)
+        converted = doc.retype(SampleFlowDoc, preserve_provenance=True)
 
         assert converted.content == binary_data
         assert converted.sha256 == doc.sha256
 
     def test_convert_with_null_description(self):
         """Test converting with None description."""
-        doc = SampleTaskDoc.create(name="test.json", content={}, description="Original")
+        doc = SampleTaskDoc.create_root(name="test.json", content={}, description="Original", reason="test input")
 
-        converted = doc.model_convert(SampleFlowDoc, update={"description": None})
+        converted = doc.retype(SampleFlowDoc, preserve_provenance=True, update={"description": None})
 
         assert converted.description is None
 
     def test_convert_chain(self):
         """Test chaining multiple conversions."""
-        task = SampleTaskDoc.create(name="data.json", content={"step": 1})
+        task = SampleTaskDoc.create_root(name="data.json", content={"step": 1}, reason="test input")
 
-        flow = task.model_convert(SampleFlowDoc)
+        flow = task.retype(SampleFlowDoc, preserve_provenance=True)
         assert isinstance(flow, SampleFlowDoc)
 
-        task2 = flow.model_convert(AnotherTaskDoc)
+        task2 = flow.retype(AnotherTaskDoc, preserve_provenance=True)
         assert isinstance(task2, AnotherTaskDoc)
 
         # All should have same content and hash

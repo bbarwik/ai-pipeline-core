@@ -9,12 +9,12 @@ to subclass ``logging.Handler``. The ruff ban on ``import logging``
 (pyproject.toml) is suppressed with ``# noqa: TID251``.
 """
 
-import contextlib
 import logging  # noqa: TID251
 
 from opentelemetry import trace as otel_trace
 
 _MIN_LEVEL = logging.INFO
+_logger = logging.getLogger(__name__)
 
 
 class SpanEventLoggingHandler(logging.Handler):
@@ -30,7 +30,7 @@ class SpanEventLoggingHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         """Write a log record as an OTel span event."""
-        with contextlib.suppress(Exception):
+        try:
             # Prevent duplicate events when handler is on both parent and child logger
             if getattr(record, "_span_event_logged", False):
                 return
@@ -46,6 +46,8 @@ class SpanEventLoggingHandler(logging.Handler):
                 },
             )
             record._span_event_logged = True
+        except (RuntimeError, ValueError, TypeError) as e:
+            _logger.debug("Failed to emit span event for log record: %s", e)
 
 
 # Module-level singleton — safe because emit() checks is_recording().

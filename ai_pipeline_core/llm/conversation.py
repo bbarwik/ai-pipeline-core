@@ -3,39 +3,40 @@
 Provides a Document-aware, immutable Conversation class that wraps the
 primitive _llm_core functions. All operations return NEW Conversation
 instances with response properties derived from the last ModelResponse.
-
-Usage:
-    >>> conv = Conversation(model="gpt-5.1", context=[system_doc])
-    >>> conv = await conv.send("Hello!")
-    >>> print(conv.content)  # "Hi there!"
-    >>> conv = await conv.send("Follow up")  # continues conversation
 """
 
 import asyncio
-import base64
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from io import BytesIO
-from typing import Any, Generic, Literal, cast
+from itertools import chain
+from typing import Any, Generic, cast, overload
 
 from lmnr import Laminar
-from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from typing_extensions import TypeVar
 
 from ai_pipeline_core._llm_core import CoreMessage, ModelOptions, ModelResponse, Role, TokenUsage
 from ai_pipeline_core._llm_core import generate as core_generate
 from ai_pipeline_core._llm_core import generate_structured as core_generate_structured
+from ai_pipeline_core._llm_core._validation import validate_text
 from ai_pipeline_core._llm_core.model_response import Citation
-from ai_pipeline_core._llm_core.types import ContentPart, ImageContent, PDFContent, TextContent
+from ai_pipeline_core._llm_core.types import TOKENS_PER_IMAGE, ContentPart, ImageContent, PDFContent, TextContent
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.llm._images import validated_binary_parts
 from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.prompt_compiler.render import RESULT_CLOSE, _extract_result, render_text
+from ai_pipeline_core.prompt_compiler.spec import PromptSpec
 
 from ._substitutor import URLSubstitutor
-from ._validation import validate_image, validate_pdf, validate_text
 
-# Default system prompt injected when substitutor is active with patterns and no user system prompt
-_DEFAULT_SUBSTITUTOR_PROMPT = (
+__all__ = [
+    "Conversation",
+    "ConversationContent",
+]
+
+# Instruction appended to system prompt when substitutor is active with patterns
+_SUBSTITUTOR_INSTRUCTION = (
     "Text uses ... (three dots) to indicate shortened content. "
     "For example, 0x7a250d56...c659F2488D is a shortened blockchain address, "
     "and https://example.com/very/long/path/to/page...resource.pdf is a shortened URL. "
@@ -45,23 +46,16 @@ _DEFAULT_SUBSTITUTOR_PROMPT = (
 
 logger = get_pipeline_logger(__name__)
 
-# Supported image formats that don't need conversion
-_LLM_SUPPORTED_IMAGE_FORMATS = frozenset({"JPEG", "PNG", "GIF", "WEBP"})
-ImageMimeType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
-_FORMAT_TO_MIME: dict[str, ImageMimeType] = {"JPEG": "image/jpeg", "PNG": "image/png", "GIF": "image/gif", "WEBP": "image/webp"}
+# Document name sentinel for system prompt documents — treated as role=SYSTEM in messages
+SYSTEM_PROMPT_DOCUMENT_NAME = "system_prompt"
 
-# Token count per image/PDF (per CLAUDE.md §3.6)
-_TOKENS_PER_IMAGE = 1080
+CHARS_PER_TOKEN = 4
 
 T = TypeVar("T", default=None)
 U = TypeVar("U", bound=BaseModel)
 
-# Content can be string, Document, or list of Documents
 ConversationContent = str | Document | list[Document]
-
-# Messages can be Documents (user/system content) or ModelResponses (assistant responses)
-MessageType = Document | ModelResponse[Any]
-
+"""Content accepted by send() and send_structured(): plain text, a Document, or a list of Documents."""
 
 # Regex matching XML tags whose names are wrapper elements used by document serialization.
 # Only these tags are escaped in content bodies — everything else (JSON, YAML, HTML, code) passes through.
@@ -91,90 +85,14 @@ def _document_to_xml_header(doc: Document) -> str:
     return f"<document>\n<id>{escaped_id}</id>\n<name>{escaped_name}</name>\n{desc}<content>\n"
 
 
-def _get_image_preset(model: str):
-    """Get ImagePreset for a model."""
-    from ._images import ImagePreset
-
-    model_lower = model.lower()
-    if "gemini" in model_lower:
-        return ImagePreset.GEMINI
-    if "claude" in model_lower:
-        return ImagePreset.CLAUDE
-    if "gpt" in model_lower:
-        return ImagePreset.GPT4V
-    return ImagePreset.DEFAULT
-
-
-def _image_needs_processing(data: bytes, model: str) -> bool:
-    """Check if image exceeds model limits and needs processing."""
-    from ._images import ImageProcessingConfig
-
-    preset = _get_image_preset(model)
-    config = ImageProcessingConfig.for_preset(preset)
-
-    try:
-        with Image.open(BytesIO(data)) as img:
-            w, h = img.size
-            fmt = img.format
-            # Needs processing if exceeds limits OR unsupported format
-            return w > config.max_dimension or h > config.max_dimension or w * h > config.max_pixels or fmt not in _LLM_SUPPORTED_IMAGE_FORMATS
-    except (OSError, ValueError):
-        return True  # Process to validate/fail
-
-
-def _process_image_to_parts(data: bytes, model: str) -> list[ContentPart]:
-    """Process image bytes and return ContentParts.
-
-    Only re-encodes images that exceed model limits. Adds text labels when
-    images are split into multiple parts.
-    """
-    from ._images import ImageProcessingError, process_image
-
-    # Check if image needs processing
-    if not _image_needs_processing(data, model):
-        # Send as-is, preserving original format/quality
-        try:
-            with Image.open(BytesIO(data)) as img:
-                mime_type: ImageMimeType = _FORMAT_TO_MIME.get(img.format or "", "image/jpeg")
-            return cast(list[ContentPart], [ImageContent(data=base64.b64encode(data), mime_type=mime_type)])
-        except (OSError, ValueError):
-            pass  # Fall through to process_image
-
-    # Process (split/compress) if needed
-    try:
-        preset = _get_image_preset(model)
-        result = process_image(data, preset=preset)
-        parts: list[ContentPart] = []
-
-        # Add description if split into multiple parts
-        if len(result.parts) > 1:
-            parts.append(TextContent(text=f"[Image split into {len(result.parts)} sequential parts with overlap]\n"))
-
-        for img_part in result.parts:
-            # Add label for each part if multiple
-            if img_part.total > 1:
-                parts.append(TextContent(text=f"[{img_part.label}]\n"))
-            parts.append(ImageContent(data=base64.b64encode(img_part.data), mime_type="image/webp"))
-
-        return parts
-    except ImageProcessingError as e:
-        logger.warning(f"Image processing failed: {e}")
-        return []
-
-
 def _document_to_content_parts(doc: Document, model: str) -> list[ContentPart]:
-    """Convert a Document to content parts for CoreMessage.
-
-    Validates content before processing and logs warnings for invalid content.
-    All text content is XML-escaped to prevent injection attacks.
-    Attachments are included inside the document wrapper.
-    """
+    """Convert a Document to content parts for CoreMessage."""
     parts: list[ContentPart] = []
     header = _document_to_xml_header(doc)
 
     if doc.is_text:
         if err := validate_text(doc.content, doc.name):
-            logger.warning(f"Skipping invalid document: {err}")
+            logger.warning("Skipping invalid document: %s", err)
             return []
         text = _escape_xml_content(doc.content.decode("utf-8"))
         # Build document with attachments INSIDE the wrapper
@@ -200,36 +118,19 @@ def _document_to_content_parts(doc: Document, model: str) -> list[ContentPart]:
             text_fragments.append("</content>\n</document>")
             parts.append(TextContent(text="".join(text_fragments)))
 
-    elif doc.is_image:
-        if err := validate_image(doc.content, doc.name):
-            logger.warning(f"Skipping invalid document: {err}")
+    elif doc.is_image or doc.is_pdf:
+        binary_parts = validated_binary_parts(doc.content, doc.name, is_image=doc.is_image, model=model)
+        if binary_parts is None:
             return []
         parts.append(TextContent(text=header))
-        image_parts = _process_image_to_parts(doc.content, model)
-        parts.extend(image_parts)
+        parts.extend(binary_parts)
 
-        # Add attachments inside document
         for att in doc.attachments:
-            att_parts = _build_attachment_parts(att, model)
-            parts.extend(att_parts)
-
-        parts.append(TextContent(text="</content>\n</document>"))
-
-    elif doc.is_pdf:
-        if err := validate_pdf(doc.content, doc.name):
-            logger.warning(f"Skipping invalid document: {err}")
-            return []
-        parts.append(TextContent(text=header))
-        parts.append(PDFContent(data=base64.b64encode(doc.content)))
-
-        # Add attachments inside document
-        for att in doc.attachments:
-            att_parts = _build_attachment_parts(att, model)
-            parts.extend(att_parts)
+            parts.extend(_build_attachment_parts(att, model))
 
         parts.append(TextContent(text="</content>\n</document>"))
     else:
-        logger.warning(f"Skipping unsupported document type: {doc.name} - {doc.mime_type}")
+        logger.warning("Skipping unsupported document type: %s - %s", doc.name, doc.mime_type)
         return []
 
     return parts
@@ -240,7 +141,7 @@ def _build_attachment_content(att: Any) -> str | None:
     if not att.is_text:
         return None
     if err := validate_text(att.content, att.name):
-        logger.warning(f"Skipping invalid attachment: {err}")
+        logger.warning("Skipping invalid attachment: %s", err)
         return None
 
     escaped_name = _escape_xml_metadata(att.name)
@@ -258,27 +159,19 @@ def _build_attachment_parts(att: Any, model: str) -> list[ContentPart]:
 
     if att.is_text:
         if err := validate_text(att.content, att.name):
-            logger.warning(f"Skipping invalid attachment: {err}")
+            logger.warning("Skipping invalid attachment: %s", err)
             return []
         att_text = _escape_xml_content(att.content.decode("utf-8"))
         parts.append(TextContent(text=f"{att_open}{att_text}\n</attachment>\n"))
-    elif att.is_image:
-        if err := validate_image(att.content, att.name):
-            logger.warning(f"Skipping invalid attachment: {err}")
+    elif att.is_image or att.is_pdf:
+        binary_parts = validated_binary_parts(att.content, att.name, is_image=att.is_image, model=model)
+        if binary_parts is None:
             return []
         parts.append(TextContent(text=att_open))
-        image_parts = _process_image_to_parts(att.content, model)
-        parts.extend(image_parts)
-        parts.append(TextContent(text="</attachment>\n"))
-    elif att.is_pdf:
-        if err := validate_pdf(att.content, att.name):
-            logger.warning(f"Skipping invalid attachment: {err}")
-            return []
-        parts.append(TextContent(text=att_open))
-        parts.append(PDFContent(data=base64.b64encode(att.content)))
+        parts.extend(binary_parts)
         parts.append(TextContent(text="</attachment>\n"))
     else:
-        logger.warning(f"Skipping unsupported attachment type: {att.name} - {att.mime_type}")
+        logger.warning("Skipping unsupported attachment type: %s - %s", att.name, att.mime_type)
 
     return parts
 
@@ -290,8 +183,15 @@ class _UserMessage:
     text: str
 
 
-# Extended message type that includes internal user messages
-_InternalMessageType = Document | ModelResponse[Any] | _UserMessage
+@dataclass(frozen=True, slots=True)
+class _AssistantMessage:
+    """Internal wrapper for injected assistant messages (not from an LLM call)."""
+
+    text: str
+
+
+# Union of all types that can appear in messages tuple
+_AnyMessage = Document | ModelResponse[Any] | _UserMessage | _AssistantMessage
 
 
 def _normalize_content(content: ConversationContent) -> tuple[Document | _UserMessage, ...]:
@@ -306,50 +206,38 @@ def _normalize_content(content: ConversationContent) -> tuple[Document | _UserMe
 class Conversation(BaseModel, Generic[T]):
     """Immutable conversation state for LLM interactions.
 
-    After calling send() or send_structured(), the returned Conversation has
-    response properties accessible directly (content, reasoning_content, usage,
-    cost, parsed, citations).
+    Every send()/send_structured() call returns a NEW Conversation instance.
+    Never discard the return value — the original Conversation is unchanged.
 
-    Generic parameter T represents the type of `.parsed` from the last
-    send_structured() call. For conversations created with send(), T is None.
+    Content protection (URLs, addresses, high-entropy strings) is enabled by default,
+    auto-disabled for `-search` suffix models. Both `.content` and `.parsed` are
+    eagerly restored after each send.
 
-    Attributes:
-        model: The model identifier (e.g., "gpt-5.1", "gemini-3-flash").
-        context: Cacheable prefix documents.
-        messages: Conversation history (Documents and ModelResponses).
-        model_options: Optional model configuration.
-        enable_substitutor: Whether to enable URL/address shortening (default True).
+    Attachment rendering in LLM context:
+    - Text attachments: wrapped in <attachment name="..." description="..."> tags
+    - Binary attachments (images, PDFs): inserted as separate content parts
     """
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = ConfigDict(frozen=True)
 
     model: str
     context: tuple[Document, ...] = ()
-    messages: tuple[MessageType | _UserMessage, ...] = ()
+    messages: tuple[_AnyMessage, ...] = ()
     model_options: ModelOptions | None = None
     enable_substitutor: bool = True
-
-    # Substitutor as a regular field, excluded from serialization
-    # This allows passing it through constructor without object.__setattr__ hacks
-    substitutor: URLSubstitutor | None = Field(default=None, exclude=True, repr=False)
+    extract_result_tags: bool = False
 
     @model_validator(mode="before")
     @classmethod
-    def _ensure_substitutor(cls, data: Any) -> Any:
-        """Auto-create substitutor if enabled and not provided."""
+    def _disable_substitutor_for_search(cls, data: Any) -> Any:
+        """Auto-disable substitutor for search models unless explicitly enabled."""
         if isinstance(data, dict):
-            # Auto-disable for search models unless explicitly overridden
-            explicitly_set = "enable_substitutor" in data
-            model_name = data.get("model", "")
-            if not explicitly_set and isinstance(model_name, str) and model_name.endswith("-search"):
-                data["enable_substitutor"] = False
-
-            enabled = data.get("enable_substitutor", True)
-            if enabled and data.get("substitutor") is None:
-                data["substitutor"] = URLSubstitutor()
-            elif not enabled:
-                data["substitutor"] = None
-        return data
+            d = cast(dict[str, Any], data)
+            if "enable_substitutor" not in d:
+                model_name = d.get("model", "")
+                if isinstance(model_name, str) and model_name.endswith("-search"):
+                    d["enable_substitutor"] = False
+        return data  # pyright: ignore[reportUnknownVariableType]
 
     @field_validator("model")
     @classmethod
@@ -359,25 +247,17 @@ class Conversation(BaseModel, Generic[T]):
             raise ValueError("model must be non-empty")
         return v
 
-    @field_validator("context", mode="before")
+    @field_validator("context", "messages", mode="before")
     @classmethod
-    def convert_context_to_tuple(cls, v: list[Document] | tuple[Document, ...] | None) -> tuple[Document, ...]:
-        """Coerce context list or None to immutable tuple."""
+    def _coerce_to_tuple(cls, v: list[Any] | tuple[Any, ...] | None) -> tuple[Any, ...]:
+        """Coerce list or None to immutable tuple."""
         if v is None:
             return ()
         if isinstance(v, list):
             return tuple(v)
         return v
 
-    @field_validator("messages", mode="before")
-    @classmethod
-    def convert_messages_to_tuple(cls, v: list[MessageType] | tuple[MessageType, ...] | None) -> tuple[MessageType, ...]:
-        """Coerce messages list or None to immutable tuple."""
-        if v is None:
-            return ()
-        if isinstance(v, list):
-            return tuple(v)
-        return v
+    # --- Response properties (delegate to last ModelResponse) ---
 
     @property
     def _last_response(self) -> ModelResponse[Any] | None:
@@ -389,31 +269,29 @@ class Conversation(BaseModel, Generic[T]):
 
     @property
     def content(self) -> str:
-        """Response text from last send() call."""
+        """Response text from last send() call.
+
+        When extract_result_tags is True, strips <result>...</result> tags
+        from the raw response (used by send_spec with output_structure).
+        """
         if r := self._last_response:
-            return r.content
+            return _extract_result(r.content) if self.extract_result_tags else r.content
         return ""
 
     @property
     def reasoning_content(self) -> str:
         """Reasoning content from last send() call (if model supports it)."""
-        if r := self._last_response:
-            return r.reasoning_content
-        return ""
+        return r.reasoning_content if (r := self._last_response) else ""
 
     @property
     def usage(self) -> TokenUsage:
         """Token usage from last send() call."""
-        if r := self._last_response:
-            return r.usage
-        return TokenUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+        return r.usage if (r := self._last_response) else TokenUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
 
     @property
     def cost(self) -> float | None:
         """Cost from last send() call (if available)."""
-        if r := self._last_response:
-            return r.cost
-        return None
+        return r.cost if (r := self._last_response) else None
 
     @property
     def parsed(self) -> T | None:
@@ -429,24 +307,23 @@ class Conversation(BaseModel, Generic[T]):
     @property
     def citations(self) -> tuple[Citation, ...]:
         """Citations from last send() call (for search-enabled models)."""
-        if r := self._last_response:
-            return tuple(r.citations)
-        return ()
+        return tuple(r.citations) if (r := self._last_response) else ()
 
-    def _to_core_messages(self, items: tuple[MessageType | _UserMessage, ...]) -> list[CoreMessage]:
-        """Convert Documents, UserMessages, and ModelResponses to CoreMessages for the LLM layer."""
+    # --- Core message conversion ---
+
+    def _to_core_messages(self, items: tuple[_AnyMessage, ...]) -> list[CoreMessage]:
+        """Convert Documents, UserMessages, AssistantMessages, and ModelResponses to CoreMessages."""
         core_messages: list[CoreMessage] = []
 
         for item in items:
             if isinstance(item, ModelResponse):
-                # Use content as-is (provider fields are preserved in ModelResponse
-                # but not re-sent to the model)
                 core_messages.append(CoreMessage(role=Role.ASSISTANT, content=item.content))
+            elif isinstance(item, _AssistantMessage):
+                core_messages.append(CoreMessage(role=Role.ASSISTANT, content=item.text))
             elif isinstance(item, _UserMessage):
-                # Simple string message from user
                 core_messages.append(CoreMessage(role=Role.USER, content=item.text))
-            elif isinstance(item, Document):
-                if item.name == "system_prompt":
+            elif isinstance(item, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
+                if item.name == SYSTEM_PROMPT_DOCUMENT_NAME:
                     core_messages.append(CoreMessage(role=Role.SYSTEM, content=item.text))
                 else:
                     parts = _document_to_content_parts(item, self.model)
@@ -460,13 +337,7 @@ class Conversation(BaseModel, Generic[T]):
 
     @staticmethod
     def _core_messages_to_span_input(messages: list[CoreMessage]) -> list[dict[str, str | list[dict[str, str]]]]:
-        """Convert CoreMessages to Laminar-compatible chat format for span input.
-
-        Returns list of {"role": str, "content": str | list} dicts that Laminar
-        renders as a chat view with user/assistant/system messages.
-        Binary content (images, PDFs) is replaced with type placeholders to avoid
-        bloating trace payloads with base64 data.
-        """
+        """Convert CoreMessages to Laminar-compatible chat format, replacing binary content with placeholders."""
         result: list[dict[str, str | list[dict[str, str]]]] = []
         for msg in messages:
             role = msg.role.value
@@ -479,20 +350,59 @@ class Conversation(BaseModel, Generic[T]):
                         parts.append({"type": "text", "text": part.text})
                     elif isinstance(part, ImageContent):
                         parts.append({"type": "text", "text": "[image]"})
-                    elif isinstance(part, PDFContent):
+                    elif isinstance(part, PDFContent):  # pyright: ignore[reportUnnecessaryIsInstance]
                         parts.append({"type": "text", "text": "[pdf]"})
                 result.append({"role": role, "content": parts})
             else:
                 result.append({"role": role, "content": str(msg.content)})
         return result
 
-    def _collect_text_for_substitutor(self, items: tuple[Document | _UserMessage, ...]) -> list[str]:
-        """Collect text content from documents and user messages for substitutor preparation."""
+    # --- Substitution ---
+
+    @staticmethod
+    def _collect_text(items: tuple[_AnyMessage, ...]) -> list[str]:
+        """Collect text content from documents and messages for substitutor preparation."""
         texts: list[str] = []
         for item in items:
-            if isinstance(item, _UserMessage) or (isinstance(item, Document) and item.is_text):
+            if isinstance(item, (_UserMessage, _AssistantMessage)) or (isinstance(item, Document) and item.is_text):
                 texts.append(item.text)
         return texts
+
+    @staticmethod
+    def _apply_substitution(core_messages: list[CoreMessage], substitutor: URLSubstitutor) -> list[CoreMessage]:
+        """Apply URL/address substitution to text content in messages."""
+        result: list[CoreMessage] = []
+        for msg in core_messages:
+            if isinstance(msg.content, str):
+                result.append(CoreMessage(role=msg.role, content=substitutor.substitute(msg.content)))
+            elif isinstance(msg.content, tuple):
+                new_parts: list[ContentPart] = []
+                for part in msg.content:
+                    if isinstance(part, TextContent):
+                        new_parts.append(TextContent(text=substitutor.substitute(part.text)))
+                    else:
+                        new_parts.append(part)
+                result.append(CoreMessage(role=msg.role, content=tuple(new_parts)))
+            else:
+                result.append(msg)
+        return result
+
+    @staticmethod
+    def _restore_response(response: ModelResponse[Any], substitutor: URLSubstitutor, response_format: type[BaseModel] | None = None) -> ModelResponse[Any]:
+        """Restore shortened URLs/addresses in LLM response."""
+        if substitutor.pattern_count == 0:
+            return response
+        restored = substitutor.restore(response.content)
+        if restored == response.content:
+            return response
+        update: dict[str, Any] = {"content": restored}
+        if response_format is not None and not isinstance(response.parsed, str):
+            update["parsed"] = response_format.model_validate_json(restored)
+        else:
+            update["parsed"] = restored
+        return response.model_copy(update=update)  # nosemgrep: no-document-model-copy
+
+    # --- Send methods ---
 
     async def _execute_send(
         self,
@@ -500,27 +410,26 @@ class Conversation(BaseModel, Generic[T]):
         response_format: type[BaseModel] | None,
         purpose: str | None,
         expected_cost: float | None,
-    ) -> tuple[tuple[MessageType | _UserMessage, ...], ModelResponse[Any]]:
+    ) -> tuple[tuple[_AnyMessage, ...], ModelResponse[Any]]:
         """Common preparation, LLM call, and response restoration for send methods."""
         docs = _normalize_content(content)
         new_messages = self.messages + docs
 
-        # Prepare substitutor with all text content
-        if self.substitutor:
-            all_items_for_sub = self.context + tuple(m for m in new_messages if isinstance(m, (Document, _UserMessage)))
-            self.substitutor.prepare(self._collect_text_for_substitutor(all_items_for_sub))
+        # Prepare substitutor fresh each call — no mutable state stored on Conversation
+        substitutor: URLSubstitutor | None = None
+        if self.enable_substitutor:
+            substitutor = URLSubstitutor()
+            all_items = self.context + tuple(m for m in new_messages if isinstance(m, (Document, _UserMessage, _AssistantMessage)))
+            substitutor.prepare(self._collect_text(all_items))
 
-        # Inject default substitutor prompt if substitutor is active with patterns and no user system prompt
+        # Adjust system prompt if substitution found patterns to shorten
         effective_options = self.model_options
-        if self.substitutor and self.substitutor.pattern_count > 0:
-            has_user_prompt = self.model_options is not None and self.model_options.system_prompt is not None
-            if not has_user_prompt:
-                if self.model_options is not None:
-                    effective_options = self.model_options.model_copy(update={"system_prompt": _DEFAULT_SUBSTITUTOR_PROMPT})
-                else:
-                    effective_options = ModelOptions(system_prompt=_DEFAULT_SUBSTITUTOR_PROMPT)
+        if substitutor and substitutor.pattern_count > 0:
+            user_prompt = self.model_options.system_prompt if self.model_options else None
+            combined = f"{user_prompt}\n\n{_SUBSTITUTOR_INSTRUCTION}" if user_prompt else _SUBSTITUTOR_INSTRUCTION
+            effective_options = (self.model_options or ModelOptions()).model_copy(update={"system_prompt": combined})  # nosemgrep: no-document-model-copy
 
-        # Build CoreMessages in single thread call (CPU-bound image/PDF processing)
+        # Build CoreMessages in thread (CPU-bound image/PDF processing)
         context_core, messages_core = await asyncio.to_thread(lambda: (self._to_core_messages(self.context), self._to_core_messages(new_messages)))
         core_messages = context_core + messages_core
         context_count = len(context_core)
@@ -529,9 +438,8 @@ class Conversation(BaseModel, Generic[T]):
         span_name = purpose or f"conversation.{'send_structured' if response_format else 'send'}"
         span_input = self._core_messages_to_span_input(core_messages)
         with Laminar.start_as_current_span(span_name, input=span_input) as span:
-            # Apply substitution if enabled
-            if self.substitutor:
-                core_messages = self._apply_substitution(core_messages)
+            if substitutor:
+                core_messages = self._apply_substitution(core_messages, substitutor)
 
             if response_format is not None:
                 response: ModelResponse[Any] = await core_generate_structured(
@@ -543,7 +451,6 @@ class Conversation(BaseModel, Generic[T]):
                     expected_cost=expected_cost,
                     context_count=context_count,
                 )
-                response = self._restore_response(response, response_format)
             else:
                 response = await core_generate(
                     core_messages,
@@ -553,7 +460,9 @@ class Conversation(BaseModel, Generic[T]):
                     expected_cost=expected_cost,
                     context_count=context_count,
                 )
-                response = self._restore_response(response)
+
+            if substitutor:
+                response = self._restore_response(response, substitutor, response_format)
 
             Laminar.set_span_output(response.content)
             span.set_attributes(response.get_laminar_metadata())  # pyright: ignore[reportArgumentType]
@@ -567,25 +476,9 @@ class Conversation(BaseModel, Generic[T]):
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[None]":
-        """Send message, returns NEW Conversation with response.
-
-        Args:
-            content: Message content - str, Document, or list of Documents.
-            purpose: Optional semantic label for tracing.
-            expected_cost: Optional expected cost for tracking.
-
-        Returns:
-            New Conversation[None] with response accessible via .content, .reasoning_content, etc.
-        """
+        """Send message, returns NEW Conversation with response."""
         new_messages, response = await self._execute_send(content, None, purpose, expected_cost)
-        return Conversation[None](
-            model=self.model,
-            context=self.context,
-            messages=new_messages + (response,),
-            model_options=self.model_options,
-            enable_substitutor=self.enable_substitutor,
-            substitutor=self.substitutor,
-        )
+        return self.model_copy(update={"messages": new_messages + (response,)})  # type: ignore[return-value]
 
     async def send_structured(
         self,
@@ -595,145 +488,168 @@ class Conversation(BaseModel, Generic[T]):
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[U]":
-        """Send message expecting structured response.
-
-        Args:
-            content: Message content - str, Document, or list of Documents.
-            response_format: Pydantic model class for structured output.
-            purpose: Optional semantic label for tracing.
-            expected_cost: Optional expected cost for tracking.
-
-        Returns:
-            New Conversation[U] with .parsed returning U instance.
-        """
+        """Send message expecting structured response, returns NEW Conversation[U] with .parsed."""
         new_messages, response = await self._execute_send(content, response_format, purpose, expected_cost)
-        return Conversation[U](
-            model=self.model,
-            context=self.context,
-            messages=new_messages + (response,),
-            model_options=self.model_options,
-            enable_substitutor=self.enable_substitutor,
-            substitutor=self.substitutor,
-        )
+        return self.model_copy(update={"messages": new_messages + (response,)})  # type: ignore[return-value]
 
-    def _apply_substitution(self, core_messages: list[CoreMessage]) -> list[CoreMessage]:
-        """Apply URL/address substitution to text content in messages."""
-        if not self.substitutor:
-            return core_messages
+    @overload
+    async def send_spec(
+        self,
+        spec: PromptSpec[str],
+        *,
+        documents: list[Document] | None = None,
+        include_input_documents: bool = True,
+        purpose: str | None = None,
+        expected_cost: float | None = None,
+    ) -> "Conversation[None]": ...
 
-        result: list[CoreMessage] = []
-        for msg in core_messages:
-            if isinstance(msg.content, str):
-                substituted = self.substitutor.substitute(msg.content)
-                result.append(CoreMessage(role=msg.role, content=substituted))
-            elif isinstance(msg.content, tuple):
-                new_parts: list[ContentPart] = []
-                for part in msg.content:
-                    if isinstance(part, TextContent):
-                        new_parts.append(TextContent(text=self.substitutor.substitute(part.text)))
-                    else:
-                        new_parts.append(part)
-                result.append(CoreMessage(role=msg.role, content=tuple(new_parts)))
+    @overload
+    async def send_spec(
+        self,
+        spec: PromptSpec[U],
+        *,
+        documents: list[Document] | None = None,
+        include_input_documents: bool = True,
+        purpose: str | None = None,
+        expected_cost: float | None = None,
+    ) -> "Conversation[U]": ...
+
+    async def send_spec(
+        self,
+        spec: PromptSpec[Any],
+        *,
+        documents: list[Document] | None = None,
+        include_input_documents: bool = True,
+        purpose: str | None = None,
+        expected_cost: float | None = None,
+    ) -> "Conversation[Any]":
+        """Send a PromptSpec to the LLM.
+
+        Adds documents to context (or messages for follow-up specs), renders the
+        prompt, and dispatches to send() or send_structured() based on output_type.
+
+        For specs with output_structure, sets stop sequences at </result> and
+        auto-extracts content — conv.content returns clean text.
+
+        For follow-up specs (follows is set), documents go to messages instead of
+        context. If the follow-up declares input_documents and documents are passed,
+        they are listed in the prompt text with their runtime id, name, description.
+        """
+        is_follow_up = spec.follows is not None
+
+        # Warning for missing documents (only for non-follow-up specs)
+        if not is_follow_up and spec.input_documents and not documents and include_input_documents:
+            logger.warning(
+                "PromptSpec '%s' declares input_documents (%s) but no documents were passed to send_spec().",
+                spec.__class__.__name__,
+                ", ".join(d.__name__ for d in spec.input_documents),
+            )
+
+        # Place documents in context (initial specs) or messages (follow-ups)
+        if documents:
+            if is_follow_up:
+                conv = self.with_documents(documents)
             else:
-                result.append(msg)
+                conv = self.with_context(*documents)
+        else:
+            conv = self
+
+        # Set stop sequence when output_structure is set (result tag wrapping)
+        if spec.output_structure is not None:
+            opts = conv.model_options or ModelOptions()
+            if RESULT_CLOSE not in (opts.stop or ()):
+                stop = (*opts.stop, RESULT_CLOSE) if opts.stop else (RESULT_CLOSE,)
+                conv = conv.with_model_options(opts.model_copy(update={"stop": stop}))  # nosemgrep: no-document-model-copy
+
+        # Determine whether to include input documents in prompt text
+        # Follow-ups: only include if the spec declares its own input_documents AND documents are passed
+        if is_follow_up:
+            effective_include_docs = bool(spec.input_documents) and documents is not None
+        else:
+            effective_include_docs = include_input_documents
+
+        prompt_text = render_text(spec, documents=documents, include_input_documents=effective_include_docs)
+        trace_purpose = purpose or spec.__class__.__name__
+
+        # Dispatch to structured or text generation
+        if spec.output_type is not str:
+            return await conv.send_structured(
+                prompt_text,
+                response_format=cast(type[BaseModel], spec.output_type),
+                purpose=trace_purpose,
+                expected_cost=expected_cost,
+            )
+
+        result = await conv.send(prompt_text, purpose=trace_purpose, expected_cost=expected_cost)
+
+        if spec.output_structure is not None:
+            return result.model_copy(update={"extract_result_tags": True})
+
         return result
 
-    def _restore_response(self, response: ModelResponse[Any], response_format: type[BaseModel] | None = None) -> ModelResponse[Any]:
-        """Restore shortened URLs/addresses in LLM response before storing in messages.
-
-        For unstructured responses, updates content and parsed (both strings).
-        For structured responses, re-parses the Pydantic model from restored JSON.
-        """
-        if not self.substitutor or self.substitutor.pattern_count == 0:
-            return response
-        restored = self.substitutor.restore(response.content)
-        if restored == response.content:
-            return response
-        update: dict[str, Any] = {"content": restored}
-        if response_format is not None and not isinstance(response.parsed, str):
-            update["parsed"] = response_format.model_validate_json(restored)
-        else:
-            update["parsed"] = restored
-        return response.model_copy(update=update)
-
-    def restore_content(self, text: str) -> str:
-        """Restore shortened URLs/addresses in text to originals.
-
-        Use this if you need to restore content that was shortened by the substitutor.
-        """
-        if self.substitutor:
-            return self.substitutor.restore(text)
-        return text
+    # --- Builder methods (return NEW Conversation) ---
 
     def with_document(self, doc: Document) -> "Conversation[T]":
-        """Return NEW Conversation with document appended to messages."""
-        return Conversation[T](
-            model=self.model,
-            context=self.context,
-            messages=self.messages + (doc,),
-            model_options=self.model_options,
-            enable_substitutor=self.enable_substitutor,
-            substitutor=self.substitutor,
-        )
+        """Return NEW Conversation with document appended to messages (not cached).
+
+        All structured data for LLM context must be wrapped in a Document.
+        Use Document.create() to wrap dicts, lists, or BaseModel instances.
+        Never construct XML manually for LLM context.
+        """
+        return self.model_copy(update={"messages": self.messages + (doc,)})
+
+    def with_documents(self, docs: Sequence[Document]) -> "Conversation[T]":
+        """Return NEW Conversation with multiple documents appended to messages (not cached)."""
+        return self.model_copy(update={"messages": self.messages + tuple(docs)})
+
+    def with_assistant_message(self, content: str) -> "Conversation[T]":
+        """Return NEW Conversation with an injected assistant turn in messages."""
+        return self.model_copy(update={"messages": self.messages + (_AssistantMessage(content),)})
 
     def with_context(self, *docs: Document) -> "Conversation[T]":
-        """Return NEW Conversation with documents added to context."""
-        return Conversation[T](
-            model=self.model,
-            context=self.context + docs,
-            messages=self.messages,
-            model_options=self.model_options,
-            enable_substitutor=self.enable_substitutor,
-            substitutor=self.substitutor,
-        )
+        """Return NEW Conversation with documents added to the cacheable context prefix.
+
+        All structured data for LLM context must be wrapped in a Document.
+        Use Document.create() to wrap dicts, lists, or BaseModel instances.
+        Never construct XML manually for LLM context.
+        """
+        return self.model_copy(update={"context": self.context + docs})
 
     def with_model_options(self, options: ModelOptions) -> "Conversation[T]":
         """Return NEW Conversation with updated model options."""
-        return Conversation[T](
-            model=self.model,
-            context=self.context,
-            messages=self.messages,
-            model_options=options,
-            enable_substitutor=self.enable_substitutor,
-            substitutor=self.substitutor,
-        )
+        return self.model_copy(update={"model_options": options})
+
+    def with_model(self, model: str) -> "Conversation[T]":
+        """Return NEW Conversation with a different model, preserving all state."""
+        if not model:
+            raise ValueError("model must be non-empty")
+        return self.model_copy(update={"model": model})
 
     def with_substitutor(self, enabled: bool = True) -> "Conversation[T]":
         """Return NEW Conversation with substitutor enabled/disabled."""
-        return Conversation[T](
-            model=self.model,
-            context=self.context,
-            messages=self.messages,
-            model_options=self.model_options,
-            enable_substitutor=enabled,
-            substitutor=self.substitutor if enabled else None,
-        )
+        return self.model_copy(update={"enable_substitutor": enabled})
 
-    def to_json(self) -> str:
-        """Serialize conversation to JSON string for debugging.
-
-        Note: Deserialization is not supported. Conversation is designed for
-        transient use within a single task, not for persistence/restore.
-        """
-        return self.model_dump_json()
+    # --- Utilities ---
 
     @property
     def approximate_tokens_count(self) -> int:
         """Approximate token count for all context and messages."""
         total = 0
-        for item in self.context + self.messages:
+        for item in chain(self.context, self.messages):
             if isinstance(item, ModelResponse):
-                total += len(item.content) // 4
+                total += len(item.content) // CHARS_PER_TOKEN
                 if reasoning := item.reasoning_content:
-                    total += len(reasoning) // 4
-            elif isinstance(item, Document):
+                    total += len(reasoning) // CHARS_PER_TOKEN
+            elif isinstance(item, (_UserMessage, _AssistantMessage)):
+                total += len(item.text) // CHARS_PER_TOKEN
+            elif isinstance(item, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
                 if item.is_text:
-                    total += len(item.content) // 4
+                    total += len(item.content) // CHARS_PER_TOKEN
                 elif item.is_image or item.is_pdf:
-                    total += _TOKENS_PER_IMAGE
+                    total += TOKENS_PER_IMAGE
                 for att in item.attachments:
                     if att.is_text:
-                        total += len(att.content) // 4
+                        total += len(att.content) // CHARS_PER_TOKEN
                     elif att.is_image or att.is_pdf:
-                        total += _TOKENS_PER_IMAGE
+                        total += TOKENS_PER_IMAGE
         return total

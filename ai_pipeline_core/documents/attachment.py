@@ -2,19 +2,23 @@
 
 import base64
 from functools import cached_property
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator, model_validator
 
 from ai_pipeline_core.exceptions import DocumentNameError
 
-from .mime_type import (
+from ._mime_type import (
     detect_mime_type,
     is_image_mime_type,
     is_pdf_mime_type,
     is_text_mime_type,
 )
 from .utils import DATA_URI_PATTERN
+
+__all__ = [
+    "Attachment",
+]
 
 
 class Attachment(BaseModel):
@@ -27,7 +31,7 @@ class Attachment(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     # Metadata keys added by Document.serialize_model() to attachments
-    _SERIALIZE_METADATA_KEYS: ClassVar[frozenset[str]] = frozenset({"mime_type", "size"})
+    SERIALIZE_METADATA_KEYS: ClassVar[frozenset[str]] = frozenset({"mime_type", "size"})
 
     name: str
     content: bytes
@@ -38,7 +42,8 @@ class Attachment(BaseModel):
     def _strip_serialize_metadata(cls, data: Any) -> Any:
         """Strip metadata keys from serialize_model() output before validation."""
         if isinstance(data, dict):
-            return {k: v for k, v in data.items() if k not in cls._SERIALIZE_METADATA_KEYS}
+            d = cast(dict[str, Any], data)
+            return {k: v for k, v in d.items() if k not in cls.SERIALIZE_METADATA_KEYS}
         return data
 
     @field_validator("name")

@@ -11,7 +11,7 @@ from ai_pipeline_core.document_store._models import (
     build_provenance_graph,
     walk_provenance,
 )
-from ai_pipeline_core.documents._types import DocumentSha256
+from ai_pipeline_core.documents.types import DocumentSha256
 
 # Valid base32-encoded SHA256 hashes (A-Z, 2-7 only, 52 chars, high entropy)
 SHA_A = DocumentSha256("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST")
@@ -21,8 +21,8 @@ SHA_D = DocumentSha256("DEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW")
 SHA_E = DocumentSha256("EFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX")
 
 
-def _node(sha256: str, sources: tuple[str, ...] = (), origins: tuple[str, ...] = ()) -> DocumentNode:
-    return DocumentNode(sha256=sha256, class_name="TestDoc", name=f"doc-{sha256[:6]}", sources=sources, origins=origins)
+def _node(sha256: str, derived_from: tuple[str, ...] = (), triggered_by: tuple[str, ...] = ()) -> DocumentNode:
+    return DocumentNode(sha256=sha256, class_name="TestDoc", name=f"doc-{sha256[:6]}", derived_from=derived_from, triggered_by=triggered_by)
 
 
 class TestDocumentNode:
@@ -30,15 +30,15 @@ class TestDocumentNode:
         node = _node(SHA_A)
         assert node.sha256 == SHA_A
         assert node.class_name == "TestDoc"
-        assert node.sources == ()
-        assert node.origins == ()
+        assert node.derived_from == ()
+        assert node.triggered_by == ()
         assert node.summary == ""
 
     def test_defaults(self):
         node = DocumentNode(sha256=SHA_A, class_name="X", name="x")
         assert node.description == ""
-        assert node.sources == ()
-        assert node.origins == ()
+        assert node.derived_from == ()
+        assert node.triggered_by == ()
         assert node.summary == ""
 
 
@@ -46,8 +46,8 @@ class TestBuildProvenanceGraph:
     def test_linear_chain(self):
         """A -> B -> C: all three found."""
         nodes = [
-            _node(SHA_A, sources=(SHA_B,)),
-            _node(SHA_B, sources=(SHA_C,)),
+            _node(SHA_A, derived_from=(SHA_B,)),
+            _node(SHA_B, derived_from=(SHA_C,)),
             _node(SHA_C),
         ]
         graph = build_provenance_graph(SHA_A, nodes)
@@ -56,9 +56,9 @@ class TestBuildProvenanceGraph:
     def test_diamond(self):
         """A -> B, A -> C, B -> D, C -> D: no duplicates."""
         nodes = [
-            _node(SHA_A, sources=(SHA_B, SHA_C)),
-            _node(SHA_B, sources=(SHA_D,)),
-            _node(SHA_C, sources=(SHA_D,)),
+            _node(SHA_A, derived_from=(SHA_B, SHA_C)),
+            _node(SHA_B, derived_from=(SHA_D,)),
+            _node(SHA_C, derived_from=(SHA_D,)),
             _node(SHA_D),
         ]
         graph = build_provenance_graph(SHA_A, nodes)
@@ -73,10 +73,10 @@ class TestBuildProvenanceGraph:
         graph = build_provenance_graph(SHA_A, [])
         assert graph == {}
 
-    def test_url_sources_skipped(self):
-        """URL strings in sources are not followed as graph edges."""
+    def test_url_derived_from_skipped(self):
+        """URL strings in derived_from are not followed as graph edges."""
         nodes = [
-            _node(SHA_A, sources=("https://example.com", SHA_B)),
+            _node(SHA_A, derived_from=("https://example.com", SHA_B)),
             _node(SHA_B),
         ]
         graph = build_provenance_graph(SHA_A, nodes)
@@ -86,7 +86,7 @@ class TestBuildProvenanceGraph:
     def test_dangling_sha256_skipped(self):
         """References to SHA256s not in the nodes list are silently skipped."""
         nodes = [
-            _node(SHA_A, sources=(SHA_B,)),
+            _node(SHA_A, derived_from=(SHA_B,)),
             # SHA_B not in nodes list
         ]
         graph = build_provenance_graph(SHA_A, nodes)
@@ -95,18 +95,18 @@ class TestBuildProvenanceGraph:
     def test_cycle_handling(self):
         """Cycles in provenance don't cause infinite loops."""
         nodes = [
-            _node(SHA_A, sources=(SHA_B,)),
-            _node(SHA_B, sources=(SHA_A,)),
+            _node(SHA_A, derived_from=(SHA_B,)),
+            _node(SHA_B, derived_from=(SHA_A,)),
         ]
         graph = build_provenance_graph(SHA_A, nodes)
         assert set(graph.keys()) == {SHA_A, SHA_B}
 
-    def test_mixed_sources_and_origins(self):
-        """Both sources and origins edges are followed."""
+    def test_mixed_derived_from_and_triggered_by(self):
+        """Both derived_from and triggered_by edges are followed."""
         nodes = [
-            _node(SHA_A, sources=(SHA_B,), origins=(SHA_C,)),
+            _node(SHA_A, derived_from=(SHA_B,), triggered_by=(SHA_C,)),
             _node(SHA_B),
-            _node(SHA_C, origins=(SHA_D,)),
+            _node(SHA_C, triggered_by=(SHA_D,)),
             _node(SHA_D),
         ]
         graph = build_provenance_graph(SHA_A, nodes)
@@ -130,16 +130,16 @@ class TestBuildProvenanceGraph:
         shas = [base64.b32encode(hashlib.sha256(str(i).encode()).digest()).decode()[:52] for i in range(count)]
 
         # Build linear chain: sha[0] -> sha[1] -> ... -> sha[count-1]
-        nodes = [_node(shas[i], sources=(shas[i + 1],) if i < count - 1 else ()) for i in range(count)]
+        nodes = [_node(shas[i], derived_from=(shas[i + 1],) if i < count - 1 else ()) for i in range(count)]
         graph = build_provenance_graph(shas[0], nodes)
         assert len(graph) == MAX_PROVENANCE_GRAPH_NODES
 
     def test_duplicate_nodes_in_input(self):
         """If same SHA256 appears multiple times in input, last one wins in index, but graph is correct."""
         nodes = [
-            _node(SHA_A, sources=(SHA_B,)),
+            _node(SHA_A, derived_from=(SHA_B,)),
             _node(SHA_B),
-            DocumentNode(sha256=SHA_A, class_name="Other", name="duplicate", sources=(SHA_B,)),
+            DocumentNode(sha256=SHA_A, class_name="Other", name="duplicate", derived_from=(SHA_B,)),
         ]
         graph = build_provenance_graph(SHA_A, nodes)
         assert SHA_A in graph
@@ -153,8 +153,8 @@ class TestWalkProvenance:
     async def test_linear_chain(self):
         """Walks A -> B -> C via batch lookups."""
         all_nodes = {
-            SHA_A: _node(SHA_A, sources=(SHA_B,)),
-            SHA_B: _node(SHA_B, sources=(SHA_C,)),
+            SHA_A: _node(SHA_A, derived_from=(SHA_B,)),
+            SHA_B: _node(SHA_B, derived_from=(SHA_C,)),
             SHA_C: _node(SHA_C),
         }
 
@@ -173,9 +173,9 @@ class TestWalkProvenance:
         assert graph == {}
 
     @pytest.mark.asyncio
-    async def test_url_sources_not_followed(self):
+    async def test_url_derived_from_not_followed(self):
         all_nodes = {
-            SHA_A: _node(SHA_A, sources=("https://example.com", SHA_B)),
+            SHA_A: _node(SHA_A, derived_from=("https://example.com", SHA_B)),
             SHA_B: _node(SHA_B),
         }
 
@@ -188,9 +188,9 @@ class TestWalkProvenance:
     @pytest.mark.asyncio
     async def test_diamond_pattern(self):
         all_nodes = {
-            SHA_A: _node(SHA_A, sources=(SHA_B, SHA_C)),
-            SHA_B: _node(SHA_B, sources=(SHA_D,)),
-            SHA_C: _node(SHA_C, sources=(SHA_D,)),
+            SHA_A: _node(SHA_A, derived_from=(SHA_B, SHA_C)),
+            SHA_B: _node(SHA_B, derived_from=(SHA_D,)),
+            SHA_C: _node(SHA_C, derived_from=(SHA_D,)),
             SHA_D: _node(SHA_D),
         }
 
@@ -204,7 +204,7 @@ class TestWalkProvenance:
     async def test_dangling_refs_stop_gracefully(self):
         """References to nonexistent nodes don't cause errors."""
         all_nodes = {
-            SHA_A: _node(SHA_A, sources=(SHA_B,)),
+            SHA_A: _node(SHA_A, derived_from=(SHA_B,)),
             # SHA_B not available
         }
 
@@ -217,8 +217,8 @@ class TestWalkProvenance:
     @pytest.mark.asyncio
     async def test_cycle_handling(self):
         all_nodes = {
-            SHA_A: _node(SHA_A, sources=(SHA_B,)),
-            SHA_B: _node(SHA_B, sources=(SHA_A,)),
+            SHA_A: _node(SHA_A, derived_from=(SHA_B,)),
+            SHA_B: _node(SHA_B, derived_from=(SHA_A,)),
         }
 
         async def loader(sha256s: list[str]) -> dict[str, DocumentNode]:
@@ -232,9 +232,9 @@ class TestWalkProvenance:
         """Verifies batching: each BFS level is loaded in one call, not per-node."""
         call_count = 0
         all_nodes = {
-            SHA_A: _node(SHA_A, sources=(SHA_B, SHA_C)),
-            SHA_B: _node(SHA_B, sources=(SHA_D,)),
-            SHA_C: _node(SHA_C, sources=(SHA_D,)),
+            SHA_A: _node(SHA_A, derived_from=(SHA_B, SHA_C)),
+            SHA_B: _node(SHA_B, derived_from=(SHA_D,)),
+            SHA_C: _node(SHA_C, derived_from=(SHA_D,)),
             SHA_D: _node(SHA_D),
         }
 
@@ -249,12 +249,12 @@ class TestWalkProvenance:
         assert call_count == 3
 
     @pytest.mark.asyncio
-    async def test_mixed_sources_and_origins(self):
-        """Both sources and origins edges are followed."""
+    async def test_mixed_derived_from_and_triggered_by(self):
+        """Both derived_from and triggered_by edges are followed."""
         all_nodes = {
-            SHA_A: _node(SHA_A, sources=(SHA_B,), origins=(SHA_C,)),
+            SHA_A: _node(SHA_A, derived_from=(SHA_B,), triggered_by=(SHA_C,)),
             SHA_B: _node(SHA_B),
-            SHA_C: _node(SHA_C, origins=(SHA_D,)),
+            SHA_C: _node(SHA_C, triggered_by=(SHA_D,)),
             SHA_D: _node(SHA_D),
         }
 
@@ -269,7 +269,7 @@ class TestWalkProvenance:
         """BFS stops at MAX_PROVENANCE_GRAPH_NODES."""
         count = MAX_PROVENANCE_GRAPH_NODES + 500
         shas = [base64.b32encode(hashlib.sha256(str(i).encode()).digest()).decode()[:52] for i in range(count)]
-        all_nodes = {shas[i]: _node(shas[i], sources=(shas[i + 1],) if i < count - 1 else ()) for i in range(count)}
+        all_nodes = {shas[i]: _node(shas[i], derived_from=(shas[i + 1],) if i < count - 1 else ()) for i in range(count)}
 
         async def loader(sha256s: list[str]) -> dict[str, DocumentNode]:
             return {s: all_nodes[s] for s in sha256s if s in all_nodes}
@@ -286,9 +286,9 @@ class TestWalkProvenance:
         children = shas[1:11]
         grandchild = shas[11]
 
-        all_nodes: dict[str, DocumentNode] = {root: _node(root, sources=tuple(children))}
+        all_nodes: dict[str, DocumentNode] = {root: _node(root, derived_from=tuple(children))}
         for child in children:
-            all_nodes[child] = _node(child, sources=(grandchild,))
+            all_nodes[child] = _node(child, derived_from=(grandchild,))
         all_nodes[grandchild] = _node(grandchild)
 
         async def loader(sha256s: list[str]) -> dict[str, DocumentNode]:

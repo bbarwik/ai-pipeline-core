@@ -2,17 +2,6 @@
 
 Provides a single generic ModelResponse[T] class for both structured and
 unstructured LLM output. Fully serializable with Pydantic.
-
-Usage:
-    # Unstructured (T=str)
-    response: ModelResponse[str] = await generate(...)
-    print(response.content)  # Raw text
-    print(response.parsed)   # Same as content
-
-    # Structured (T=MyModel)
-    response: ModelResponse[MyModel] = await generate_structured(..., MyModel)
-    print(response.parsed)        # MyModel instance
-    print(response.parsed.field)  # Type-safe access
 """
 
 from collections.abc import Mapping
@@ -88,7 +77,7 @@ class ModelResponse(BaseModel, Generic[T]):
     thinking_blocks: tuple[dict[str, Any], ...] | None = None
     """Structured thinking blocks from the model (if available)."""
 
-    provider_specific_fields: dict[str, Any] | None = None
+    provider_specific_fields: Mapping[str, Any] | None = None
     """Provider-specific fields like Gemini thought_signatures for multi-turn."""
 
     @field_serializer("parsed", when_used="always")
@@ -104,14 +93,7 @@ class ModelResponse(BaseModel, Generic[T]):
         return [{"title": c.title, "url": c.url, "start_index": c.start_index, "end_index": c.end_index} for c in value]
 
     def get_laminar_metadata(self) -> dict[str, str | int | float]:
-        """Extract metadata for LMNR (Laminar) observability.
-
-        Attribute names match Laminar's span_attributes.rs constants:
-        - gen_ai.usage.input_tokens / output_tokens (not prompt/completion)
-        - gen_ai.usage.cache_read_input_tokens (not cached_tokens)
-        - gen_ai.usage.cost / input_cost / output_cost
-        - gen_ai.request_model for model identification
-        """
+        """Extract metadata for Laminar observability spans."""
         result: dict[str, str | int | float] = {
             "gen_ai.response.id": self.response_id,
             "gen_ai.system": "litellm",

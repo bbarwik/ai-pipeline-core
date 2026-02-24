@@ -1,28 +1,37 @@
 # MODULE: prompt_compiler
-# CLASSES: Role, Rule, OutputRule, Guide, PromptSpec, Phase
-# DEPENDS: BaseModel, Generic, str
+# CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
+# DEPENDS: BaseModel, Generic
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# SIZE: ~29KB
+# VERSION: 0.10.0
+# AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
-# === IMPORTS ===
-from ai_pipeline_core import Guide, OutputRule, OutputT, Phase, PromptSpec, Role, Rule, extract_result, render_preview, render_text, send_spec
+## Imports
 
-# === RULES (MUST FOLLOW) ===
-# 1. Must define a non-empty docstring and a ``text`` ClassVar on every Role subclass.
-# 2. Must not end Role text with sentence punctuation (.!?) — the renderer adds a period automatically.
-# 3. Must define a non-empty docstring and a ``text`` ClassVar on every Rule subclass (max 5 lines).
-# 4. Must define a non-empty docstring and a ``text`` ClassVar on every OutputRule subclass (max 5 lines).
-# 5. Must define a non-empty docstring and a ``template`` ClassVar on every Guide subclass.
-# 6. Must use a relative path for Guide template — content is loaded and cached at import time.
-# 7. Never use ``#`` (H1) headers in Guide templates — reserved for prompt section boundaries. Use ``##`` or deeper.
-# 8. Must subclass PromptSpec directly — no inheritance chains allowed.
-# 9. Must declare phase via class parameter: ``class MySpec(PromptSpec, phase=Phase('review'))``.
-# 10. Must define role, task, and input_documents on every PromptSpec subclass.
-# 11. Must use ``Field(description='...')`` for all dynamic Pydantic fields on PromptSpec subclasses.
-# 12. Must be a non-empty string when creating a Phase (validated by PromptSpec at class definition time).
+```python
+from ai_pipeline_core import Guide, OutputRule, PromptSpec, Role, Rule, render_preview, render_text
+```
 
-# === TYPES & CONSTANTS ===
+## Rules
 
+1. Must define a non-empty docstring and a ``text`` ClassVar on every Role subclass.
+2. Must not end Role text with sentence punctuation (.!?) — the renderer adds a period automatically.
+3. Must use domain-neutral Roles for specs that handle multiple domains — a PromptSpec
+4. Must define a non-empty docstring and a ``text`` ClassVar on every Rule subclass (max 5 lines).
+5. Must define a non-empty docstring and a ``text`` ClassVar on every OutputRule subclass (max 5 lines).
+6. Must define a non-empty docstring and a ``template`` ClassVar on every Guide subclass.
+7. Must use a relative path for Guide template — content is loaded and cached at import time.
+8. Never use ``#`` (H1) headers in Guide templates — reserved for prompt section boundaries. Use ``##`` or deeper.
+9. Must subclass PromptSpec directly — no inheritance chains allowed.
+10. Must define task on every PromptSpec subclass.
+11. Must define role and input_documents on standalone specs (not required when ``follows`` is set).
+12. Must use ``Field(description='...')`` for all dynamic Pydantic fields on PromptSpec subclasses.
+13. Must include all Guides that define terminology referenced in the task text — missing Guides
+14. Must ensure task vocabulary matches output model field names — when task text uses
+15. Never construct XML manually (f-string ``<document>`` tags) — the framework wraps Documents
+
+## Types & Constants
+
+```python
 APPROX_CHARS_PER_TOKEN = 4
 
 MAX_RULE_LINES = 5
@@ -33,13 +42,19 @@ RESULT_OPEN = f"<{RESULT_TAG}>"
 
 RESULT_CLOSE = f"</{RESULT_TAG}>"
 
-# === PUBLIC API ===
+```
 
+## Public API
+
+```python
 class Role:
     """Base class for LLM role definitions.
 
 Must define a non-empty docstring and a ``text`` ClassVar on every Role subclass.
-Must not end Role text with sentence punctuation (.!?) — the renderer adds a period automatically."""
+Must not end Role text with sentence punctuation (.!?) — the renderer adds a period automatically.
+Must use domain-neutral Roles for specs that handle multiple domains — a PromptSpec
+parameterized by domain (e.g., finding_type field that can be "risk", "opportunity",
+or "question") needs a Role that doesn't bias toward any single domain."""
     text: ClassVar[str]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -58,8 +73,7 @@ Must define a non-empty docstring and a ``text`` ClassVar on every Rule subclass
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        _require_docstring(cls, kind="Rule")
-        _require_text(cls, kind="Rule", max_lines=MAX_RULE_LINES)
+        _init_text_component(cls, "Rule", max_lines=MAX_RULE_LINES)
 
 
 class OutputRule:
@@ -70,8 +84,7 @@ Must define a non-empty docstring and a ``text`` ClassVar on every OutputRule su
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        _require_docstring(cls, kind="OutputRule")
-        _require_text(cls, kind="OutputRule", max_lines=MAX_RULE_LINES)
+        _init_text_component(cls, "OutputRule", max_lines=MAX_RULE_LINES)
 
 
 class Guide:
@@ -129,28 +142,47 @@ Generic parameter ``OutputT`` determines the output type:
 - ``PromptSpec[MyModel]`` for structured output (MyModel must be a BaseModel subclass)
 
 Must subclass PromptSpec directly — no inheritance chains allowed.
-Must declare phase via class parameter: ``class MySpec(PromptSpec, phase=Phase('review'))``.
-Must define role, task, and input_documents on every PromptSpec subclass.
+Must define task on every PromptSpec subclass.
+Must define role and input_documents on standalone specs (not required when ``follows`` is set).
 Must use ``Field(description='...')`` for all dynamic Pydantic fields on PromptSpec subclasses.
+Must include all Guides that define terminology referenced in the task text — missing Guides
+cause the LLM to hallucinate definitions for framework-specific terms.
+Must ensure task vocabulary matches output model field names — when task text uses
+domain-specific terms but the output BaseModel has generic field names, add explicit
+mapping instructions in the task text.
 
-Required ClassVars: role, task, input_documents.
-Optional ClassVars: guides=(), rules=(), output_rules=(), output_structure=None, xml_wrapped=False.
+Required ClassVars: task. Also role and input_documents unless ``follows`` is set.
+Optional ClassVars: guides=(), rules=(), output_rules=(), output_structure=None.
+
+Class keyword parameter ``follows`` declares this spec as a follow-up to another spec.
+When ``follows`` is set, ``role`` and ``input_documents`` become optional (default to
+None and () respectively).
+
+``input_documents`` declares Document types this spec expects in context. These are class
+references (types), not instances. Actual Document instances are passed via
+``Conversation.send_spec(documents=[...])``.
+
+``output_structure`` automatically enables ``<result>`` XML wrapping and auto-extraction
+in ``send_spec()``.
+
+Never construct XML manually (f-string ``<document>`` tags) — the framework wraps Documents
+in XML automatically when they are added to the Conversation via ``with_context()`` or
+``with_document()``. Use ``Document.create()`` to wrap dicts, lists, or BaseModel instances.
 
 Pydantic fields (dynamic input values):
     Any field declared with ``Field(description=...)`` becomes a dynamic input."""
     model_config = ConfigDict(frozen=True, extra='forbid')
-    phase: ClassVar[Phase]
+    follows: ClassVar[type['PromptSpec'] | None]
     input_documents: ClassVar[tuple[type[Document], ...]]
-    role: ClassVar[type[Role]]
+    role: ClassVar[type[Role] | None]
     task: ClassVar[str]
     guides: ClassVar[tuple[type[Guide], ...]]
     rules: ClassVar[tuple[type[Rule], ...]]
     output_rules: ClassVar[tuple[type[OutputRule], ...]]
     output_type: ClassVar[type[str] | type[BaseModel]]
     output_structure: ClassVar[str | None]
-    xml_wrapped: ClassVar[bool]
 
-    def __init_subclass__(cls, *, phase: Phase | None = None, **kwargs: Any) -> None:  # noqa: C901, PLR0912, PLR0915
+    def __init_subclass__(cls, *, follows: type["PromptSpec"] | None = None, **kwargs: Any) -> None:  # noqa: C901, PLR0912, PLR0915
         super().__init_subclass__(**kwargs)
 
         # Pydantic creates concrete subclasses for parameterized generics (e.g. PromptSpec[str]).
@@ -170,17 +202,27 @@ Pydantic fields (dynamic input values):
         if cls.__doc__ is None or not cls.__doc__.strip():
             raise TypeError(f"PromptSpec '{name}' must define a non-empty docstring")
 
-        # Phase required as class parameter
-        if not isinstance(phase, str) or not phase.strip():
-            raise TypeError(f"PromptSpec '{name}' must set phase: class {name}(PromptSpec, phase=Phase('review'))")
-        cls.phase = Phase(phase)
+        # Validate follows (runtime check — users may pass invalid types despite annotation)
+        if follows is not None:
+            # Cast to Any for runtime validation (callers may bypass type annotations)
+            follows_raw: Any = follows
+            if not isinstance(follows_raw, type) or not issubclass(follows_raw, PromptSpec):
+                raise TypeError(f"PromptSpec '{name}'.follows must be a PromptSpec subclass, got {follows_raw!r}")
+            if follows is PromptSpec:
+                raise TypeError(f"PromptSpec '{name}'.follows must be a concrete PromptSpec subclass, not PromptSpec itself")
+            if "[" in follows.__name__:
+                raise TypeError(f"PromptSpec '{name}'.follows must be a concrete PromptSpec subclass, not a parameterized generic")
+        cls.follows = follows
 
-        # Validate role
+        # Validate role (required for standalone specs, optional for follow-ups)
         if "role" not in cls.__dict__:
-            raise TypeError(f"PromptSpec '{name}' must define 'role'")
-        role = cls.__dict__["role"]
-        if not isinstance(role, type) or not issubclass(role, Role):
-            raise TypeError(f"PromptSpec '{name}'.role must be a Role subclass (class reference), got {role!r}")
+            if follows is None:
+                raise TypeError(f"PromptSpec '{name}' must define 'role'")
+            cls.role = None
+        else:
+            role = cls.__dict__["role"]
+            if not isinstance(role, type) or not issubclass(role, Role):
+                raise TypeError(f"PromptSpec '{name}'.role must be a Role subclass (class reference), got {role!r}")
 
         # Validate task
         if "task" not in cls.__dict__:
@@ -192,23 +234,25 @@ Pydantic fields (dynamic input values):
         if not cls.task:
             raise TypeError(f"PromptSpec '{name}'.task must not be empty")
 
-        # Validate input_documents
+        # Validate input_documents (required for standalone specs, optional for follow-ups)
         if "input_documents" not in cls.__dict__:
-            raise TypeError(f"PromptSpec '{name}' must define 'input_documents'")
-        input_docs = cls.__dict__["input_documents"]
-        if not isinstance(input_docs, tuple):
-            raise TypeError(f"PromptSpec '{name}'.input_documents must be a tuple of Document subclasses")
-        for doc_cls in input_docs:
-            if not isinstance(doc_cls, type) or not issubclass(doc_cls, Document):
-                raise TypeError(f"PromptSpec '{name}'.input_documents contains non-Document class: {doc_cls!r}")
-        _check_no_duplicates(input_docs, attr="input_documents", spec_name=name)
+            if follows is None:
+                raise TypeError(f"PromptSpec '{name}' must define 'input_documents'")
+            cls.input_documents = ()
+        else:
+            input_docs = cls.__dict__["input_documents"]
+            if not isinstance(input_docs, tuple):
+                raise TypeError(f"PromptSpec '{name}'.input_documents must be a tuple of Document subclasses")
+            for doc_cls in cast(tuple[Any, ...], input_docs):
+                if not isinstance(doc_cls, type) or not issubclass(doc_cls, Document):
+                    raise TypeError(f"PromptSpec '{name}'.input_documents contains non-Document class: {doc_cls!r}")
+            _check_no_duplicates(cast(tuple[type[Document], ...], input_docs), attr="input_documents", spec_name=name)
 
         # Derive output_type from generic parameter (PromptSpec[X] -> X)
         # Reject manual output_type declarations — the generic parameter is the source of truth
         if "output_type" in cls.__dict__:
             raise TypeError(
-                f"PromptSpec '{name}' must not declare 'output_type' directly. "
-                f"Use the generic parameter instead: class {name}(PromptSpec[MyModel], phase=Phase('...'))"
+                f"PromptSpec '{name}' must not declare 'output_type' directly. Use the generic parameter instead: class {name}(PromptSpec[MyModel])"
             )
         output_type: type[str] | type[BaseModel] = str  # default when no explicit generic arg
         # Check __orig_bases__ first (standard Python generic alias), then fall back
@@ -234,41 +278,10 @@ Pydantic fields (dynamic input values):
             raise TypeError(f"PromptSpec '{name}' generic parameter must be 'str' or a BaseModel subclass, got {output_type!r}")
         cls.output_type = output_type
 
-        # Validate guides (optional, default empty)
-        guides = cls.__dict__.get("guides", ())
-        if not isinstance(guides, tuple):
-            raise TypeError(f"PromptSpec '{name}'.guides must be a tuple of Guide subclasses")
-        for guide_cls in guides:
-            if not isinstance(guide_cls, type) or not issubclass(guide_cls, Guide):
-                raise TypeError(f"PromptSpec '{name}'.guides contains non-Guide class: {guide_cls!r}")
-        _check_no_duplicates(guides, attr="guides", spec_name=name)
-        cls.guides = guides
-
-        # Validate rules (optional, default empty)
-        rules = cls.__dict__.get("rules", ())
-        if not isinstance(rules, tuple):
-            raise TypeError(f"PromptSpec '{name}'.rules must be a tuple of Rule subclasses")
-        for rule_cls in rules:
-            if not isinstance(rule_cls, type) or not issubclass(rule_cls, Rule):
-                if isinstance(rule_cls, type) and issubclass(rule_cls, OutputRule):
-                    raise TypeError(
-                        f"PromptSpec '{name}'.rules contains OutputRule '{rule_cls.__name__}'. Use output_rules= for output formatting constraints."
-                    )
-                raise TypeError(f"PromptSpec '{name}'.rules contains non-Rule class: {rule_cls!r}")
-        _check_no_duplicates(rules, attr="rules", spec_name=name)
-        cls.rules = rules
-
-        # Validate output_rules (optional, default empty)
-        output_rules = cls.__dict__.get("output_rules", ())
-        if not isinstance(output_rules, tuple):
-            raise TypeError(f"PromptSpec '{name}'.output_rules must be a tuple of OutputRule subclasses")
-        for rule_cls in output_rules:
-            if not isinstance(rule_cls, type) or not issubclass(rule_cls, OutputRule):
-                if isinstance(rule_cls, type) and issubclass(rule_cls, Rule):
-                    raise TypeError(f"PromptSpec '{name}'.output_rules contains Rule '{rule_cls.__name__}'. Use rules= for behavioral constraints.")
-                raise TypeError(f"PromptSpec '{name}'.output_rules contains non-OutputRule class: {rule_cls!r}")
-        _check_no_duplicates(output_rules, attr="output_rules", spec_name=name)
-        cls.output_rules = output_rules
+        # Validate component tuples (optional, default empty)
+        cls.guides = _validate_component_tuple(cls.__dict__, name, "guides", Guide)
+        cls.rules = _validate_component_tuple(cls.__dict__, name, "rules", Rule, cross_check=OutputRule, cross_attr="output_rules")
+        cls.output_rules = _validate_component_tuple(cls.__dict__, name, "output_rules", OutputRule, cross_check=Rule, cross_attr="rules")
 
         # Validate output_structure (optional)
         output_structure = cls.__dict__.get("output_structure")
@@ -286,13 +299,15 @@ Pydantic fields (dynamic input values):
         else:
             cls.output_structure = None
 
-        # Validate xml_wrapped (optional, default False)
-        xml_wrapped = cls.__dict__.get("xml_wrapped", False)
-        if not isinstance(xml_wrapped, bool):
-            raise TypeError(f"PromptSpec '{name}'.xml_wrapped must be a bool")
-        if xml_wrapped and cls.output_type is not str:
-            raise TypeError(f"PromptSpec '{name}'.xml_wrapped is only allowed with PromptSpec[str] (structured output uses JSON, not XML wrapping)")
-        cls.xml_wrapped = xml_wrapped
+        # Validate OutputRules don't reference XML tags when output_structure is set
+        if cls.output_structure is not None and cls.output_rules:
+            for or_cls in cast(tuple[Any, ...], cls.output_rules):
+                if _XML_TAG_PATTERN.search(str(or_cls.text)):
+                    raise TypeError(
+                        f"PromptSpec '{name}' has output_structure with OutputRule "
+                        f"'{or_cls.__name__}' that references XML tags. "
+                        f"output_structure automatically adds <result> wrapping — remove XML instructions from the OutputRule."
+                    )
 
         # Validate Pydantic field descriptions (uses __annotations__ + FieldInfo directly)
         _check_field_descriptions(cls, name)
@@ -301,23 +316,15 @@ Pydantic fields (dynamic input values):
         _check_unknown_attrs(cls, name)
 
 
-class Phase(str):
-    """Pipeline phase identifier for PromptSpec subclasses.
+```
 
-Must be a non-empty string when creating a Phase (validated by PromptSpec at class definition time).
-Any non-empty string is valid (e.g., Phase('review'), Phase('analysis'), Phase('writing')).
-Used as a class parameter: ``class MySpec(PromptSpec, phase=Phase('review'))``."""
+## Functions
 
-# === FUNCTIONS ===
-
+```python
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point for prompt compiler operations."""
     parser = argparse.ArgumentParser(prog="prompt_compiler", description="Prompt compiler CLI")
     subparsers = parser.add_subparsers(dest="command")
-
-    # list
-    list_parser = subparsers.add_parser("list", help="List all discovered PromptSpec subclasses")
-    list_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
 
     # inspect
     inspect_parser = subparsers.add_parser("inspect", help="Show detailed anatomy of a single spec")
@@ -330,83 +337,19 @@ def main(argv: list[str] | None = None) -> int:
     render_parser.add_argument("--no-input-documents", action="store_true", help="Hide input document listing")
     render_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
 
-    # compile
-    compile_parser = subparsers.add_parser("compile", help="Compile all specs to .prompts/ directory")
+    # compile (also discovers and lists specs)
+    compile_parser = subparsers.add_parser("compile", help="Discover, list, and compile all specs to .prompts/")
     compile_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
 
     args = parser.parse_args(argv)
 
-    handlers = {"list": _cmd_list, "inspect": _cmd_inspect, "render": _cmd_render, "compile": _cmd_compile}
+    handlers = {"inspect": _cmd_inspect, "render": _cmd_render, "compile": _cmd_compile}
     handler = handlers.get(args.command)
     if handler is None:
         parser.print_help()
         return 1
 
     return handler(args)
-
-def extract_result(text: str) -> str:
-    """Extract content from <result> tags. Returns text as-is if no tags found."""
-    match = _EXTRACT_PATTERN.search(text)
-    return match.group(1).strip() if match else text
-
-async def send_spec(
-    spec: PromptSpec[Any],
-    *,
-    model: str | None = None,
-    conversation: Conversation[Any] | None = None,
-    documents: list[Document] | None = None,
-    model_options: ModelOptions | None = None,
-    include_input_documents: bool = True,
-    purpose: str | None = None,
-    expected_cost: float | None = None,
-) -> Conversation[Any]:
-    r"""Send a PromptSpec to an LLM via Conversation.
-
-    Either ``model`` or ``conversation`` must be provided. When ``conversation``
-    is given, uses it directly (enables warmup+fork pattern). When ``model``
-    is given, creates a fresh Conversation.
-
-    Adds documents to context, renders the prompt, and sends it.
-    Dispatches to send() or send_structured() based on the spec's output type.
-
-    When spec.xml_wrapped is True and the model supports stop sequences,
-    automatically sets stop=[\"</result>\"] to cut off after the response.
-    Use extract_result(conv.content) to get clean content from xml_wrapped specs.
-    """
-    if conversation is not None:
-        conv: Conversation[Any] = conversation
-        if model_options is not None:
-            conv = conv.with_model_options(model_options)
-    elif model is not None:
-        conv = Conversation(model=model, model_options=model_options)
-    else:
-        raise ValueError("Either 'model' or 'conversation' must be provided")
-
-    spec_cls = type(spec)
-
-    # Set stop sequence for xml_wrapped specs on supported models
-    if spec_cls.xml_wrapped and _supports_stop_sequence(conv.model):
-        current_options = conv.model_options or ModelOptions()
-        existing_stop = current_options.stop
-        if existing_stop is None:
-            stop_list = [RESULT_CLOSE]
-        elif isinstance(existing_stop, str):
-            stop_list = [existing_stop, RESULT_CLOSE]
-        else:
-            stop_list = [*existing_stop, RESULT_CLOSE]
-        conv = conv.with_model_options(current_options.model_copy(update={"stop": stop_list}))
-
-    if documents:
-        conv = conv.with_context(*documents)
-
-    prompt_text = render_text(spec, documents=documents, include_input_documents=include_input_documents)
-    trace_purpose = purpose or spec_cls.__name__
-
-    if spec_cls.output_type is str:
-        return await conv.send(prompt_text, purpose=trace_purpose, expected_cost=expected_cost)
-
-    response_format = cast(type[BaseModel], spec_cls.output_type)
-    return await conv.send_structured(prompt_text, response_format=response_format, purpose=trace_purpose, expected_cost=expected_cost)
 
 def render_text(
     spec: PromptSpec,
@@ -425,8 +368,9 @@ def render_text(
     spec_cls = type(spec)
     sections: list[str] = []
 
-    # 1. Role
-    sections.append(f"# Role\n\n{_role_sentence(spec_cls.role.text)}")
+    # 1. Role (skipped when None, e.g. follow-up specs without explicit role)
+    if spec_cls.role is not None:
+        sections.append(f"# Role\n\n{_role_sentence(spec_cls.role.text)}")
 
     # 2. Context: document listing + dynamic parameter values
     context_parts: list[str] = []
@@ -463,18 +407,15 @@ def render_text(
         sections.append(f"# Reference: {title}\n\n{content}")
 
     # 6. Output rules (before structure — tell the LLM constraints before format)
-    if spec_cls.output_rules:
-        or_lines = [_format_numbered_rule(i, rule_cls.text) for i, rule_cls in enumerate(spec_cls.output_rules, 1)]
+    or_lines = [_format_numbered_rule(i, rule_cls.text) for i, rule_cls in enumerate(spec_cls.output_rules, 1)]
+    if spec_cls.output_structure is not None:
+        or_lines.append(_format_numbered_rule(len(or_lines) + 1, _RESULT_TAG_RULE))
+    if or_lines:
         sections.append("# Output Rules\n\n" + "\n".join(or_lines))
 
     # 7. Output structure
-    structure_parts: list[str] = []
-    if spec_cls.xml_wrapped:
-        structure_parts.append(_XML_WRAP_INSTRUCTION)
     if spec_cls.output_structure:
-        structure_parts.append(spec_cls.output_structure)
-    if structure_parts:
-        sections.append("# Output Structure\n\n" + "\n\n".join(structure_parts))
+        sections.append("# Output Structure\n\n" + spec_cls.output_structure)
 
     return "\n\n".join(sections)
 
@@ -486,18 +427,18 @@ def render_preview(spec_class: type[PromptSpec], *, include_input_documents: boo
     """
     placeholders = {field_name: f"{{{field_name}}}" for field_name in spec_class.model_fields}
     instance = spec_class.model_construct(**placeholders)  # pyright: ignore[reportArgumentType] — placeholders are intentionally untyped strings
-    return render_text(instance, include_input_documents=include_input_documents)
+    text = render_text(instance, include_input_documents=include_input_documents)
+    if spec_class.follows is not None:
+        return f"[Follows: {spec_class.follows.__name__}]\n\n{text}"
+    return text
 
-# === EXAMPLES (from tests/) ===
+```
 
-# Example: Extract result with closing tag
-# Source: tests/prompt_compiler/test_api.py:123
-def test_extract_result_with_closing_tag() -> None:
-    text = "preamble <result>\n  hello world \n</result> trailing"
-    assert api.extract_result(text) == "hello world"
+## Examples
 
-# Example: Role valid
-# Source: tests/prompt_compiler/test_components.py:109
+**Role valid** (`tests/prompt_compiler/test_components.py:109`)
+
+```python
 def test_role_valid() -> None:
     class ValidRole(Role):
         """A valid role."""
@@ -505,9 +446,11 @@ def test_role_valid() -> None:
         text = "Expert engineer"
 
     assert ValidRole.text == "Expert engineer"
+```
 
-# Example: Rule valid
-# Source: tests/prompt_compiler/test_components.py:186
+**Rule valid** (`tests/prompt_compiler/test_components.py:186`)
+
+```python
 def test_rule_valid() -> None:
     class ValidRule(Rule):
         """Doc."""
@@ -515,12 +458,14 @@ def test_rule_valid() -> None:
         text = "Do not fail."
 
     assert ValidRule.text == "Do not fail."
+```
 
-# Example: Render full prompt spec workflow
-# Source: tests/prompt_compiler/test_render.py:545
+**Render full prompt spec workflow** (`tests/prompt_compiler/test_render.py:629`)
+
+```python
 def test_render_full_prompt_spec_workflow() -> None:
     """Define components and a PromptSpec, then render it to prompt text."""
-    from ai_pipeline_core.prompt_compiler import OutputRule, Phase, PromptSpec, Role, Rule, render_text
+    from ai_pipeline_core.prompt_compiler import OutputRule, PromptSpec, Role, Rule, render_text
 
     class Analyst(Role):
         """Research analyst role."""
@@ -537,7 +482,7 @@ def test_render_full_prompt_spec_workflow() -> None:
 
         text = "Use prose paragraphs, not bullet lists"
 
-    class AnalysisSpec(PromptSpec, phase=Phase("analysis")):
+    class AnalysisSpec(PromptSpec):
         """Analyze source documents for key findings."""
 
         input_documents = ()
@@ -556,62 +501,69 @@ def test_render_full_prompt_spec_workflow() -> None:
     assert "# Rules\n\n1. Cite specific evidence" in rendered
     assert "# Output Rules\n\n1. Use prose paragraphs" in rendered
     assert "# Output Structure\n\n## Key Findings" in rendered
+```
 
-# Example: Extract result empty content
-# Source: tests/prompt_compiler/test_api.py:143
-def test_extract_result_empty_content() -> None:
-    text = "<result></result>"
-    assert api.extract_result(text) == ""
+**Main compile empty dir** (`tests/prompt_compiler/test_cli.py:349`)
 
-# Example: Extract result multiline content
-# Source: tests/prompt_compiler/test_api.py:138
-def test_extract_result_multiline_content() -> None:
-    text = "<result>\nline1\nline2\n</result>"
-    assert api.extract_result(text) == "line1\nline2"
+```python
+def test_main_compile_empty_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["compile", "--root", str(tmp_path)])
+    assert ret == 0
+    capsys.readouterr()  # Consume output; we only verify it doesn't crash
+```
 
-# Example: Extract result whitespace stripped
-# Source: tests/prompt_compiler/test_api.py:148
-def test_extract_result_whitespace_stripped() -> None:
-    text = "<result>  \n  content  \n  </result>"
-    assert api.extract_result(text) == "content"
+**Main compile finds specs** (`tests/prompt_compiler/test_cli.py:341`)
 
-# Example: Extract result with incomplete closing tag
-# Source: tests/prompt_compiler/test_api.py:133
-def test_extract_result_with_incomplete_closing_tag() -> None:
-    text = "prefix <result>partial content"
-    assert api.extract_result(text) == "partial content"
+```python
+def test_main_compile_finds_specs(capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["compile", "--root", str(Path.cwd())])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "spec(s) found:" in out
+    assert "Name" in out  # table header
+```
 
-# Example: Extract result without tags
-# Source: tests/prompt_compiler/test_api.py:128
-def test_extract_result_without_tags() -> None:
-    text = "plain response"
-    assert api.extract_result(text) == text
+**Main inspect basemodel output** (`tests/prompt_compiler/test_cli.py:422`)
 
-# === ERROR EXAMPLES (What NOT to Do) ===
+```python
+def test_main_inspect_basemodel_output(capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["inspect", f"{StructuredInspectSpec.__module__}:StructuredInspectSpec"])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "Type: CliPayload" in out
+```
 
-# Error: Spec requires phase
-# Source: tests/prompt_compiler/test_spec.py:244
-def test_spec_requires_phase() -> None:
-    from ai_pipeline_core.prompt_compiler import PromptSpec, Role
+**Main inspect not found** (`tests/prompt_compiler/test_cli.py:439`)
 
-    class ReviewerRole(Role):
-        """Reviewer."""
+```python
+def test_main_inspect_not_found(capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["inspect", "NoSuchSpec12345"])
+    assert ret == 1
+    err = capsys.readouterr().err
+    assert "not found" in err
+```
 
-        text = "careful reviewer"
+**Main inspect with guides** (`tests/prompt_compiler/test_cli.py:429`)
 
-    with pytest.raises(TypeError, match="must set phase"):
+```python
+def test_main_inspect_with_guides(capsys: pytest.CaptureFixture[str]) -> None:
+    """Inspect a spec that has guides — covers the guides section rendering."""
+    ret = main(["inspect", "examples.showcase_prompt_compiler:IssueOptimisticSpec"])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "Guides (2):" in out
+    assert "RiskAssessmentFramework" in out
+    assert "chars)" in out
+```
 
-        class NoPhaseSpec(PromptSpec):
-            """Doc."""
 
-            input_documents = ()
-            role = ReviewerRole
-            task = "do it"
+## Error Examples
 
-# Error: Spec rules reject output rule with specific message
-# Source: tests/prompt_compiler/test_spec.py:600
+**Spec rules reject output rule with specific message** (`tests/prompt_compiler/test_spec.py:650`)
+
+```python
 def test_spec_rules_reject_output_rule_with_specific_message() -> None:
-    from ai_pipeline_core.prompt_compiler import OutputRule, Phase, PromptSpec, Role
+    from ai_pipeline_core.prompt_compiler import OutputRule, PromptSpec, Role
 
     class ReviewerRole(Role):
         """Reviewer."""
@@ -625,7 +577,7 @@ def test_spec_rules_reject_output_rule_with_specific_message() -> None:
 
     with pytest.raises(TypeError, match=r"\.rules contains OutputRule 'FormatBullets'"):
 
-        class MixedSpec(PromptSpec, phase=Phase("review")):
+        class MixedSpec(PromptSpec):
             """Doc."""
 
             input_documents = ()
@@ -633,11 +585,13 @@ def test_spec_rules_reject_output_rule_with_specific_message() -> None:
             task = "do it"
 
             rules = (FormatBullets,)  # Wrong! Should be output_rules=
+```
 
-# Error: Spec bare field no description
-# Source: tests/prompt_compiler/test_spec.py:875
+**Spec bare field no description** (`tests/prompt_compiler/test_spec.py:922`)
+
+```python
 def test_spec_bare_field_no_description() -> None:
-    from ai_pipeline_core.prompt_compiler import Phase, PromptSpec, Role
+    from ai_pipeline_core.prompt_compiler import PromptSpec, Role
 
     class ReviewerRole(Role):
         """Reviewer."""
@@ -646,7 +600,7 @@ def test_spec_bare_field_no_description() -> None:
 
     with pytest.raises(TypeError, match=r"field 'item' must use Field\(description='\.\.\.'\)"):
 
-        class BareFieldSpec(PromptSpec, phase=Phase("review")):
+        class BareFieldSpec(PromptSpec):
             """Doc."""
 
             input_documents = ()
@@ -654,31 +608,39 @@ def test_spec_bare_field_no_description() -> None:
             task = "do it"
 
             item: str  # Wrong! Must use Field(description='...')
+```
 
-# Error: Guide missing docstring
-# Source: tests/prompt_compiler/test_components.py:258
+**Guide missing docstring** (`tests/prompt_compiler/test_components.py:258`)
+
+```python
 def test_guide_missing_docstring() -> None:
     with pytest.raises(TypeError, match="must define a non-empty docstring"):
 
         class NoDocGuide(Guide):
             template = "guide.txt"
+```
 
-# Error: Guide rejects absolute path
-# Source: tests/prompt_compiler/test_components.py:271
+**Guide rejects absolute path** (`tests/prompt_compiler/test_components.py:271`)
+
+```python
 def test_guide_rejects_absolute_path(tmp_path: Path) -> None:
     absolute = str((tmp_path / "guide.txt").resolve())
     with pytest.raises(TypeError, match="template must be a relative path"):
         type("AbsGuide", (Guide,), {"__module__": __name__, "__doc__": "Guide doc.", "template": absolute})
+```
 
-# Error: Guide requires non empty string template
-# Source: tests/prompt_compiler/test_components.py:266
+**Guide requires non empty string template** (`tests/prompt_compiler/test_components.py:266`)
+
+```python
 @pytest.mark.parametrize("template_value", [None, "", "   ", 123])
 def test_guide_requires_non_empty_string_template(template_value: object) -> None:
     with pytest.raises(TypeError, match="must define 'template' as a ClassVar"):
         type("BadTemplateGuide", (Guide,), {"__module__": __name__, "__doc__": "Guide doc.", "template": template_value})
+```
 
-# Error: Role empty docstring
-# Source: tests/prompt_compiler/test_components.py:125
+**Role empty docstring** (`tests/prompt_compiler/test_components.py:125`)
+
+```python
 def test_role_empty_docstring() -> None:
     with pytest.raises(TypeError, match="must define a non-empty docstring"):
 
@@ -686,3 +648,4 @@ def test_role_empty_docstring() -> None:
             """ """
 
             text = "valid"
+```

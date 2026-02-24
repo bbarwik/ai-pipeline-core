@@ -152,29 +152,22 @@ class TestTotalSizeValidation:
 
 
 class TestModelCopyWithAttachments:
-    """Test model_copy(update=...) on frozen documents with attachments."""
+    """model_copy is blocked on Document — verify it raises TypeError."""
 
     def test_model_copy_replaces_attachments(self):
-        original_att = Attachment(name="a.txt", content=b"old")
-        new_att = Attachment(name="b.txt", content=b"new")
-        doc = SampleFlowDoc(name="test.txt", content=b"Hello", attachments=(original_att,))
-        copied = doc.model_copy(update={"attachments": (new_att,)})
-        assert len(copied.attachments) == 1
-        assert copied.attachments[0].name == "b.txt"
-        assert copied.content == b"Hello"
+        doc = SampleFlowDoc(name="test.txt", content=b"Hello")
+        with pytest.raises(TypeError, match=r"model_copy.*not supported"):
+            doc.model_copy(update={"attachments": ()})
 
     def test_model_copy_clears_attachments(self):
-        att = Attachment(name="a.txt", content=b"data")
-        doc = SampleFlowDoc(name="test.txt", content=b"Hello", attachments=(att,))
-        copied = doc.model_copy(update={"attachments": ()})
-        assert copied.attachments == ()
+        doc = SampleFlowDoc(name="test.txt", content=b"Hello")
+        with pytest.raises(TypeError, match=r"model_copy.*not supported"):
+            doc.model_copy(update={"attachments": ()})
 
     def test_model_copy_preserves_attachments_when_not_updated(self):
-        att = Attachment(name="a.txt", content=b"data")
-        doc = SampleFlowDoc(name="test.txt", content=b"Hello", attachments=(att,))
-        copied = doc.model_copy(update={"description": "new desc"})
-        assert len(copied.attachments) == 1
-        assert copied.attachments[0].name == "a.txt"
+        doc = SampleFlowDoc(name="test.txt", content=b"Hello")
+        with pytest.raises(TypeError, match=r"model_copy.*not supported"):
+            doc.model_copy(update={"description": "new desc"})
 
 
 class TestEmptyTupleAttachments:

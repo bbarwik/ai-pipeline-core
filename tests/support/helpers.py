@@ -5,7 +5,8 @@ from typing import Any
 from pydantic import BaseModel
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.llm import ModelResponse, TokenUsage
+from ai_pipeline_core._llm_core.model_response import ModelResponse
+from ai_pipeline_core._llm_core.types import TokenUsage
 
 
 class ConcreteDocument(Document):

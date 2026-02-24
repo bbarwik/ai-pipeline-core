@@ -1,4 +1,4 @@
-"""Tests for deploy.py — bundled wheels deployment."""
+"""Tests for deployment/deploy.py — bundled wheels deployment."""
 
 # pyright: reportPrivateUsage=false, reportUnusedClass=false
 
@@ -167,7 +167,7 @@ class _DeployTestResult(DeploymentResult):
 
 
 @pipeline_flow()
-async def _deploy_test_flow(project_name: str, documents: list[_DeployInputDoc], flow_options: _DeployTestOptions) -> list[_DeployOutputDoc]:
+async def _deploy_test_flow(run_id: str, documents: list[_DeployInputDoc], flow_options: _DeployTestOptions) -> list[_DeployOutputDoc]:
     return [_DeployOutputDoc(name="out.txt", content=b"ok")]
 
 
@@ -175,7 +175,7 @@ class _DeploySchemaTestDeployment(PipelineDeployment[_DeployTestOptions, _Deploy
     flows = [_deploy_test_flow]  # type: ignore[reportAssignmentType]
 
     @staticmethod
-    def build_result(project_name: str, documents: list[Document], options: _DeployTestOptions) -> _DeployTestResult:
+    def build_result(run_id: str, documents: list[Document], options: _DeployTestOptions) -> _DeployTestResult:
         return _DeployTestResult(success=True, report="done")
 
 
@@ -372,7 +372,7 @@ class TestBuildBundle:
                 outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
             elif "pip download" in cmd:
-                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split()[0].strip("'\"")
+                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 (Path(dest) / "dep-1.0.0-py3-none-any.whl").write_bytes(b"dep")
             return ""
 
@@ -409,7 +409,7 @@ class TestBuildBundle:
                 outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"project wheel")
             elif "pip download" in cmd:
-                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split()[0].strip("'\"")
+                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 (Path(dest) / "httpx-0.28.0-py3-none-any.whl").write_bytes(b"httpx")
                 (Path(dest) / "pydantic-2.11.0-py3-none-any.whl").write_bytes(b"pydantic")
             return ""
@@ -492,7 +492,7 @@ class TestPlatformTargeting:
                 outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
             elif "pip download" in cmd:
-                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split()[0].strip("'\"")
+                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 (Path(dest) / "dep-1.0.0-py3-none-any.whl").write_bytes(b"dep")
             return ""
 
@@ -520,7 +520,7 @@ class TestPlatformTargeting:
                 outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
             elif "pip download" in cmd:
-                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split()[0].strip("'\"")
+                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 (Path(dest) / "dep-1.0.0-py3-none-any.whl").write_bytes(b"dep")
             return ""
 
@@ -622,17 +622,17 @@ class TestVendorPackages:
         def mock_run(cmd: str, *, check: bool = True) -> str:
             commands_run.append(cmd)
             if "build --wheel" in cmd:
-                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].split()[0].strip("'\"")
+                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 Path(outdir).mkdir(parents=True, exist_ok=True)
                 if "common" in cmd:
                     (Path(outdir) / "lib_common-0.2.0-py3-none-any.whl").write_bytes(b"vendor")
                 else:
                     (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
             elif "pip download" in cmd:
-                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split()[0].strip("'\"")
+                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 (Path(dest) / "httpx-0.28.0-py3-none-any.whl").write_bytes(b"dep")
             elif "uv pip compile" in cmd:
-                out_flag = cmd.rsplit("-o ", maxsplit=1)[-1].split()[0].strip("'\"")
+                out_flag = cmd.rsplit("-o ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 Path(out_flag).write_text("lib-common==0.2.0\nhttpx==0.28.0\n")
             return ""
 
@@ -657,7 +657,7 @@ class TestVendorPackages:
                 outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
             elif "pip download" in cmd:
-                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split()[0].strip("'\"")
+                dest = cmd.rsplit("-d ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 (Path(dest) / "dep-1.0.0-py3-none-any.whl").write_bytes(b"dep")
             return ""
 
@@ -679,7 +679,7 @@ class TestVendorPackages:
 
         def mock_run(cmd: str, *, check: bool = True) -> str:
             if "build --wheel" in cmd:
-                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].split()[0].strip("'\"")
+                outdir = cmd.rsplit("--outdir ", maxsplit=1)[-1].split(maxsplit=1)[0].strip("'\"")
                 Path(outdir).mkdir(parents=True, exist_ok=True)
                 (Path(outdir) / "lib_common-0.2.0-py3-none-any.whl").write_bytes(b"vendor")
             return ""

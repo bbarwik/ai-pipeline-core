@@ -7,7 +7,7 @@ Demonstrates every capability of the Prompt Compiler module:
   - OutputRule: Output formatting constraints (max 5 lines)
   - Guide: File-backed reference material (validated at import time)
   - PromptSpec: Typed prompt specification with import-time validation
-  - Phase: Pipeline phase enum (planning/writing/review)
+  - follows: Typed follow-up spec chains
   - render_text(): Render spec instance to prompt string
   - render_preview(): Render spec class with placeholder values
   - send_spec(): Single-call LLM interaction (requires LLM proxy)
@@ -28,11 +28,9 @@ from ai_pipeline_core.documents import Document
 from ai_pipeline_core.prompt_compiler import (
     Guide,
     OutputRule,
-    Phase,
     PromptSpec,
     Role,
     Rule,
-    extract_result,
     render_preview,
     render_text,
 )
@@ -158,7 +156,7 @@ STEP09_COMMON_RULES = (BeAnalytical, FocusOnThisIssueOnly, CiteEvidence)
 # =============================================================================
 
 
-class IssueOptimisticSpec(PromptSpec, phase=Phase("review")):
+class IssueOptimisticSpec(PromptSpec):
     """Argue the optimistic case for a risk issue in the intermediate review debate."""
 
     input_documents = STEP09_DOCUMENTS
@@ -176,7 +174,7 @@ class IssueOptimisticSpec(PromptSpec, phase=Phase("review")):
     item: str = Field(description="The issue to analyze")
 
 
-class IssuePessimisticSpec(PromptSpec, phase=Phase("review")):
+class IssuePessimisticSpec(PromptSpec):
     """Argue the pessimistic case for a risk issue in the intermediate review debate."""
 
     input_documents = STEP09_DOCUMENTS
@@ -199,7 +197,7 @@ class IssuePessimisticSpec(PromptSpec, phase=Phase("review")):
 # =============================================================================
 
 
-class IssueSummarySpec(PromptSpec, phase=Phase("review")):
+class IssueSummarySpec(PromptSpec):
     """Synthesize optimistic and pessimistic arguments into a final issue assessment."""
 
     input_documents = STEP09_DOCUMENTS
@@ -242,7 +240,7 @@ class RiskVerdict(BaseModel):
     recommendation: str
 
 
-class IssueVerdictSpec(PromptSpec[RiskVerdict], phase=Phase("review")):
+class IssueVerdictSpec(PromptSpec[RiskVerdict]):
     """Produce a structured risk verdict for a single issue."""
 
     input_documents = STEP09_DOCUMENTS
@@ -262,7 +260,7 @@ class IssueVerdictSpec(PromptSpec[RiskVerdict], phase=Phase("review")):
 # =============================================================================
 
 
-class WarmupAcknowledgementSpec(PromptSpec, phase=Phase("review")):
+class WarmupAcknowledgementSpec(PromptSpec):
     """Warmup prompt to populate cache before forking into parallel debate calls."""
 
     input_documents = STEP09_DOCUMENTS
@@ -271,11 +269,11 @@ class WarmupAcknowledgementSpec(PromptSpec, phase=Phase("review")):
 
 
 # =============================================================================
-# 11. PromptSpec — Different phase (WRITING)
+# 11. PromptSpec — Follow-up spec (follows=)
 # =============================================================================
 
 
-class DraftReportSpec(PromptSpec, phase=Phase("writing")):
+class DraftReportSpec(PromptSpec):
     """Draft a research report section based on analysis findings."""
 
     input_documents = (IntermediateResearchDocument,)
@@ -290,13 +288,24 @@ class DraftReportSpec(PromptSpec, phase=Phase("writing")):
     key_findings: str = Field(description="Bullet points of key findings to incorporate")
 
 
+class DraftRevisionSpec(PromptSpec, follows=DraftReportSpec):
+    """Revise a previously drafted report section based on feedback."""
+
+    task = """\
+        Revise the previously drafted section incorporating the provided feedback.
+        Maintain the same structure and evidence standards.
+        """
+
+    feedback: str = Field(description="Revision feedback to incorporate")
+
+
 # =============================================================================
-# 12. PromptSpec — XML-wrapped response (extract_result)
+# 12. PromptSpec — output_structure with auto-extraction
 # =============================================================================
 
 
-class FinalVerdictSpec(PromptSpec, phase=Phase("review")):
-    """Produce a final go/no-go verdict with XML-wrapped response for extraction."""
+class FinalVerdictSpec(PromptSpec):
+    """Produce a final go/no-go verdict with structured output for extraction."""
 
     input_documents = STEP09_DOCUMENTS
     role = ResearchSupervisor
@@ -306,7 +315,6 @@ class FinalVerdictSpec(PromptSpec, phase=Phase("review")):
         """
     rules = (CiteEvidence, NoSpeculation)
     output_rules = (DontUseMarkdownTables,)
-    xml_wrapped = True
     output_structure = """\
         ## Verdict
         ## Key Evidence
@@ -320,6 +328,115 @@ class FinalVerdictSpec(PromptSpec, phase=Phase("review")):
 # =============================================================================
 # Demo execution
 # =============================================================================
+
+
+def _show_validation_examples() -> None:
+    """Demonstrate import-time validation errors (extracted to reduce branch count)."""
+    errors: list[tuple[str, str]] = []
+
+    # Missing docstring
+    try:
+
+        class _NoDocSpec(PromptSpec):
+            input_documents = ()
+            role = SeniorVCAnalyst
+            task = "do it"
+
+    except TypeError as e:
+        errors.append(("Missing docstring", str(e)))
+
+    # Missing role (standalone spec)
+    try:
+
+        class _NoRoleSpec(PromptSpec):
+            """Test."""
+
+            input_documents = ()
+            task = "do it"
+
+    except TypeError as e:
+        errors.append(("Missing role", str(e)))
+
+    # Bare field without Field(description=...)
+    try:
+
+        class _BareFieldSpec(PromptSpec):
+            """Test."""
+
+            input_documents = ()
+            role = SeniorVCAnalyst
+            task = "do it"
+            item: str
+
+    except TypeError as e:
+        errors.append(("Bare field (no description)", str(e)))
+
+    # OutputRule in rules (wrong tuple)
+    try:
+
+        class _WrongRuleSpec(PromptSpec):
+            """Test."""
+
+            input_documents = ()
+            role = SeniorVCAnalyst
+            task = "do it"
+            rules = (StartWithOptimisticAnalyst,)  # OutputRule in rules!
+
+    except TypeError as e:
+        errors.append(("OutputRule in rules", str(e)))
+
+    # output_structure with BaseModel output_type
+    try:
+
+        class _BadStructSpec(PromptSpec[RiskVerdict]):
+            """Test."""
+
+            input_documents = ()
+            role = SeniorVCAnalyst
+            task = "do it"
+            output_structure = "## Section"
+
+    except TypeError as e:
+        errors.append(("output_structure with BaseModel", str(e)))
+
+    # Empty task
+    try:
+
+        class _EmptyTaskSpec(PromptSpec):
+            """Test."""
+
+            input_documents = ()
+            role = SeniorVCAnalyst
+            task = "   "
+
+    except TypeError as e:
+        errors.append(("Empty task", str(e)))
+
+    # follows must be a PromptSpec subclass
+    try:
+
+        class _BadFollowsSpec(PromptSpec, follows=str):  # type: ignore[arg-type]
+            """Test."""
+
+            task = "do it"
+
+    except TypeError as e:
+        errors.append(("follows=str", str(e)))
+
+    # follows must not be PromptSpec itself
+    try:
+
+        class _FollowsBaseSpec(PromptSpec, follows=PromptSpec):
+            """Test."""
+
+            task = "do it"
+
+    except TypeError as e:
+        errors.append(("follows=PromptSpec", str(e)))
+
+    for label, msg in errors:
+        print(f"  [{label}]")
+        print(f"    {msg}\n")
 
 
 def main() -> None:
@@ -371,14 +488,13 @@ def main() -> None:
     summary_text = render_text(summary)
     print(summary_text)
 
-    # --- Feature: Different phase ---
+    # --- Feature: Follow-up spec (follows=) ---
     print("\n" + "=" * 80)
-    print("\n--- 7. WRITING phase spec ---\n")
-    draft = DraftReportSpec(
-        section_title="Market Analysis",
-        key_findings="- Trading volume declined 40% MoM\n- Liquidity concentrated in 2 pools",
-    )
-    print(render_text(draft))
+    print("\n--- 7. Follow-up spec (follows=DraftReportSpec) ---\n")
+    revision = DraftRevisionSpec(feedback="Add more quantitative evidence and specific metrics.")
+    print(render_text(revision))
+    print(f"\n[follows = {DraftRevisionSpec.follows.__name__}]")
+    print(f"[role = {DraftRevisionSpec.role}]")  # None — inherited from conversation
 
     # --- Feature: render_preview without documents ---
     print("\n" + "=" * 80)
@@ -393,100 +509,16 @@ def main() -> None:
     print(f"IssueSummarySpec.guides     = {tuple(g.__name__ for g in IssueSummarySpec.guides)}")
     print("\nAll issue specs share STEP09_DOCUMENTS and STEP09_ISSUE_GUIDES via module-level tuples.")
 
-    # --- Feature: Phase introspection ---
+    # --- Feature: render_preview shows follows note ---
     print("\n" + "=" * 80)
-    print("\n--- 10. Phase introspection ---\n")
-    for spec_cls in [IssueOptimisticSpec, IssueSummarySpec, DraftReportSpec, WarmupAcknowledgementSpec]:
-        print(f"  {spec_cls.__name__:30s} phase={spec_cls.phase}")
+    print("\n--- 10. render_preview() shows follows note ---\n")
+    preview = render_preview(DraftRevisionSpec)
+    print(preview)
 
     # --- Feature: Import-time validation ---
     print("\n" + "=" * 80)
     print("\n--- 11. Import-time validation examples ---\n")
-
-    errors: list[tuple[str, str]] = []
-
-    # Missing docstring
-    try:
-
-        class _NoDocSpec(PromptSpec, phase=Phase("review")):
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-
-    except TypeError as e:
-        errors.append(("Missing docstring", str(e)))
-
-    # Missing phase
-    try:
-
-        class _NoPhaseSpec(PromptSpec):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-
-    except TypeError as e:
-        errors.append(("Missing phase", str(e)))
-
-    # Bare field without Field(description=...)
-    try:
-
-        class _BareFieldSpec(PromptSpec, phase=Phase("review")):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-            item: str
-
-    except TypeError as e:
-        errors.append(("Bare field (no description)", str(e)))
-
-    # OutputRule in rules (wrong tuple)
-    try:
-
-        class _WrongRuleSpec(PromptSpec, phase=Phase("review")):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-            rules = (StartWithOptimisticAnalyst,)  # OutputRule in rules!
-
-    except TypeError as e:
-        errors.append(("OutputRule in rules", str(e)))
-
-    # output_structure with BaseModel output_type
-    try:
-
-        class _BadStructSpec(PromptSpec[RiskVerdict], phase=Phase("review")):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-            output_structure = "## Section"
-
-    except TypeError as e:
-        errors.append(("output_structure with BaseModel", str(e)))
-
-    # Empty task
-    try:
-
-        class _EmptyTaskSpec(PromptSpec, phase=Phase("review")):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "   "
-
-    except TypeError as e:
-        errors.append(("Empty task", str(e)))
-
-    for label, msg in errors:
-        print(f"  [{label}]")
-        print(f"    {msg}\n")
+    _show_validation_examples()
 
     # --- Feature: Guide.render() reads file content ---
     print("=" * 80)
@@ -517,9 +549,11 @@ def main() -> None:
     )
     print(conv.parsed)  # RiskVerdict instance
 
-    # Multi-turn with follow-up spec:
-    conv = await send_spec(warmup_spec, model=model, documents=docs)
-    conv = await conv.send(render_text(optimistic_spec, include_input_documents=False))
+    # Follow-up spec:
+    conv = await conv.send_spec(
+        DraftRevisionSpec(feedback="Add metrics"),
+    )
+    print(conv.content)  # revised text
 
     # Warmup + fork for parallel calls:
     warmup = await send_spec(warmup_spec, model=model, documents=docs)
@@ -528,47 +562,25 @@ def main() -> None:
         warmup.send(render_text(pessimistic_spec, include_input_documents=False)),
     )""")
 
-    # --- Feature: XML-wrapped response spec ---
+    # --- Feature: output_structure spec (auto-extracted) ---
     print("\n" + "=" * 80)
-    print("\n--- 14. XML-wrapped response spec (xml_wrapped=True) ---\n")
+    print("\n--- 14. output_structure spec (auto-extraction in send_spec) ---\n")
     verdict = FinalVerdictSpec(project_name="DeFi Bridge Protocol")
     verdict_text = render_text(verdict)
     print(verdict_text)
+    print(f"\n[output_structure = {FinalVerdictSpec.output_structure is not None}]")
+    print("[send_spec() auto-extracts <result> tags — conv.content returns clean text]")
 
-    # --- Feature: extract_result utility ---
+    # --- Feature: output_structure validation ---
     print("\n" + "=" * 80)
-    print("\n--- 15. extract_result() utility ---\n")
-    sample_response = "Some preamble\n<result>\n## Verdict\nProceed with caution.\n</result>\nTrailing text"
-    extracted = extract_result(sample_response)
-    print(f"Input:     {sample_response!r}")
-    print(f"Extracted: {extracted!r}")
-    no_tags = "Plain response without tags"
-    print(f"\nNo tags:   {extract_result(no_tags)!r} (returns as-is)")
-
-    # --- Feature: xml_wrapped validation ---
-    print("\n" + "=" * 80)
-    print("\n--- 16. xml_wrapped import-time validation ---\n")
+    print("\n--- 15. output_structure validation errors ---\n")
 
     xml_errors: list[tuple[str, str]] = []
-
-    # xml_wrapped with BaseModel output_type
-    try:
-
-        class _XmlBaseModelSpec(PromptSpec[RiskVerdict], phase=Phase("review")):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-            xml_wrapped = True
-
-    except TypeError as e:
-        xml_errors.append(("xml_wrapped with BaseModel", str(e)))
 
     # H1 header in output_structure
     try:
 
-        class _H1OutputSpec(PromptSpec, phase=Phase("review")):
+        class _H1OutputSpec(PromptSpec):
             """Test."""
 
             input_documents = ()

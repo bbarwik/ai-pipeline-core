@@ -1,4 +1,4 @@
-"""Primitive types for LLM interactions.
+"""Primitive types and constants for LLM interactions.
 
 This module provides low-level types for LLM communication that have NO dependency
 on the Document class. These types are used by internal modules (document_store,
@@ -11,6 +11,33 @@ from enum import StrEnum
 from typing import Literal
 
 from pydantic import Base64Bytes, BaseModel, ConfigDict
+
+# Token count per image/PDF (per CLAUDE.md §3.6)
+TOKENS_PER_IMAGE = 1080
+
+
+type ModelName = (
+    Literal[
+        # Core models
+        "gemini-3-pro",
+        "gpt-5.1",
+        # Small models
+        "gemini-3-flash",
+        "gpt-5-mini",
+        "grok-4.1-fast",
+        # Search models
+        "gemini-3-flash-search",
+        "gpt-5-mini-search",
+        "grok-4.1-fast-search",
+        "sonar-pro-search",
+    ]
+    | str
+)
+"""Type-safe model name with IDE autocompletion for common models.
+
+Literal[...] | str provides autocomplete for known models while accepting any string.
+Model availability depends on your LiteLLM proxy configuration and provider access.
+"""
 
 
 class Role(StrEnum):

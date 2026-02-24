@@ -2,13 +2,6 @@
 
 # pyright: reportPrivateUsage=false
 
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
-from uuid import UUID
-
-import httpx
-import pytest
-
 from ai_pipeline_core import (
     Document,
     FlowOptions,
@@ -16,11 +9,9 @@ from ai_pipeline_core import (
     pipeline_flow,
 )
 from ai_pipeline_core.deployment import DeploymentResult
-from ai_pipeline_core.deployment.contract import ProgressRun
 from ai_pipeline_core.deployment._helpers import (
     class_name_to_deployment_name,
     extract_generic_params,
-    send_webhook,
 )
 
 
@@ -53,76 +44,14 @@ class TestExtractGenericParams:
         assert options_type is FlowOptions
         assert result_type is SampleResult
 
-    def test_returns_none_for_non_generic(self):
-        """Test returns None for class without generic params."""
+    def test_returns_empty_for_non_generic(self):
+        """Test returns empty tuple for class without generic params."""
 
         class Plain:
             """Plain class."""
 
-        options_type, result_type = extract_generic_params(Plain, PipelineDeployment)
-        assert options_type is None
-        assert result_type is None
-
-
-class TestSendWebhook:
-    """Test webhook sending with retries."""
-
-    async def test_success(self):
-        """Test successful webhook delivery."""
-        payload = ProgressRun(
-            flow_run_id=UUID(int=0),
-            project_name="test",
-            state="RUNNING",
-            timestamp=datetime.now(UTC),
-            step=1,
-            total_steps=3,
-            flow_name="flow1",
-            status="started",
-            progress=0.0,
-            step_progress=0.0,
-            message="Starting",
-        )
-
-        mock_response = AsyncMock()
-        mock_response.raise_for_status = lambda: None
-
-        with patch("ai_pipeline_core.deployment._helpers.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
-            mock_client.post.return_value = mock_response
-            mock_client_cls.return_value = mock_client
-
-            await send_webhook("http://example.com/hook", payload)
-            mock_client.post.assert_called_once()
-
-    async def test_retries_on_failure(self):
-        """Test webhook retries on transient failure."""
-        payload = ProgressRun(
-            flow_run_id=UUID(int=0),
-            project_name="test",
-            state="RUNNING",
-            timestamp=datetime.now(UTC),
-            step=1,
-            total_steps=1,
-            flow_name="flow",
-            status="started",
-            progress=0.0,
-            step_progress=0.0,
-            message="msg",
-        )
-
-        with patch("ai_pipeline_core.deployment._helpers.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
-            mock_client.post.side_effect = httpx.HTTPError("timeout")
-            mock_client_cls.return_value = mock_client
-
-            with patch("ai_pipeline_core.deployment._helpers.asyncio.sleep"), pytest.raises(httpx.HTTPError):
-                await send_webhook("http://example.com/hook", payload, max_retries=2, retry_delay=0)
-
-            assert mock_client.post.call_count == 2
+        result = extract_generic_params(Plain, PipelineDeployment)
+        assert result == ()
 
 
 # --- Module-level test infrastructure ---
@@ -143,7 +72,7 @@ class SampleOutputDoc(Document):
 
 
 @pipeline_flow()
-async def sample_flow(project_name: str, documents: list[SampleInputDoc], flow_options: FlowOptions) -> list[SampleOutputDoc]:
+async def sample_flow(run_id: str, documents: list[SampleInputDoc], flow_options: FlowOptions) -> list[SampleOutputDoc]:
     """Sample flow."""
     return []
 
@@ -154,6 +83,6 @@ class SampleDeployment(PipelineDeployment[FlowOptions, SampleResult]):
     flows = [sample_flow]  # type: ignore[reportAssignmentType]
 
     @staticmethod
-    def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+    def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
         """Build result."""
         return SampleResult(success=True)

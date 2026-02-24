@@ -37,6 +37,7 @@ rules:
         - "**/*_protocol.py"
         - "**/base.py"
         - "**/memory.py"
+        - "**/_publishers.py"
 
   # Rule: Protocol separation - Protocols must be in dedicated files
   # Excludes internal protocols (underscore-prefixed) and files that are already dedicated
@@ -79,17 +80,4 @@ rules:
   # Note: Silent exception handling is enforced by ruff BLE001/S110/E722
   # Semgrep pattern for except blocks doesn't parse correctly, so we rely on ruff
 
-  # Rule: No Example: blocks in docstrings
-  # Tests serve as usage examples, not docstrings
-  - id: no-example-blocks-in-docstrings
-    pattern-regex: '"""[\s\S]*?Example:[\s\S]*?"""'
-    message: "Docstrings must not contain 'Example:' blocks. Write tests instead."
-    severity: WARNING
-    languages: [python]
-    paths:
-      include: ["ai_pipeline_core/"]
-      exclude:
-        - "**/tests/**"
-        - "**/examples/**"
-        # False positive: regex matches "class TestExample:" across string boundaries
-        - "**/guide_builder.py"
+  # Rule: No Example: blocks in docstrings — canonical rule is in docstring_rules.yml

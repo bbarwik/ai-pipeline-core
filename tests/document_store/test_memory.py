@@ -4,10 +4,11 @@ from datetime import timedelta
 
 import pytest
 
-from ai_pipeline_core.document_store import DocumentNode, DocumentStore, walk_provenance
-from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+from ai_pipeline_core.document_store._protocol import DocumentStore
+from ai_pipeline_core.document_store._models import DocumentNode, walk_provenance
+from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._types import DocumentSha256, RunScope
+from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 
 
 class DocA(Document):
@@ -24,7 +25,7 @@ def store() -> MemoryDocumentStore:
 
 
 def _make(cls: type[Document], name: str, content: str = "test") -> Document:
-    return cls.create(name=name, content=content)
+    return cls.create_root(name=name, content=content, reason="test input")
 
 
 class TestProtocolCompliance:
@@ -239,14 +240,14 @@ class TestLoadScopeMetadata:
         assert node.name == "a.txt"
 
     @pytest.mark.asyncio
-    async def test_metadata_has_sources_and_origins(self, store: MemoryDocumentStore):
+    async def test_metadata_has_derived_from_and_triggered_by(self, store: MemoryDocumentStore):
         origin_doc = _make(DocA, "origin.txt", "origin")
-        doc = DocA.create(name="child.txt", content="child", sources=("https://example.com",), origins=(origin_doc.sha256,))
+        doc = DocA.create(name="child.txt", content="child", derived_from=("https://example.com",), triggered_by=(origin_doc.sha256,))
         await store.save(doc, RunScope("run1"))
         metadata = await store.load_scope_metadata(RunScope("run1"))
         assert len(metadata) == 1
-        assert "https://example.com" in metadata[0].sources
-        assert origin_doc.sha256 in metadata[0].origins
+        assert "https://example.com" in metadata[0].derived_from
+        assert origin_doc.sha256 in metadata[0].triggered_by
 
 
 class TestLoadNodesBySha256s:
@@ -284,13 +285,13 @@ class TestLoadNodesBySha256s:
 
     @pytest.mark.asyncio
     async def test_returns_document_node_instances(self, store: MemoryDocumentStore):
-        doc = DocA.create(name="a.txt", content="test", sources=("https://example.com",))
+        doc = DocA.create(name="a.txt", content="test", derived_from=("https://example.com",))
         await store.save(doc, RunScope("run1"))
         result = await store.load_nodes_by_sha256s([doc.sha256])
         node = result[doc.sha256]
         assert isinstance(node, DocumentNode)
         assert node.class_name == "DocA"
-        assert "https://example.com" in node.sources
+        assert "https://example.com" in node.derived_from
 
     @pytest.mark.asyncio
     async def test_includes_summaries(self, store: MemoryDocumentStore):
@@ -314,20 +315,20 @@ class TestCrossPipelineProvenanceGraph:
         source_a = DocB.create(
             name="source_a.md",
             content="Bitcoin whitepaper",
-            sources=("https://bitcoin.org/whitepaper",),
-            origins=(task_doc.sha256,),
+            derived_from=("https://bitcoin.org/whitepaper",),
+            triggered_by=(task_doc.sha256,),
         )
         source_b = DocB.create(
             name="source_b.md",
             content="Bitcoin wiki",
-            sources=("https://en.wikipedia.org/wiki/Bitcoin",),
-            origins=(task_doc.sha256,),
+            derived_from=("https://en.wikipedia.org/wiki/Bitcoin",),
+            triggered_by=(task_doc.sha256,),
         )
         report = DocA.create(
             name="research_report.md",
             content="Bitcoin is a cryptocurrency...",
-            sources=(source_a.sha256, source_b.sha256),
-            origins=(task_doc.sha256,),
+            derived_from=(source_a.sha256, source_b.sha256),
+            triggered_by=(task_doc.sha256,),
         )
         for doc in [task_doc, source_a, source_b, report]:
             await store.save(doc, RunScope("ai_research/bitcoin/run1"))
@@ -342,24 +343,24 @@ class TestCrossPipelineProvenanceGraph:
         # Extract all external URLs from the provenance chain
         urls = set()
         for node in graph.values():
-            for src in node.sources:
+            for src in node.derived_from:
                 if "://" in src:
                     urls.add(src)
         assert "https://bitcoin.org/whitepaper" in urls
         assert "https://en.wikipedia.org/wiki/Bitcoin" in urls
 
     @pytest.mark.asyncio
-    async def test_walk_provenance_url_sources_not_followed(self, store: MemoryDocumentStore):
-        """URL sources are preserved in metadata but not followed as graph edges."""
+    async def test_walk_provenance_url_derived_from_not_followed(self, store: MemoryDocumentStore):
+        """URL derived_from entries are preserved in metadata but not followed as graph edges."""
         source_doc = DocA.create(
             name="fetched.md",
             content="fetched content",
-            sources=("https://example.com/data",),
+            derived_from=("https://example.com/data",),
         )
         report = DocA.create(
             name="report.md",
             content="report content",
-            sources=(source_doc.sha256, "https://example.com/other"),
+            derived_from=(source_doc.sha256, "https://example.com/other"),
         )
         for doc in [source_doc, report]:
             await store.save(doc, RunScope("run1"))
@@ -367,7 +368,7 @@ class TestCrossPipelineProvenanceGraph:
         graph = await walk_provenance(report.sha256, store.load_nodes_by_sha256s)
         assert report.sha256 in graph
         assert source_doc.sha256 in graph
-        assert "https://example.com/other" in graph[report.sha256].sources
+        assert "https://example.com/other" in graph[report.sha256].derived_from
 
     @pytest.mark.asyncio
     async def test_walk_provenance_returns_empty_for_unknown_root(self, store: MemoryDocumentStore):
@@ -398,8 +399,8 @@ class TestGlobalDedup:
         await store.save(doc, RunScope("scope_a"))
         await store.save(doc, RunScope("scope_b"))
         assert len(store._documents) == 1
-        assert doc.sha256 in store._run_docs.get(RunScope("scope_a"), set())
-        assert doc.sha256 in store._run_docs.get(RunScope("scope_b"), set())
+        assert (doc.sha256, "DocA") in store._run_docs.get(RunScope("scope_a"), set())
+        assert (doc.sha256, "DocA") in store._run_docs.get(RunScope("scope_b"), set())
 
     @pytest.mark.asyncio
     async def test_has_documents_false_for_wrong_scope(self, store: MemoryDocumentStore):
@@ -420,3 +421,48 @@ class TestGlobalDedup:
         meta_b = await store.load_scope_metadata(RunScope("scope_b"))
         assert meta_a[0].summary == "global summary"
         assert meta_b[0].summary == "global summary"
+
+
+class TestFlowCompletion:
+    async def test_save_and_get_round_trip(self, store: MemoryDocumentStore):
+        await store.save_flow_completion(RunScope("proj/run1"), "flow_a", ("sha1", "sha2"), ("sha3",))
+        result = await store.get_flow_completion(RunScope("proj/run1"), "flow_a")
+        assert result is not None
+        assert result.flow_name == "flow_a"
+        assert result.input_sha256s == ("sha1", "sha2")
+        assert result.output_sha256s == ("sha3",)
+
+    async def test_nonexistent_returns_none(self, store: MemoryDocumentStore):
+        result = await store.get_flow_completion(RunScope("proj/run1"), "nonexistent")
+        assert result is None
+
+    async def test_overwrite_on_rerun(self, store: MemoryDocumentStore):
+        scope = RunScope("proj/run1")
+        await store.save_flow_completion(scope, "flow_a", ("sha1",), ("sha2",))
+        await store.save_flow_completion(scope, "flow_a", ("sha1",), ("sha2", "sha3"))
+        result = await store.get_flow_completion(scope, "flow_a")
+        assert result is not None
+        assert result.output_sha256s == ("sha2", "sha3")
+
+    async def test_different_flows_independent(self, store: MemoryDocumentStore):
+        scope = RunScope("proj/run1")
+        await store.save_flow_completion(scope, "flow_a", (), ("sha1",))
+        await store.save_flow_completion(scope, "flow_b", (), ("sha2",))
+        a = await store.get_flow_completion(scope, "flow_a")
+        b = await store.get_flow_completion(scope, "flow_b")
+        assert a is not None and a.output_sha256s == ("sha1",)
+        assert b is not None and b.output_sha256s == ("sha2",)
+
+    async def test_different_scopes_independent(self, store: MemoryDocumentStore):
+        await store.save_flow_completion(RunScope("scope1"), "flow_a", (), ("sha1",))
+        await store.save_flow_completion(RunScope("scope2"), "flow_a", (), ("sha2",))
+        r1 = await store.get_flow_completion(RunScope("scope1"), "flow_a")
+        r2 = await store.get_flow_completion(RunScope("scope2"), "flow_a")
+        assert r1 is not None and r1.output_sha256s == ("sha1",)
+        assert r2 is not None and r2.output_sha256s == ("sha2",)
+
+    async def test_max_age_ignored_in_memory(self, store: MemoryDocumentStore):
+        """Memory store ignores max_age (consistent with has_documents behavior)."""
+        await store.save_flow_completion(RunScope("proj"), "flow_a", (), ())
+        result = await store.get_flow_completion(RunScope("proj"), "flow_a", max_age=timedelta(seconds=0))
+        assert result is not None

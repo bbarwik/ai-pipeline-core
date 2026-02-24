@@ -75,10 +75,11 @@ class TestTextDocImageAttachmentIntegration:
     async def test_single_screenshot_readable(self):
         """LLM must be able to read text from a single image attachment on a text doc."""
         screenshot = _make_text_image("ALPHA")
-        doc = ConcreteDocument.create(
+        doc = ConcreteDocument.create_root(
             name="page.md",
             content="# Website\n\nThis page has a screenshot attached.",
             attachments=(Attachment(name="screenshot.jpg", content=screenshot),),
+            reason="test input",
         )
 
         conv = Conversation(model=MODEL, model_options=OPTIONS)
@@ -93,7 +94,7 @@ class TestTextDocImageAttachmentIntegration:
         img1 = _make_text_image("BRAVO", bg="lightyellow")
         img2 = _make_text_image("CHARLIE", bg="lightblue")
         img3 = _make_text_image("DELTA", bg="lightgreen")
-        doc = ConcreteDocument.create(
+        doc = ConcreteDocument.create_root(
             name="page.md",
             content="# Multi-image page\n\nThree screenshots attached.",
             attachments=(
@@ -101,6 +102,7 @@ class TestTextDocImageAttachmentIntegration:
                 Attachment(name="img2.jpg", content=img2),
                 Attachment(name="img3.jpg", content=img3),
             ),
+            reason="test input",
         )
 
         conv = Conversation(model=MODEL, model_options=OPTIONS)
@@ -120,13 +122,14 @@ class TestTextDocImageAttachmentIntegration:
     async def test_mixed_text_and_image_attachments(self):
         """LLM must see both text attachments and image attachments."""
         img = _make_text_image("FOXTROT")
-        doc = ConcreteDocument.create(
+        doc = ConcreteDocument.create_root(
             name="report.md",
             content="# Research Report",
             attachments=(
                 Attachment(name="notes.txt", content=b"The secret code is ECHO."),
                 Attachment(name="chart.jpg", content=img),
             ),
+            reason="test input",
         )
 
         conv = Conversation(model=MODEL, model_options=OPTIONS)
@@ -151,7 +154,7 @@ class TestImageSplittingIntegration:
         """LLM must read content from an image that exceeds model limits and gets split."""
         # Create an image taller than 3000px (Gemini limit) to force splitting
         tall_img = _make_tall_text_image(["GOLF", "HOTEL", "INDIA", "JULIET", "KILO", "LIMA", "MIKE", "NOVEMBER"])
-        doc = ConcreteDocument.create(name="screenshot.jpg", content=tall_img)
+        doc = ConcreteDocument.create_root(name="screenshot.jpg", content=tall_img, reason="test input")
 
         conv = Conversation(model=MODEL, model_options=OPTIONS)
         conv = conv.with_document(doc)
@@ -170,10 +173,11 @@ class TestImageSplittingIntegration:
     async def test_tall_image_as_attachment_split_readable(self):
         """Tall image as attachment on text doc must also be split and readable."""
         tall_img = _make_tall_text_image(["OSCAR", "PAPA", "QUEBEC", "ROMEO", "SIERRA", "TANGO", "UNIFORM", "VICTOR"])
-        doc = ConcreteDocument.create(
+        doc = ConcreteDocument.create_root(
             name="page.md",
             content="# Full page capture with tall screenshot.",
             attachments=(Attachment(name="full_page.jpg", content=tall_img),),
+            reason="test input",
         )
 
         conv = Conversation(model=MODEL, model_options=OPTIONS)

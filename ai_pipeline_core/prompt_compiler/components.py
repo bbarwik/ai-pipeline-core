@@ -32,6 +32,9 @@ class Role:
 
     Must define a non-empty docstring and a ``text`` ClassVar on every Role subclass.
     Must not end Role text with sentence punctuation (.!?) — the renderer adds a period automatically.
+    Must use domain-neutral Roles for specs that handle multiple domains — a PromptSpec
+    parameterized by domain (e.g., finding_type field that can be "risk", "opportunity",
+    or "question") needs a Role that doesn't bias toward any single domain.
     """
 
     text: ClassVar[str]
@@ -44,6 +47,12 @@ class Role:
             raise TypeError(f"Role '{cls.__name__}' text must not end with punctuation (the renderer adds a period automatically)")
 
 
+def _init_text_component(cls: type, kind: str, *, max_lines: int | None = None) -> None:
+    """Shared validation for text-based components (Rule, OutputRule)."""
+    _require_docstring(cls, kind=kind)
+    _require_text(cls, kind=kind, max_lines=max_lines)
+
+
 class Rule:
     """Base class for behavioral constraints.
 
@@ -54,8 +63,7 @@ class Rule:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        _require_docstring(cls, kind="Rule")
-        _require_text(cls, kind="Rule", max_lines=MAX_RULE_LINES)
+        _init_text_component(cls, "Rule", max_lines=MAX_RULE_LINES)
 
 
 class OutputRule:
@@ -68,8 +76,7 @@ class OutputRule:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        _require_docstring(cls, kind="OutputRule")
-        _require_text(cls, kind="OutputRule", max_lines=MAX_RULE_LINES)
+        _init_text_component(cls, "OutputRule", max_lines=MAX_RULE_LINES)
 
 
 class Guide:

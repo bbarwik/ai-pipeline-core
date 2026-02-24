@@ -7,7 +7,7 @@ LLMs may corrupt shortened forms in two ways:
 restore() handles both via Unicode normalization and case-insensitive lookup.
 """
 
-from ai_pipeline_core.llm import URLSubstitutor
+from ai_pipeline_core.llm._substitutor import URLSubstitutor
 
 
 # Tier 1: tx hashes (0x + 64 hex = 66 chars)

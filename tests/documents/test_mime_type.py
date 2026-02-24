@@ -1,11 +1,8 @@
 """Tests for MIME type utility functions."""
 
-from ai_pipeline_core.documents.mime_type import (
-    LLM_SUPPORTED_IMAGE_MIME_TYPES,
+from ai_pipeline_core.documents._mime_type import (
     detect_mime_type,
     is_image_mime_type,
-    is_json_mime_type,
-    is_llm_supported_image,
     is_pdf_mime_type,
     is_text_mime_type,
     is_yaml_mime_type,
@@ -76,17 +73,6 @@ class TestMimeTypeCheckers:
         assert is_text_mime_type("application/pdf") is False
         assert is_text_mime_type("application/octet-stream") is False
         assert is_text_mime_type("video/mp4") is False
-
-    def test_is_json_mime_type(self):
-        """Test is_json_mime_type function."""
-        # JSON type
-        assert is_json_mime_type("application/json") is True
-
-        # Non-JSON types
-        assert is_json_mime_type("text/plain") is False
-        assert is_json_mime_type("application/yaml") is False
-        assert is_json_mime_type("application/xml") is False
-        assert is_json_mime_type("text/json") is False  # Not standard JSON MIME type
 
     def test_is_yaml_mime_type(self):
         """Test is_yaml_mime_type function."""
@@ -166,7 +152,7 @@ class TestMimeTypeEdgeCases:
         """Test that MIME type checkers are consistent with detection."""
         # JSON
         json_mime = detect_mime_type(b'{"key": "value"}', "data.json")
-        assert is_json_mime_type(json_mime) is True
+        assert json_mime == "application/json"
         assert is_text_mime_type(json_mime) is True
 
         # YAML
@@ -188,33 +174,3 @@ class TestMimeTypeEdgeCases:
         """Test HEIC/HEIF extension-based MIME type detection."""
         assert detect_mime_type(b"\x00\x00\x00", "photo.heic") == "image/heic"
         assert detect_mime_type(b"\x00\x00\x00", "photo.heif") == "image/heif"
-
-
-class TestLlmSupportedImage:
-    """Test LLM-supported image MIME type checks."""
-
-    def test_supported_types(self):
-        """Test that all LLM-supported image types are recognized."""
-        assert is_llm_supported_image("image/png") is True
-        assert is_llm_supported_image("image/jpeg") is True
-        assert is_llm_supported_image("image/webp") is True
-        assert is_llm_supported_image("image/heic") is True
-        assert is_llm_supported_image("image/heif") is True
-
-    def test_unsupported_image_types(self):
-        """Test that unsupported image types are rejected."""
-        assert is_llm_supported_image("image/gif") is False
-        assert is_llm_supported_image("image/bmp") is False
-        assert is_llm_supported_image("image/tiff") is False
-        assert is_llm_supported_image("image/svg+xml") is False
-
-    def test_non_image_types(self):
-        """Test that non-image types are rejected."""
-        assert is_llm_supported_image("text/plain") is False
-        assert is_llm_supported_image("application/pdf") is False
-
-    def test_frozenset_constant(self):
-        """Test that LLM_SUPPORTED_IMAGE_MIME_TYPES is a frozenset with expected members."""
-        assert isinstance(LLM_SUPPORTED_IMAGE_MIME_TYPES, frozenset)
-        assert len(LLM_SUPPORTED_IMAGE_MIME_TYPES) == 5
-        assert "image/png" in LLM_SUPPORTED_IMAGE_MIME_TYPES

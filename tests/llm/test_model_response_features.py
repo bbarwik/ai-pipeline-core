@@ -2,9 +2,12 @@
 
 import json
 
+import pytest
+
 from pydantic import BaseModel
 
-from ai_pipeline_core.llm import ModelResponse, TokenUsage
+from ai_pipeline_core._llm_core.model_response import ModelResponse
+from ai_pipeline_core._llm_core.types import TokenUsage
 from tests.support.helpers import create_test_model_response, create_test_structured_model_response
 
 
@@ -24,8 +27,8 @@ class TestModelResponseMetadata:
         )
 
         laminar_metadata = response.get_laminar_metadata()
-        assert laminar_metadata["time_taken"] == 1.5
-        assert laminar_metadata["first_token_time"] == 0.3
+        assert laminar_metadata["time_taken"] == pytest.approx(1.5)
+        assert laminar_metadata["first_token_time"] == pytest.approx(0.3)
 
     def test_metadata_includes_usage(self):
         """Test that metadata includes usage information."""
@@ -257,11 +260,11 @@ class TestModelResponseLaminarMetadata:
         assert metadata["gen_ai.usage.total_tokens"] == 150
 
         # Cost fields
-        assert metadata["gen_ai.usage.cost"] == 0.01
+        assert metadata["gen_ai.usage.cost"] == pytest.approx(0.01)
 
         # Timing metadata
-        assert metadata["time_taken"] == 2.5
-        assert metadata["first_token_time"] == 0.5
+        assert metadata["time_taken"] == pytest.approx(2.5)
+        assert metadata["first_token_time"] == pytest.approx(0.5)
 
     def test_metadata_excludes_non_scalar_values(self):
         """Test that non-scalar metadata values are excluded."""
@@ -284,7 +287,7 @@ class TestModelResponseLaminarMetadata:
 
         # Scalar values should be included
         assert metadata["scalar_int"] == 42
-        assert metadata["scalar_float"] == 3.14
+        assert metadata["scalar_float"] == pytest.approx(3.14)
         assert metadata["scalar_str"] == "hello"
 
         # Non-scalar values should be excluded

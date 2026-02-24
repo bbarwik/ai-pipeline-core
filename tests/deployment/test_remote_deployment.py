@@ -269,7 +269,7 @@ class TestRunDocumentSerialization:
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
             trace_level: ClassVar[TraceLevel] = "off"
 
-        doc = AlphaDoc.create(name="test.txt", content="hello world")
+        doc = AlphaDoc.create_root(name="test.txt", content="hello world", reason="test input")
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = SimpleResult(success=True)
             await Foo().run("project", [doc], FlowOptions())
@@ -288,8 +288,8 @@ class TestRunDocumentSerialization:
             trace_level: ClassVar[TraceLevel] = "off"
 
         docs = [
-            AlphaDoc.create(name="a.txt", content="alpha"),
-            BetaDoc.create(name="b.txt", content="beta"),
+            AlphaDoc.create_root(name="a.txt", content="alpha", reason="test input"),
+            BetaDoc.create_root(name="b.txt", content="beta", reason="test input"),
         ]
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = SimpleResult(success=True)
@@ -328,7 +328,7 @@ class TestRunContext:
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
             trace_level: ClassVar[TraceLevel] = "off"
 
-        ctx = DeploymentContext(progress_webhook_url="http://example.com")
+        ctx = DeploymentContext()
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = SimpleResult(success=True)
             await Foo().run("project", [], FlowOptions(), context=ctx)
@@ -364,7 +364,7 @@ class TestRunResultDeserialization:
         class Foo(RemoteDeployment[AlphaDoc, FlowOptions, NestedDocResult]):
             trace_level: ClassVar[TraceLevel] = "off"
 
-        original_doc = AlphaDoc.create(name="output.txt", content="result data")
+        original_doc = AlphaDoc.create_root(name="output.txt", content="result data", reason="test input")
         original_result = NestedDocResult(success=True, output_doc=original_doc)
         result_dict = original_result.model_dump(mode="json")
 
@@ -503,7 +503,7 @@ class TestTraceCombinedGuard:
 
 class TestSerializationRoundTrip:
     def test_serialize_model_produces_reconstructable_dict(self):
-        doc = AlphaDoc.create(name="test.txt", content="hello")
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test input")
         serialized = doc.serialize_model()
 
         assert serialized["class_name"] == "AlphaDoc"
@@ -514,8 +514,8 @@ class TestSerializationRoundTrip:
         assert restored.sha256 == doc.sha256
 
     def test_from_dict_round_trip_with_known_types(self):
-        alpha = AlphaDoc.create(name="a.txt", content="alpha content")
-        beta = BetaDoc.create(name="b.txt", content="beta content")
+        alpha = AlphaDoc.create_root(name="a.txt", content="alpha content", reason="test input")
+        beta = BetaDoc.create_root(name="b.txt", content="beta content", reason="test input")
 
         type_map = {cls.__name__: cls for cls in [AlphaDoc, BetaDoc]}
         for original in [alpha, beta]:
@@ -530,8 +530,8 @@ class TestSerializationRoundTrip:
             trace_level: ClassVar[TraceLevel] = "off"
 
         docs = [
-            AlphaDoc.create(name="input.txt", content="input data"),
-            BetaDoc.create(name="context.md", content="context info"),
+            AlphaDoc.create_root(name="input.txt", content="input data", reason="test input"),
+            BetaDoc.create_root(name="context.md", content="context info", reason="test input"),
         ]
 
         with patch(_REMOTE_RUN) as mock_run:
@@ -628,9 +628,9 @@ class TestExtractGenericParamsUpdated:
         assert result[1] is FlowOptions
         assert result[2] is SimpleResult
 
-    def test_no_match_returns_none_tuple(self):
+    def test_no_match_returns_empty_tuple(self):
         result = extract_generic_params(SimpleResult, RemoteDeployment)
-        assert result == (None, None)
+        assert result == ()
 
 
 # ===================================================================

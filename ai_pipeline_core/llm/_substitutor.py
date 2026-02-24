@@ -10,7 +10,6 @@ because it matches standard truncation in block explorers and documentation.
 Round-trip: prepare() → substitute() → LLM → restore().
 """
 
-import hashlib
 import math
 import re
 from collections import Counter
@@ -27,10 +26,7 @@ _INVISIBLE_CHARS = frozenset("\u200b\u200c\u200d\ufeff\u2060\u180e")
 # ── Tier 1 config ─────────────────────────────────────────────────────────────
 _T1_PREFIX = 10
 _T1_SUFFIX = 10
-_T1_STABLE_PREFIX = 8
-_T1_STABLE_SUFFIX = 8
 _T1_MIN_LENGTH = 66
-_T1_MAX_ATTEMPTS = 200
 
 # ── Tier 2 URL config ─────────────────────────────────────────────────────────
 _URL_THRESHOLD = 80
@@ -74,28 +70,7 @@ _DELIMITER_PAIRS: dict[str, str] = {"(": ")", "[": "]", '"': '"', "'": "'", ">":
 _FUZZY_BEFORE_CONTEXT = _URL_PREFIX_LEN + _URL_MAX_COLLISION_ATTEMPTS * 2 + 5  # 67
 _FUZZY_AFTER_CONTEXT = 20  # > max suffix (_URL_SUFFIX_LEN = 15)
 _FUZZY_MIN_PREFIX_MATCH = 8
-_FUZZY_BOUNDARY_CHARS = frozenset({
-    " ",
-    "\t",
-    "\n",
-    "\r",
-    '"',
-    "'",
-    "`",
-    ")",
-    ",",
-    ";",
-    ":",
-    "!",
-    "?",
-    "]",
-    "}",
-    ">",
-    "\\",
-    "&",
-    "/",
-    "#",  # URL delimiters — T1 patterns inside URLs have these after suffix
-})
+_FUZZY_BOUNDARY_CHARS = frozenset(" \t\n\r\"'`),;:!?]}>\\&#/")
 _FUZZY_DOTS_RE = re.compile(r"\.{3,}")
 
 # ── Helper functions ───────────────────────────────────────────────────────────
@@ -215,12 +190,6 @@ class URLSubstitutor:
 
     Tier 1: High-entropy strings (addresses, hashes, base64) → prefix...suffix
     Tier 2: Long URLs (> 80 chars after Tier 1) → prefix...suffix with hard cap
-
-    Usage:
-        sub = URLSubstitutor()
-        sub.prepare(["Check https://etherscan.io/address/0xdAC17F958D2ee523..."])
-        shortened = sub.substitute(text)
-        original = sub.restore(shortened)
     """
 
     # Unified forward/reverse for all mapping types
@@ -283,25 +252,12 @@ class URLSubstitutor:
                 self._forward[original] = abbr
             return abbr
 
-        abbr = f"{normalized[:_T1_PREFIX]}...{normalized[-_T1_SUFFIX:]}"
-        if not self._t1_has_conflict(abbr):
-            self._t1_register(canonical, original, abbr)
-            return abbr
-
-        # Mutation-based collision resolution
-        charset = sorted({c for c in normalized if c.isalnum()})
-        if len(charset) < 10:
-            charset = list("0123456789abcdefghijklmnopqrstuvwxyz")
-
-        for attempt in range(_T1_MAX_ATTEMPTS):
-            ps = _T1_STABLE_PREFIX if attempt < 50 else _T1_STABLE_PREFIX - 2
-            ss = _T1_STABLE_SUFFIX if attempt < 50 else _T1_STABLE_SUFFIX - 2
-            h = hashlib.sha256(f"{canonical}:{attempt}".encode()).digest()
-            pc = "".join(charset[h[i] % len(charset)] for i in range(_T1_PREFIX - ps))
-            sc = "".join(charset[h[i + 16] % len(charset)] for i in range(_T1_SUFFIX - ss))
-            mp = normalized[:ps] + pc
-            ms = sc + (normalized[-ss:] if ss > 0 else "")
-            abbr = f"{mp}...{ms}"
+        # Widening collision resolution: try prefix/suffix = 10/10, 11/11, 12/12, 13/13
+        for extra in range(4):
+            p, s = _T1_PREFIX + extra, _T1_SUFFIX + extra
+            if p + 3 + s >= len(normalized):
+                return None
+            abbr = f"{normalized[:p]}...{normalized[-s:]}"
             if not self._t1_has_conflict(abbr):
                 self._t1_register(canonical, original, abbr)
                 return abbr
@@ -440,55 +396,8 @@ class URLSubstitutor:
         self._prepared = True
 
     def _scan(self, text: str) -> None:
-        normalized, index_map = _build_normalized_view(text)
-        jwt_spans = [(m.start(), m.end()) for m in _JWT_PATTERN.finditer(normalized)]
-
-        # Phase 1: URLs
-        url_spans: list[tuple[int, int]] = []
-        for m in _URL_PATTERN.finditer(normalized):
-            url_text = _trim_url(m.group())
-            url_start, url_end = m.start(), m.start() + len(url_text)
-            orig_start, orig_end = _map_span(index_map, url_start, url_end)
-            original_url = text[orig_start:orig_end]
-
-            if original_url not in self._forward:
-                self._shorten_url(original_url)
-            url_spans.append((url_start, url_end))
-
-        # Phase 2: Tier 1 patterns (span-deduplicated, skip inside URLs/JWTs)
-        claimed: list[tuple[int, int]] = list(url_spans)
-        for kind, pattern in _T1_PATTERNS:
-            for m in pattern.finditer(normalized):
-                s, e = m.start(), m.end()
-                if _overlaps_any(s, e, claimed):
-                    continue
-                if any(js <= s < je for js, je in jwt_spans):
-                    continue
-
-                orig_s, orig_e = _map_span(index_map, s, e)
-                original = text[orig_s:orig_e]
-                if original in self._forward:
-                    claimed.append((s, e))
-                    continue
-
-                ctx_b = text[max(0, orig_s - 200) : orig_s]
-                ctx_a = text[orig_e : min(len(text), orig_e + 30)]
-                if _is_valid_t1_pattern(m.group(), kind, ctx_b, ctx_a) and self._abbreviate_t1(original):
-                    claimed.append((s, e))
-
-        # Phase 3: Paths (skip inside URLs)
-        for m in _PATH_PATTERN.finditer(normalized):
-            s, e = m.start(), m.end()
-            if _overlaps_any(s, e, url_spans):
-                continue
-            orig_s, orig_e = _map_span(index_map, s, e)
-            original = text[orig_s:orig_e]
-            if original in self._forward:
-                continue
-            ctx_b = text[max(0, orig_s - 30) : orig_s]
-            ctx_a = text[orig_e : min(len(text), orig_e + 30)]
-            if _is_valid_path(m.group(), ctx_b, ctx_a):
-                self._shorten_path(original)
+        """Pre-scan text to populate mappings. Same logic as substitute(), result discarded."""
+        self.substitute(text)
 
     def substitute(self, text: str) -> str:
         """Replace patterns with shortened forms."""
@@ -600,7 +509,7 @@ class URLSubstitutor:
                 if prefix_match_len < _FUZZY_MIN_PREFIX_MATCH:
                     continue
 
-                # ── Suffix check: exact, skip 1, skip 2, or suffix dropped ──
+                # ── Suffix check: exact, -1 char, -2 chars, or suffix dropped ──
                 suffix_match_len = 0
                 suffix_matched = False
 
@@ -613,9 +522,8 @@ class URLSubstitutor:
                 elif len(suffix_lower) >= 3 and after_lower.startswith(suffix_lower[2:]):
                     suffix_match_len = len(suffix_lower) - 2
                     suffix_matched = True
-
-                if not suffix_matched and (not after or after[0] in _FUZZY_BOUNDARY_CHARS):
-                    suffix_matched = True  # suffix_match_len stays 0 (suffix dropped)
+                elif not after or after[0] in _FUZZY_BOUNDARY_CHARS:
+                    suffix_matched = True  # suffix dropped by LLM
 
                 if not suffix_matched:
                     continue
@@ -628,7 +536,7 @@ class URLSubstitutor:
                 replacements.append(candidates[0])
             elif len(candidates) > 1:
                 ctx = text[max(0, dot_start - 20) : min(len(text), dot_end + 20)]
-                logger.warning(f"Ambiguous fuzzy restore: {len(candidates)} candidates at position {dot_start}: '{ctx}'")
+                logger.warning("Ambiguous fuzzy restore: %d candidates at position %d: '%s'", len(candidates), dot_start, ctx)
 
         return self._apply_replacements(text, replacements)
 

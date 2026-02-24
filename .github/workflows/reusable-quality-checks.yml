@@ -8,6 +8,11 @@ on:
         type: string
         required: false
         default: '["3.12","3.13"]'
+      skip_integration_tests:
+        description: 'Skip integration tests'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   lint:
@@ -31,7 +36,7 @@ jobs:
       - name: Install tooling
         run: |
           python -m pip install --upgrade pip
-          pip install ruff==0.14.14
+          pip install ruff==0.15.2
 
       - name: Ruff check
         run: ruff check .
@@ -143,7 +148,7 @@ jobs:
         run: pytest -v --tb=short -m "clickhouse" --maxfail=1 --durations=30 -n 0
 
   integration-test:
-    if: github.event_name == 'push' || github.event_name == 'workflow_call'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_call') && inputs.skip_integration_tests != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

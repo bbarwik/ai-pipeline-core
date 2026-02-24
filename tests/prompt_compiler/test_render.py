@@ -12,7 +12,6 @@ from pydantic import Field
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.prompt_compiler.components import Guide, OutputRule, Role, Rule
 from ai_pipeline_core.prompt_compiler.render import (
-    RESULT_CLOSE,
     RESULT_OPEN,
     _format_numbered_rule,
     _pascal_to_title,
@@ -23,7 +22,6 @@ from ai_pipeline_core.prompt_compiler.render import (
     render_text,
 )
 from ai_pipeline_core.prompt_compiler.spec import PromptSpec
-from ai_pipeline_core.prompt_compiler.types import Phase
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +149,7 @@ def test_format_numbered_rule_multiline() -> None:
 
 
 def test_render_documents_preview_uses_first_docstring_line() -> None:
-    class PreviewSpec(PromptSpec, phase=Phase("review")):
+    class PreviewSpec(PromptSpec):
         """Doc."""
 
         input_documents = (RenderDoc,)
@@ -163,7 +161,7 @@ def test_render_documents_preview_uses_first_docstring_line() -> None:
 
 
 def test_render_documents_preview_fallback_for_no_docstring() -> None:
-    class PreviewSpec(PromptSpec, phase=Phase("review")):
+    class PreviewSpec(PromptSpec):
         """Doc."""
 
         input_documents = (RenderDocNoDoc,)
@@ -209,7 +207,7 @@ def test_render_documents_actual_multiple_documents() -> None:
 
 
 def test_render_text_role_section() -> None:
-    class MinSpec(PromptSpec, phase=Phase("review")):
+    class MinSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -221,7 +219,7 @@ def test_render_text_role_section() -> None:
 
 
 def test_render_text_vowel_role_article() -> None:
-    class VowelSpec(PromptSpec, phase=Phase("review")):
+    class VowelSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -233,7 +231,7 @@ def test_render_text_vowel_role_article() -> None:
 
 
 def test_render_text_task_section() -> None:
-    class TaskSpec(PromptSpec, phase=Phase("review")):
+    class TaskSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -245,7 +243,7 @@ def test_render_text_task_section() -> None:
 
 
 def test_render_text_context_with_preview_documents() -> None:
-    class DocSpec(PromptSpec, phase=Phase("review")):
+    class DocSpec(PromptSpec):
         """Doc."""
 
         input_documents = (RenderDoc,)
@@ -259,7 +257,7 @@ def test_render_text_context_with_preview_documents() -> None:
 
 
 def test_render_text_context_with_actual_documents() -> None:
-    class DocSpec(PromptSpec, phase=Phase("review")):
+    class DocSpec(PromptSpec):
         """Doc."""
 
         input_documents = (RenderDoc,)
@@ -275,7 +273,7 @@ def test_render_text_context_with_actual_documents() -> None:
 
 
 def test_render_text_context_with_dynamic_fields() -> None:
-    class FieldSpec(PromptSpec, phase=Phase("review")):
+    class FieldSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -290,7 +288,7 @@ def test_render_text_context_with_dynamic_fields() -> None:
 
 
 def test_render_text_include_input_documents_false() -> None:
-    class DocFieldSpec(PromptSpec, phase=Phase("review")):
+    class DocFieldSpec(PromptSpec):
         """Doc."""
 
         input_documents = (RenderDoc,)
@@ -305,7 +303,7 @@ def test_render_text_include_input_documents_false() -> None:
 
 
 def test_render_text_no_context_section_when_empty() -> None:
-    class EmptyContextSpec(PromptSpec, phase=Phase("review")):
+    class EmptyContextSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -318,7 +316,7 @@ def test_render_text_no_context_section_when_empty() -> None:
 
 
 def test_render_text_rules_section() -> None:
-    class RulesSpec(PromptSpec, phase=Phase("review")):
+    class RulesSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -334,7 +332,7 @@ def test_render_text_rules_section() -> None:
 
 
 def test_render_text_no_rules_section_when_empty() -> None:
-    class NoRulesSpec(PromptSpec, phase=Phase("review")):
+    class NoRulesSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -348,7 +346,7 @@ def test_render_text_no_rules_section_when_empty() -> None:
 def test_render_text_guide_section(tmp_path: Path, temp_modules: list[str]) -> None:
     guide_cls = _make_guide(tmp_path, temp_modules, class_name="RiskAssessmentFramework", content="Use four dimensions.\n")
 
-    class GuideSpec(PromptSpec, phase=Phase("review")):
+    class GuideSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -371,7 +369,7 @@ def test_render_text_guide_title_dedup(tmp_path: Path, temp_modules: list[str]) 
         content="Risk Assessment Framework\nUse four dimensions.\n",
     )
 
-    class GuideSpec(PromptSpec, phase=Phase("review")):
+    class GuideSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -392,7 +390,7 @@ def test_render_text_guide_title_dedup(tmp_path: Path, temp_modules: list[str]) 
 def test_render_text_guide_keeps_non_matching_title(tmp_path: Path, temp_modules: list[str]) -> None:
     guide_cls = _make_guide(tmp_path, temp_modules, class_name="MethodPlaybook", content="Different Heading\nBody line\n")
 
-    class GuideSpec(PromptSpec, phase=Phase("review")):
+    class GuideSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -406,25 +404,31 @@ def test_render_text_guide_keeps_non_matching_title(tmp_path: Path, temp_modules
     assert "Different Heading" in rendered
 
 
-def test_render_text_output_structure_xml_wrapped() -> None:
-    class XmlSpec(PromptSpec, phase=Phase("review")):
+def test_render_text_output_structure_result_in_output_rules() -> None:
+    """<result> instruction appears in Output Rules, not Output Structure."""
+
+    class StructSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
         role = RenderRole
         task = "Task"
 
-        xml_wrapped = True
+        output_structure = "## Summary\n## Details"
 
-    rendered = render_text(XmlSpec())
-    assert "# Output Structure" in rendered
-    assert RESULT_OPEN in rendered
-    assert RESULT_CLOSE in rendered
-    assert "Write your complete response inside <result> tags." in rendered
+    rendered = render_text(StructSpec())
+    # Result tag instruction is in Output Rules
+    assert "# Output Rules" in rendered
+    assert "Write your complete response inside <result> tags" in rendered
+    # Output Structure has just the structure content
+    assert "# Output Structure\n\n## Summary\n## Details" in rendered
+    idx_structure = rendered.index("# Output Structure")
+    structure_section = rendered[idx_structure:]
+    assert "<result>your response content</result>" not in structure_section
 
 
 def test_render_text_output_structure_section() -> None:
-    class StructSpec(PromptSpec, phase=Phase("review")):
+    class StructSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -438,7 +442,7 @@ def test_render_text_output_structure_section() -> None:
 
 
 def test_render_text_output_rules_section() -> None:
-    class OutputRulesSpec(PromptSpec, phase=Phase("review")):
+    class OutputRulesSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -453,7 +457,7 @@ def test_render_text_output_rules_section() -> None:
 
 
 def test_render_text_no_output_sections_when_empty() -> None:
-    class NoOutputSpec(PromptSpec, phase=Phase("review")):
+    class NoOutputSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -466,14 +470,13 @@ def test_render_text_no_output_sections_when_empty() -> None:
 
 
 def test_render_text_output_rules_before_structure() -> None:
-    class FullOutputSpec(PromptSpec, phase=Phase("review")):
+    class FullOutputSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
         role = RenderRole
         task = "Task"
 
-        xml_wrapped = True
         output_structure = "## Section"
         output_rules = (RenderOutputRule,)
 
@@ -489,7 +492,7 @@ def test_render_text_output_rules_before_structure() -> None:
 def test_render_text_documents_empty_list_uses_preview() -> None:
     """When documents=[] (truthy empty list), it takes the 'documents is not None' path."""
 
-    class DocSpec(PromptSpec, phase=Phase("review")):
+    class DocSpec(PromptSpec):
         """Doc."""
 
         input_documents = (RenderDoc,)
@@ -502,12 +505,76 @@ def test_render_text_documents_empty_list_uses_preview() -> None:
 
 
 # ---------------------------------------------------------------------------
+# render_text: follow-up specs
+# ---------------------------------------------------------------------------
+
+
+def test_render_follow_up_skips_role() -> None:
+    """Follow-up spec with role=None renders no Role section."""
+
+    class InitSpec(PromptSpec):
+        """Init."""
+
+        input_documents = ()
+        role = RenderRole
+        task = "init"
+
+    class FollowSpec(PromptSpec, follows=InitSpec):
+        """Follow."""
+
+        task = "continue"
+
+    rendered = render_text(FollowSpec())
+    assert "# Role" not in rendered
+    assert "# Task" in rendered
+
+
+def test_render_follow_up_with_role() -> None:
+    """Follow-up spec with explicit role renders Role section."""
+
+    class InitSpec(PromptSpec):
+        """Init."""
+
+        input_documents = ()
+        role = RenderRole
+        task = "init"
+
+    class FollowSpec(PromptSpec, follows=InitSpec):
+        """Follow."""
+
+        role = RenderRole
+        task = "continue"
+
+    rendered = render_text(FollowSpec())
+    assert "# Role" in rendered
+
+
+def test_render_text_no_follows_note() -> None:
+    """render_text does NOT include follows note (only render_preview does)."""
+
+    class InitSpec(PromptSpec):
+        """Init."""
+
+        input_documents = ()
+        role = RenderRole
+        task = "init"
+
+    class FollowSpec(PromptSpec, follows=InitSpec):
+        """Follow."""
+
+        task = "continue"
+
+    rendered = render_text(FollowSpec())
+    assert "[Follows:" not in rendered
+
+
+# ---------------------------------------------------------------------------
 # render_preview
 # ---------------------------------------------------------------------------
 
 
 def test_render_preview_uses_placeholders() -> None:
-    class PlaceholderSpec(PromptSpec, phase=Phase("review")):
+    class PlaceholderSpec(PromptSpec):
         """Doc."""
 
         input_documents = (RenderDoc,)
@@ -522,7 +589,7 @@ def test_render_preview_uses_placeholders() -> None:
 
 
 def test_render_preview_include_input_documents_false() -> None:
-    class PlaceholderSpec(PromptSpec, phase=Phase("review")):
+    class PlaceholderSpec(PromptSpec):
         """Doc."""
 
         input_documents = (RenderDoc,)
@@ -536,6 +603,23 @@ def test_render_preview_include_input_documents_false() -> None:
     assert "{item}" in preview
 
 
+def test_render_preview_shows_follows() -> None:
+    class InitSpec(PromptSpec):
+        """Init."""
+
+        input_documents = ()
+        role = RenderRole
+        task = "init"
+
+    class FollowSpec(PromptSpec, follows=InitSpec):
+        """Follow."""
+
+        task = "continue"
+
+    preview = render_preview(FollowSpec)
+    assert preview.startswith("[Follows: InitSpec]")
+
+
 # ---------------------------------------------------------------------------
 # Full workflow example (marked for ai-docs generation)
 # ---------------------------------------------------------------------------
@@ -544,7 +628,7 @@ def test_render_preview_include_input_documents_false() -> None:
 @pytest.mark.ai_docs
 def test_render_full_prompt_spec_workflow() -> None:
     """Define components and a PromptSpec, then render it to prompt text."""
-    from ai_pipeline_core.prompt_compiler import OutputRule, Phase, PromptSpec, Role, Rule, render_text
+    from ai_pipeline_core.prompt_compiler import OutputRule, PromptSpec, Role, Rule, render_text
 
     class Analyst(Role):
         """Research analyst role."""
@@ -561,7 +645,7 @@ def test_render_full_prompt_spec_workflow() -> None:
 
         text = "Use prose paragraphs, not bullet lists"
 
-    class AnalysisSpec(PromptSpec, phase=Phase("analysis")):
+    class AnalysisSpec(PromptSpec):
         """Analyze source documents for key findings."""
 
         input_documents = ()

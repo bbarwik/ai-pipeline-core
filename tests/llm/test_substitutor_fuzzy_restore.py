@@ -13,7 +13,7 @@ import logging
 
 import pytest
 
-from ai_pipeline_core.llm import URLSubstitutor
+from ai_pipeline_core.llm._substitutor import URLSubstitutor
 
 
 # ── Test data ─────────────────────────────────────────────────────────────────

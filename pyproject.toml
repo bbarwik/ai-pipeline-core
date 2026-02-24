@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.9.3"
+version = "0.10.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -57,10 +57,13 @@ dev = [
     "pytest-mock>=3.14.0",
     "pytest-xdist>=3.8.0",
     "pytest>=8.4.1",
-    "ruff==0.14.14",
+    "ruff==0.15.2",
     "testcontainers[clickhouse]>=4.0.0",
     "vulture==2.14",
     "pylint>=3.0.0",
+]
+pubsub = [
+    "google-cloud-pubsub>=2.0",
 ]
 
 [tool.pytest.ini_options]
@@ -144,43 +147,49 @@ ignore = [
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "TID251"]
+"tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "RUF069", "TID251"]
 "examples/**/*.py" = ["D", "DOC", "PLC0415", "S", "ARG", "T20", "RUF029", "C901", "PLR0914", "PLR0915"]
 "dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
 ".vulture_whitelist.py" = ["B018", "E402", "F401", "D"]
-"ai_pipeline_core/__init__.py" = ["RUF067"]
-"ai_pipeline_core/prompt_compiler/cli.py" = ["T201", "C901", "PLR0912", "PLR0915"]
-"ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046", "BLE001"]
-"ai_pipeline_core/pipeline/limits.py" = ["BLE001", "ASYNC109"]
+"ai_pipeline_core/__init__.py" = ["RUF067", "TID251"]
+"ai_pipeline_core/testing.py" = ["TID251"]
+"ai_pipeline_core/deployment/_cli.py" = ["TID251", "PLR0912", "PLR0914", "PLR0915", "UP047"]
+"ai_pipeline_core/deployment/_helpers.py" = ["PLC0415"]
+"ai_pipeline_core/prompt_compiler/cli.py" = ["T201", "C901", "PLR0912", "PLR0915", "TID251"]
+"ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046", "BLE001", "TID251"]
+"ai_pipeline_core/pipeline/limits.py" = ["BLE001", "ASYNC109", "TID251"]
 "tests/pipeline/test_limits.py" = ["PLC2801"]
-"ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912", "BLE001"]
-"ai_pipeline_core/deployment/remote.py" = ["UP046", "UP047"]
-"ai_pipeline_core/deployment/progress.py" = ["RUF029", "BLE001"]
+"ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912", "BLE001", "TID251"]
+"ai_pipeline_core/deployment/remote.py" = ["UP046", "UP047", "TID251"]
+"ai_pipeline_core/deployment/_pubsub.py" = ["PLC0415", "BLE001"]
+"ai_pipeline_core/deployment/progress.py" = ["RUF029", "BLE001", "TID251"]
 "ai_pipeline_core/documents/document.py" = ["PLR0904"]
-"ai_pipeline_core/document_store/factory.py" = ["F821", "PLC0415"]
-"ai_pipeline_core/document_store/clickhouse.py" = ["S608", "BLE001", "PLR0914"]
-"ai_pipeline_core/document_store/protocol.py" = ["PLW0603"]
+"ai_pipeline_core/document_store/_factory.py" = ["F821", "PLC0415"]
+"ai_pipeline_core/document_store/_clickhouse.py" = ["S608", "BLE001", "PLR0914"]
 "ai_pipeline_core/_llm_core/client.py" = ["PLR0911", "C901", "PLR0912", "PLR0915", "PLR0914", "PLR1702", "RUF005", "PLC2801", "UP047", "BLE001"]
 "ai_pipeline_core/_llm_core/model_response.py" = ["UP046", "PLR6301", "PERF403", "BLE001"]
 "ai_pipeline_core/llm/__init__.py" = ["TID252"]
 "ai_pipeline_core/llm/conversation.py" = ["RUF005", "PERF401", "FBT002", "UP035", "UP046", "PLC0415", "PLC2801", "PLR6301", "C901", "PLR0912", "TID252", "BLE001"]
 "ai_pipeline_core/llm/_substitutor.py" = ["BLE001", "C901", "PLR0911", "PLR0912", "PLR0914"]
 "ai_pipeline_core/deployment/_resolve.py" = ["PLC0415", "C901", "PLR0915", "BLE001"]
-"ai_pipeline_core/llm/_validation.py" = ["BLE001"]
+"ai_pipeline_core/_llm_core/_validation.py" = ["BLE001"]
 "ai_pipeline_core/llm/_images.py" = ["PLR0917", "BLE001"]
 "ai_pipeline_core/observability/_debug/_content.py" = ["PLR1702", "C901", "PLR0912", "PLR0915", "PLR6301", "BLE001"]
 "ai_pipeline_core/observability/_debug/_writer.py" = ["S112", "S324", "SIM116", "BLE001"]
 "ai_pipeline_core/observability/_debug/_summary.py" = ["BLE001"]
 "ai_pipeline_core/observability/_initialization.py" = ["BLE001"]
-"ai_pipeline_core/observability/_summary.py" = ["BLE001"]
 "ai_pipeline_core/observability/_tracking/_processor.py" = ["BLE001"]
 "ai_pipeline_core/observability/_tracking/_writer.py" = ["BLE001"]
 "ai_pipeline_core/observability/tracing.py" = ["C901", "PLR0912", "PLR0915", "PLR0914", "BLE001"]
+"ai_pipeline_core/document_store/_singleton.py" = ["PLW0603"]
+"ai_pipeline_core/document_store/_summary_llm.py" = ["BLE001"]
 "ai_pipeline_core/document_store/_summary_worker.py" = ["BLE001"]
-"ai_pipeline_core/document_store/memory.py" = ["RUF029"]
-"ai_pipeline_core/pipeline/decorators.py" = ["C901", "PLR0912", "PLR0915", "S110", "SIM105", "BLE001"]
+"ai_pipeline_core/document_store/_memory.py" = ["RUF029"]
+"ai_pipeline_core/pipeline/_type_validation.py" = ["BLE001"]
+"ai_pipeline_core/deployment/_publishers.py" = ["RUF029"]
+"ai_pipeline_core/deployment/_task_results.py" = ["S608", "BLE001"]
+"ai_pipeline_core/pipeline/decorators.py" = ["C901", "PLR0912", "PLR0915", "S110", "SIM105", "BLE001", "TID251"]
 "ai_pipeline_core/logging/logging_config.py" = ["TID251"]
-"ai_pipeline_core/prompt_manager.py" = ["S701"]
 "ai_pipeline_core/docs_generator/cli.py" = ["T20"]
 
 [tool.ruff.format]
@@ -193,6 +202,8 @@ ban-relative-imports = "parents"
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "logging".msg = "Use from ai_pipeline_core.logging import get_pipeline_logger instead of import logging"
+"warnings".msg = "Use from ai_pipeline_core.logging import get_pipeline_logger for warnings instead of import warnings"
+"prefect".msg = "Do not import Prefect directly. Use ai_pipeline_core.pipeline and ai_pipeline_core.deployment instead."
 
 [tool.ruff.lint.mccabe]
 max-complexity = 12
@@ -239,8 +250,7 @@ reportUnknownLambdaType = "warning"
 reportUnknownVariableType = "warning"
 reportUnknownMemberType = "warning"
 reportAny = "information"
-# Keep at "warning" — tests import private internals
-reportPrivateUsage = "warning"
+reportPrivateUsage = false
 # New rules
 reportUnnecessaryIsInstance = "warning"
 reportUnnecessaryTypeIgnoreComment = "error"
@@ -260,7 +270,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.9.3"
+current_version = "0.10.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"
@@ -269,11 +279,6 @@ tag_name = "v{new_version}"
 filename = "pyproject.toml"
 search = 'version = "{current_version}"'
 replace = 'version = "{new_version}"'
-
-[[tool.bumpversion.files]]
-filename = "ai_pipeline_core/__init__.py"
-search = '__version__ = "{current_version}"'
-replace = '__version__ = "{new_version}"'
 
 [build-system]
 requires = ["hatchling"]

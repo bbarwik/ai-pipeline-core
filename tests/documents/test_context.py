@@ -1,16 +1,14 @@
-"""Tests for RunContext, TaskDocumentContext, and suppression flag."""
+"""Tests for RunContext and TaskDocumentContext."""
 
 import pytest
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._types import RunScope
+from ai_pipeline_core.documents.types import RunScope
 from ai_pipeline_core.documents.context import (
     RunContext,
     TaskDocumentContext,
     get_run_context,
-    is_registration_suppressed,
     set_run_context,
-    suppress_registration,
 )
 
 
@@ -24,10 +22,12 @@ class SampleDoc(Document):
 def _make_doc(
     name: str,
     content: str = "test",
-    sources: tuple[str, ...] | None = None,
-    origins: tuple[str, ...] | None = None,
+    derived_from: tuple[str, ...] | None = None,
+    triggered_by: tuple[str, ...] | None = None,
 ) -> SampleDoc:
-    return SampleDoc.create(name=name, content=content, sources=sources, origins=origins)
+    if derived_from or triggered_by:
+        return SampleDoc.create(name=name, content=content, derived_from=derived_from, triggered_by=triggered_by)
+    return SampleDoc.create_root(name=name, content=content, reason="test fixture")
 
 
 # ===== RunContext tests =====
@@ -94,60 +94,59 @@ class TestRegistration:
 
 
 class TestValidateProvenance:
-    def test_source_in_existing_set(self):
-        """Source exists in the store — no warning."""
+    def test_derived_from_in_existing_set(self):
+        """derived_from reference exists in the store — no warning."""
         parent = _make_doc("parent.txt", "parent")
-        doc = _make_doc("a.txt", "aaa", sources=(parent.sha256,))
+        doc = _make_doc("a.txt", "aaa", derived_from=(parent.sha256,))
         ctx = TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s={parent.sha256})
         assert warnings == []
 
-    def test_missing_source(self):
+    def test_missing_derived_from(self):
         """Document references a SHA256 that doesn't exist in the store."""
         phantom = _make_doc("phantom.txt", "ghost")
-        doc = _make_doc("a.txt", "aaa", sources=(phantom.sha256,))
+        doc = _make_doc("a.txt", "aaa", derived_from=(phantom.sha256,))
         ctx = TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s=set())
         assert len(warnings) == 1
         assert "does not exist" in warnings[0]
 
-    def test_accepts_url_sources(self):
-        """URLs in sources are accepted and not validated as SHA256."""
-        doc = _make_doc("a.txt", "aaa", sources=("https://example.com",))
+    def test_accepts_url_derived_from(self):
+        """URLs in derived_from are accepted and not validated as SHA256."""
+        doc = _make_doc("a.txt", "aaa", derived_from=("https://example.com",))
         ctx = TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s=set())
-        # URL sources have provenance, no "does not exist" warning for URLs
         assert all("does not exist" not in w for w in warnings)
 
-    def test_rejects_invalid_source_strings(self):
+    def test_rejects_invalid_derived_from_strings(self):
         """Non-SHA256, non-URL strings are rejected at document creation."""
         with pytest.raises(Exception):
-            _make_doc("a.txt", "aaa", sources=("not-a-hash",))
+            _make_doc("a.txt", "aaa", derived_from=("not-a-hash",))
         with pytest.raises(Exception):
-            _make_doc("a.txt", "aaa", sources=("short",))
+            _make_doc("a.txt", "aaa", derived_from=("short",))
 
-    def test_missing_origin(self):
-        """Document references an origin SHA256 that doesn't exist."""
+    def test_missing_triggered_by(self):
+        """Document references a triggered_by SHA256 that doesn't exist."""
         phantom = _make_doc("phantom.txt", "ghost")
-        doc = _make_doc("a.txt", "aaa", origins=(phantom.sha256,))
+        doc = _make_doc("a.txt", "aaa", triggered_by=(phantom.sha256,))
         ctx = TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s=set())
         assert len(warnings) == 1
-        assert "origin" in warnings[0]
+        assert "triggered_by" in warnings[0]
         assert "does not exist" in warnings[0]
 
-    def test_origin_in_existing_set(self):
-        """Origin exists in the store — no warning."""
+    def test_triggered_by_in_existing_set(self):
+        """triggered_by reference exists in the store — no warning."""
         parent = _make_doc("parent.txt", "parent")
-        doc = _make_doc("a.txt", "aaa", origins=(parent.sha256,))
+        doc = _make_doc("a.txt", "aaa", triggered_by=(parent.sha256,))
         ctx = TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s={parent.sha256})
         assert warnings == []
 
-    def test_same_task_source_interdep(self):
-        """Source SHA256 created in the same task produces a warning."""
+    def test_same_task_derived_from_interdep(self):
+        """derived_from SHA256 created in the same task produces a warning."""
         doc_a = _make_doc("a.txt", "aaa")
-        doc_b = _make_doc("b.txt", "bbb", sources=(doc_a.sha256,))
+        doc_b = _make_doc("b.txt", "bbb", derived_from=(doc_a.sha256,))
         ctx = TaskDocumentContext()
         ctx.register_created(doc_a)
         ctx.register_created(doc_b)
@@ -155,29 +154,29 @@ class TestValidateProvenance:
         assert len(warnings) == 1
         assert "same task" in warnings[0]
 
-    def test_same_task_origin_interdep(self):
-        """Origin SHA256 created in the same task produces a warning."""
+    def test_same_task_triggered_by_interdep(self):
+        """triggered_by SHA256 created in the same task produces a warning."""
         doc_a = _make_doc("a.txt", "aaa")
-        doc_b = _make_doc("b.txt", "bbb", origins=(doc_a.sha256,))
+        doc_b = _make_doc("b.txt", "bbb", triggered_by=(doc_a.sha256,))
         ctx = TaskDocumentContext()
         ctx.register_created(doc_a)
         ctx.register_created(doc_b)
         warnings = ctx.validate_provenance([doc_b], existing_sha256s=set())
         assert len(warnings) == 1
         assert "same task" in warnings[0]
-        assert "origin" in warnings[0]
+        assert "triggered_by" in warnings[0]
 
     def test_no_provenance_warning(self):
-        """Document with no sources and no origins gets a warning."""
+        """Document with no derived_from and no triggered_by gets a warning."""
         doc = _make_doc("a.txt", "aaa")
         ctx = TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s=set())
         assert len(warnings) == 1
         assert "no provenance" in warnings[0]
 
-    def test_source_url_no_provenance_warning(self):
-        """Document with URL source has provenance — no warning."""
-        doc = _make_doc("a.txt", "aaa", sources=("https://example.com",))
+    def test_url_derived_from_no_provenance_warning(self):
+        """Document with URL derived_from has provenance — no warning."""
+        doc = _make_doc("a.txt", "aaa", derived_from=("https://example.com",))
         ctx = TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s=set())
         assert warnings == []
@@ -185,65 +184,12 @@ class TestValidateProvenance:
     def test_mixed_valid_and_invalid(self):
         """Multiple documents with different provenance issues."""
         parent = _make_doc("parent.txt", "parent")
-        valid = _make_doc("valid.txt", "valid", sources=(parent.sha256,))
+        valid = _make_doc("valid.txt", "valid", derived_from=(parent.sha256,))
         orphan = _make_doc("orphan.txt", "orphan")  # no provenance
         ctx = TaskDocumentContext()
         warnings = ctx.validate_provenance([valid, orphan], existing_sha256s={parent.sha256})
         assert len(warnings) == 1
         assert "no provenance" in warnings[0]
-
-    def test_check_created_warns_on_foreign_doc(self):
-        """With check_created=True, returning a doc not created in this context warns."""
-        foreign = _make_doc("foreign.txt", "foreign")
-        ctx = TaskDocumentContext()
-        # foreign was NOT registered via register_created
-        warnings = ctx.validate_provenance([foreign], existing_sha256s=set(), check_created=True)
-        assert any("was not created in this task" in w for w in warnings)
-
-    def test_check_created_no_warning_when_created(self):
-        """With check_created=True, returning a doc created in this context is fine."""
-        doc = _make_doc("mine.txt", "mine")
-        ctx = TaskDocumentContext()
-        ctx.register_created(doc)
-        warnings = ctx.validate_provenance([doc], existing_sha256s=set(), check_created=True)
-        # Only the "no provenance" warning, not the "not created" warning
-        assert all("was not created" not in w for w in warnings)
-
-    def test_check_created_disabled_by_default(self):
-        """Without check_created, returning a foreign doc does not warn about creation."""
-        foreign = _make_doc("foreign.txt", "foreign")
-        ctx = TaskDocumentContext()
-        warnings = ctx.validate_provenance([foreign], existing_sha256s=set())
-        assert all("was not created" not in w for w in warnings)
-
-
-# ===== finalize =====
-
-
-class TestFinalize:
-    def test_no_warnings_when_all_returned(self):
-        ctx = TaskDocumentContext()
-        doc_a = _make_doc("a.txt", "aaa")
-        doc_b = _make_doc("b.txt", "bbb")
-        ctx.register_created(doc_a)
-        ctx.register_created(doc_b)
-        warnings = ctx.finalize([doc_a, doc_b])
-        assert warnings == []
-
-    def test_warns_on_created_not_returned(self):
-        ctx = TaskDocumentContext()
-        doc_a = _make_doc("a.txt", "aaa")
-        doc_b = _make_doc("b.txt", "bbb")
-        ctx.register_created(doc_a)
-        ctx.register_created(doc_b)
-        warnings = ctx.finalize([doc_a])  # doc_b not returned
-        assert len(warnings) == 1
-        assert "created but not returned" in warnings[0]
-
-    def test_empty_context(self):
-        ctx = TaskDocumentContext()
-        warnings = ctx.finalize([])
-        assert warnings == []
 
 
 # ===== deduplicate =====
@@ -279,22 +225,50 @@ class TestDeduplicate:
         assert len(result) == 1
 
 
+# ===== finalize (orphan detection) =====
+
+
+class TestFinalize:
+    def test_no_orphans_when_all_returned(self):
+        ctx = TaskDocumentContext()
+        doc_a = _make_doc("a.txt", "aaa")
+        doc_b = _make_doc("b.txt", "bbb")
+        ctx.register_created(doc_a)
+        ctx.register_created(doc_b)
+        orphans = ctx.finalize([doc_a, doc_b])
+        assert orphans == []
+
+    def test_detects_orphaned_documents(self):
+        ctx = TaskDocumentContext()
+        doc_a = _make_doc("a.txt", "aaa")
+        doc_b = _make_doc("b.txt", "bbb")
+        ctx.register_created(doc_a)
+        ctx.register_created(doc_b)
+        orphans = ctx.finalize([doc_a])  # doc_b not returned
+        assert len(orphans) == 1
+        assert orphans[0] == doc_b.sha256
+
+    def test_all_orphaned(self):
+        ctx = TaskDocumentContext()
+        doc = _make_doc("a.txt", "aaa")
+        ctx.register_created(doc)
+        orphans = ctx.finalize([])
+        assert len(orphans) == 1
+        assert orphans[0] == doc.sha256
+
+    def test_empty_context_no_orphans(self):
+        ctx = TaskDocumentContext()
+        orphans = ctx.finalize([])
+        assert orphans == []
+
+    def test_returns_sorted_sha256s(self):
+        ctx = TaskDocumentContext()
+        docs = [_make_doc(f"{i}.txt", f"content-{i}") for i in range(5)]
+        for d in docs:
+            ctx.register_created(d)
+        orphans = ctx.finalize([docs[2]])  # return only one
+        assert orphans == sorted(orphans)
+        assert len(orphans) == 4
+
+
 # ===== suppression flag =====
-
-
-class TestSuppression:
-    def test_default_not_suppressed(self):
-        assert is_registration_suppressed() is False
-
-    def test_suppress_registration_sets_flag(self):
-        with suppress_registration():
-            assert is_registration_suppressed() is True
-        assert is_registration_suppressed() is False
-
-    def test_nested_suppression(self):
-        with suppress_registration():
-            assert is_registration_suppressed() is True
-            with suppress_registration():
-                assert is_registration_suppressed() is True
-            assert is_registration_suppressed() is True
-        assert is_registration_suppressed() is False

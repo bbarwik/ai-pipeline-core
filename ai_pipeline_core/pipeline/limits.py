@@ -8,12 +8,11 @@ Supports three limit kinds:
 - PER_MINUTE: Token bucket with limit/60 decay per second (allows bursting).
 - PER_HOUR: Token bucket with limit/3600 decay per second (allows bursting).
 
-When Prefect is unavailable, CONCURRENT limits fall back to per-process asyncio.Semaphore.
-PER_MINUTE/PER_HOUR have no local fallback and proceed unthrottled.
+When Prefect is unavailable, all limits proceed unthrottled with a warning.
 """
 
-import asyncio
 import re
+import time
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
@@ -36,6 +35,7 @@ logger = get_pipeline_logger(__name__)
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
 _VALID_LIMIT_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
+_CACHE_TTL_WARNING_THRESHOLD = 120  # Warn if slot wait exceeds 2 minutes (cache TTL default is 5 min)
 
 
 class LimitKind(StrEnum):
@@ -90,17 +90,10 @@ class _SharedStatus:
     dataclass reference, but all copies point to the same _SharedStatus object.
     """
 
-    __slots__ = ("_fallback_semaphores", "prefect_available")
+    __slots__ = ("prefect_available",)
 
     def __init__(self) -> None:
         self.prefect_available: bool = True
-        self._fallback_semaphores: dict[str, asyncio.Semaphore] = {}
-
-    def get_fallback_semaphore(self, name: str, limit: int) -> asyncio.Semaphore:
-        """Lazily create per-process fallback semaphore."""
-        if name not in self._fallback_semaphores:
-            self._fallback_semaphores[name] = asyncio.Semaphore(limit)
-        return self._fallback_semaphores[name]
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,20 +124,6 @@ def _reset_limits_state(token: Token[_LimitsState]) -> None:
 
 
 @asynccontextmanager
-async def _acquire_local_semaphore(name: str, cfg: PipelineLimit, status: _SharedStatus, wait_seconds: int) -> AsyncGenerator[None, None]:
-    """Acquire local semaphore fallback and yield."""
-    sem = status.get_fallback_semaphore(name, cfg.limit)
-    try:
-        await asyncio.wait_for(sem.acquire(), timeout=wait_seconds)
-    except TimeoutError:
-        raise AcquireConcurrencySlotTimeoutError(f"Local semaphore timeout for '{name}' after {wait_seconds}s") from None
-    try:
-        yield
-    finally:
-        sem.release()
-
-
-@asynccontextmanager
 async def pipeline_concurrency(
     name: str,
     *,
@@ -155,7 +134,7 @@ async def pipeline_concurrency(
     For CONCURRENT limits: slot held during block, released on exit.
     For PER_MINUTE/PER_HOUR: slot acquired (decays automatically), exit is no-op.
 
-    Falls back to per-process asyncio.Semaphore when Prefect is unavailable (CONCURRENT only).
+    Proceeds unthrottled when Prefect is unavailable.
     Timeout always raises AcquireConcurrencySlotTimeoutError.
     """
     state = _limits_state.get()
@@ -164,42 +143,43 @@ async def pipeline_concurrency(
         available = ", ".join(sorted(state.limits)) or "(none)"
         raise KeyError(f"pipeline_concurrency({name!r}) not registered. Available limits: {available}. Declare it on PipelineDeployment.concurrency_limits.")
 
-    effective_timeout = timeout if timeout is not None else cfg.timeout
-
-    # Prefect unavailable — use local semaphore fallback
+    # Prefect unavailable — proceed unthrottled
     if not state.status.prefect_available:
-        if cfg.kind == LimitKind.CONCURRENT:
-            async with _acquire_local_semaphore(name, cfg, state.status, effective_timeout):
-                yield
-        else:
-            yield
+        yield
         return
 
+    effective_timeout = timeout if timeout is not None else cfg.timeout
+    t0 = time.monotonic()
+
+    def _warn_if_slow() -> None:
+        wait_seconds = time.monotonic() - t0
+        if wait_seconds > _CACHE_TTL_WARNING_THRESHOLD:
+            logger.warning(
+                "Slot wait for %r took %.1fs — exceeds %ds threshold. "
+                "LLM cache TTL (default 300s) may expire before execution. "
+                "Consider increasing concurrency limit or reducing parallelism.",
+                name,
+                wait_seconds,
+                _CACHE_TTL_WARNING_THRESHOLD,
+            )
+
     # Prefect available — use global concurrency/rate limiting
-    yielded = False
     try:
         match cfg.kind:
             case LimitKind.CONCURRENT:
                 async with concurrency(name, occupy=1, timeout_seconds=effective_timeout, strict=False):
-                    yielded = True
+                    _warn_if_slow()
                     yield
             case LimitKind.PER_MINUTE | LimitKind.PER_HOUR:
                 await rate_limit(name, occupy=1, timeout_seconds=effective_timeout, strict=False)
-                yielded = True
+                _warn_if_slow()
                 yield
     except AcquireConcurrencySlotTimeoutError:
         raise
     except ConcurrencySlotAcquisitionError as e:
-        logger.warning("Prefect concurrency unavailable for %r, falling back to local semaphore: %s", name, e)
+        logger.warning("Prefect concurrency unavailable for %r, proceeding unthrottled: %s", name, e)
         state.status.prefect_available = False
-        if yielded:
-            return
-        # Use local fallback for this call
-        if cfg.kind == LimitKind.CONCURRENT:
-            async with _acquire_local_semaphore(name, cfg, state.status, effective_timeout):
-                yield
-        else:
-            yield
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -254,13 +234,13 @@ def _validate_concurrency_limits(
     if not raw:
         return MappingProxyType({})
     for name, config in raw.items():
-        if not isinstance(name, str):
+        if not isinstance(name, str):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"{deployment_name}.concurrency_limits key must be str, got {type(name).__name__}")
         if not _VALID_LIMIT_NAME.match(name):
             raise TypeError(f"{deployment_name}.concurrency_limits: invalid name '{name}'. Must match [a-zA-Z0-9_-]+")
-        if not isinstance(config, PipelineLimit):
+        if not isinstance(config, PipelineLimit):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"{deployment_name}.concurrency_limits['{name}'] must be PipelineLimit, got {type(config).__name__}")
-        if not isinstance(config.kind, LimitKind):
+        if not isinstance(config.kind, LimitKind):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"{deployment_name}.concurrency_limits['{name}'].kind must be LimitKind, got {type(config.kind).__name__}")
     return MappingProxyType(dict(raw))
 
@@ -268,8 +248,6 @@ def _validate_concurrency_limits(
 __all__ = [
     "LimitKind",
     "PipelineLimit",
-    "_LimitsState",
-    "_SharedStatus",
     "_ensure_concurrency_limits",
     "_reset_limits_state",
     "_set_limits_state",

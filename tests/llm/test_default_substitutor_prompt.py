@@ -7,7 +7,7 @@ Conversation should inject a default system prompt instructing the LLM to preser
 import pytest
 
 from ai_pipeline_core._llm_core import ModelOptions
-from ai_pipeline_core.llm.conversation import Conversation, _DEFAULT_SUBSTITUTOR_PROMPT
+from ai_pipeline_core.llm.conversation import Conversation, _SUBSTITUTOR_INSTRUCTION
 from tests.support.helpers import create_test_model_response
 
 LONG_URL = "https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page"
@@ -33,11 +33,11 @@ class TestPromptInjection:
         assert len(captured_options) == 1
         opts = captured_options[0]
         assert opts is not None
-        assert opts.system_prompt == _DEFAULT_SUBSTITUTOR_PROMPT
+        assert opts.system_prompt == _SUBSTITUTOR_INSTRUCTION
 
     @pytest.mark.asyncio
-    async def test_default_prompt_not_injected_when_user_has_system_prompt(self, monkeypatch):
-        """User-provided system prompt should not be overridden."""
+    async def test_substitutor_instruction_appended_to_user_system_prompt(self, monkeypatch):
+        """User-provided system prompt should have substitutor instruction appended."""
         captured_options: list[ModelOptions | None] = []
         user_prompt = "You are a blockchain expert."
 
@@ -53,7 +53,7 @@ class TestPromptInjection:
         assert len(captured_options) == 1
         opts = captured_options[0]
         assert opts is not None
-        assert opts.system_prompt == user_prompt
+        assert opts.system_prompt == f"{user_prompt}\n\n{_SUBSTITUTOR_INSTRUCTION}"
 
     @pytest.mark.asyncio
     async def test_default_prompt_not_injected_when_substitutor_disabled(self, monkeypatch):
@@ -113,7 +113,7 @@ class TestPromptIntegration:
 
         opts = captured_options[0]
         assert opts is not None
-        assert opts.system_prompt == _DEFAULT_SUBSTITUTOR_PROMPT
+        assert opts.system_prompt == _SUBSTITUTOR_INSTRUCTION
 
     @pytest.mark.asyncio
     async def test_default_prompt_does_not_mutate_original_options(self, monkeypatch):
@@ -148,7 +148,7 @@ class TestPromptIntegration:
 
         opts = captured_options[0]
         assert opts is not None
-        assert opts.system_prompt == _DEFAULT_SUBSTITUTOR_PROMPT
+        assert opts.system_prompt == _SUBSTITUTOR_INSTRUCTION
         assert opts.reasoning_effort == "high"
         assert opts.retries == 5
 
@@ -175,4 +175,4 @@ class TestPromptIntegration:
 
         opts = captured_options[0]
         assert opts is not None
-        assert opts.system_prompt == _DEFAULT_SUBSTITUTOR_PROMPT
+        assert opts.system_prompt == _SUBSTITUTOR_INSTRUCTION

@@ -74,17 +74,17 @@ def _trim_document_content(doc_dict: dict[str, Any]) -> dict[str, Any]:
     return doc_dict
 
 
-def _trim_documents_in_data(data: Any) -> Any:
+def trim_documents_in_data(data: Any) -> Any:
     """Recursively trim document content in nested data structures."""
     if isinstance(data, dict):
         data_dict = cast(dict[str, Any], data)
         if "class_name" in data_dict and "content" in data_dict:
             return _trim_document_content(data_dict)
-        return {k: _trim_documents_in_data(v) for k, v in data_dict.items()}
+        return {k: trim_documents_in_data(v) for k, v in data_dict.items()}
     if isinstance(data, list):
-        return [_trim_documents_in_data(item) for item in cast(list[Any], data)]
+        return [trim_documents_in_data(item) for item in cast(list[Any], data)]
     if isinstance(data, tuple):
-        return tuple(_trim_documents_in_data(item) for item in cast(tuple[Any, ...], data))
+        return tuple(trim_documents_in_data(item) for item in cast(tuple[Any, ...], data))
     return data
 
 
@@ -93,5 +93,5 @@ __all__ = [
     "_trim_attachment_list",
     "_trim_content_string",
     "_trim_document_content",
-    "_trim_documents_in_data",
+    "trim_documents_in_data",
 ]

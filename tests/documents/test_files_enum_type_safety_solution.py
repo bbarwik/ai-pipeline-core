@@ -21,7 +21,7 @@ class AllowedInputFiles(StrEnum):
 class InputDocumentSimple(Document):
     """Flow document using enum directly."""
 
-    FILES: ClassVar[type[AllowedInputFiles]] = AllowedInputFiles
+    FILES = AllowedInputFiles
 
     def get_type(self) -> str:
         return "input"
@@ -80,7 +80,7 @@ class InputDocumentPattern(Document):
     """Best practice: use enum directly, document the pattern."""
 
     # For validation, set FILES to the enum class
-    FILES: ClassVar[type[AllowedInputFiles]] = AllowedInputFiles
+    FILES = AllowedInputFiles
 
     # Document the allowed files for users
     # Users should use AllowedInputFiles.CONFIG, etc. directly

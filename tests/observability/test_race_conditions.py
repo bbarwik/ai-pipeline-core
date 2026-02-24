@@ -7,12 +7,12 @@ a fix confirm it's resolved.
 
 import time
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from pydantic import BaseModel
 
 from ai_pipeline_core.observability._debug._config import TraceDebugConfig
-from ai_pipeline_core.observability._debug._types import WriteJob
+from ai_pipeline_core.observability._debug._config import WriteJob
 from ai_pipeline_core.observability._debug._writer import LocalTraceWriter
 from ai_pipeline_core.observability._tracking._client import ClickHouseClient
 from ai_pipeline_core.observability._tracking._writer import ClickHouseWriter
@@ -287,101 +287,3 @@ class TestLocalWriterShutdownRace:
         # (it was finalized during shutdown as "running")
         child_dirs = [d for d in root_dirs[0].iterdir() if d.is_dir() and "child_task" in d.name]
         assert len(child_dirs) == 1
-
-
-class TestAutoSummaryShutdownBug:
-    """Issue 6: Auto-summary disabled during shutdown.
-
-    _finalize_trace checks `not self._shutdown` before generating auto-summary,
-    but during shutdown(), _shutdown is already True, so auto-summary is always skipped
-    for traces finalized in the shutdown path.
-    """
-
-    def test_auto_summary_skipped_when_finalized_during_shutdown(self, tmp_path):
-        """Auto-summary is never generated for traces finalized during shutdown."""
-        config = TraceDebugConfig(
-            path=tmp_path,
-            auto_summary_enabled=True,
-            auto_summary_model="test-model",
-            generate_summary=True,
-            include_llm_index=False,
-            include_error_index=False,
-        )
-        writer = LocalTraceWriter(config)
-
-        trace_id = "f" * 32
-        span_id = "1" * 16
-
-        # Start a span but don't end it — leave trace incomplete
-        writer.on_span_start(trace_id, span_id, None, "incomplete_task")
-
-        # Shutdown with the span still "running"
-        # _finalize_trace will be called with _shutdown=True → auto-summary skipped
-        writer.shutdown(timeout=5.0)
-
-        trace_dirs = list(tmp_path.iterdir())
-        assert len(trace_dirs) == 1
-        t = trace_dirs[0]
-
-        # Static summary should exist (generated unconditionally)
-        assert (t / "_summary.md").exists()
-
-        # Auto-summary should NOT exist (skipped due to _shutdown=True)
-        assert not (t / "_auto_summary.md").exists()
-
-    def test_auto_summary_works_before_shutdown(self, tmp_path):
-        """Auto-summary IS generated when trace completes normally (before shutdown)."""
-        config = TraceDebugConfig(
-            path=tmp_path,
-            auto_summary_enabled=True,
-            auto_summary_model="test-model",
-            generate_summary=True,
-            include_llm_index=False,
-            include_error_index=False,
-        )
-        writer = LocalTraceWriter(config)
-
-        trace_id = "2" * 32
-        span_id = "3" * 16
-        now_ns = int(datetime.now(UTC).timestamp() * 1e9)
-
-        writer.on_span_start(trace_id, span_id, None, "complete_task")
-
-        # Mock the auto-summary module to avoid real LLM call
-        mock_auto_summary = "# Auto Summary\nTest auto-summary content."
-        with patch(
-            "ai_pipeline_core.observability._debug._auto_summary.generate_auto_summary",
-            return_value=mock_auto_summary,
-        ):
-            writer.on_span_end(
-                WriteJob(
-                    trace_id=trace_id,
-                    span_id=span_id,
-                    name="complete_task",
-                    parent_id=None,
-                    attributes={},
-                    events=[],
-                    status_code="OK",
-                    status_description=None,
-                    start_time_ns=now_ns,
-                    end_time_ns=now_ns + 100_000_000,
-                )
-            )
-
-            # Wait for processing
-            time.sleep(1.0)
-
-        writer.shutdown(timeout=5.0)
-
-        trace_dirs = list(tmp_path.iterdir())
-        t = trace_dirs[0]
-
-        # Static summary should exist
-        assert (t / "_summary.md").exists()
-
-        # Auto-summary should exist (trace completed before shutdown)
-        # NOTE: This may or may not work depending on whether the trace was
-        # finalized as a single-root-span trace. If the _finalize_trace path
-        # only triggers on shutdown, this test validates the happy path.
-        # If the test fails here, it means auto-summary only works via shutdown
-        # path — which is ALWAYS blocked by the _shutdown check.

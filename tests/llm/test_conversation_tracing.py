@@ -102,6 +102,8 @@ class TestConversationTracing:
     @pytest.mark.asyncio
     async def test_span_input_not_shortened(self, monkeypatch):
         """Verify the shortened form does NOT appear in span input."""
+        from ai_pipeline_core.llm._substitutor import URLSubstitutor
+
         mock_laminar, captured = _mock_laminar()
 
         async def fake_generate(messages, **kwargs):
@@ -109,13 +111,14 @@ class TestConversationTracing:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
+        # Determine what the shortened form would be (algorithm is deterministic)
+        sub = URLSubstitutor()
+        sub.prepare([LONG_URL])
+        short = sub.get_mappings()[LONG_URL]
+        assert "..." in short
+
         with patch("ai_pipeline_core.llm.conversation.Laminar", mock_laminar):
             conv = Conversation(model="test-model")
-            assert conv.substitutor is not None
-            conv.substitutor.prepare([LONG_URL])
-            short = conv.substitutor.get_mappings()[LONG_URL]
-            assert "..." in short
-
             await conv.send(f"Check {LONG_URL}")
 
         full_text = _text_from_span_input(captured["input"])
@@ -174,7 +177,7 @@ class TestConversationTracing:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        doc = ConcreteDocument.create(name="context.md", content="Important context data")
+        doc = ConcreteDocument.create_root(name="context.md", content="Important context data", reason="test input")
 
         with patch("ai_pipeline_core.llm.conversation.Laminar", mock_laminar):
             conv = Conversation(model="test-model", context=(doc,))
@@ -209,7 +212,7 @@ class TestConversationTracing:
         iend = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", iend_crc)
         png_bytes = png_header + ihdr + idat + iend
 
-        img_doc = ConcreteDocument.create(name="screenshot.png", content=png_bytes)
+        img_doc = ConcreteDocument.create_root(name="screenshot.png", content=png_bytes, reason="test input")
 
         with patch("ai_pipeline_core.llm.conversation.Laminar", mock_laminar):
             conv = Conversation(model="test-model")

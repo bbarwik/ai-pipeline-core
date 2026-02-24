@@ -13,13 +13,13 @@ AI Pipeline Core is a production-ready framework that combines document processi
 
 ### Key Features
 
-- **Document System**: Single `Document` base class with immutable content, SHA256-based identity, automatic MIME type detection, provenance tracking, and multi-part attachments
+- **Document System**: Single `Document` base class with immutable content, SHA256-based identity, automatic MIME type detection, provenance tracking, multi-part attachments, and optional typed content via `Document[ModelType]`
 - **Document Store**: Pluggable storage backends (ClickHouse production, local filesystem CLI/debug, in-memory testing) with automatic deduplication
 - **Conversation Class**: Immutable, stateful multi-turn LLM conversations with context caching, automatic URL/address shortening, and eager response restoration
 - **LLM Integration**: Unified interface to any model via LiteLLM proxy (OpenRouter compatible) with context caching (default 300s TTL)
-- **Structured Output**: Type-safe generation with Pydantic model validation via `generate_structured()` and `Conversation.send_structured()`
-- **Workflow Orchestration**: Prefect-based flows and tasks with annotation-driven document types
-- **Auto-Persistence**: `@pipeline_task` saves returned documents to `DocumentStore` automatically (configurable via `persist` parameter)
+- **Structured Output**: Type-safe generation with Pydantic model validation via `Conversation.send_structured()`
+- **Workflow Orchestration**: Prefect-based flows and tasks with annotation-driven document types and decoration-time input/output validation
+- **Auto-Persistence**: `@pipeline_task` saves returned documents to `DocumentStore` automatically
 - **Image Processing**: Automatic image tiling/splitting for LLM vision models with model-specific presets
 - **Observability**: Built-in distributed tracing via Laminar (LMNR) with cost tracking, local trace debugging, and ClickHouse-based tracking
 - **Prompt Compiler**: Type-safe prompt specifications replacing Jinja2 templates — typed Python classes for roles, rules, guides, and output formats with definition-time validation and a CLI tool for inspection
@@ -32,7 +32,7 @@ pip install ai-pipeline-core
 ```
 
 This installs two CLI commands:
-- `ai-prompt-compiler` — discover, inspect, and render prompt specifications
+- `ai-prompt-compiler` — discover, inspect, render, and compile prompt specifications
 - `ai-pipeline-deploy` — build and deploy pipelines to Prefect Cloud
 
 ### Requirements
@@ -97,14 +97,14 @@ async def analyze_document(document: InputDocument) -> AnalysisDocument:
     return AnalysisDocument.create(
         name=f"analysis_{document.sha256[:12]}.json",
         content=AnalysisSummary(word_count=42, top_keywords=["ai", "pipeline"]),
-        sources=(document.sha256,),
+        derived_from=(document.sha256,),
     )
 
 
 # 4. Pipeline flow -- type contract is in the annotations
 @pipeline_flow(estimated_minutes=5)
 async def analysis_flow(
-    project_name: str,
+    run_id: str,
     documents: list[InputDocument],
     flow_options: FlowOptions,
 ) -> list[AnalysisDocument]:
@@ -116,14 +116,14 @@ async def analysis_flow(
 
 @pipeline_flow(estimated_minutes=2)
 async def report_flow(
-    project_name: str,
+    run_id: str,
     documents: list[AnalysisDocument],
     flow_options: FlowOptions,
 ) -> list[ReportDocument]:
     report = ReportDocument.create(
         name="report.md",
         content="# Report\n\nAnalysis complete.",
-        sources=tuple(doc.sha256 for doc in documents),
+        derived_from=tuple(doc.sha256 for doc in documents),
     )
     return [report]
 
@@ -138,7 +138,7 @@ class MyPipeline(PipelineDeployment[FlowOptions, MyResult]):
 
     @staticmethod
     def build_result(
-        project_name: str,
+        run_id: str,
         documents: list[Document],
         options: FlowOptions,
     ) -> MyResult:
@@ -146,10 +146,10 @@ class MyPipeline(PipelineDeployment[FlowOptions, MyResult]):
         return MyResult(success=True, report_count=len(reports))
 
 
-# 6. CLI initializer provides project name and initial documents
+# 6. CLI initializer provides run ID and initial documents
 def initialize(options: FlowOptions) -> tuple[str, list[Document]]:
     docs: list[Document] = [
-        InputDocument.create(name="input.txt", content="Sample data"),
+        InputDocument.create_root(name="input.txt", content="Sample data", reason="CLI input"),
     ]
     return "my-project", docs
 
@@ -167,11 +167,13 @@ from ai_pipeline_core.llm import Conversation, ModelOptions
 # Create a conversation with model and optional context
 conv = Conversation(model="gemini-3-pro")
 
-# Add documents to context (cacheable prefix)
-conv = conv.with_document(my_document)
+# Add documents to cacheable context prefix (shared across forks)
 conv = conv.with_context(doc1, doc2, doc3)
 
-# Send a message (returns NEW immutable Conversation instance)
+# Add a document to dynamic messages suffix (NOT cached, per-fork content)
+conv = conv.with_document(my_document)
+
+# Send a message (returns NEW immutable Conversation instance — always capture!)
 conv = await conv.send("Analyze the document")
 print(conv.content)  # Response text
 
@@ -185,7 +187,7 @@ print(conv.content)
 
 # Access response properties
 print(conv.reasoning_content)  # Thinking/reasoning text (if available)
-print(conv.usage)              # TokenUsage with input/output counts
+print(conv.usage)              # Token usage with input/output counts
 print(conv.cost)               # Estimated cost
 print(conv.citations)          # Citation objects (for search models)
 ```
@@ -194,22 +196,22 @@ print(conv.citations)          # Citation objects (for search models)
 
 ```python
 from pydantic import BaseModel
-from ai_pipeline_core import llm
+from ai_pipeline_core import Conversation
 
 class Analysis(BaseModel):
     summary: str
     sentiment: float
     key_points: list[str]
 
-# Generate structured output
-response = await llm.generate_structured(
-    model="gemini-3-pro",
+# Generate structured output via Conversation
+conv = Conversation(model="gemini-3-pro")
+conv = await conv.send_structured(
+    "Analyze this product review: ...",
     response_format=Analysis,
-    messages="Analyze this product review: ..."
 )
 
 # Access parsed result with type safety
-analysis = response.parsed
+analysis = conv.parsed
 print(f"Sentiment: {analysis.sentiment}")
 for point in analysis.key_points:
     print(f"- {point}")
@@ -226,27 +228,69 @@ class MyDocument(Document):
 # Create documents with automatic conversion
 doc = MyDocument.create(
     name="data.json",
-    content={"key": "value"}  # Automatically converted to JSON bytes
+    content={"key": "value"},  # Automatically converted to JSON bytes
+    derived_from=("https://api.example.com/data",),
 )
 
 # Parse back to original type
 data = doc.parse(dict)  # Returns {"key": "value"}
 
 # Document provenance tracking
-source_doc = MyDocument.create(name="source.txt", content="original data")
-plan_doc = MyDocument.create(name="plan.txt", content="research plan", sources=(source_doc.sha256,))
+source_doc = MyDocument.create_root(name="source.txt", content="original data", reason="user upload")
+plan_doc = MyDocument.create(name="plan.txt", content="research plan", derived_from=(source_doc.sha256,))
 derived = MyDocument.create(
     name="derived.json",
     content={"result": "processed"},
-    sources=("https://api.example.com/data",),  # Content came from this URL
-    origins=(plan_doc.sha256,),  # Created because of this plan (causal, not content)
+    derived_from=("https://api.example.com/data",),  # Content came from this URL
+    triggered_by=(plan_doc.sha256,),  # Created because of this plan (causal, not content)
 )
 
 # Check provenance
-for hash in derived.source_documents:
+for hash in derived.content_documents:
     print(f"Derived from document: {hash}")
-for ref in derived.source_references:
+for ref in derived.content_references:
     print(f"External source: {ref}")
+```
+
+### Typed Content (Document[T])
+
+Declare a Pydantic BaseModel as the content schema for a Document subclass. Content is validated at creation time and accessible via `.parsed`:
+
+```python
+from pydantic import BaseModel
+from ai_pipeline_core import Document
+
+class ResearchDefinition(BaseModel, frozen=True):
+    topic: str
+    max_sources: int = 10
+
+class ResearchPlanDocument(Document[ResearchDefinition]):
+    """Plan document with typed content schema."""
+
+# Content is validated against the schema at creation time
+plan = ResearchPlanDocument.create(
+    name="plan.json",
+    content=ResearchDefinition(topic="AI safety"),
+    derived_from=(input_doc.sha256,),
+)
+
+# Zero-boilerplate typed access (cached, returns ResearchDefinition)
+definition = plan.parsed
+print(definition.topic)       # "AI safety"
+print(definition.max_sources)  # 10
+
+# Wrong schema type is rejected at creation time
+class WrongModel(BaseModel, frozen=True):
+    x: int
+
+plan = ResearchPlanDocument.create(
+    name="plan.json",
+    content=WrongModel(x=1),   # TypeError: Expected content of type ResearchDefinition
+    derived_from=(input_doc.sha256,),
+)
+
+# Introspection
+ResearchPlanDocument.get_content_type()  # ResearchDefinition
 ```
 
 ## Core Concepts
@@ -262,7 +306,8 @@ class MyDocument(Document):
 # Use create() for automatic conversion
 doc = MyDocument.create(
     name="data.json",
-    content={"key": "value"}  # Auto-converts to JSON
+    content={"key": "value"},  # Auto-converts to JSON
+    derived_from=(source.sha256,),
 )
 
 # Access content
@@ -274,72 +319,76 @@ data = doc.as_json()  # or as_yaml()
 model = doc.as_pydantic_model(MyModel)  # Requires model_type argument
 
 # Convert between document types
-other = doc.model_convert(OtherDocType)
+other = doc.retype(OtherDocType, preserve_provenance=True)
 
 # Content-addressed identity
 print(doc.sha256)  # Full SHA256 hash (base32)
 print(doc.id)      # Short 6-char identifier
 ```
 
+**Typed content** — declare a content schema via generic parameter for automatic validation and typed access:
+
+```python
+class PlanDocument(Document[PlanModel]):
+    """Content is validated against PlanModel at creation time."""
+
+plan = PlanDocument.create(name="plan.json", content=PlanModel(...), derived_from=(...,))
+plan.parsed  # → PlanModel (cached, typed)
+PlanDocument.get_content_type()  # → PlanModel
+```
+
 **Document fields:**
 - `name`: Filename (validated for security -- no path traversal)
 - `description`: Optional human-readable description
 - `content`: Raw bytes (auto-converted from str, dict, list, BaseModel via `create()`)
-- `sources`: Content provenance — SHA256 hashes of source documents or external references (URLs, file paths). A SHA256 must not appear in both sources and origins.
-- `origins`: Causal provenance — SHA256 hashes of documents that caused this document to be created without contributing to its content.
+- `derived_from`: Content provenance — SHA256 hashes of source documents or URI-style references (must contain `://`). A SHA256 must not appear in both derived_from and triggered_by.
+- `triggered_by`: Causal provenance — SHA256 hashes of documents that caused this document to be created without contributing to its content.
 - `attachments`: Tuple of `Attachment` objects for multi-part content
 
 Documents support:
 - Automatic content serialization based on file extension: `.json` → JSON, `.yaml`/`.yml` → YAML, others → UTF-8 text. Structured data (dict, list, BaseModel) requires `.json` or `.yaml` extension.
+- Optional typed content schema via `Document[ModelType]` with creation-time validation and `.parsed` access
 - MIME type detection via `mime_type` cached property, with `is_text`/`is_image`/`is_pdf` helpers
 - SHA256-based identity and deduplication
-- Source provenance tracking (`sources` for references, `origins` for parent lineage)
+- Provenance tracking (`derived_from` for content sources, `triggered_by` for causal lineage)
 - `FILES` enum for filename restrictions (definition-time validation)
-- `model_convert()` for type conversion between document subclasses
-- `canonical_name()` for standardized snake_case class identification
+- `retype(new_type, preserve_provenance=True|False)` for type conversion between document subclasses
+- `derive(from_documents=..., name=..., content=...)` convenience method for creating documents from other documents (extracts SHA256 hashes automatically)
 - Token count estimation via `approximate_tokens_count`
 
 ### Document Store
 
-Documents are automatically persisted by `@pipeline_task` to a `DocumentStore`. The store is a protocol with three implementations:
+Documents are automatically persisted by `@pipeline_task` to a document store. The framework provides four backend implementations (ClickHouse, local filesystem, in-memory, dual), all managed internally — application code interacts only through the read-only `DocumentReader` protocol.
 
-- **ClickHouseDocumentStore**: Production backend (selected when `CLICKHOUSE_HOST` is configured). Requires `clickhouse-connect` (included in dependencies).
-- **LocalDocumentStore**: CLI/debug mode (filesystem-based, browsable files on disk). Uses collision-safe filenames (`{stem}_{sha256[:6]}{suffix}`) so same-name documents coexist.
-- **MemoryDocumentStore**: Testing (in-memory, zero I/O)
-- **DualDocumentStore**: Wraps primary (ClickHouse) + secondary (local filesystem). Saves to both, reads from primary only. Secondary failures are best-effort.
+**Backend implementations** (internal, auto-selected by execution mode):
+- **ClickHouse**: Production backend (selected when `CLICKHOUSE_HOST` is configured)
+- **Local filesystem**: CLI/debug mode (browsable files on disk, collision-safe filenames)
+- **In-memory**: Testing (zero I/O, used by `run_local()`)
+- **Dual**: Wraps primary (ClickHouse) + secondary (local). Saves to both, reads from primary only
 
 **Store selection depends on the execution mode:**
-- `run_cli()`: Uses `DualDocumentStore` (ClickHouse + local) when `CLICKHOUSE_HOST` is configured, `LocalDocumentStore` otherwise
-- `run_local()`: Always uses `MemoryDocumentStore` (in-memory, no persistence)
-- `as_prefect_flow()`: Auto-selects based on settings -- `ClickHouseDocumentStore` when `CLICKHOUSE_HOST` is set, `LocalDocumentStore` otherwise
+- `run_cli()`: Uses dual store (ClickHouse + local) when `CLICKHOUSE_HOST` is configured, local otherwise
+- `run_local()`: Always uses in-memory store (no persistence)
+- `as_prefect_flow()`: Auto-selects based on settings
 
-**Store protocol methods:**
-- `save(document, run_scope)` -- Save a single document (idempotent)
-- `save_batch(documents, run_scope)` -- Save multiple documents
+**Public API — `DocumentReader`** (read-only, available via `get_document_store()`):
 - `load(run_scope, document_types)` -- Load documents by type from a run scope
-- `has_documents(run_scope, document_type)` -- Check if documents of a type exist in a run scope
+- `has_documents(run_scope, document_type, *, max_age=None)` -- Check if documents of a type exist
 - `check_existing(sha256s)` -- Check which SHA256 hashes exist globally
-- `update_summary(document_sha256, summary)` -- Update summary for a stored document (global, not scoped)
+- `find_by_source(source_values, document_type, *, max_age=None)` -- Find most recent document per source value
 - `load_summaries(document_sha256s)` -- Load summaries by SHA256 (global)
-- `load_by_sha256s(sha256s, document_type, run_scope=None)` -- Batch-load full documents by SHA256. `document_type` is for construction only (class_name not enforced). When `run_scope` is provided, verifies scope membership
-- `load_nodes_by_sha256s(sha256s)` -- Batch-load lightweight `DocumentNode` metadata by SHA256 (global, cross-scope)
-- `load_scope_metadata(run_scope)` -- Load `DocumentNode` metadata for all documents in a run scope
-- `flush()` -- Block until all pending background work (summaries) is processed
-- `shutdown()` -- Flush pending work and stop background workers
+- `load_by_sha256s(sha256s, document_type, run_scope=None)` -- Batch-load full documents by SHA256
+- `load_nodes_by_sha256s(sha256s)` -- Batch-load lightweight `DocumentNode` metadata (global, cross-scope)
+- `load_scope_metadata(run_scope)` -- Load `DocumentNode` metadata for all documents in a scope
+- `get_flow_completion(run_scope, flow_name, *, max_age=None)` -- Check flow completion record (returns `FlowCompletion | None`)
 
-**Document summaries:** When a `SummaryGenerator` callable is provided, stores automatically generate LLM-powered summaries in the background after each new document is saved (including empty and binary documents). Summaries are best-effort (failures are logged and skipped) and stored as store-level metadata (not on the `Document` model). Configure via `DOC_SUMMARY_ENABLED` and `DOC_SUMMARY_MODEL` environment variables.
+Write operations (`save`, `save_batch`, `flush`, `shutdown`) are framework-internal — `@pipeline_task` handles persistence automatically.
 
-Store implementations are not exported from the top-level package. Import from submodules:
-
-```python
-from ai_pipeline_core.document_store.local import LocalDocumentStore
-from ai_pipeline_core.document_store.memory import MemoryDocumentStore
-from ai_pipeline_core.document_store.clickhouse import ClickHouseDocumentStore
-```
+**Document summaries:** When enabled, stores automatically generate LLM-powered summaries in the background after each new document is saved. Summaries are best-effort and stored as store-level metadata (not on the `Document` model). Configure via `DOC_SUMMARY_ENABLED` and `DOC_SUMMARY_MODEL` environment variables.
 
 ### LLM Integration
 
-Two interfaces are available: **`Conversation`** for multi-turn interactions and **`generate()`/`generate_structured()`** for single-shot calls.
+The primary interface is the **`Conversation`** class for multi-turn interactions.
 
 #### Conversation (Recommended)
 
@@ -351,9 +400,11 @@ from ai_pipeline_core.llm import Conversation, ModelOptions
 # Create with model and optional configuration
 conv = Conversation(model="gemini-3-pro")
 
-# Add documents to context (cacheable prefix)
-conv = conv.with_document(my_document)
+# Add documents to cacheable context prefix (shared across forks)
 conv = conv.with_context(doc1, doc2, doc3)
+
+# Add a document to dynamic messages suffix (NOT cached, per-fork content)
+conv = conv.with_document(my_document)
 
 # Configure model options
 conv = conv.with_model_options(ModelOptions(
@@ -373,7 +424,14 @@ print(conv.content)
 conv = await conv.send_structured("Extract entities", response_format=Entities)
 print(conv.parsed)  # Entities instance
 
+# Add multiple documents at once
+conv = conv.with_documents([doc1, doc2, doc3])
+
+# Inject prior assistant output (e.g., from another conversation)
+conv = conv.with_assistant_message("Previous analysis result...")
+
 # Warmup + fork pattern for parallel calls with shared cache
+import asyncio
 base = await conv.send("Acknowledge the context")  # Warmup
 # Fork: create parallel conversations from the same base
 results = await asyncio.gather(
@@ -381,57 +439,14 @@ results = await asyncio.gather(
     base.send("Analyze source 2"),
     base.send("Analyze source 3"),
 )
+
+# Approximate token count for all context and messages
+print(conv.approximate_tokens_count)
 ```
 
-**Content protection (automatic):** URLs, blockchain addresses, and high-entropy strings in context documents are automatically shortened to `prefix...suffix` forms to save tokens. Responses are eagerly restored — `conv.content` always contains original URLs/addresses. A fuzzy fallback handles LLM-mangled forms (dropped suffix, prefix/suffix truncated by 1-2 chars). Use `conv.restore_content(text)` for text from earlier turns if needed.
+**`send_spec()`** — sends a `PromptSpec` to the LLM. Handles document placement, stop sequences, and auto-extraction of `<result>` tags. For structured specs (`PromptSpec[SomeModel]`), dispatches to `send_structured()` automatically.
 
-#### Single-Shot Functions
-
-```python
-from ai_pipeline_core import llm
-
-# Simple generation
-response = await llm.generate(
-    model="gemini-3-pro",
-    messages="Explain quantum computing"
-)
-print(response.content)
-
-# Structured output
-response = await llm.generate_structured(
-    model="gemini-3-pro",
-    response_format=Analysis,
-    messages="Analyze this review: ..."
-)
-print(response.parsed.sentiment)
-```
-
-**`generate()` signature:**
-```python
-async def generate(
-    model: ModelName,
-    *,
-    context: list[CoreMessage] | None = None,
-    messages: list[CoreMessage] | str,
-    options: ModelOptions | None = None,
-    purpose: str | None = None,
-    expected_cost: float | None = None,
-) -> ModelResponse
-```
-
-**`generate_structured()` signature:**
-```python
-async def generate_structured(
-    model: ModelName,
-    response_format: type[T],
-    *,
-    context: list[CoreMessage] | None = None,
-    messages: list[CoreMessage] | str,
-    options: ModelOptions | None = None,
-    purpose: str | None = None,
-    expected_cost: float | None = None,
-) -> ModelResponse[T]
-```
+**Content protection (automatic):** URLs, blockchain addresses, and high-entropy strings in context documents are automatically shortened to `prefix...suffix` forms to save tokens. Both `.content` and `.parsed` are eagerly restored after every `send()`/`send_structured()` call — no manual restoration needed. A fuzzy fallback handles LLM-mangled forms (dropped suffix, prefix/suffix truncated by 1-2 chars).
 
 **`ModelOptions` key fields (all optional with sensible defaults):**
 - `cache_ttl`: Context cache TTL (default `"300s"`, set `None` to disable)
@@ -444,15 +459,16 @@ async def generate_structured(
 - `service_tier`: `"auto" | "default" | "flex" | "scale" | "priority"` (OpenAI only)
 - `max_completion_tokens`: Max output tokens
 - `temperature`: Generation randomness (usually omit -- use provider defaults)
+- `stop`: Stop sequences (tuple of strings, used internally by `send_spec` for `</result>` tags)
 
 **ModelName predefined values:** `"gemini-3-pro"`, `"gpt-5.1"`, `"gemini-3-flash"`, `"gpt-5-mini"`, `"grok-4.1-fast"`, `"gemini-3-flash-search"`, `"gpt-5-mini-search"`, `"grok-4.1-fast-search"`, `"sonar-pro-search"` (also accepts any string for custom models).
 
 ### Image Processing
 
-Image processing for LLM vision models is available from the top-level package:
+Image processing for LLM vision models is available from the `llm._images` module:
 
 ```python
-from ai_pipeline_core import process_image, ImagePreset
+from ai_pipeline_core.llm._images import process_image, ImagePreset
 
 # Process an image with model-specific presets
 result = process_image(screenshot_bytes, preset=ImagePreset.GEMINI)
@@ -465,6 +481,22 @@ Available presets: `GEMINI` (3000px, 9M pixels), `CLAUDE` (1568px, 1.15M pixels)
 **Token cost:** A single image consumes **1080 tokens** regardless of pixel dimensions.
 
 The `Conversation` class automatically splits oversized images when documents are added to context — you typically don't need to call `process_image` directly.
+
+### Exceptions
+
+The framework re-exports key exceptions at the top level for convenient catching:
+
+```python
+from ai_pipeline_core import PipelineCoreError, LLMError, DocumentValidationError, DocumentSizeError, DocumentNameError
+```
+
+- `PipelineCoreError` — Base for all framework exceptions
+- `LLMError` — LLM generation failures (retries exhausted, timeouts, degeneration)
+- `DocumentValidationError` — Document validation failures
+- `DocumentSizeError` — Document exceeds size limits
+- `DocumentNameError` — Invalid document name (path traversal, etc.)
+
+Output degeneration (token repetition loops) is detected automatically and raises `LLMError` after retry exhaustion.
 
 ### Pipeline Decorators
 
@@ -480,7 +512,7 @@ async def process_chunk(document: InputDocument) -> OutputDocument:
     return OutputDocument.create(
         name="result.json",
         content={"processed": True},
-        sources=(document.sha256,),
+        derived_from=(document.sha256,),
     )
 
 @pipeline_task(retries=3, estimated_minutes=5)
@@ -488,25 +520,24 @@ async def expensive_task(data: str) -> OutputDocument:
     # Retries, tracing, and document auto-save handled automatically
     ...
 
-@pipeline_task(persist=False)  # Disable auto-save for this task
-async def transient_task(data: str) -> OutputDocument:
-    ...
 ```
 
 Key parameters:
-- `persist`: Auto-save returned documents to store (default `True`)
 - `retries`: Retry attempts on failure (default `0` -- no retries unless specified)
 - `estimated_minutes`: Duration estimate for progress tracking (default `1`, must be >= 1)
 - `timeout_seconds`: Task execution timeout
 - `trace_level`: `"always" | "debug" | "off"` (default `"always"`)
-- `user_summary`: Enable LLM-generated span summaries (default `False`)
 - `expected_cost`: Expected cost budget for cost tracking
 
 Key features:
 - Async-only enforcement (raises `TypeError` if not `async def`)
+- Decoration-time return type validation (must return Document types or None)
+- Decoration-time input type validation (all parameters must be annotated with serializable types)
 - Laminar tracing (automatic)
 - Document auto-save to DocumentStore (returned documents are extracted and persisted)
 - Source validation (warns if referenced SHA256s don't exist in store)
+
+**Input type validation** — all `@pipeline_task` parameters must be annotated with serializable types. Allowed: `str`, `int`, `float`, `bool`, `Path`, `UUID`, `None`, `Any`, Document subclasses, FlowOptions subclasses, frozen BaseModel, Enum, and `list`/`tuple`/`dict[str, ...]`/`Union` containers thereof. Non-serializable types (mutable models, plain classes) are rejected at decoration time.
 
 #### `@pipeline_flow`
 
@@ -517,14 +548,14 @@ from ai_pipeline_core import pipeline_flow, FlowOptions
 
 @pipeline_flow(estimated_minutes=10, retries=2, timeout_seconds=1200)
 async def my_flow(
-    project_name: str,
+    run_id: str,                     # Must be named 'run_id'
     documents: list[InputDoc],       # Input types extracted from annotation
     flow_options: MyFlowOptions,     # Must be FlowOptions or subclass
 ) -> list[OutputDoc]:                # Output types extracted from annotation
     ...
 ```
 
-The flow's `documents` parameter annotation determines input types, and the return annotation determines output types. The function must have exactly 3 parameters: `(str, list[...], FlowOptions)`. No separate config class needed -- the type contract is in the function signature.
+The flow's `documents` parameter annotation determines input types, and the return annotation determines output types. The function must have exactly 3 parameters. The first must be named `run_id: str`, followed by `documents: list[...]` and `flow_options: FlowOptions`. No separate config class needed -- the type contract is in the function signature.
 
 **FlowOptions** is a base `BaseSettings` class for pipeline configuration. Subclass it to add flow-specific parameters:
 
@@ -538,7 +569,7 @@ class ResearchOptions(FlowOptions):
 
 #### `PipelineDeployment`
 
-Orchestrates multi-flow pipelines with resume, uploads, and webhooks:
+Orchestrates multi-flow pipelines with resume, per-flow uploads, and event publishing:
 
 ```python
 class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
@@ -546,7 +577,7 @@ class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
 
     @staticmethod
     def build_result(
-        project_name: str,
+        run_id: str,
         documents: list[Document],
         options: MyOptions,
     ) -> MyResult:
@@ -564,7 +595,7 @@ pipeline.run_cli(initializer=init_fn, trace_name="my-pipeline")
 
 # Local mode: in-memory store, returns result directly (synchronous)
 result = pipeline.run_local(
-    project_name="test",
+    run_id="test",
     documents=input_docs,
     options=MyOptions(),
 )
@@ -574,11 +605,11 @@ prefect_flow = pipeline.as_prefect_flow()
 ```
 
 Features:
-- **Per-flow resume**: Skips flows whose output documents already exist in the store (with configurable `cache_ttl`, default 24h)
-- **Type chain validation**: At class definition time, validates that each flow's input types are producible by preceding flows
-- **Per-flow uploads**: Upload documents after each flow completes
-- **Concurrency limits**: Cross-run enforcement via Prefect global concurrency limits, with per-process semaphore fallback
-- **CLI mode**: `--start N` / `--end N` for step control, automatic `LocalDocumentStore`
+- **Per-flow resume**: Skips flows with a `FlowCompletion` record in the store (explicit completion tracking, not document-presence inference). Configurable `cache_ttl` (default 24h)
+- **Type chain validation**: At class definition time, validates that at least one of each flow's declared input types is producible by preceding flows (union semantics)
+- **Event publishing**: Per-flow start/completion notifications via Pub/Sub (`pubsub_project_id`, `pubsub_topic_id`)
+- **Concurrency limits**: Cross-run enforcement via Prefect global concurrency limits
+- **CLI mode**: `--start N` / `--end N` for step control, `DualDocumentStore` when ClickHouse is configured
 
 #### Concurrency Limits
 
@@ -614,8 +645,30 @@ async def fetch_data(url: str) -> Data:
 **Behavior:**
 - Limits are auto-created in Prefect server at pipeline start (idempotent upsert)
 - Timeout raises `AcquireConcurrencySlotTimeoutError` (limit doing its job)
-- When Prefect is unavailable, `CONCURRENT` limits fall back to per-process `asyncio.Semaphore`; rate limits proceed unthrottled
+- When Prefect is unavailable, limits proceed unthrottled (logged as warning)
 - Limit names are validated at class definition time (alphanumeric, dashes, underscores)
+
+#### Parallel Execution
+
+`safe_gather` and `safe_gather_indexed` run coroutines in parallel with fault tolerance:
+
+```python
+from ai_pipeline_core import safe_gather, safe_gather_indexed
+
+# safe_gather: returns successes only, filters out failures
+results = await safe_gather(
+    process(doc1), process(doc2), process(doc3),
+    label="processing",
+)  # Returns list of successful results (order may shift)
+
+# safe_gather_indexed: preserves positional correspondence (None for failures)
+results = await safe_gather_indexed(
+    process(doc1), process(doc2), process(doc3),
+    label="processing",
+)  # Returns [result1, None, result3] if doc2 failed
+```
+
+Both raise if all coroutines fail (configurable via `raise_if_all_fail=False`).
 
 #### Deploying to Prefect Cloud
 
@@ -633,6 +686,34 @@ python -m ai_pipeline_core.deployment.deploy
 - `uv` (dependency resolution) and `pip` (wheel download) on the deploy machine
 - `PREFECT_API_URL`, `PREFECT_GCS_BUCKET` configured
 - `uv` on the worker (for offline install)
+
+#### Remote Deployment Client
+
+`RemoteDeployment` is a typed client for calling a remote `PipelineDeployment` via Prefect. Name the client class identically to the server's deployment class so the auto-derived deployment name matches:
+
+```python
+from ai_pipeline_core import RemoteDeployment, DeploymentResult, FlowOptions, Document
+
+class RemoteInputDocument(Document):
+    """Mirror type -- class_name must match the remote pipeline's document type."""
+
+class RemoteResult(DeploymentResult):
+    """Result type matching the remote pipeline's result."""
+    report_count: int = 0
+
+class MyPipeline(RemoteDeployment[RemoteInputDocument, FlowOptions, RemoteResult]):
+    """Client for the remote MyPipeline deployment."""
+
+client = MyPipeline()
+result = await client.run(
+    run_id="test",
+    documents=input_docs,
+    options=FlowOptions(),
+    on_progress=my_progress_callback,  # Optional: async (fraction, message) -> None
+)
+```
+
+The client defines local Document subclasses ("mirror types") whose `class_name` must match the remote pipeline's document types exactly. `run_remote_deployment()` is also available as a lower-level function.
 
 ### Prompt Compiler
 
@@ -663,20 +744,19 @@ class RiskFrameworkGuide(Guide):
 **Specs** — typed prompt definitions with full validation:
 
 ```python
-from ai_pipeline_core import PromptSpec, Phase, Document
+from ai_pipeline_core import PromptSpec, Document
 from pydantic import Field
 
 class SourceDocument(Document):
     """Source material for analysis."""
 
-class AnalysisSpec(PromptSpec, phase=Phase("analysis")):
+class AnalysisSpec(PromptSpec):
     """Analyze source documents for key findings."""
     role = ResearchAnalyst
     input_documents = (SourceDocument,)
     task = "Analyze the provided documents and identify key findings."
     rules = (CiteEvidence,)
     guides = (RiskFrameworkGuide,)
-    output_type = str
     output_structure = "## Key Findings\n## Evidence\n## Gaps"
     output_rules = (DontUseMarkdownTables,)
 
@@ -687,60 +767,44 @@ class AnalysisSpec(PromptSpec, phase=Phase("analysis")):
 **Rendering and sending:**
 
 ```python
-from ai_pipeline_core import render_text, render_preview, send_spec, extract_result
+from ai_pipeline_core import Conversation, render_text, render_preview
 
-# Render with actual values
-prompt = render_text(AnalysisSpec, project_name="ACME", documents=[source_doc])
+# Create spec instance with dynamic field values
+spec = AnalysisSpec(project_name="ACME")
+
+# Render prompt text (for inspection/debugging)
+prompt = render_text(spec, documents=[source_doc])
 
 # Preview with placeholder values (for debugging)
 preview = render_preview(AnalysisSpec)
 
 # Send to LLM via Conversation
-conv = await send_spec(conv, AnalysisSpec, project_name="ACME", documents=[source_doc])
-print(conv.content)
-
-# Extract result from XML-wrapped responses
-result = extract_result(conv.content)  # Extracts text between <result> tags
+conv = await Conversation(model="gemini-3-flash").send_spec(spec, documents=[source_doc])
+print(conv.content)  # <result> tags auto-extracted by send_spec()
 ```
 
-**XML-wrapped output** — for `output_type=str` specs, setting `xml_wrapped = True` adds `<result>` tags to the prompt and enables `extract_result()` extraction. Structured output (`output_type=SomeModel`) uses `send_structured()` automatically.
+**Structured output** — `output_structure` automatically enables `<result>` tag wrapping, sets a stop sequence at `</result>`, and auto-extracts the content in `Conversation.send_spec()`. `conv.content` returns clean text without tags. Structured output (`PromptSpec[SomeModel]`) uses `send_structured()` automatically.
 
-**Phase** is a `str` subclass — any non-empty string is valid (e.g. `Phase("review")`, `Phase("analysis")`). Use whatever labels fit your pipeline.
+**Follow-up specs** — use `follows=ParentSpec` to declare follow-up specs. Follow-up specs inherit context from the parent conversation and don't require `role` or `input_documents`.
 
-**CLI tool** for discovery, inspection, and rendering:
+**CLI tool** for discovery, inspection, rendering, and compilation:
 
 ```bash
-# List all discovered specs
-ai-prompt-compiler list
-
 # Inspect a spec's anatomy (role, docs, fields, rules, output config, token estimate)
 ai-prompt-compiler inspect AnalysisSpec
 
 # Render a prompt preview
 ai-prompt-compiler render AnalysisSpec
 
+# Discover, list, and compile all specs to .prompts/ directory as markdown files
+ai-prompt-compiler compile
+
 # Explicit module:class reference
 ai-prompt-compiler render my_package.specs:AnalysisSpec
 
 # Also available as module:
-python -m ai_pipeline_core.prompt_compiler list
+python -m ai_pipeline_core.prompt_compiler inspect AnalysisSpec
 ```
-
-### Prompt Manager
-
-Jinja2 template management for structured prompts:
-
-```python
-from ai_pipeline_core import PromptManager
-
-# Module-level initialization (uses __file__ for relative template discovery)
-prompts = PromptManager(__file__, prompts_dir="templates")
-
-# Render a template
-prompt = prompts.get("analyze.jinja2", source_id="example.com", task="summarize")
-```
-
-Globals available in all templates: `current_date` (formatted as "01 February 2026").
 
 ### Local Trace Debugging
 
@@ -759,8 +823,7 @@ The directory structure mirrors the execution flow:
   |-- _summary.md           # Static execution summary (always generated)
   |-- artifacts/            # Deduplicated content storage
   |   +-- sha256/
-  |       +-- ab/cd/        # Sharded by hash prefix
-  |           +-- abcdef...1234.txt
+  |       +-- abcdef...1234.txt  # Flat storage, deduped by hash
   +-- 0001_my_flow/         # Root span (numbered for execution order)
       |-- _span.yaml        # Span metadata (timing, status, attributes, I/O refs)
       |-- input.yaml
@@ -807,11 +870,15 @@ CLICKHOUSE_USER=default
 CLICKHOUSE_PASSWORD=your-password
 CLICKHOUSE_SECURE=true
 TRACKING_ENABLED=true
-TRACKING_SUMMARY_MODEL=gemini-3-flash
 
 # Optional: Document Summaries (store-level, LLM-generated)
 DOC_SUMMARY_ENABLED=true
 DOC_SUMMARY_MODEL=gemini-3-flash
+
+# Optional: Pub/Sub event delivery (deployment progress/status)
+PUBSUB_PROJECT_ID=your-gcp-project
+PUBSUB_TOPIC_ID=pipeline-events
+SERVICE_TYPE=your-service-name
 ```
 
 ### Settings Management
@@ -840,11 +907,11 @@ print(settings.app_name)
 
 1. **Decorators**: Use `@pipeline_task` without parameters for most cases, `@pipeline_flow(estimated_minutes=N)` with annotations (always requires parentheses)
 2. **Logging**: Use `get_pipeline_logger(__name__)` -- never `print()` or `logging` module directly
-3. **LLM calls**: Use `Conversation` for multi-turn interactions, `generate()`/`generate_structured()` for single-shot calls
+3. **LLM calls**: Use `Conversation` for all LLM interactions (multi-turn and single-shot)
 4. **Options**: Omit `ModelOptions` unless specifically needed (defaults are production-optimized)
-5. **Documents**: Create with just `name` and `content` -- skip `description`. Always subclass `Document`
+5. **Documents**: Use `create_root()` for pipeline inputs (no provenance), `create()` or `derive()` for derived documents. Always subclass `Document`
 6. **Flow annotations**: Input/output types are in the function signature -- `list[InputDoc]` and `-> list[OutputDoc]`
-7. **Initialization**: `PromptManager` and logger at module scope, not in functions
+7. **Initialization**: Logger at module scope, not in functions
 8. **Document lists**: Use plain `list[Document]` -- no wrapper class needed
 
 ### Import Convention
@@ -852,12 +919,12 @@ print(settings.app_name)
 Always import from the top-level package when possible:
 
 ```python
-# CORRECT - top-level imports
-from ai_pipeline_core import Document, pipeline_flow, pipeline_task, llm, Conversation
+# Top-level imports (preferred)
+from ai_pipeline_core import Document, pipeline_flow, pipeline_task, Conversation
 
-# ALSO CORRECT - store implementations are NOT exported from top-level
-from ai_pipeline_core.document_store.local import LocalDocumentStore
-from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+# Sub-package imports for symbols not at top level
+from ai_pipeline_core.deployment import CompletedRun, DeploymentResultData
+from ai_pipeline_core.llm import ModelOptions
 ```
 
 ## Development
@@ -874,7 +941,7 @@ make test-clickhouse   # ClickHouse integration tests (requires Docker)
 
 ```bash
 make check             # Run ALL checks (lint, typecheck, deadcode, semgrep, docstrings, tests)
-make lint              # Ruff linting (27 rule sets)
+make lint              # Ruff linting (28 rule sets)
 make format            # Auto-format and auto-fix code with ruff
 make typecheck         # Type checking with basedpyright (strict mode)
 make deadcode          # Dead code detection with vulture
@@ -883,7 +950,7 @@ make docstrings-cover  # Docstring coverage (100% required)
 ```
 
 **Static analysis tools:**
-- **Ruff** — 27 rule sets including bugbear, security (bandit), complexity, async enforcement, exception patterns
+- **Ruff** — 28 rule sets including bugbear, security (bandit), complexity, async enforcement, exception patterns
 - **Basedpyright** — strict mode with `reportUnusedCoroutine`, `reportUnreachable`, `reportImplicitStringConcatenation`
 - **Vulture** — dead code detection with framework-aware whitelist
 - **Semgrep** — custom rules in `.semgrep/` for frozen model mutable fields, async enforcement, docstring quality, architecture constraints
@@ -900,17 +967,14 @@ make docs-ai-check  # Validate .ai-docs/ freshness and completeness
 
 The `examples/` directory contains:
 
-- **`showcase.py`** -- Full pipeline demonstrating Document types, `@pipeline_task` auto-save, `@pipeline_flow` annotations, `PipelineDeployment`, and CLI mode
-- **`showcase_document_store.py`** -- DocumentStore usage patterns: MemoryDocumentStore, LocalDocumentStore, RunContext scoping, pipeline tasks with auto-save, and `run_local()` execution
-- **`showcase_prompt_compiler.py`** -- Prompt compiler features: Role, Rule, OutputRule, Guide, PromptSpec, rendering, XML-wrapped output, `extract_result()`, definition-time validation
+- **`showcase.py`** -- Full 3-stage pipeline: Conversation API, multi-turn LLM analysis, structured extraction, PipelineDeployment with CLI, resume/skip, progress tracking, image processing
+- **`showcase_document_store.py`** -- Document store usage: pipeline tasks with auto-save, flow execution via `run_local()`, document provenance tracking
+- **`showcase_prompt_compiler.py`** -- Prompt compiler features: Role, Rule, OutputRule, Guide, PromptSpec, rendering, output_structure, follow-up specs, definition-time validation
 
 Run examples:
 ```bash
-# CLI mode with output directory
+# Full pipeline showcase (requires OPENAI_BASE_URL and OPENAI_API_KEY)
 python examples/showcase.py ./output
-
-# With custom options
-python examples/showcase.py ./output --max-keywords 8
 
 # Document store showcase (no arguments needed)
 python examples/showcase_document_store.py
@@ -934,7 +998,6 @@ ai-pipeline-core/
 |   |-- observability/     # Tracing, tracking, and debug trace writer
 |   |-- pipeline/          # Pipeline decorators, FlowOptions, and concurrency limits
 |   |-- prompt_compiler/   # Type-safe prompt specs, rendering, and CLI tool
-|   |-- prompt_manager.py  # Jinja2 template management
 |   |-- settings.py        # Configuration management (Pydantic BaseSettings)
 |   +-- exceptions.py      # Framework exceptions (LLMError, DocumentNameError, etc.)
 |-- tests/                 # Comprehensive test suite

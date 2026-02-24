@@ -1,7 +1,6 @@
 """Unified pipeline run response contract.
 
-Single source of truth for the response shape used by both
-webhook push (ai-pipeline-core) and polling pull (unified-middleware).
+Single source of truth for the response shape shared with unified-middleware.
 """
 
 from datetime import datetime
@@ -36,7 +35,7 @@ class _RunBase(BaseModel):
     """Common fields on every run response variant."""
 
     flow_run_id: UUID
-    project_name: str
+    run_id: str
     state: RunState
     timestamp: datetime
 

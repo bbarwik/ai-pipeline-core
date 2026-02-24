@@ -20,6 +20,43 @@ rules:
       exclude:
         - "**/test_*"
 
+  - id: no-document-model-copy
+    pattern: $DOC.model_copy(...)
+    message: "Document.model_copy() is blocked. Use derive() or create()."
+    severity: ERROR
+    languages: [python]
+    paths:
+      exclude:
+        # Framework internals that use model_copy on non-Document Pydantic models
+        # (ModelOptions, ModelResponse, Conversation, DeploymentResult, SpanInfo)
+        - "**/_llm_core/**"
+        - "**/llm/conversation.py"
+        - "**/deployment/base.py"
+        - "**/observability/_tracking/**"
+        - "**/prompt_compiler/_*.py"
+        - "**/prompt_compiler/api.py"
+
+  - id: no-model-convert-legacy
+    pattern: $DOC.model_convert(...)
+    message: "model_convert() renamed to retype(new_type, provenance='preserve'|'reset')"
+    severity: ERROR
+    languages: [python]
+
+  - id: prefer-document-parsed-over-validate
+    pattern-either:
+      - pattern: $MODEL.model_validate_json($DOC.text)
+      - pattern: $MODEL.model_validate_json($DOC.content)
+    message: >
+      Use doc.parsed (for Document[T]) or doc.as_pydantic_model(Model) instead of
+      manual Model.model_validate_json(doc.text). Direct model_validate bypasses
+      the Document API and misses the typed content system.
+    severity: WARNING
+    languages: [python]
+    paths:
+      exclude:
+        - "**/test_*"
+        - "ai_pipeline_core/**"
+
   - id: json-yaml-fallback
     patterns:
       - pattern: |

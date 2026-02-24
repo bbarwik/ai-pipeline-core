@@ -19,10 +19,10 @@ class TestFlowOptionsInheritance:
         assert not hasattr(options, "core_model")
         assert not hasattr(options, "small_model")
 
-    def test_base_flow_options_accepts_extra(self):
-        """Test that base FlowOptions accepts extra fields (extra='allow')."""
-        options = FlowOptions(unknown_field="value")
-        assert options.unknown_field == "value"
+    def test_base_flow_options_rejects_extra(self):
+        """Test that base FlowOptions rejects extra fields (extra='forbid')."""
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            FlowOptions(unknown_field="value")
 
     def test_flow_options_is_frozen(self):
         """Test that FlowOptions instances are immutable."""
@@ -131,11 +131,11 @@ class TestFlowOptionsInheritance:
 
         # Valid options
         options = ValidatedFlowOptions(temperature=0.5)
-        assert options.temperature == 0.5
+        assert options.temperature == pytest.approx(0.5)
 
         # Valid high temperature with different models
         options = ValidatedFlowOptions(temperature=1.8, core_model="gpt-5.1", small_model="gpt-5-mini")
-        assert options.temperature == 1.8
+        assert options.temperature == pytest.approx(1.8)
 
         # Invalid temperature
         with pytest.raises(ValidationError):
@@ -157,13 +157,13 @@ class TestDocumentsFlowWithInheritedOptions:
         """Test pipeline_flow with base FlowOptions."""
 
         @pipeline_flow()
-        async def test_flow(project_name: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
-            assert isinstance(project_name, str)
+        async def test_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+            assert isinstance(run_id, str)
             assert isinstance(flow_options, FlowOptions)
             return list([FlowOutputDocument(name="output", content=b"test")])
 
         result = asyncio.run(
-            test_flow(project_name="test", documents=list([]), flow_options=FlowOptions())  # type: ignore[call-overload]
+            test_flow(run_id="test", documents=list([]), flow_options=FlowOptions())  # type: ignore[call-overload]
         )
         assert isinstance(result, list)
 
@@ -177,7 +177,7 @@ class TestDocumentsFlowWithInheritedOptions:
 
         @pipeline_flow()  # type: ignore[arg-type]
         async def test_flow(
-            project_name: str,
+            run_id: str,
             documents: list[Document],
             flow_options: CustomFlowOptions,
         ) -> list[Document]:
@@ -191,7 +191,7 @@ class TestDocumentsFlowWithInheritedOptions:
         custom_options = CustomFlowOptions(core_model="custom-core", batch_size=20, enable_logging=False)
 
         result = asyncio.run(
-            test_flow(project_name="test", documents=list([]), flow_options=custom_options)  # type: ignore[call-overload]
+            test_flow(run_id="test", documents=list([]), flow_options=custom_options)  # type: ignore[call-overload]
         )
         assert isinstance(result, list)
 
@@ -211,7 +211,7 @@ class TestDocumentsFlowWithInheritedOptions:
             metadata: dict[str, Any] = Field(default_factory=dict)
 
         @pipeline_flow()  # type: ignore[arg-type]
-        async def advanced_flow(project_name: str, documents: list[Document], flow_options: AdvancedFlowOptions) -> list[Document]:
+        async def advanced_flow(run_id: str, documents: list[Document], flow_options: AdvancedFlowOptions) -> list[Document]:
             assert flow_options.core_model == "gemini-3-pro"
             assert flow_options.small_model == "custom-small"
             assert flow_options.api_config.endpoint == "https://custom.api.com"
@@ -231,7 +231,7 @@ class TestDocumentsFlowWithInheritedOptions:
 
         result = asyncio.run(
             advanced_flow(  # type: ignore[call-overload]
-                project_name="advanced-test", documents=list([]), flow_options=options
+                run_id="advanced-test", documents=list([]), flow_options=options
             )
         )
         assert isinstance(result, list)
@@ -243,13 +243,13 @@ class TestDocumentsFlowWithInheritedOptions:
             required_field: str  # No default - required field
 
         @pipeline_flow()  # type: ignore[arg-type]
-        async def strict_flow(project_name: str, documents: list[Document], flow_options: StrictFlowOptions) -> list[Document]:
+        async def strict_flow(run_id: str, documents: list[Document], flow_options: StrictFlowOptions) -> list[Document]:
             assert flow_options.required_field == "test-value"
             return list([FlowOutputDocument(name="output", content=b"test")])
 
         options = StrictFlowOptions(required_field="test-value")
         result = asyncio.run(
-            strict_flow(project_name="test", documents=list([]), flow_options=options)  # type: ignore[call-overload]
+            strict_flow(run_id="test", documents=list([]), flow_options=options)  # type: ignore[call-overload]
         )
         assert isinstance(result, list)
 
@@ -268,7 +268,7 @@ class TestDocumentsFlowWithInheritedOptions:
             feature_flags: dict[str, bool] = Field(default_factory=dict)
 
         @pipeline_flow()  # type: ignore[arg-type]
-        async def multi_level_flow(project_name: str, documents: list[Document], flow_options: SpecificProjectOptions) -> list[Document]:
+        async def multi_level_flow(run_id: str, documents: list[Document], flow_options: SpecificProjectOptions) -> list[Document]:
             assert flow_options.core_model == "gemini-3-pro"
             assert flow_options.organization == "custom-org"
             assert flow_options.environment == "production"
@@ -283,7 +283,7 @@ class TestDocumentsFlowWithInheritedOptions:
 
         result = asyncio.run(
             multi_level_flow(  # type: ignore[call-overload]
-                project_name="multi-level", documents=list([]), flow_options=options
+                run_id="multi-level", documents=list([]), flow_options=options
             )
         )
         assert isinstance(result, list)
@@ -301,7 +301,7 @@ class TestDocumentsFlowWithInheritedOptions:
 
         @pipeline_flow()
         async def convert_input_documents(
-            project_name: str,
+            run_id: str,
             documents: list[Document],
             flow_options: ProjectFlowOptions,
         ) -> list[Document]:
@@ -311,5 +311,5 @@ class TestDocumentsFlowWithInheritedOptions:
             return list([FlowOutputDocument(name="output", content=b"test")])
 
         options = ProjectFlowOptions()
-        result = asyncio.run(convert_input_documents(project_name="test", documents=list([]), flow_options=options))
+        result = asyncio.run(convert_input_documents(run_id="test", documents=list([]), flow_options=options))
         assert isinstance(result, list)

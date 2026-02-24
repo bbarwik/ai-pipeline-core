@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ai_pipeline_core.observability import LocalTraceWriter, TraceDebugConfig, WriteJob
+from ai_pipeline_core.observability._debug import LocalTraceWriter, TraceDebugConfig, WriteJob
 
 
 @pytest.fixture
@@ -254,7 +254,7 @@ class TestLocalTraceWriter:
         assert "llm" in span_meta
         assert span_meta["llm"]["model"] == "gpt-5.1"
         assert span_meta["llm"]["input_tokens"] == 1000
-        assert span_meta["llm"]["cost"] == 0.05
+        assert span_meta["llm"]["cost"] == pytest.approx(0.05)
 
     def test_unset_status_treated_as_completed(self, writer: LocalTraceWriter, config: TraceDebugConfig) -> None:
         """Test UNSET status code (from Laminar @observe) is treated as completed."""

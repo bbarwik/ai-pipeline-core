@@ -2,12 +2,13 @@
 
 import pytest
 
-from ai_pipeline_core.document_store import DocumentNode, DocumentStore, set_document_store, walk_provenance
+from ai_pipeline_core.document_store._protocol import DocumentStore, set_document_store
+from ai_pipeline_core.document_store._models import DocumentNode, walk_provenance
 from ai_pipeline_core.document_store._dual_store import DualDocumentStore
-from ai_pipeline_core.document_store.memory import MemoryDocumentStore
+from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_document_sha256
-from ai_pipeline_core.documents._types import RunScope
+from ai_pipeline_core.documents.types import RunScope
 
 
 class DualReportDoc(Document):
@@ -21,7 +22,7 @@ def _reset_store():
 
 
 def _make(name: str, content: str = "test") -> DualReportDoc:
-    return DualReportDoc.create(name=name, content=content)
+    return DualReportDoc.create_root(name=name, content=content, reason="test input")
 
 
 class TestProtocolCompliance:
@@ -285,7 +286,7 @@ class TestLoadNodesBySha256sDelegation:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         parent = _make("parent.md", "parent content")
-        child = DualReportDoc.create(name="child.md", content="child", sources=(parent.sha256,))
+        child = DualReportDoc.create(name="child.md", content="child", derived_from=(parent.sha256,))
         await dual.save(parent, RunScope("run1"))
         await dual.save(child, RunScope("run1"))
         graph = await walk_provenance(child.sha256, dual.load_nodes_by_sha256s)
@@ -304,3 +305,25 @@ class TestShutdown:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         dual.flush()  # No exception
+
+
+class TestFlowCompletion:
+    @pytest.mark.asyncio
+    async def test_save_fans_out_to_both_stores(self):
+        primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
+        dual = DualDocumentStore(primary=primary, secondary=secondary)
+        await dual.save_flow_completion(RunScope("proj/run1"), "flow_a", ("sha1",), ("sha2",))
+        # Both stores should have the record
+        p = await primary.get_flow_completion(RunScope("proj/run1"), "flow_a")
+        s = await secondary.get_flow_completion(RunScope("proj/run1"), "flow_a")
+        assert p is not None and p.output_sha256s == ("sha2",)
+        assert s is not None and s.output_sha256s == ("sha2",)
+
+    @pytest.mark.asyncio
+    async def test_get_reads_from_primary_only(self):
+        primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
+        dual = DualDocumentStore(primary=primary, secondary=secondary)
+        # Save only in secondary
+        await secondary.save_flow_completion(RunScope("proj/run1"), "flow_a", (), ())
+        result = await dual.get_flow_completion(RunScope("proj/run1"), "flow_a")
+        assert result is None  # Primary doesn't have it

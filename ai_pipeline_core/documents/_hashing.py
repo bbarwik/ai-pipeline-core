@@ -8,7 +8,7 @@ import hashlib
 from base64 import b32encode
 from typing import Any, Protocol
 
-from ai_pipeline_core.documents._types import DocumentSha256
+from ai_pipeline_core.documents.types import DocumentSha256
 
 
 class _Hashable(Protocol):
@@ -16,17 +16,17 @@ class _Hashable(Protocol):
 
     name: str
     content: bytes
-    sources: tuple[str, ...]
-    origins: tuple[str, ...]
+    derived_from: tuple[str, ...]
+    triggered_by: tuple[DocumentSha256, ...]
     attachments: Any
 
 
 def compute_document_sha256(doc: _Hashable) -> DocumentSha256:
     """Compute the document identity hash including provenance.
 
-    Fields included: name, content, sources, origins, attachments.
+    Fields included: name, content, derived_from, triggered_by, attachments.
     Uses length-prefixed fields with null-byte separators for collision resistance.
-    Groups (sources, origins, attachments) are count-prefixed for unambiguous boundaries.
+    Groups (derived_from, triggered_by, attachments) are count-prefixed for unambiguous boundaries.
     Result is BASE32 encoded (uppercase, no padding), consistent with Document.sha256.
 
     Excluded from hash: description, class_name.
@@ -36,17 +36,17 @@ def compute_document_sha256(doc: _Hashable) -> DocumentSha256:
     _hash_field(h, doc.name.encode("utf-8"))
     _hash_field(h, doc.content)
 
-    # Sources group (sorted for order-independence)
-    sorted_sources = sorted(doc.sources)
-    _hash_field(h, str(len(sorted_sources)).encode("ascii"))
-    for source in sorted_sources:
-        _hash_field(h, source.encode("utf-8"))
+    # derived_from group (sorted for order-independence)
+    sorted_derived = sorted(doc.derived_from)
+    _hash_field(h, str(len(sorted_derived)).encode("ascii"))
+    for ref in sorted_derived:
+        _hash_field(h, ref.encode("utf-8"))
 
-    # Origins group (sorted for order-independence)
-    sorted_origins = sorted(doc.origins)
-    _hash_field(h, str(len(sorted_origins)).encode("ascii"))
-    for origin in sorted_origins:
-        _hash_field(h, origin.encode("utf-8"))
+    # triggered_by group (sorted for order-independence)
+    sorted_triggers = sorted(doc.triggered_by)
+    _hash_field(h, str(len(sorted_triggers)).encode("ascii"))
+    for trigger in sorted_triggers:
+        _hash_field(h, trigger.encode("utf-8"))
 
     # Attachments group (sorted by name)
     sorted_atts = sorted(doc.attachments, key=lambda a: a.name)

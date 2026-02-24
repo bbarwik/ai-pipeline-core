@@ -13,21 +13,21 @@ testcontainers_clickhouse = pytest.importorskip("testcontainers.clickhouse")
 
 from testcontainers.clickhouse import ClickHouseContainer
 
-from ai_pipeline_core.document_store import DocumentNode, walk_provenance
-from ai_pipeline_core.document_store.clickhouse import (
+from ai_pipeline_core.document_store._models import DocumentNode, walk_provenance
+from ai_pipeline_core.document_store._clickhouse import (
+    DDL_CONTENT,
+    DDL_INDEX,
+    DDL_RUN_DOCUMENTS,
     TABLE_DOCUMENT_CONTENT,
     TABLE_DOCUMENT_INDEX,
     TABLE_RUN_DOCUMENTS,
-    _DDL_CONTENT,
-    _DDL_INDEX,
-    _DDL_RUN_DOCUMENTS,
     _FAILURE_THRESHOLD,
     _MAX_BUFFER_SIZE,
     ClickHouseDocumentStore,
 )
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
-from ai_pipeline_core.documents._types import DocumentSha256, RunScope
+from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 from ai_pipeline_core.settings import settings
 
 pytestmark = pytest.mark.clickhouse
@@ -64,7 +64,9 @@ def store(clickhouse_container: ClickHouseContainer) -> ClickHouseDocumentStore:
 
 
 def _make(cls: type[Document], name: str, content: str = "test content", **kwargs: object) -> Document:
-    return cls.create(name=name, content=content, **kwargs)
+    if "derived_from" in kwargs or "triggered_by" in kwargs:
+        return cls.create(name=name, content=content, **kwargs)
+    return cls.create_root(name=name, content=content, reason="test fixture", **kwargs)
 
 
 async def _optimize_tables(store: ClickHouseDocumentStore) -> None:
@@ -84,18 +86,18 @@ async def _query_count(store: ClickHouseDocumentStore, table: str, where: str = 
 
 class TestDDL:
     def test_ddl_statements_are_valid_sql(self):
-        assert "ReplacingMergeTree" in _DDL_CONTENT
-        assert "ReplacingMergeTree" in _DDL_INDEX
-        assert "ReplacingMergeTree" in _DDL_RUN_DOCUMENTS
-        assert "content_sha256" in _DDL_CONTENT
-        assert "document_sha256" in _DDL_INDEX
-        assert "run_scope" in _DDL_RUN_DOCUMENTS
-        assert "stored_at" in _DDL_CONTENT
-        assert "stored_at" in _DDL_INDEX
-        assert "bloom_filter" not in _DDL_CONTENT
-        assert "bloom_filter" not in _DDL_INDEX
-        assert "bloom_filter" not in _DDL_RUN_DOCUMENTS
-        assert "ZSTD" in _DDL_INDEX
+        assert "ReplacingMergeTree" in DDL_CONTENT
+        assert "ReplacingMergeTree" in DDL_INDEX
+        assert "ReplacingMergeTree" in DDL_RUN_DOCUMENTS
+        assert "content_sha256" in DDL_CONTENT
+        assert "document_sha256" in DDL_INDEX
+        assert "run_scope" in DDL_RUN_DOCUMENTS
+        assert "stored_at" in DDL_CONTENT
+        assert "stored_at" in DDL_INDEX
+        assert "bloom_filter" not in DDL_CONTENT
+        assert "bloom_filter" not in DDL_INDEX
+        assert "bloom_filter" not in DDL_RUN_DOCUMENTS
+        assert "ZSTD" in DDL_INDEX
 
     async def test_tables_created_in_clickhouse(self, store: ClickHouseDocumentStore):
         """Verify DDL actually creates tables with correct engines."""
@@ -165,7 +167,7 @@ class TestSaveAndLoad:
         assert await store.load(RunScope("nonexistent-scope"), [CHDocA]) == []
 
     async def test_save_and_load_preserves_metadata(self, store: ClickHouseDocumentStore):
-        """Verify description, sources, and origins round-trip through ClickHouse."""
+        """Verify description, derived_from, and triggered_by round-trip through ClickHouse."""
         # Create a real document to use its sha256 as an origin
         origin_doc = _make(CHDocA, "origin.txt", "origin content")
         doc = _make(
@@ -173,15 +175,15 @@ class TestSaveAndLoad:
             "meta.txt",
             "metadata test",
             description="A test document",
-            sources=("https://example.com",),
-            origins=(origin_doc.sha256,),
+            derived_from=("https://example.com",),
+            triggered_by=(origin_doc.sha256,),
         )
         await store.save(doc, RunScope("test-metadata"))
         loaded = await store.load(RunScope("test-metadata"), [CHDocA])
         assert len(loaded) == 1
         assert loaded[0].description == "A test document"
-        assert "https://example.com" in loaded[0].sources
-        assert loaded[0].origins == (origin_doc.sha256,)
+        assert "https://example.com" in loaded[0].derived_from
+        assert loaded[0].triggered_by == (origin_doc.sha256,)
 
     async def test_save_and_load_empty_content(self, store: ClickHouseDocumentStore):
         doc = CHDocA(name="empty.txt", content=b"")
@@ -716,7 +718,7 @@ class TestCircuitBreaker:
 
         for i in range(_MAX_BUFFER_SIZE + 100):
             bad_store._buffer.append(
-                __import__("ai_pipeline_core.document_store.clickhouse", fromlist=["_BufferedWrite"])._BufferedWrite(
+                __import__("ai_pipeline_core.document_store._clickhouse", fromlist=["_BufferedWrite"])._BufferedWrite(
                     document=_make(CHDocA, f"buf-{i}.txt"), run_scope=RunScope("test")
                 )
             )
@@ -731,7 +733,7 @@ class TestCircuitBreaker:
         await store.save(doc1, RunScope("test-flush"))
 
         # Manually buffer a write (simulating outage)
-        from ai_pipeline_core.document_store.clickhouse import _BufferedWrite
+        from ai_pipeline_core.document_store._clickhouse import _BufferedWrite
 
         store._buffer.append(_BufferedWrite(document=doc2, run_scope=RunScope("test-flush")))
         store._circuit_open = True
@@ -796,16 +798,16 @@ class TestLoadBySha256s:
             "meta.txt",
             "metadata",
             description="A doc",
-            sources=("https://example.com",),
-            origins=(origin.sha256,),
+            derived_from=("https://example.com",),
+            triggered_by=(origin.sha256,),
         )
         await store.save(doc, RunScope("test-load-sha-meta"))
         result = await store.load_by_sha256s([doc.sha256], CHDocA, RunScope("test-load-sha-meta"))
         assert doc.sha256 in result
         loaded = result[doc.sha256]
         assert loaded.description == "A doc"
-        assert "https://example.com" in loaded.sources
-        assert loaded.origins == (origin.sha256,)
+        assert "https://example.com" in loaded.derived_from
+        assert loaded.triggered_by == (origin.sha256,)
 
     async def test_cross_scope_lookup_without_run_scope(self, store: ClickHouseDocumentStore):
         """When run_scope=None, searches across all scopes."""
@@ -916,16 +918,16 @@ class TestLoadNodesBySha256s:
             name="meta.txt",
             content="metadata content for test",
             description="A doc",
-            sources=("https://example.com",),
-            origins=(origin.sha256,),
+            derived_from=("https://example.com",),
+            triggered_by=(origin.sha256,),
         )
         await store.save(doc, RunScope("test-nodes-meta"))
         result = await store.load_nodes_by_sha256s([doc.sha256])
         node = result[doc.sha256]
         assert isinstance(node, DocumentNode)
         assert node.description == "A doc"
-        assert "https://example.com" in node.sources
-        assert origin.sha256 in node.origins
+        assert "https://example.com" in node.derived_from
+        assert origin.sha256 in node.triggered_by
 
 
 class TestCrossPipelineProvenance:
@@ -938,20 +940,20 @@ class TestCrossPipelineProvenance:
         source_a = CHDocB.create(
             name="source_a.md",
             content="Ethereum whitepaper provenance chain",
-            sources=("https://ethereum.org/whitepaper",),
-            origins=(task.sha256,),
+            derived_from=("https://ethereum.org/whitepaper",),
+            triggered_by=(task.sha256,),
         )
         source_b = CHDocB.create(
             name="source_b.md",
             content="Ethereum wiki provenance chain",
-            sources=("https://en.wikipedia.org/wiki/Ethereum",),
-            origins=(task.sha256,),
+            derived_from=("https://en.wikipedia.org/wiki/Ethereum",),
+            triggered_by=(task.sha256,),
         )
         report = CHDocA.create(
             name="report.md",
             content="# Ethereum Research Report provenance chain",
-            sources=(source_a.sha256, source_b.sha256),
-            origins=(task.sha256,),
+            derived_from=(source_a.sha256, source_b.sha256),
+            triggered_by=(task.sha256,),
         )
         for doc in [task, source_a, source_b, report]:
             await store.save(doc, scope)
@@ -962,19 +964,19 @@ class TestCrossPipelineProvenance:
         assert all(sha in graph for sha in [report.sha256, source_a.sha256, source_b.sha256, task.sha256])
 
         # Extract external URLs
-        urls = {src for node in graph.values() for src in node.sources if "://" in src}
+        urls = {src for node in graph.values() for src in node.derived_from if "://" in src}
         assert "https://ethereum.org/whitepaper" in urls
         assert "https://en.wikipedia.org/wiki/Ethereum" in urls
 
-    async def test_provenance_graph_with_url_and_sha256_sources(self, store: ClickHouseDocumentStore):
+    async def test_provenance_graph_with_url_and_sha256_derived_from(self, store: ClickHouseDocumentStore):
         """Provenance graph correctly follows SHA256 refs and ignores URL refs."""
         scope = RunScope("test-provenance-mixed")
         parent = _make(CHDocA, "parent.md", "parent content for mixed provenance")
         child = CHDocA.create(
             name="child.md",
             content="child content for mixed provenance",
-            sources=(parent.sha256, "https://example.com/api"),
-            origins=(),
+            derived_from=(parent.sha256, "https://example.com/api"),
+            triggered_by=(),
         )
         await store.save(parent, scope)
         await store.save(child, scope)
@@ -982,8 +984,8 @@ class TestCrossPipelineProvenance:
         graph = await walk_provenance(child.sha256, store.load_nodes_by_sha256s)
         assert len(graph) == 2
         child_node = graph[child.sha256]
-        assert parent.sha256 in child_node.sources
-        assert "https://example.com/api" in child_node.sources
+        assert parent.sha256 in child_node.derived_from
+        assert "https://example.com/api" in child_node.derived_from
 
 
 # --- End-to-End with LLM ---
@@ -995,7 +997,7 @@ class TestSummariesWithLLM:
 
     @pytest.mark.skipif(not HAS_API_KEYS, reason="OpenAI API keys not configured")
     async def test_save_generate_summary_and_persist(self, store: ClickHouseDocumentStore):
-        from ai_pipeline_core.observability._summary import generate_document_summary
+        from ai_pipeline_core.document_store._summary_llm import generate_document_summary
 
         doc = _make(
             CHDocA,
@@ -1022,7 +1024,7 @@ class TestSummariesWithLLM:
     @pytest.mark.skipif(not HAS_API_KEYS, reason="OpenAI API keys not configured")
     async def test_llm_summaries_multiple_documents(self, store: ClickHouseDocumentStore):
         """Generate and persist LLM summaries for multiple documents, verify all round-trip."""
-        from ai_pipeline_core.observability._summary import generate_document_summary
+        from ai_pipeline_core.document_store._summary_llm import generate_document_summary
 
         docs = [
             _make(CHDocA, "code_review.md", "Python function for sorting a list of dictionaries by multiple keys."),

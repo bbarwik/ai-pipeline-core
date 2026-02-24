@@ -73,9 +73,13 @@ rules:
     languages: [python]
 
   - id: no-document-subclass-in-framework
-    pattern: |
-      class $NAME(Document):
-          ...
+    pattern-either:
+      - pattern: |
+          class $NAME(Document):
+              ...
+      - pattern: |
+          class $NAME(Document[$T]):
+              ...
     message: "Document subclasses must not be defined inside ai_pipeline_core — Document is a base class for applications to subclass"
     severity: ERROR
     languages: [python]
@@ -91,3 +95,15 @@ rules:
     languages: [python]
     paths:
       include: ["ai_pipeline_core/"]
+
+  - id: suspicious-flow-options-inheritance
+    pattern-regex: 'class\s+\w*(?:Task|Writer|Processor|Handler|Worker|Config)\w*\(FlowOptions\)'
+    message: >
+      This class name suggests task-level configuration but inherits FlowOptions
+      (BaseSettings). FlowOptions fields are overridable via environment variables.
+      Use BaseModel instead for programmatically-constructed options.
+    severity: WARNING
+    languages: [python]
+    paths:
+      exclude:
+        - "**/tests/**"

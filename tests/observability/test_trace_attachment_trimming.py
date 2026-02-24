@@ -3,7 +3,7 @@
 from ai_pipeline_core.observability._trimming import (
     _trim_attachment_list,
     _trim_document_content,
-    _trim_documents_in_data,
+    trim_documents_in_data,
 )
 
 
@@ -151,7 +151,7 @@ class TestTrimDocumentContentWithAttachments:
 
 
 class TestTrimDocumentsInDataWithAttachments:
-    """Tests for _trim_documents_in_data with attachments."""
+    """Tests for trim_documents_in_data with attachments."""
 
     def test_nested_structure_with_attachments(self):
         data = {
@@ -165,7 +165,7 @@ class TestTrimDocumentsInDataWithAttachments:
                 },
             ],
         }
-        result = _trim_documents_in_data(data)
+        result = trim_documents_in_data(data)
         assert result["docs"][0]["attachments"][0]["content"] == "[binary content removed]"
 
     def test_list_of_documents_with_attachments(self):
@@ -178,6 +178,6 @@ class TestTrimDocumentsInDataWithAttachments:
                 ],
             },
         ]
-        result = _trim_documents_in_data(data)
+        result = trim_documents_in_data(data)
         assert result[0]["content"] == "flow text"  # short content kept
         assert " ... [trimmed 100 chars] ... " in result[0]["attachments"][0]["content"]

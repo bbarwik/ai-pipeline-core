@@ -424,7 +424,8 @@ def test_render_guide_has_module_header():
 def test_render_guide_includes_function_section():
     data = _empty_guide(functions=[_make_function(name="do_stuff", is_async=True)])
     output = render_guide(data)
-    assert "# === FUNCTIONS ===" in output
+    assert "## Functions" in output
+    assert "```python" in output
     assert "async def do_stuff" in output
 
 
@@ -435,15 +436,26 @@ def test_render_guide_includes_example_sections():
         error_examples=[err_ex],
     )
     output = render_guide(data)
-    assert "# === EXAMPLES (from tests/) ===" in output
-    assert "# === ERROR EXAMPLES (What NOT to Do) ===" in output
+    assert "## Examples" in output
+    assert "## Error Examples" in output
 
 
-def test_render_guide_size_header():
+def test_render_guide_auto_generated_header():
     data = _empty_guide()
     output = render_guide(data)
-    assert "# SIZE:" in output
-    assert "KB" in output
+    assert "# AUTO-GENERATED" in output
+
+
+def test_render_guide_version_header():
+    data = _empty_guide()
+    output = render_guide(data, version="1.2.3")
+    assert "# VERSION: 1.2.3" in output
+
+
+def test_render_guide_no_version_header_when_empty():
+    data = _empty_guide()
+    output = render_guide(data)
+    assert "# VERSION:" not in output
 
 
 def test_render_guide_includes_method_body():
@@ -891,7 +903,7 @@ def test_build_guide_no_internal_types_when_none_referenced(tmp_path):
 
 
 def test_render_guide_includes_internal_types_section():
-    """Rendered guide includes INTERNAL TYPES section when present."""
+    """Rendered guide includes Internal Types section when present."""
     private_cls = _make_class(
         name="_MyProtocol",
         is_public=False,
@@ -899,20 +911,20 @@ def test_render_guide_includes_internal_types_section():
     )
     data = _empty_guide(internal_types=[private_cls])
     output = render_guide(data)
-    assert "# === INTERNAL TYPES (referenced by public API) ===" in output
+    assert "## Internal Types" in output
     assert "class _MyProtocol" in output
     assert "def __call__" in output
 
 
 def test_render_guide_no_internal_types_section_when_empty():
-    """No INTERNAL TYPES section when internal_types is empty."""
+    """No Internal Types section when internal_types is empty."""
     data = _empty_guide()
     output = render_guide(data)
-    assert "INTERNAL TYPES" not in output
+    assert "Internal Types" not in output
 
 
 def test_internal_types_section_before_public_api():
-    """INTERNAL TYPES section appears before PUBLIC API."""
+    """Internal Types section appears before Public API."""
     private_cls = _make_class(name="_Proto", is_public=False)
     data = _empty_guide(
         external_bases={"BaseModel"},
@@ -920,8 +932,8 @@ def test_internal_types_section_before_public_api():
         classes=[_make_class(name="MyClass")],
     )
     output = render_guide(data)
-    internal_idx = output.index("# === INTERNAL TYPES")
-    api_idx = output.index("# === PUBLIC API")
+    internal_idx = output.index("## Internal Types")
+    api_idx = output.index("## Public API")
     assert internal_idx < api_idx
 
 
@@ -934,7 +946,7 @@ def test_render_guide_no_dependencies_stubs():
     """DEPENDENCIES (Resolved) section with class stubs is removed."""
     data = _empty_guide(external_bases={"BaseModel"}, classes=[_make_class(name="Foo")])
     output = render_guide(data)
-    assert "# === DEPENDENCIES (Resolved) ===" not in output
+    assert "DEPENDENCIES (Resolved)" not in output
     assert "# DEPENDS: BaseModel" in output
 
 
@@ -966,6 +978,22 @@ def test_render_guide_no_tag_for_normal_class():
     output = render_guide(data)
     assert "# Protocol" not in output
     assert "# Enum" not in output
+
+
+def test_render_guide_class_field_descriptions():
+    cls = _make_class(
+        name="Document",
+        class_vars=(
+            ("name", "str", "", "Filename with extension"),
+            ("content", "bytes", "", "Raw binary content"),
+            ("derived_from", "tuple[str, ...]", "()", "Content provenance hashes or URLs"),
+        ),
+    )
+    data = _empty_guide(classes=[cls])
+    output = render_guide(data)
+    assert "name: str  # Filename with extension" in output
+    assert "content: bytes  # Raw binary content" in output
+    assert "derived_from: tuple[str, ...] = ()  # Content provenance hashes or URLs" in output
 
 
 # ---------------------------------------------------------------------------
@@ -1002,14 +1030,14 @@ def test_render_guide_types_and_constants_section():
     val = _make_value(name="DocumentSha256", source='DocumentSha256 = NewType("DocumentSha256", str)', kind="NewType")
     data = _empty_guide(values=[val])
     output = render_guide(data)
-    assert "# === TYPES & CONSTANTS ===" in output
+    assert "## Types & Constants" in output
     assert "DocumentSha256 = NewType" in output
 
 
 def test_render_guide_no_types_section_when_empty():
     data = _empty_guide()
     output = render_guide(data)
-    assert "TYPES & CONSTANTS" not in output
+    assert "Types & Constants" not in output
 
 
 def test_render_guide_types_section_before_public_api():
@@ -1017,8 +1045,8 @@ def test_render_guide_types_section_before_public_api():
     cls = _make_class(name="Foo")
     data = _empty_guide(values=[val], classes=[cls])
     output = render_guide(data)
-    types_idx = output.index("# === TYPES & CONSTANTS")
-    api_idx = output.index("# === PUBLIC API")
+    types_idx = output.index("## Types & Constants")
+    api_idx = output.index("## Public API")
     assert types_idx < api_idx
 
 
@@ -1047,13 +1075,13 @@ def test_render_guide_no_purpose_when_empty():
 
 def test_render_guide_imports_section():
     data = _empty_guide()
-    data.imports = ["Conversation", "generate"]
+    data.imports = ["Conversation", "ModelOptions"]
     output = render_guide(data)
-    assert "# === IMPORTS ===" in output
-    assert "from ai_pipeline_core import Conversation, generate" in output
+    assert "## Imports" in output
+    assert "from ai_pipeline_core import Conversation, ModelOptions" in output
 
 
 def test_render_guide_no_imports_when_empty():
     data = _empty_guide()
     output = render_guide(data)
-    assert "# === IMPORTS ===" not in output
+    assert "## Imports" not in output

@@ -16,8 +16,8 @@ import pytest
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, pipeline_flow
 from ai_pipeline_core.deployment import DeploymentContext
-from ai_pipeline_core.document_store.memory import MemoryDocumentStore
-from ai_pipeline_core.document_store.protocol import set_document_store
+from ai_pipeline_core.document_store._memory import MemoryDocumentStore
+from ai_pipeline_core.document_store._protocol import set_document_store
 from pydantic import Field
 
 
@@ -44,7 +44,7 @@ _flow_executions: list[str] = []
 
 @pipeline_flow()
 async def resume_flow(
-    project_name: str,
+    run_id: str,
     documents: list[ResumeInputDoc],
     flow_options: ResumeOptions,
 ) -> list[ResumeOutputDoc]:
@@ -64,7 +64,7 @@ class ResumeDeployment(PipelineDeployment[ResumeOptions, ResumeResult]):
     flows = [resume_flow]  # type: ignore[reportAssignmentType]
 
     @staticmethod
-    def build_result(project_name: str, documents: list[Document], options: ResumeOptions) -> ResumeResult:
+    def build_result(run_id: str, documents: list[Document], options: ResumeOptions) -> ResumeResult:
         return ResumeResult(success=True)
 
 
@@ -84,13 +84,13 @@ class TestResumeLogic:
 
     async def _run(
         self,
-        project_name: str,
+        run_id: str,
         documents: list[Document],
         options: ResumeOptions | None = None,
     ) -> ResumeResult:
         """Run pipeline through run() with shared store."""
         return await ResumeDeployment().run(
-            project_name=project_name,
+            run_id=run_id,
             documents=documents,
             options=options or ResumeOptions(),
             context=DeploymentContext(),
@@ -154,7 +154,7 @@ class TestCacheTTL:
             cache_ttl = timedelta(hours=48)
 
             @staticmethod
-            def build_result(project_name: str, documents: list[Document], options: ResumeOptions) -> ResumeResult:
+            def build_result(run_id: str, documents: list[Document], options: ResumeOptions) -> ResumeResult:
                 return ResumeResult(success=True)
 
         assert CustomTTLDeployment.cache_ttl == timedelta(hours=48)
@@ -167,7 +167,7 @@ class TestCacheTTL:
             cache_ttl = None
 
             @staticmethod
-            def build_result(project_name: str, documents: list[Document], options: ResumeOptions) -> ResumeResult:
+            def build_result(run_id: str, documents: list[Document], options: ResumeOptions) -> ResumeResult:
                 return ResumeResult(success=True)
 
         assert NoCacheTTLDeployment.cache_ttl is None

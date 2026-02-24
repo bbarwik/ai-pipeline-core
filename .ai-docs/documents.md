@@ -1,54 +1,37 @@
 # MODULE: documents
 # CLASSES: Attachment, TaskDocumentContext, Document
-# DEPENDS: BaseModel
+# DEPENDS: BaseModel, Generic
 # PURPOSE: Document system for AI pipeline flows.
-# SIZE: ~39KB
+# VERSION: 0.10.0
+# AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
-# === IMPORTS ===
-from ai_pipeline_core import Attachment, Document, DocumentSha256, RunContext, RunScope, TaskDocumentContext, get_run_context, is_document_sha256, reset_run_context, sanitize_url, set_run_context
+## Imports
 
-# === TYPES & CONSTANTS ===
+```python
+from ai_pipeline_core import Attachment, Document, DocumentSha256, RunScope, TaskDocumentContext, ensure_extension, find_document, is_document_sha256, replace_extension, sanitize_url
+```
 
-EXTENSION_MIME_MAP = {
-    "md": "text/markdown",
-    "txt": "text/plain",
-    "pdf": "application/pdf",
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "gif": "image/gif",
-    "bmp": "image/bmp",
-    "webp": "image/webp",
-    "heic": "image/heic",
-    "heif": "image/heif",
-    "json": "application/json",
-    "yaml": "application/yaml",
-    "yml": "application/yaml",
-    "xml": "text/xml",
-    "html": "text/html",
-    "htm": "text/html",
-    "py": "text/x-python",
-    "css": "text/css",
-    "js": "application/javascript",
-    "ts": "application/typescript",
-    "tsx": "application/typescript",
-    "jsx": "application/javascript",
-}
+## Types & Constants
 
-DATA_URI_PATTERN = re.compile(r"^data:[a-zA-Z0-9.+/-]+;base64,")
-
+```python
 DocumentSha256 = NewType("DocumentSha256", str)
 
 RunScope = NewType("RunScope", str)
 
-# === PUBLIC API ===
+DATA_URI_PATTERN = re.compile(r"^data:[a-zA-Z0-9.+/-]+;base64,")
 
+```
+
+## Public API
+
+```python
 class Attachment(BaseModel):
     """Immutable binary attachment for multi-part documents.
 
 Carries binary content (screenshots, PDFs, supplementary files) without full Document machinery.
 ``mime_type`` is a cached_property — not included in ``model_dump()`` output."""
     model_config = ConfigDict(frozen=True, extra='forbid')
+    SERIALIZE_METADATA_KEYS: ClassVar[frozenset[str]] = frozenset({'mime_type', 'size'})
     name: str
     content: bytes
     description: str | None = None
@@ -137,9 +120,9 @@ class TaskDocumentContext:
     """Tracks documents created within a single pipeline task or flow execution.
 
 Used by @pipeline_task and @pipeline_flow decorators to:
-- Validate that all source/origin SHA256 references point to pre-existing documents
+- Validate that all derived_from/triggered_by SHA256 references point to pre-existing documents
 - Detect same-task interdependencies (doc B referencing doc A created in the same task)
-- Warn about documents with no provenance (no sources and no origins)
+- Warn about documents with no provenance (no derived_from and no triggered_by)
 - Detect documents created but not returned (orphaned)
 - Deduplicate returned documents by SHA256"""
     created: set[DocumentSha256] = field(default_factory=set)
@@ -153,15 +136,13 @@ Used by @pipeline_task and @pipeline_flow decorators to:
                 seen[doc.sha256] = doc
         return list(seen.values())
 
-    def finalize(self, returned_docs: list[Document]) -> list[str]:
-        """Check for documents created but not returned from the task/flow.
+    def finalize(self, returned_docs: list[Document]) -> list[DocumentSha256]:
+        """Detect orphaned documents — created but not returned.
 
-        Returns a list of warning messages for orphaned documents — those registered
-        via Document.__init__ but not present in the returned result.
+        Returns list of orphaned document SHA256 hashes.
         """
         returned_sha256s = {doc.sha256 for doc in returned_docs}
-        orphaned = self.created - returned_sha256s
-        return [f"Document {sha[:12]}... was created but not returned" for sha in sorted(orphaned)]
+        return sorted(self.created - returned_sha256s)
 
     def register_created(self, doc: Document) -> None:
         """Register a document as created in this task/flow context."""
@@ -171,23 +152,18 @@ Used by @pipeline_task and @pipeline_flow decorators to:
         self,
         documents: list[Document],
         existing_sha256s: set[DocumentSha256],
-        *,
-        check_created: bool = False,
     ) -> list[str]:
-        """Validate provenance (sources and origins) for returned documents.
+        """Validate provenance (derived_from and triggered_by) for returned documents.
 
         Checks:
-        1. All SHA256 source references exist in the store (existing_sha256s).
-        2. All origin references exist in the store (existing_sha256s).
+        1. All SHA256 derived_from references exist in the store (existing_sha256s).
+        2. All triggered_by references exist in the store (existing_sha256s).
         3. No same-task interdependencies: a returned document must not reference
-           (via source or origin SHA256) another document created in this same context.
-        4. Documents with no sources AND no origins get a warning (no provenance).
-        5. (When check_created=True) Returned documents must have been created in
-           this context. Only applicable for @pipeline_task — flows delegate creation
-           to nested tasks whose documents register in the task's own context.
+           (via derived_from or triggered_by SHA256) another document created in this same context.
+        4. Documents with no derived_from AND no triggered_by get a warning (no provenance).
 
-        Only SHA256-formatted sources are validated; URLs and other reference strings
-        in sources are skipped. Initial pipeline inputs (documents with no provenance)
+        Only SHA256-formatted entries in derived_from are validated; URLs and other reference
+        strings are skipped. Initial pipeline inputs (documents with no provenance)
         are acceptable and warned about for awareness.
 
         Returns a list of warning messages (empty if everything is valid).
@@ -195,44 +171,52 @@ Used by @pipeline_task and @pipeline_flow decorators to:
         warnings: list[str] = []
 
         for doc in documents:
-            # Check that returned doc was created in this context (task-only)
-            if check_created and doc.sha256 not in self.created:
-                warnings.append(f"Document '{doc.name}' was not created in this task — only newly created documents should be returned")
-
-            # Check sources
-            for src in doc.sources:
+            # Check derived_from
+            for src in doc.derived_from:
                 if not is_document_sha256(src):
                     continue
                 if src in self.created:
-                    warnings.append(f"Document '{doc.name}' references source {src[:12]}... created in the same task (same-task interdependency)")
+                    warnings.append(f"Document '{doc.name}' references derived_from {src[:12]}... created in the same task (same-task interdependency)")
                 elif src not in existing_sha256s:
-                    warnings.append(f"Document '{doc.name}' references source {src[:12]}... which does not exist in the store")
+                    warnings.append(f"Document '{doc.name}' references derived_from {src[:12]}... which does not exist in the store")
 
-            # Check origins
-            for origin in doc.origins:
-                if origin in self.created:
-                    warnings.append(f"Document '{doc.name}' references origin {origin[:12]}... created in the same task (same-task interdependency)")
-                elif origin not in existing_sha256s:
-                    warnings.append(f"Document '{doc.name}' references origin {origin[:12]}... which does not exist in the store")
+            # Check triggered_by
+            for trigger in doc.triggered_by:
+                if trigger in self.created:
+                    warnings.append(f"Document '{doc.name}' references triggered_by {trigger[:12]}... created in the same task (same-task interdependency)")
+                elif trigger not in existing_sha256s:
+                    warnings.append(f"Document '{doc.name}' references triggered_by {trigger[:12]}... which does not exist in the store")
 
             # Warn about no provenance
-            if not doc.sources and not doc.origins:
-                warnings.append(f"Document '{doc.name}' has no sources and no origins (no provenance)")
+            if not doc.derived_from and not doc.triggered_by:
+                warnings.append(f"Document '{doc.name}' has no derived_from and no triggered_by (no provenance)")
 
         return warnings
 
 
-class Document(BaseModel):
+class Document(BaseModel, Generic[TContent]):
     """Immutable base class for all pipeline documents. Cannot be instantiated directly — must be subclassed.
 
 Content is stored as bytes. Use `create()` for automatic conversion from str/dict/list/BaseModel.
-Use `parse()` to reverse the conversion. Serialization is extension-driven (.json → JSON, .yaml → YAML)."""
-    MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024
+Use `parse()` to reverse the conversion. Serialization is extension-driven (.json → JSON, .yaml → YAML).
+
+Provenance:
+    - `derived_from`: content sources (document SHA256 hashes or external URLs)
+    - `triggered_by`: causal provenance (document SHA256 hashes only)
+    - `create()` requires at least one provenance field. Use `create_root()` for pipeline inputs.
+
+Attachments:
+    Secondary content bundled with the primary document. The primary content lives in `content`,
+    while `attachments` carries supplementary material of the same logical document — e.g. a webpage
+    stored as HTML in `content` with its screenshot in an attachment, or a report with embedded images.
+    Attachments affect the document SHA256 hash."""
+    MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024  # Maximum allowed total size in bytes (default 25MB).
+    FILES: ClassVar[type[StrEnum] | None] = None  # Allowed filenames enum. Define as nested ``class FILES(StrEnum)`` or assign an external StrEnum subclass.
     name: str
     description: str | None = None
     content: bytes
-    sources: tuple[str, ...] = ()
-    origins: tuple[str, ...] = ()
+    derived_from: tuple[str, ...] = ()  # Content provenance: documents and references this document's content was directly
+    triggered_by: tuple[DocumentSha256, ...] = ()  # Causal provenance: documents that triggered this document's creation without directly
     attachments: tuple[Attachment, ...] = ()
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra='forbid')
 
@@ -242,28 +226,37 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         name: str,
         content: bytes,
         description: str | None = None,
-        sources: tuple[str, ...] | None = None,
-        origins: tuple[str, ...] | None = None,
+        derived_from: tuple[str, ...] | None = None,
+        triggered_by: tuple[DocumentSha256, ...] | None = None,
         attachments: tuple[Attachment, ...] | None = None,
     ) -> None:
-        """Initialize with raw bytes content. Most users should use `create()` instead."""
-        if type(self) is Document:
-            raise TypeError("Cannot instantiate Document directly — use a concrete subclass")
+        """Initialize with raw bytes content. Most users should use `create()` or `derive()` instead."""
+        if type(self) is Document or "[" in type(self).__name__:
+            raise TypeError("Cannot instantiate Document directly — define a named subclass")
 
         super().__init__(
             name=name,
             content=content,
             description=description,
-            sources=sources or (),
-            origins=origins or (),
+            derived_from=derived_from or (),
+            triggered_by=triggered_by or (),
             attachments=attachments or (),
         )
-
-        # Register with task context for document lifecycle tracking
+        # Register with task context for lifecycle tracking (skip during deserialization)
         if not is_registration_suppressed():
-            task_ctx = get_task_context()
-            if task_ctx is not None:
-                task_ctx.register_created(self)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+            ctx = get_task_context()
+            if ctx is not None:
+                ctx.created.add(self.sha256)
+
+    @property
+    def content_documents(self) -> tuple[str, ...]:
+        """Document SHA256 hashes from derived_from (filtered by is_document_sha256)."""
+        return tuple(src for src in self.derived_from if is_document_sha256(src))
+
+    @property
+    def content_references(self) -> tuple[str, ...]:
+        """Non-hash reference strings from derived_from (URLs, file paths, etc.)."""
+        return tuple(src for src in self.derived_from if not is_document_sha256(src))
 
     @final
     @property
@@ -293,16 +286,6 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         return len(self.content) + sum(att.size for att in self.attachments)
 
     @property
-    def source_documents(self) -> tuple[str, ...]:
-        """Document SHA256 hashes from sources (filtered by is_document_sha256)."""
-        return tuple(src for src in self.sources if is_document_sha256(src))
-
-    @property
-    def source_references(self) -> tuple[str, ...]:
-        """Non-hash reference strings from sources (URLs, file paths, etc.)."""
-        return tuple(src for src in self.sources if not is_document_sha256(src))
-
-    @property
     def text(self) -> str:
         """Content decoded as UTF-8. Raises ValueError if not text."""
         if not self.is_text:
@@ -316,21 +299,86 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
         description: str | None = None,
-        sources: tuple[str, ...] | None = None,
-        origins: tuple[str, ...] | None = None,
+        derived_from: tuple[str, ...] | None = None,
+        triggered_by: tuple[DocumentSha256, ...] | None = None,
         attachments: tuple[Attachment, ...] | None = None,
     ) -> Self:
         """Create a document with automatic content-to-bytes conversion.
 
+        Must be called within a @pipeline_task or @pipeline_flow context.
+        Must provide derived_from or triggered_by for provenance tracking.
+        For root inputs (no provenance), use create_root(reason='...') instead.
+        All created documents must be returned from the task/flow — unreturned documents are flagged as orphans.
         Serialization is extension-driven: .json → JSON, .yaml → YAML, others → UTF-8.
         Reversible via parse(). Cannot be called on Document directly — must use a subclass.
         """
+        if not derived_from and not triggered_by:
+            raise ValueError(f"Document.create() requires derived_from or triggered_by. For root inputs use {cls.__name__}.create_root(reason='...').")
+        content_bytes = _convert_content(name, content)
+        if cls._content_type is not None:
+            _validate_content_schema(cls._content_type, content, content_bytes, name)
         return cls(
             name=name,
-            content=_convert_content(name, content),
+            content=content_bytes,
             description=description,
-            sources=sources,
-            origins=origins,
+            derived_from=derived_from,
+            triggered_by=triggered_by,
+            attachments=attachments,
+        )
+
+    @classmethod
+    def create_root(
+        cls,
+        *,
+        name: str,
+        content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
+        reason: str,
+        description: str | None = None,
+        attachments: tuple[Attachment, ...] | None = None,
+    ) -> Self:
+        """Create a root document (pipeline input) with no provenance.
+
+        Must be called within a @pipeline_task or @pipeline_flow context.
+        Must provide reason explaining why this document has no provenance.
+        The reason is stored as description if no explicit description is given.
+        All created documents must be returned from the task/flow — unreturned documents are flagged as orphans.
+        """
+        content_bytes = _convert_content(name, content)
+        if cls._content_type is not None:
+            _validate_content_schema(cls._content_type, content, content_bytes, name)
+        return cls(
+            name=name,
+            content=content_bytes,
+            description=description or reason,
+            derived_from=(),
+            triggered_by=(),
+            attachments=attachments,
+        )
+
+    @classmethod
+    def derive(
+        cls,
+        *,
+        from_documents: tuple["Document", ...],
+        name: str,
+        content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
+        triggered_by: tuple["Document", ...] = (),
+        description: str | None = None,
+        attachments: tuple[Attachment, ...] | None = None,
+    ) -> Self:
+        """Create a document derived from other documents. The 95% API path.
+
+        Must be called within a @pipeline_task or @pipeline_flow context.
+        All created documents must be returned from the task/flow — unreturned documents are flagged as orphans.
+        Accepts Document objects directly (extracts SHA256 hashes automatically).
+        Use this for content transformations (summaries, analyses, reviews).
+        """
+        return cls.create(
+            name=name,
+            content=content,
+            derived_from=tuple(d.sha256 for d in from_documents),
+            triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by) if triggered_by else None,
+            description=description,
             attachments=attachments,
         )
 
@@ -348,9 +396,16 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
 
         # Strip attachment metadata added by serialize_model()
         if cleaned.get("attachments"):
-            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in Attachment._SERIALIZE_METADATA_KEYS} for att in cleaned["attachments"]]
+            cleaned["attachments"] = [{k: v for k, v in att.items() if k not in Attachment.SERIALIZE_METADATA_KEYS} for att in cleaned["attachments"]]
 
-        return cls.model_validate(cleaned)
+        with _suppress_document_registration():
+            return cls.model_validate(cleaned)
+
+    @final
+    @classmethod
+    def get_content_type(cls) -> type[BaseModel] | None:
+        """Return the declared content type from the generic parameter, or None."""
+        return cls._content_type
 
     @final
     @classmethod
@@ -358,12 +413,13 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         """Return allowed filenames from FILES enum, or None if unrestricted."""
         if not hasattr(cls, "FILES"):
             return None
-        files: type[StrEnum] = cls.FILES  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
-        if not files:
+        files_attr = cls.FILES
+        if files_attr is None:
             return None
-        assert issubclass(files, StrEnum)
+        if not isinstance(files_attr, type) or not issubclass(files_attr, StrEnum):  # pyright: ignore[reportUnnecessaryIsInstance]
+            return None
         try:
-            values = [member.value for member in files]
+            values = [str(member.value) for member in files_attr]
         except TypeError:
             raise DocumentNameError(f"{cls.__name__}.FILES must be an Enum of string values") from None
         if len(values) == 0:
@@ -399,6 +455,15 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
             raise DocumentSizeError(f"Document size ({len(v)} bytes) exceeds maximum allowed size ({cls.MAX_CONTENT_SIZE} bytes)")
         return v
 
+    @field_validator("derived_from")
+    @classmethod
+    def validate_derived_from(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        """derived_from must be document SHA256 hashes or URLs."""
+        for src in v:
+            if not is_document_sha256(src) and "://" not in src:
+                raise ValueError(f"derived_from entry must be a document SHA256 hash or a URL (containing '://'), got: {src!r}")
+        return v
+
     @classmethod
     def validate_file_name(cls, name: str) -> None:
         """Validate filename against FILES enum. Override only for custom validation beyond FILES."""
@@ -406,9 +471,17 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         if not allowed:
             return
 
-        if len(allowed) > 0 and name not in allowed:
+        if name not in allowed:
             allowed_str = ", ".join(sorted(allowed))
-            raise DocumentNameError(f"Invalid filename '{name}'. Allowed names: {allowed_str}")
+            files_enum = getattr(cls, "FILES", None)
+            hint = ""
+            if files_enum is not None:
+                members = [f"{cls.__name__}.FILES.{m.name}" for m in files_enum]
+                if len(members) == 1:
+                    hint = f"\nFIX: Use {members[0]}, or use create()/create_root()/derive() which auto-defaults the name for single-file document types."
+                else:
+                    hint = f"\nFIX: Use one of: {', '.join(members)}"
+            raise DocumentNameError(f"Invalid filename '{name}' for {cls.__name__}. Allowed: {allowed_str}{hint}")
 
     @field_validator("name")
     @classmethod
@@ -423,44 +496,71 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         if v.endswith(".meta.json"):
             raise DocumentNameError(f"Document names cannot end with .meta.json (reserved): {v}")
 
+        # Detect double extensions like .md.md, .json.json, .yaml.yaml
+        dot_pos = v.rfind(".")
+        if dot_pos > 0:
+            ext = v[dot_pos:]
+            prefix = v[:dot_pos]
+            if prefix.endswith(ext):
+                raise DocumentNameError(f"Double extension detected in '{v}' — use ensure_extension() to prevent this")
+
         cls.validate_file_name(v)
 
         return v
 
-    @field_validator("origins")
+    @field_validator("triggered_by")
     @classmethod
-    def validate_origins(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        """Origins must be valid document SHA256 hashes."""
-        for origin in v:
-            if not is_document_sha256(origin):
-                raise ValueError(f"Origin must be a document SHA256 hash, got: {origin}")
+    def validate_triggered_by(cls, v: tuple[DocumentSha256, ...]) -> tuple[DocumentSha256, ...]:
+        """triggered_by must be valid document SHA256 hashes."""
+        for trigger in v:
+            if not is_document_sha256(trigger):
+                raise ValueError(f"triggered_by entry must be a document SHA256 hash, got: {trigger}")
         return v
 
-    @field_validator("sources")
-    @classmethod
-    def validate_sources(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        """Sources must be document SHA256 hashes or URLs."""
-        for src in v:
-            if not is_document_sha256(src) and "://" not in src:
-                raise ValueError(f"Source must be a document SHA256 hash or a URL (containing '://'), got: {src!r}")
-        return v
+    def __copy__(self) -> Self:
+        """Blocked: copy.copy() is not supported for Documents."""
+        raise TypeError("Document copying is not supported. Use derive() for content transformations or create() for new documents.")
+
+    def __deepcopy__(self, _memo: dict[int, Any] | None = None) -> Self:
+        """Blocked: copy.deepcopy() is not supported for Documents."""
+        raise TypeError("Document copying is not supported. Use derive() for content transformations or create() for new documents.")
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Validate subclass at definition time. Cannot start with 'Test', cannot add custom fields."""
         super().__init_subclass__(**kwargs)
+
+        # Skip Pydantic-generated parameterized classes (e.g. Document[ResearchDefinition]).
+        # Same pattern as PromptSpec (spec.py:130-131).
+        if "[" in cls.__name__:
+            return
+
+        # Extract content type from generic parameter.
+        # When inheriting from Document[T], Pydantic creates a concrete intermediate class.
+        # The type info is in the parent's __pydantic_generic_metadata__.
+        # Same pattern as PromptSpec (spec.py:186-204).
+        for base in cls.__bases__:
+            meta = getattr(base, "__pydantic_generic_metadata__", None)
+            if meta and meta.get("origin") is Document and meta.get("args"):
+                ct = meta["args"][0]
+                if not isinstance(ct, type) or not issubclass(ct, BaseModel):
+                    raise TypeError(f"Document subclass '{cls.__name__}' generic parameter must be a BaseModel subclass, got {ct!r}")
+                cls._content_type = ct
+                break
+
         if cls.__name__.startswith("Test"):
             raise TypeError(
                 f"Document subclass '{cls.__name__}' cannot start with 'Test' prefix. "
                 "This causes conflicts with pytest test discovery. "
                 "Please use a different name (e.g., 'SampleDocument', 'ExampleDocument')."
             )
-        if hasattr(cls, "FILES"):
-            files: type[StrEnum] = cls.FILES  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
-            if not issubclass(files, StrEnum):
+        if "FILES" in cls.__dict__:
+            files_attr = cls.__dict__["FILES"]
+            if not isinstance(files_attr, type) or not issubclass(files_attr, StrEnum):
                 raise TypeError(f"Document subclass '{cls.__name__}'.FILES must be an Enum of string values")
+
         # Check that the Document's model_fields only contain the allowed fields
         # It prevents AI models from adding additional fields to documents
-        allowed = {"name", "description", "content", "sources", "attachments", "origins"}
+        allowed = {"name", "description", "content", "derived_from", "attachments", "triggered_by"}
         current = set(getattr(cls, "model_fields", {}).keys())
         extras = current - allowed
         if extras:
@@ -481,20 +581,28 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
                 )
             _class_name_registry[name] = cls
 
+    def __reduce__(self) -> Any:
+        """Blocked: pickle serialization is not supported for Documents."""
+        raise TypeError("Document pickle serialization is not supported. Use JSON serialization (model_dump/model_validate).")
+
+    def __reduce_ex__(self, _protocol: object) -> Any:
+        """Blocked: pickle serialization is not supported for Documents."""
+        raise TypeError("Document pickle serialization is not supported. Use JSON serialization (model_dump/model_validate).")
+
     @cached_property
     def approximate_tokens_count(self) -> int:
-        """Approximate token count (tiktoken gpt-4 encoding). Images=1080, PDFs/other=1024."""
+        """Approximate token count (tiktoken gpt-4 encoding). Images=TOKENS_PER_IMAGE, PDFs/other=1024."""
         enc = get_tiktoken_encoding()
         if self.is_text:
             total = len(enc.encode(self.text))
         elif self.is_image:
-            total = 1080
+            total = TOKENS_PER_IMAGE
         else:
             total = 1024
 
         for att in self.attachments:
             if att.is_image:
-                total += 1080
+                total += TOKENS_PER_IMAGE
             elif att.is_pdf:
                 total += 1024
             elif att.is_text:
@@ -522,52 +630,25 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         """SHA256 hash of raw content bytes only. Used for content deduplication."""
         return compute_content_sha256(self.content)
 
-    def has_source(self, source: "Document | str") -> bool:
-        """Check if a source (Document or string) is in this document's sources."""
+    def has_derived_from(self, source: "Document | str") -> bool:
+        """Check if a source (Document or string) is in this document's derived_from."""
         if isinstance(source, str):
-            return source in self.sources
-        if not isinstance(source, Document):
-            raise TypeError(f"Invalid source type: {type(source)}")  # pyright: ignore[reportUnreachable]
-        return source.sha256 in self.sources
+            return source in self.derived_from
+        if not isinstance(source, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f"Invalid source type: {type(source).__name__}. Expected Document or str.")  # pyright: ignore[reportUnreachable]
+        return source.sha256 in self.derived_from
 
     @cached_property
     def mime_type(self) -> str:
         """Detected MIME type. Extension-based for known formats, content analysis for others. Cached."""
         return detect_mime_type(self.content, self.name)
 
-    @final
-    def model_convert(self, new_type: type[TDocument], *, update: dict[str, Any] | None = None) -> TDocument:
-        """Convert to a different Document subclass with optional field overrides."""
-        try:
-            if not isinstance(new_type, type):  # pyright: ignore[reportUnnecessaryIsInstance]
-                raise TypeError(f"new_type must be a class, got {new_type}")  # pyright: ignore[reportUnreachable]
-            if not issubclass(new_type, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
-                raise TypeError(f"new_type must be a subclass of Document, got {new_type}")  # pyright: ignore[reportUnreachable]
-        except (TypeError, AttributeError) as err:
-            raise TypeError(f"new_type must be a subclass of Document, got {new_type}") from err
-
-        if new_type is Document:
-            raise TypeError("Cannot instantiate Document directly — use a concrete subclass")
-
-        data: dict[str, Any] = {  # nosemgrep: mutable-field-on-frozen-pydantic-model
-            "name": self.name,
-            "content": self.content,
-            "description": self.description,
-            "sources": self.sources,
-            "origins": self.origins,
-            "attachments": self.attachments,
-        }
-
-        if update:
-            data.update(update)
-
-        return new_type(
-            name=data["name"],
-            content=data["content"],
-            description=data.get("description"),
-            sources=data.get("sources"),
-            origins=data.get("origins"),
-            attachments=data.get("attachments"),
+    @override
+    def model_copy(self, *args: Any, **kwargs: Any) -> Self:
+        """Blocked: model_copy bypasses Document validation and lifecycle tracking."""
+        raise TypeError(
+            "Document.model_copy() is not supported — it bypasses validation and lifecycle tracking. "
+            "Use derive() for content transformations or create() for new documents."
         )
 
     def parse(self, type_: type[Any]) -> Any:
@@ -584,6 +665,75 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         if isinstance(type_, type) and issubclass(type_, BaseModel):  # pyright: ignore[reportUnnecessaryIsInstance]
             return self.as_pydantic_model(type_)
         raise ValueError(f"Unsupported parse type: {type_}")
+
+    @final
+    @cached_property
+    def parsed(self) -> TContent:
+        """Content parsed against the declared generic type parameter. Cached.
+
+        Returns the Pydantic model declared via Document[ModelType].
+        Raises TypeError if the Document subclass has no declared content type.
+        Use parse(ModelType) for explicit parsing on untyped documents.
+        """
+        content_type = self.__class__._content_type
+        if content_type is None:
+            raise TypeError(f"{self.__class__.__name__} has no declared content type. Use parse(ModelType) for explicit parsing.")
+        return cast(TContent, self.as_pydantic_model(content_type))
+
+    @final
+    def retype(
+        self,
+        new_type: type[TDocument],
+        *,
+        preserve_provenance: bool,
+        update: dict[str, Any] | None = None,
+    ) -> TDocument:
+        """Convert to a different Document subclass.
+
+        Must specify preserve_provenance:
+        - True: keep existing derived_from/triggered_by
+        - False: clear provenance fields (caller sets new provenance via update)
+        """
+        try:
+            if not isinstance(new_type, type):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise TypeError(f"new_type must be a class, got {new_type}")  # pyright: ignore[reportUnreachable]
+            if not issubclass(new_type, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise TypeError(f"new_type must be a subclass of Document, got {new_type}")  # pyright: ignore[reportUnreachable]
+        except (TypeError, AttributeError) as err:
+            raise TypeError(f"new_type must be a subclass of Document, got {new_type}") from err
+
+        if new_type is Document:
+            raise TypeError("Cannot instantiate Document directly — use a concrete subclass")
+
+        data: dict[str, Any] = {  # nosemgrep: mutable-field-on-frozen-pydantic-model
+            "name": self.name,
+            "content": self.content,
+            "description": self.description,
+            "attachments": self.attachments,
+        }
+        if preserve_provenance:
+            data["derived_from"] = self.derived_from
+            data["triggered_by"] = self.triggered_by
+
+        if update:
+            data.update(update)
+
+        if new_type._content_type is not None:
+            content = data["content"]
+            if isinstance(content, bytes):
+                _validate_content_schema(new_type._content_type, content, content, data["name"])
+            else:
+                content_bytes = _convert_content(data["name"], content)
+                _validate_content_schema(new_type._content_type, content, content_bytes, data["name"])
+
+        return new_type(
+            name=data["name"],
+            content=data["content"],
+            description=data.get("description"),
+            derived_from=data.get("derived_from"),
+            triggered_by=data.get("triggered_by"),
+            attachments=data.get("attachments"),
+        )
 
     @field_serializer("content")
     def serialize_content(self, v: bytes) -> str:
@@ -621,21 +771,21 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
     @final
     @cached_property
     def sha256(self) -> DocumentSha256:
-        """Full SHA256 identity hash (name + content + sources + origins + attachments). BASE32 encoded, cached."""
+        """Full SHA256 identity hash (name + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
         return compute_document_sha256(self)
 
     @model_validator(mode="after")
-    def validate_no_source_origin_overlap(self) -> Self:
-        """Reject documents where the same SHA256 appears in both sources and origins."""
-        source_sha256s = {src for src in self.sources if is_document_sha256(src)}
-        if source_sha256s:
-            overlap = source_sha256s & set(self.origins)
+    def validate_no_provenance_overlap(self) -> Self:
+        """Reject documents where the same SHA256 appears in both derived_from and triggered_by."""
+        derived_sha256s = {src for src in self.derived_from if is_document_sha256(src)}
+        if derived_sha256s:
+            overlap = derived_sha256s & set(self.triggered_by)
             if overlap:
                 sample = next(iter(overlap))
                 raise ValueError(
-                    f"SHA256 hash {sample[:12]}... appears in both sources and origins. "
-                    f"A document reference must be either a source (content provenance) "
-                    f"or an origin (causal provenance), not both."
+                    f"SHA256 hash {sample[:12]}... appears in both derived_from and triggered_by. "
+                    f"A document reference must be either derived_from (content provenance) "
+                    f"or triggered_by (causal provenance), not both."
                 )
         return self
 
@@ -648,190 +798,18 @@ Use `parse()` to reverse the conversion. Serialization is extension-driven (.jso
         return self
 
 
-# === FUNCTIONS ===
+```
 
+## Functions
+
+```python
 @functools.cache
 def get_tiktoken_encoding() -> tiktoken.Encoding:
     """Lazy-cached tiktoken encoding. Deferred to first use, cached forever."""
     return tiktoken.encoding_for_model("gpt-4")
 
-def detect_mime_type(content: bytes, name: str) -> str:
-    r"""Detect MIME type from document content and filename.
-
-    Uses a multi-stage detection strategy for maximum accuracy:
-    1. Returns 'text/plain' for empty content
-    2. Uses extension-based detection for known formats (most reliable)
-    3. Falls back to python-magic content analysis
-    4. Final fallback to extension or 'application/octet-stream'
-
-    Args:
-        content: Document content as bytes.
-        name: Filename with extension.
-
-    Returns:
-        MIME type string (e.g., 'text/plain', 'application/json').
-        Never returns None or empty string.
-
-    Fallback behavior:
-        - Empty content: 'text/plain'
-        - Unknown extension with binary content: 'application/octet-stream'
-        - Magic library failure: Falls back to extension or 'application/octet-stream'
-
-    Performance:
-        Only the first 1024 bytes are analyzed for content detection.
-        Extension-based detection is O(1) lookup.
-
-    Extension-based detection is preferred for text formats as
-    content analysis can sometimes misidentify structured text.
-    """
-    # Check for empty content
-    if len(content) == 0:
-        return "text/plain"
-
-    # Try extension-based detection first for known formats
-    # This is more reliable for text formats that magic might misidentify
-    ext = name.lower().split(".")[-1] if "." in name else ""
-    if ext in EXTENSION_MIME_MAP:
-        return EXTENSION_MIME_MAP[ext]
-
-    # Try content-based detection with magic
-    try:
-        mime = magic.from_buffer(content[:1024], mime=True)
-        # If magic returns a valid mime type, use it
-        if mime and mime != "application/octet-stream":
-            return mime
-    except (AttributeError, OSError, magic.MagicException) as e:
-        logger.warning(f"MIME detection failed for {name}: {e}")
-    except Exception:
-        logger.exception(f"Unexpected error in MIME detection for {name}")
-
-    # Final fallback based on extension or default
-    return EXTENSION_MIME_MAP.get(ext, "application/octet-stream")
-
-def is_text_mime_type(mime_type: str) -> bool:
-    """Check if MIME type represents text-based content.
-
-    Determines if content can be safely decoded as text.
-    Includes common text formats and structured text like JSON/YAML.
-
-    Args:
-        mime_type: MIME type string to check.
-
-    Returns:
-        True if MIME type indicates text content, False otherwise.
-
-    Recognized as text:
-        - Any type starting with 'text/'
-        - application/json
-        - application/xml
-        - application/javascript
-        - application/yaml
-        - application/x-yaml
-
-    """
-    text_types = [
-        "text/",
-        "application/json",
-        "application/xml",
-        "application/javascript",
-        "application/yaml",
-        "application/x-yaml",
-    ]
-    return any(mime_type.startswith(t) for t in text_types)
-
-def is_json_mime_type(mime_type: str) -> bool:
-    """Check if MIME type is JSON.
-
-    Args:
-        mime_type: MIME type string to check.
-
-    Returns:
-        True if MIME type is 'application/json', False otherwise.
-
-    Only matches exact 'application/json', not variants like
-    'application/ld+json' or 'application/vnd.api+json'.
-    """
-    return mime_type == "application/json"
-
-def is_yaml_mime_type(mime_type: str) -> bool:
-    """Check if MIME type is YAML.
-
-    Recognizes both standard YAML MIME types.
-
-    Args:
-        mime_type: MIME type string to check.
-
-    Returns:
-        True if MIME type is YAML, False otherwise.
-
-    Recognized types:
-        - application/yaml (standard)
-        - application/x-yaml (legacy)
-
-    """
-    return mime_type in {"application/yaml", "application/x-yaml"}
-
-def is_pdf_mime_type(mime_type: str) -> bool:
-    """Check if MIME type is PDF.
-
-    Args:
-        mime_type: MIME type string to check.
-
-    Returns:
-        True if MIME type is 'application/pdf', False otherwise.
-
-    PDF documents require special handling in the LLM module
-    and are supported by certain vision-capable models.
-    """
-    return mime_type == "application/pdf"
-
-def is_image_mime_type(mime_type: str) -> bool:
-    """Check if MIME type represents an image.
-
-    Args:
-        mime_type: MIME type string to check.
-
-    Returns:
-        True if MIME type starts with 'image/', False otherwise.
-
-    Recognized formats:
-        Any MIME type starting with 'image/' including:
-        - image/png
-        - image/jpeg
-        - image/gif
-        - image/webp
-        - image/svg+xml
-
-    Image documents are automatically encoded for vision-capable
-    LLM models in the AIMessages.document_to_prompt() method.
-    """
-    return mime_type.startswith("image/")
-
-def is_llm_supported_image(mime_type: str) -> bool:
-    """Check if MIME type is an image format directly supported by LLMs.
-
-    Unsupported image formats (gif, bmp, tiff, svg, etc.) need conversion
-    to PNG before sending to the LLM.
-
-    Args:
-        mime_type: MIME type string to check.
-
-    Returns:
-        True if the image format is natively supported by LLMs.
-    """
-    return mime_type in LLM_SUPPORTED_IMAGE_MIME_TYPES
-
 def sanitize_url(url: str) -> str:
-    """Sanitize URL or query string for use in filenames.
-
-    Removes or replaces characters that are invalid in filenames.
-
-    Args:
-        url: The URL or query string to sanitize.
-
-    Returns:
-        A sanitized string safe for use as a filename.
-    """
+    """Sanitize URL or query string for use as a filename (max 100 chars)."""
     # Remove protocol if it's a URL
     if url.startswith(("http://", "https://")):
         parsed = urlparse(url)
@@ -857,55 +835,8 @@ def sanitize_url(url: str) -> str:
 
     return sanitized
 
-def camel_to_snake(name: str) -> str:
-    """Convert CamelCase (incl. acronyms) to snake_case.
-
-    Args:
-        name: The CamelCase string to convert.
-
-    Returns:
-        The converted snake_case string.
-    """
-    s1 = re.sub(r"(.)([A-Z][a-z0-9]+)", r"\1_\2", name)
-    s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1)
-    return s2.replace("__", "_").strip("_").lower()
-
 def is_document_sha256(value: str) -> bool:
-    """Check if a string is a valid base32-encoded SHA256 hash with proper entropy.
-
-    This function validates that a string is not just formatted like a SHA256 hash,
-    but actually has the entropy characteristics of a real hash. It checks:
-    1. Correct length (52 characters without padding)
-    2. Valid base32 characters (A-Z, 2-7)
-    3. Sufficient entropy (at least 8 unique characters)
-
-    The entropy check prevents false positives like 'AAAAAAA...AAA' from being
-    identified as valid document hashes.
-
-    Args:
-        value: String to check if it's a document SHA256 hash.
-
-    Returns:
-        True if the string appears to be a real base32-encoded SHA256 hash,
-        False otherwise.
-
-    Examples:
-        >>> # Real SHA256 hash
-        >>> is_document_sha256("P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ")
-        True
-
-        >>> # Too uniform - lacks entropy
-        >>> is_document_sha256("A" * 52)
-        False
-
-        >>> # Wrong length
-        >>> is_document_sha256("ABC123")
-        False
-
-        >>> # Invalid characters
-        >>> is_document_sha256("a" * 52)  # lowercase
-        False
-    """
+    """Check if a string is a valid base32-encoded SHA256 hash (52 chars, A-Z2-7, sufficient entropy)."""
     if not isinstance(value, str) or len(value) != 52:  # pyright: ignore[reportUnnecessaryIsInstance]
         return False
 
@@ -913,30 +844,70 @@ def is_document_sha256(value: str) -> bool:
     if not re.match(r"^[A-Z2-7]{52}$", value):
         return False
 
-    # Check entropy: real SHA256 hashes have high entropy
-    # Require at least 8 unique characters (out of 32 possible in base32)
-    # This prevents patterns like "AAAAAAA..." from being identified as real hashes
     unique_chars = len(set(value))
-    return unique_chars >= 8
+    return unique_chars >= _MIN_HASH_UNIQUE_CHARS
 
-# === EXAMPLES (from tests/) ===
+def ensure_extension(name: str, ext: str) -> str:
+    """Ensure a filename has the given extension, adding it only if missing.
 
-# Example: Attachment mime type
-# Source: tests/documents/test_document_core.py:924
+    Prevents double-extension bugs like 'report.md.md' from ad-hoc string concatenation.
+    """
+    if not ext.startswith("."):
+        ext = f".{ext}"
+    if name.endswith(ext):
+        return name
+    return name + ext
+
+def replace_extension(name: str, ext: str) -> str:
+    """Replace the file extension (or add one if missing).
+
+    Handles compound extensions like '.tar.gz' by replacing only the last extension.
+    """
+    if not ext.startswith("."):
+        ext = f".{ext}"
+    dot_pos = name.rfind(".")
+    if dot_pos > 0:
+        return name[:dot_pos] + ext
+    return name + ext
+
+def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
+    """Find a document of the given type in a sequence.
+
+    Replaces bare `next(d for d in docs if isinstance(d, T))` which gives opaque
+    StopIteration on missing types. Raises DocumentValidationError with a clear message
+    listing available document types.
+    """
+    for doc in documents:
+        if isinstance(doc, doc_type):
+            return doc
+    available = sorted({type(d).__name__ for d in documents})
+    raise DocumentValidationError(f"No document of type '{doc_type.__name__}' found. Available types: {', '.join(available) or 'none'}")
+
+```
+
+## Examples
+
+**Attachment mime type** (`tests/documents/test_document_core.py:924`)
+
+```python
 def test_attachment_mime_type(self):
     """Attachment.mime_type returns detected MIME type."""
     att = Attachment(name="notes.txt", content=b"Hello")
     assert "text" in att.mime_type
+```
 
-# Example: Attachment no detected mime type
-# Source: tests/documents/test_document_core.py:929
+**Attachment no detected mime type** (`tests/documents/test_document_core.py:929`)
+
+```python
 def test_attachment_no_detected_mime_type(self):
     """Attachment has no detected_mime_type attribute (renamed to mime_type)."""
     att = Attachment(name="notes.txt", content=b"Hello")
     assert not hasattr(att, "detected_mime_type")
+```
 
-# Example: Attachment order does not affect hash
-# Source: tests/documents/test_document_attachments.py:62
+**Attachment order does not affect hash** (`tests/documents/test_document_attachments.py:62`)
+
+```python
 def test_attachment_order_does_not_affect_hash(self):
     """Attachments are sorted by name before hashing, so order doesn't matter."""
     att_x = Attachment(name="x.txt", content=b"xxx")
@@ -944,56 +915,69 @@ def test_attachment_order_does_not_affect_hash(self):
     doc_xy = SampleFlowDoc(name="test.txt", content=b"Hello", attachments=(att_x, att_y))
     doc_yx = SampleFlowDoc(name="test.txt", content=b"Hello", attachments=(att_y, att_x))
     assert doc_xy.sha256 == doc_yx.sha256
+```
 
-# Example: Attachment order does not matter
-# Source: tests/documents/test_hashing.py:41
+**Attachment order does not matter** (`tests/documents/test_hashing.py:41`)
+
+```python
 def test_attachment_order_does_not_matter(self):
     """Attachments are sorted by name before hashing."""
     att_a = Attachment(name="a.txt", content=b"aaa")
     att_b = Attachment(name="b.txt", content=b"bbb")
-    doc1 = HashDoc.create(name="doc.txt", content="content", attachments=(att_a, att_b))
-    doc2 = HashDoc.create(name="doc.txt", content="content", attachments=(att_b, att_a))
+    doc1 = HashDoc.create_root(name="doc.txt", content="content", attachments=(att_a, att_b), reason="test input")
+    doc2 = HashDoc.create_root(name="doc.txt", content="content", attachments=(att_b, att_a), reason="test input")
     assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
+```
 
-# Example: Document mime type
-# Source: tests/documents/test_document_core.py:914
+**Document mime type** (`tests/documents/test_document_core.py:914`)
+
+```python
 def test_document_mime_type(self):
     """Document.mime_type returns detected MIME type."""
-    doc = ConcreteTestDocument.create(name="data.json", content={"key": "value"})
+    doc = ConcreteTestDocument.create_root(name="data.json", content={"key": "value"}, reason="test input")
     assert doc.mime_type == "application/json"
+```
 
-# === ERROR EXAMPLES (What NOT to Do) ===
 
-# Error: Cannot convert to document
-# Source: tests/documents/test_document_model_convert.py:145
+## Error Examples
+
+**Cannot convert to document** (`tests/documents/test_document_model_convert.py:145`)
+
+```python
 def test_cannot_convert_to_document(self):
     """Test that converting to base Document class raises error."""
-    doc = SampleTaskDoc.create(name="test.json", content={})
+    doc = SampleTaskDoc.create_root(name="test.json", content={}, reason="test input")
 
     with pytest.raises(TypeError):
-        doc.model_convert(Document)
+        doc.retype(Document, preserve_provenance=True)
+```
 
-# Error: Cannot convert to non document
-# Source: tests/documents/test_document_model_convert.py:152
+**Cannot convert to non document** (`tests/documents/test_document_model_convert.py:152`)
+
+```python
 def test_cannot_convert_to_non_document(self):
     """Test that converting to non-Document class raises error."""
-    doc = SampleTaskDoc.create(name="test.json", content={})
+    doc = SampleTaskDoc.create_root(name="test.json", content={}, reason="test input")
 
     with pytest.raises(TypeError, match="must be a subclass of Document"):
-        doc.model_convert(dict)  # type: ignore
+        doc.retype(dict, preserve_provenance=True)  # type: ignore
 
     with pytest.raises(TypeError, match="must be a subclass of Document"):
-        doc.model_convert(str)  # type: ignore
+        doc.retype(str, preserve_provenance=True)  # type: ignore
+```
 
-# Error: Cannot instantiate document
-# Source: tests/documents/test_document_core.py:120
+**Cannot instantiate document** (`tests/documents/test_document_core.py:119`)
+
+```python
 def test_cannot_instantiate_document(self):
     """Test that Document cannot be instantiated directly."""
     with pytest.raises(TypeError, match="Cannot instantiate Document directly"):
         Document(name="test.txt", content=b"test")
+```
 
-# Error: Content plus attachments exceeding limit
-# Source: tests/documents/test_document_core.py:1017
+**Content plus attachments exceeding limit** (`tests/documents/test_document_core.py:1017`)
+
+```python
 def test_content_plus_attachments_exceeding_limit(self):
     """Content + attachments exceeding MAX_CONTENT_SIZE is rejected by model_validator."""
     # Content is 7 bytes (under 10-byte limit), but total with attachment is 12
@@ -1003,9 +987,11 @@ def test_content_plus_attachments_exceeding_limit(self):
             content=b"1234567",  # 7 bytes
             attachments=(Attachment(name="a.txt", content=b"12345"),),  # 5 bytes => total 12
         )
+```
 
-# Error: Content plus attachments exceeding limit rejected
-# Source: tests/documents/test_document_attachments.py:137
+**Content plus attachments exceeding limit rejected** (`tests/documents/test_document_attachments.py:137`)
+
+```python
 def test_content_plus_attachments_exceeding_limit_rejected(self):
     with pytest.raises(DocumentSizeError, match="including attachments"):
         SmallLimitDoc(
@@ -1013,3 +999,4 @@ def test_content_plus_attachments_exceeding_limit_rejected(self):
             content=b"A" * 30,  # 30 bytes
             attachments=(Attachment(name="a.txt", content=b"B" * 25),),  # total 55 > 50
         )
+```

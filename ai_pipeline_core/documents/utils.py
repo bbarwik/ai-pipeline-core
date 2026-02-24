@@ -5,23 +5,27 @@ hash validation, and shared constants used throughout the document system.
 """
 
 import re
+from collections.abc import Sequence
+from typing import Any
 from urllib.parse import urlparse
+
+from ai_pipeline_core.exceptions import DocumentValidationError
+
+__all__ = [
+    "DATA_URI_PATTERN",
+    "ensure_extension",
+    "find_document",
+    "is_document_sha256",
+    "replace_extension",
+    "sanitize_url",
+]
 
 # Regex for detecting data URIs (RFC 2397): data:<mime>;base64,<payload>
 DATA_URI_PATTERN = re.compile(r"^data:[a-zA-Z0-9.+/-]+;base64,")
 
 
 def sanitize_url(url: str) -> str:
-    """Sanitize URL or query string for use in filenames.
-
-    Removes or replaces characters that are invalid in filenames.
-
-    Args:
-        url: The URL or query string to sanitize.
-
-    Returns:
-        A sanitized string safe for use as a filename.
-    """
+    """Sanitize URL or query string for use as a filename (max 100 chars)."""
     # Remove protocol if it's a URL
     if url.startswith(("http://", "https://")):
         parsed = urlparse(url)
@@ -48,56 +52,11 @@ def sanitize_url(url: str) -> str:
     return sanitized
 
 
-def camel_to_snake(name: str) -> str:
-    """Convert CamelCase (incl. acronyms) to snake_case.
-
-    Args:
-        name: The CamelCase string to convert.
-
-    Returns:
-        The converted snake_case string.
-    """
-    s1 = re.sub(r"(.)([A-Z][a-z0-9]+)", r"\1_\2", name)
-    s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1)
-    return s2.replace("__", "_").strip("_").lower()
+_MIN_HASH_UNIQUE_CHARS = 8
 
 
 def is_document_sha256(value: str) -> bool:
-    """Check if a string is a valid base32-encoded SHA256 hash with proper entropy.
-
-    This function validates that a string is not just formatted like a SHA256 hash,
-    but actually has the entropy characteristics of a real hash. It checks:
-    1. Correct length (52 characters without padding)
-    2. Valid base32 characters (A-Z, 2-7)
-    3. Sufficient entropy (at least 8 unique characters)
-
-    The entropy check prevents false positives like 'AAAAAAA...AAA' from being
-    identified as valid document hashes.
-
-    Args:
-        value: String to check if it's a document SHA256 hash.
-
-    Returns:
-        True if the string appears to be a real base32-encoded SHA256 hash,
-        False otherwise.
-
-    Examples:
-        >>> # Real SHA256 hash
-        >>> is_document_sha256("P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ")
-        True
-
-        >>> # Too uniform - lacks entropy
-        >>> is_document_sha256("A" * 52)
-        False
-
-        >>> # Wrong length
-        >>> is_document_sha256("ABC123")
-        False
-
-        >>> # Invalid characters
-        >>> is_document_sha256("a" * 52)  # lowercase
-        False
-    """
+    """Check if a string is a valid base32-encoded SHA256 hash (52 chars, A-Z2-7, sufficient entropy)."""
     if not isinstance(value, str) or len(value) != 52:  # pyright: ignore[reportUnnecessaryIsInstance]
         return False
 
@@ -105,8 +64,44 @@ def is_document_sha256(value: str) -> bool:
     if not re.match(r"^[A-Z2-7]{52}$", value):
         return False
 
-    # Check entropy: real SHA256 hashes have high entropy
-    # Require at least 8 unique characters (out of 32 possible in base32)
-    # This prevents patterns like "AAAAAAA..." from being identified as real hashes
     unique_chars = len(set(value))
-    return unique_chars >= 8
+    return unique_chars >= _MIN_HASH_UNIQUE_CHARS
+
+
+def ensure_extension(name: str, ext: str) -> str:
+    """Ensure a filename has the given extension, adding it only if missing.
+
+    Prevents double-extension bugs like 'report.md.md' from ad-hoc string concatenation.
+    """
+    if not ext.startswith("."):
+        ext = f".{ext}"
+    if name.endswith(ext):
+        return name
+    return name + ext
+
+
+def replace_extension(name: str, ext: str) -> str:
+    """Replace the file extension (or add one if missing).
+
+    Handles compound extensions like '.tar.gz' by replacing only the last extension.
+    """
+    if not ext.startswith("."):
+        ext = f".{ext}"
+    dot_pos = name.rfind(".")
+    if dot_pos > 0:
+        return name[:dot_pos] + ext
+    return name + ext
+
+
+def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
+    """Find a document of the given type in a sequence.
+
+    Replaces bare `next(d for d in docs if isinstance(d, T))` which gives opaque
+    StopIteration on missing types. Raises DocumentValidationError with a clear message
+    listing available document types.
+    """
+    for doc in documents:
+        if isinstance(doc, doc_type):
+            return doc
+    available = sorted({type(d).__name__ for d in documents})
+    raise DocumentValidationError(f"No document of type '{doc_type.__name__}' found. Available types: {', '.join(available) or 'none'}")

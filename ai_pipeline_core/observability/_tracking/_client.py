@@ -10,7 +10,6 @@ from ._models import (
     TABLE_PIPELINE_RUNS,
     TABLE_SPAN_EVENTS,
     TABLE_TRACKED_SPANS,
-    TrackedSpanRow,
 )
 
 logger = get_pipeline_logger(__name__)
@@ -20,8 +19,8 @@ _CREATE_TABLES_SQL = [
     f"""
     CREATE TABLE IF NOT EXISTS {TABLE_PIPELINE_RUNS}
     (
-        run_id           UUID,
-        project_name     LowCardinality(String),
+        execution_id     UUID,
+        run_id           LowCardinality(String),
         flow_name        LowCardinality(String),
         run_scope        String         DEFAULT '',
         status           LowCardinality(String),
@@ -34,7 +33,7 @@ _CREATE_TABLES_SQL = [
     )
     ENGINE = ReplacingMergeTree(version)
     PARTITION BY toYYYYMM(start_time)
-    ORDER BY (run_id)
+    ORDER BY (execution_id)
     SETTINGS index_granularity = 8192
     """,
     f"""
@@ -42,7 +41,7 @@ _CREATE_TABLES_SQL = [
     (
         span_id                  String,
         trace_id                 String,
-        run_id                   UUID,
+        execution_id             UUID,
         parent_span_id           Nullable(String),
         name                     String,
         span_type                LowCardinality(String),
@@ -54,9 +53,6 @@ _CREATE_TABLES_SQL = [
         tokens_input             UInt64         DEFAULT 0,
         tokens_output            UInt64         DEFAULT 0,
         llm_model                LowCardinality(Nullable(String)),
-        user_summary             Nullable(String) CODEC(ZSTD(3)),
-        user_visible             Bool           DEFAULT false,
-        user_label               Nullable(String),
         input_document_sha256s   Array(String),
         output_document_sha256s  Array(String),
         version                  UInt64         DEFAULT 1,
@@ -64,14 +60,14 @@ _CREATE_TABLES_SQL = [
     )
     ENGINE = ReplacingMergeTree(version)
     PARTITION BY toYYYYMM(start_time)
-    ORDER BY (run_id, span_id)
+    ORDER BY (execution_id, span_id)
     SETTINGS index_granularity = 8192
     """,
     f"""
     CREATE TABLE IF NOT EXISTS {TABLE_DOCUMENT_EVENTS}
     (
         event_id           UUID,
-        run_id             UUID,
+        execution_id       UUID,
         document_sha256    String,
         span_id            String,
         event_type         LowCardinality(String),
@@ -80,14 +76,14 @@ _CREATE_TABLES_SQL = [
     )
     ENGINE = MergeTree
     PARTITION BY toYYYYMM(timestamp)
-    ORDER BY (run_id, document_sha256, timestamp)
+    ORDER BY (execution_id, document_sha256, timestamp)
     SETTINGS index_granularity = 8192
     """,
     f"""
     CREATE TABLE IF NOT EXISTS {TABLE_SPAN_EVENTS}
     (
         event_id       UUID,
-        run_id         UUID,
+        execution_id   UUID,
         span_id        String,
         name           String,
         timestamp      DateTime64(3, 'UTC'),
@@ -96,7 +92,7 @@ _CREATE_TABLES_SQL = [
     )
     ENGINE = MergeTree
     PARTITION BY toYYYYMM(timestamp)
-    ORDER BY (run_id, span_id, timestamp)
+    ORDER BY (execution_id, span_id, timestamp)
     SETTINGS index_granularity = 8192
     """,
 ]
@@ -135,7 +131,7 @@ class ClickHouseClient:
     def connect(self) -> None:
         """Connect to ClickHouse. Call from writer thread, not async context."""
         self._client = clickhouse_connect.get_client(**self._params)  # pyright: ignore[reportArgumentType, reportUnknownMemberType]
-        logger.info(f"Connected to ClickHouse at {self._params['host']}:{self._params['port']}")
+        logger.info("Connected to ClickHouse at %s:%s", self._params["host"], self._params["port"])
 
     def ensure_tables(self) -> None:
         """Create tables if they don't exist. Call after connect()."""
@@ -145,7 +141,7 @@ class ClickHouseClient:
         if self._tables_initialized:
             return
         for sql in _CREATE_TABLES_SQL:
-            client.command(sql)  # pyright: ignore[reportAttributeAccessIssue]
+            client.command(sql)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
 
         self._tables_initialized = True
         logger.info("ClickHouse tables verified/created")
@@ -160,7 +156,7 @@ class ClickHouseClient:
             raise ValueError(f"Mixed row types in batch for table {table}")
         column_names = list(row_type.model_fields.keys())
         data = [[getattr(row, col) for row in rows] for col in column_names]
-        client.insert(table, data, column_names=column_names, column_oriented=True)  # pyright: ignore[reportAttributeAccessIssue]
+        client.insert(table, data, column_names=column_names, column_oriented=True)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
 
     def insert_runs(self, rows: list[BaseModel]) -> None:
         """Insert pipeline run rows."""
@@ -177,7 +173,3 @@ class ClickHouseClient:
     def insert_span_events(self, rows: list[BaseModel]) -> None:
         """Insert span event rows."""
         self._insert_rows(TABLE_SPAN_EVENTS, rows)
-
-    def update_span(self, row: TrackedSpanRow) -> None:
-        """Insert a single replacement span row (ReplacingMergeTree update)."""
-        self.insert_spans([row])

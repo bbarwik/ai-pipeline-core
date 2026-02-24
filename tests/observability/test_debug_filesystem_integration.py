@@ -18,7 +18,7 @@ from ai_pipeline_core.observability._debug._content import ArtifactStore, Conten
 
 from tests.observability.test_helpers import reconstruct_span_content
 from ai_pipeline_core.observability._debug._summary import generate_summary
-from ai_pipeline_core.observability._debug._types import SpanInfo, TraceState, WriteJob
+from ai_pipeline_core.observability._debug._config import SpanInfo, TraceState, WriteJob
 from ai_pipeline_core.observability._debug._writer import LocalTraceWriter
 
 
@@ -40,7 +40,6 @@ def config(trace_dir: Path) -> TraceDebugConfig:
         include_llm_index=True,
         include_error_index=True,
         merge_wrapper_spans=False,
-        auto_summary_enabled=False,
     )
 
 
@@ -258,25 +257,20 @@ class TestArtifactStoreIntegration:
     def test_text_deduplication(self, tmp_path):
         store = ArtifactStore(tmp_path)
 
-        ref1 = store.store_text("Hello, world!")
-        ref2 = store.store_text("Hello, world!")
-        ref3 = store.store_text("Different content")
+        ref1 = store.store(b"Hello, world!", "text/plain")
+        ref2 = store.store(b"Hello, world!", "text/plain")
+        ref3 = store.store(b"Different content", "text/plain")
 
         assert ref1.hash == ref2.hash
         assert ref1.path == ref2.path
         assert ref1.hash != ref3.hash
 
-        stats = store.get_stats()
-        assert stats["unique_artifacts"] == 2
-        # total_references counts unique hashes stored, not total store calls
-        assert stats["total_references"] >= 2
-
     def test_binary_deduplication(self, tmp_path):
         store = ArtifactStore(tmp_path)
 
         data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-        ref1 = store.store_binary(data, "image/png")
-        ref2 = store.store_binary(data, "image/png")
+        ref1 = store.store(data, "image/png")
+        ref2 = store.store(data, "image/png")
 
         assert ref1.hash == ref2.hash
         assert ref1.path.endswith(".png")
@@ -288,7 +282,7 @@ class TestArtifactStoreIntegration:
 
     def test_flat_directory_structure(self, tmp_path):
         store = ArtifactStore(tmp_path)
-        ref = store.store_text("test content for sharding")
+        ref = store.store(b"test content for sharding", "text/plain")
 
         # Path should have format: artifacts/sha256/<hash>.txt
         parts = Path(ref.path).parts

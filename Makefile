@@ -1,6 +1,6 @@
 .PHONY: install install-dev test test-clickhouse test-cov lint format typecheck
 .PHONY: clean pre-commit docstrings-cover docs-ai-build docs-ai-check deadcode semgrep check
-.PHONY: filesize duplicates exports hygiene
+.PHONY: filesize duplicates exports hygiene check-claude-md
 
 install:
 	pip install -e .
@@ -45,6 +45,9 @@ deadcode:
 semgrep:
 	semgrep --config .semgrep/ ai_pipeline_core/ tests/ --error
 
+check-claude-md:
+	python scripts/check_claude_md_symbols.py
+
 # File size limits: 500 lines warning, 1000 lines error (excluding blanks and comments)
 filesize:
 	@echo "Checking file sizes..."
@@ -88,5 +91,5 @@ clean:
 pre-commit:
 	pre-commit run --all-files
 
-check: lint typecheck deadcode semgrep docstrings-cover filesize docs-ai-check test
+check: lint typecheck deadcode semgrep docstrings-cover filesize check-claude-md docs-ai-check test
 	@echo "All checks passed"

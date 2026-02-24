@@ -1,9 +1,7 @@
 """Local trace writer for filesystem-based debugging."""
 
-import asyncio
 import atexit
 import hashlib
-import importlib
 import json
 import os
 import re
@@ -20,12 +18,15 @@ import yaml
 
 from ai_pipeline_core.logging import get_pipeline_logger
 
-from ._config import TraceDebugConfig
+from ._config import SpanInfo, TraceDebugConfig, TraceState, WriteJob
 from ._content import ArtifactStore, ContentWriter
 from ._summary import generate_summary
-from ._types import SpanInfo, TraceState, WriteJob
 
 logger = get_pipeline_logger(__name__)
+
+_MAX_DIR_NAME_LENGTH = 28
+_DIR_NAME_TRUNCATE_LENGTH = 24
+_DIR_NAME_HASH_LENGTH = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,8 +42,7 @@ class LocalTraceWriter:
     Uses a hierarchical directory structure where child spans are nested
     inside parent span directories. Directory names use numeric prefixes
     (01_, 02_, etc.) to preserve execution order when viewed with `tree`.
-    Generates index files and optionally produces _summary.md and
-    _auto_summary.md for trace analysis.
+    Generates index files and optionally produces _summary.md for trace analysis.
     """
 
     def __init__(self, config: TraceDebugConfig):
@@ -93,7 +93,7 @@ class LocalTraceWriter:
                 depth = parent_info.depth + 1
             elif parent_id:
                 # Parent ID provided but not found - orphan span, place at root
-                logger.warning(f"Span {span_id} has unknown parent {parent_id}, placing at trace root")
+                logger.warning("Span %s has unknown parent %s, placing at trace root", span_id, parent_id)
                 parent_path = trace.path
                 depth = 0
             else:
@@ -180,7 +180,7 @@ class LocalTraceWriter:
                 try:
                     self._finalize_trace(trace)
                 except Exception as e:
-                    logger.warning(f"Failed to finalize trace {trace.trace_id}: {e}")
+                    logger.warning("Failed to finalize trace %s: %s", trace.trace_id, e)
             self._traces.clear()
 
     def _get_or_create_trace(self, trace_id: str, name: str) -> TraceState:
@@ -232,26 +232,26 @@ class LocalTraceWriter:
             try:
                 self._process_job(job)
             except Exception as e:
-                logger.warning(f"Trace debug write failed for span {job.span_id}: {e}")
+                logger.warning("Trace debug write failed for span %s: %s", job.span_id, e)
 
     def _process_job(self, job: WriteJob) -> None:  # noqa: PLR0914
         """Process a span end job - write all span data."""
         with self._lock:
             trace = self._traces.get(job.trace_id)
             if not trace:
-                logger.warning(f"Trace {job.trace_id} not found for span {job.span_id}")
+                logger.warning("Trace %s not found for span %s", job.trace_id, job.span_id)
                 return
 
             span_info = trace.spans.get(job.span_id)
             if not span_info:
-                logger.warning(f"Span {job.span_id} not found in trace {job.trace_id}")
+                logger.warning("Span %s not found in trace %s", job.span_id, job.trace_id)
                 return
 
             span_dir = span_info.path
 
             # Extract input/output from attributes
-            input_content = self._extract_input(job.attributes)
-            output_content = self._extract_output(job.attributes)
+            input_content = self._extract_json_attribute(job.attributes, "lmnr.span.input")
+            output_content = self._extract_json_attribute(job.attributes, "lmnr.span.output")
 
             # Get artifact store for this trace
             artifact_store = self._artifact_stores.get(job.trace_id)
@@ -324,25 +324,14 @@ class LocalTraceWriter:
                     del self._artifact_stores[job.trace_id]
 
     @staticmethod
-    def _extract_input(attributes: dict[str, Any]) -> Any:
-        """Extract input from span attributes."""
-        input_str = attributes.get("lmnr.span.input")
-        if input_str:
+    def _extract_json_attribute(attributes: dict[str, Any], key: str) -> Any:
+        """Extract and JSON-parse a span attribute, returning raw string on parse failure."""
+        raw = attributes.get(key)
+        if raw:
             try:
-                return json.loads(input_str)
+                return json.loads(raw)
             except (json.JSONDecodeError, TypeError):
-                return input_str
-        return None
-
-    @staticmethod
-    def _extract_output(attributes: dict[str, Any]) -> Any:
-        """Extract output from span attributes."""
-        output_str = attributes.get("lmnr.span.output")
-        if output_str:
-            try:
-                return json.loads(output_str)
-            except (json.JSONDecodeError, TypeError):
-                return output_str
+                return raw
         return None
 
     @staticmethod
@@ -467,7 +456,8 @@ class LocalTraceWriter:
                 if event.attributes:
                     event_dict["attributes"] = dict(event.attributes)
                 result.append(event_dict)
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to serialize event '%s': %s", event.name, e)
                 continue
         return result
 
@@ -699,7 +689,8 @@ class LocalTraceWriter:
                     span_meta = yaml.safe_load(span_yaml.read_text())
                     if span_meta.get("input", {}).get("type") != "none":
                         continue
-                except Exception:
+                except Exception as e:
+                    logger.debug("Failed to parse span YAML at %s: %s", span_yaml, e)
                     continue
 
             # Parent must have prefect info
@@ -732,7 +723,7 @@ class LocalTraceWriter:
         if not wrappers:
             return
 
-        logger.debug(f"Merging {len(wrappers)} wrapper spans in trace {trace.trace_id}")
+        logger.debug("Merging %s wrapper spans in trace %s", len(wrappers), trace.trace_id)
 
         # Cache wrapper IDs for use in tree index writing
         trace.merged_wrapper_ids = wrappers
@@ -810,25 +801,6 @@ class LocalTraceWriter:
             summary_path = trace.path / "_summary.md"
             summary_path.write_text(summary, encoding="utf-8")
 
-        # Generate LLM-powered auto-summary if enabled.
-        # asyncio.run() is unsafe when the current thread already has a running event loop.
-        # Skip if static summary is unavailable: auto-summary uses it as context input.
-        has_running_loop = False
-        try:
-            asyncio.get_running_loop()
-            has_running_loop = True
-        except RuntimeError:
-            pass
-        if self._config.auto_summary_enabled and not has_running_loop and summary is not None:
-            try:
-                auto_mod = importlib.import_module("ai_pipeline_core.observability._debug._auto_summary")
-                auto_summary_text = asyncio.run(auto_mod.generate_auto_summary(summary, self._config.auto_summary_model))
-                if auto_summary_text:
-                    auto_summary_path = trace.path / "_auto_summary.md"
-                    auto_summary_path.write_text(auto_summary_text, encoding="utf-8")
-            except Exception as e:
-                logger.warning(f"Auto-summary generation failed: {e}")
-
     def _cleanup_old_traces(self) -> None:
         """Delete old traces beyond max_traces limit."""
         if self._config.max_traces is None:
@@ -844,13 +816,13 @@ class LocalTraceWriter:
             try:
                 shutil.rmtree(path)
             except Exception as e:
-                logger.warning(f"Failed to delete old trace {path}: {e}")
+                logger.warning("Failed to delete old trace %s: %s", path, e)
 
     @staticmethod
     def _sanitize_name(name: str) -> str:
         """Sanitize name for safe filesystem use.
 
-        Truncates to 24 chars + 4-char hash to avoid collisions and keep
+        Truncates long names with a hash suffix to avoid collisions and keep
         paths manageable with deep nesting.
         """
         safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
@@ -862,8 +834,8 @@ class LocalTraceWriter:
             safe = f"_{safe}"
 
         # Truncate with hash suffix to avoid collisions
-        if len(safe) > 28:
-            name_hash = hashlib.md5(name.encode()).hexdigest()[:4]
-            safe = f"{safe[:24]}_{name_hash}"
+        if len(safe) > _MAX_DIR_NAME_LENGTH:
+            name_hash = hashlib.md5(name.encode()).hexdigest()[:_DIR_NAME_HASH_LENGTH]
+            safe = f"{safe[:_DIR_NAME_TRUNCATE_LENGTH]}_{name_hash}"
 
         return safe or "span"

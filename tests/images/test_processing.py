@@ -43,7 +43,7 @@ class TestPlanSplit:
         assert plan.trim_width is None
         assert plan.tile_width == 800
         assert plan.tile_height == 600
-        assert plan.warnings == []
+        assert plan.warnings == ()
 
     def test_tall_image_splits(self):
         plan = plan_split(1000, 7000, max_dimension=3000, max_pixels=9_000_000, overlap_fraction=0.2, max_parts=20)
@@ -168,7 +168,6 @@ class TestEncodeWebp:
         img = make_rgb_image(200, 100)
         data = encode_webp(img, quality=60)
         assert len(data) > 0
-        # Verify it's valid WebP
         result = Image.open(BytesIO(data))
         assert result.format == "WEBP"
         assert result.size == (200, 100)
@@ -205,7 +204,7 @@ class TestExecuteSplit:
 
     def test_single_part_no_split(self):
         img = make_rgb_image(800, 600)
-        plan = SplitPlan(tile_width=800, tile_height=600, step_y=0, num_parts=1, trim_width=None, warnings=[])
+        plan = SplitPlan(tile_width=800, tile_height=600, step_y=0, num_parts=1, trim_width=None, warnings=())
         parts = execute_split(img, plan, webp_quality=60)
         assert len(parts) == 1
         data, w, h, sy, sh = parts[0]
@@ -222,7 +221,6 @@ class TestExecuteSplit:
         assert len(parts) == plan.num_parts
         assert len(parts) > 1
 
-        # All parts should have valid WebP data
         for data, w, h, _sy, _sh in parts:
             assert len(data) > 0
             assert w == 1000
@@ -238,7 +236,7 @@ class TestExecuteSplit:
 
     def test_trim_width(self):
         img = make_rgb_image(5000, 600)
-        plan = SplitPlan(tile_width=3000, tile_height=600, step_y=0, num_parts=1, trim_width=3000, warnings=[])
+        plan = SplitPlan(tile_width=3000, tile_height=600, step_y=0, num_parts=1, trim_width=3000, warnings=())
         parts = execute_split(img, plan, webp_quality=60)
         assert len(parts) == 1
         _, w, h, _, _ = parts[0]
@@ -247,10 +245,9 @@ class TestExecuteSplit:
 
     def test_rgba_converted(self):
         img = Image.new("RGBA", (800, 600), (128, 128, 128, 200))
-        plan = SplitPlan(tile_width=800, tile_height=600, step_y=0, num_parts=1, trim_width=None, warnings=[])
+        plan = SplitPlan(tile_width=800, tile_height=600, step_y=0, num_parts=1, trim_width=None, warnings=())
         parts = execute_split(img, plan, webp_quality=60)
         assert len(parts) == 1
-        # Should produce valid WebP (RGBA preserved)
         result = Image.open(BytesIO(parts[0][0]))
         assert result.format == "WEBP"
 

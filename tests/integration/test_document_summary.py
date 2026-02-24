@@ -1,8 +1,8 @@
-"""Integration tests for LLM-powered document and span summary generation."""
+"""Integration tests for LLM-powered document summary generation."""
 
 import pytest
 
-from ai_pipeline_core.observability._summary import generate_document_summary, generate_span_summary
+from ai_pipeline_core.document_store._summary_llm import generate_document_summary
 from ai_pipeline_core.settings import settings
 
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
@@ -24,18 +24,6 @@ async def test_generate_document_summary():
             "The SaaS segment grew 31% driven by enterprise contracts. "
             "Operating costs remained stable at $2.8M."
         ),
-    )
-
-    assert summary, "Summary should not be empty"
-    assert len(summary.split()) <= 100, f"Summary too long ({len(summary.split())} words): {summary}"
-
-
-@pytest.mark.asyncio
-async def test_generate_span_summary():
-    """Test span/task summary generation with a real LLM call."""
-    summary = await generate_span_summary(
-        label="verify_sources",
-        output_hint="Verified 12 sources against the research report. 10 confirmed, 2 flagged as inconsistent.",
     )
 
     assert summary, "Summary should not be empty"

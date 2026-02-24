@@ -1,9 +1,18 @@
 # MODULE: exceptions
-# CLASSES: PipelineCoreError, DocumentValidationError, DocumentSizeError, DocumentNameError, LLMError, PromptError, PromptRenderError, PromptNotFoundError
+# CLASSES: PipelineCoreError, DocumentValidationError, DocumentSizeError, DocumentNameError, LLMError, OutputDegenerationError
 # DEPENDS: Exception
-# SIZE: ~1KB
-# === PUBLIC API ===
+# VERSION: 0.10.0
+# AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
+## Imports
+
+```python
+from ai_pipeline_core import DocumentNameError, DocumentSizeError, DocumentValidationError, LLMError, PipelineCoreError
+```
+
+## Public API
+
+```python
 class PipelineCoreError(Exception):
     """Base exception for all AI Pipeline Core errors."""
 
@@ -19,14 +28,11 @@ class DocumentNameError(DocumentValidationError):
 class LLMError(PipelineCoreError):
     """Raised when LLM generation fails after all retries."""
 
-class PromptError(PipelineCoreError):
-    """Base exception for prompt template errors."""
+class OutputDegenerationError(LLMError):
+    """LLM output contains degeneration patterns (e.g., token repetition loops)."""
 
-class PromptRenderError(PromptError):
-    """Raised when Jinja2 template rendering fails."""
+```
 
-class PromptNotFoundError(PromptError):
-    """Raised when prompt template file is not found in search paths."""
+## Examples
 
-# === EXAMPLES ===
-# No test examples available.
+No test examples available.

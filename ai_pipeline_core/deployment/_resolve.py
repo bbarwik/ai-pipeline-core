@@ -8,16 +8,15 @@ import asyncio
 import ipaddress
 import re
 import socket
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Self, cast
 from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._hashing import compute_content_sha256
-from ai_pipeline_core.documents._types import DocumentSha256
 from ai_pipeline_core.documents.attachment import Attachment
+from ai_pipeline_core.documents.types import DocumentSha256
 from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
@@ -32,72 +31,64 @@ _MAX_CONCURRENT_DOWNLOADS = 10
 # ---------------------------------------------------------------------------
 
 
-class AttachmentInput(BaseModel):
-    """Attachment provided to a deployment — inline content or a URL reference."""
+class _InputBase(BaseModel):
+    """Shared validators for deployment input models (AttachmentInput, DocumentInput).
 
-    name: str = ""
-    description: str | None = None
+    Subclasses must define STRIP_KEYS and have `url` and `content` fields.
+    """
+
     content: str | None = None
     url: str = ""
 
-    _STRIP_KEYS: ClassVar[frozenset[str]] = frozenset({"mime_type", "size"})
+    STRIP_KEYS: ClassVar[frozenset[str]] = frozenset()
 
     @model_validator(mode="before")
     @classmethod
     def _strip_serialize_metadata(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            return {k: v for k, v in data.items() if k not in cls._STRIP_KEYS}
+            d = cast(dict[str, Any], data)
+            return {k: v for k, v in d.items() if k not in cls.STRIP_KEYS}
         return data
 
     @model_validator(mode="after")
     def _check_mode(self) -> Self:
+        cls_name = type(self).__name__
         if self.url and self.content is not None:
-            raise ValueError("AttachmentInput cannot have both 'url' and 'content'")
+            raise ValueError(f"{cls_name} cannot have both 'url' and 'content'")
         if not self.url and self.content is None:
-            raise ValueError("AttachmentInput must have either 'url' or 'content'")
+            raise ValueError(f"{cls_name} must have either 'url' or 'content'")
         return self
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
-class DocumentInput(BaseModel):
+class AttachmentInput(_InputBase):
+    """Attachment provided to a deployment — inline content or a URL reference."""
+
+    name: str = ""
+    description: str | None = None
+
+    STRIP_KEYS: ClassVar[frozenset[str]] = frozenset({"mime_type", "size"})
+
+
+class DocumentInput(_InputBase):
     """Document provided to a deployment — inline content or a URL reference."""
 
     name: str = ""
     description: str = ""
     class_name: str = ""
 
-    content: str | None = None
-    sources: tuple[str, ...] = ()
-    origins: tuple[str, ...] = ()
+    derived_from: tuple[str, ...] = ()
+    triggered_by: tuple[str, ...] = ()
     attachments: tuple[AttachmentInput, ...] = ()
 
-    url: str = ""
-
-    _STRIP_KEYS: ClassVar[frozenset[str]] = frozenset({
+    STRIP_KEYS: ClassVar[frozenset[str]] = frozenset({
         "id",
         "sha256",
         "content_sha256",
         "size",
         "mime_type",
     })
-
-    @model_validator(mode="before")
-    @classmethod
-    def _strip_serialize_metadata(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            return {k: v for k, v in data.items() if k not in cls._STRIP_KEYS}
-        return data
-
-    @model_validator(mode="after")
-    def _check_mode(self) -> Self:
-        if self.url and self.content is not None:
-            raise ValueError("DocumentInput cannot have both 'url' and 'content'")
-        if not self.url and self.content is None:
-            raise ValueError("DocumentInput must have either 'url' or 'content'")
-        return self
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +126,8 @@ class OutputDocument(BaseModel):
 
 def build_output_document(doc: Document) -> OutputDocument:
     """Build an OutputDocument from a live Document object."""
+    from ai_pipeline_core.documents._hashing import compute_content_sha256
+
     att_outputs = tuple(
         OutputAttachment(
             sha256=compute_content_sha256(att.content),
@@ -163,27 +156,25 @@ def build_output_document(doc: Document) -> OutputDocument:
 # ---------------------------------------------------------------------------
 
 
-def _is_private_ip(hostname: str) -> bool:
+def _is_ip_private(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Check if an IP address is private/reserved (SSRF protection)."""
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+
+
+async def _is_private_ip(hostname: str) -> bool:
     """Check if hostname resolves to a private/reserved IP address (SSRF protection)."""
     try:
-        addr = ipaddress.ip_address(hostname)
-        return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
+        return _is_ip_private(ipaddress.ip_address(hostname))
     except ValueError:
         pass
     try:
-        resolved = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        return any(
-            ipaddress.ip_address(addr[4][0]).is_private
-            or ipaddress.ip_address(addr[4][0]).is_loopback
-            or ipaddress.ip_address(addr[4][0]).is_link_local
-            or ipaddress.ip_address(addr[4][0]).is_reserved
-            for addr in resolved
-        )
+        resolved = await asyncio.to_thread(socket.getaddrinfo, hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        return any(_is_ip_private(ipaddress.ip_address(addr[4][0])) for addr in resolved)
     except (socket.gaierror, ValueError, OSError):
         return False
 
 
-def _validate_url(url: str) -> None:
+async def _validate_url(url: str) -> None:
     """Validate URL scheme and block private/reserved IP ranges (SSRF protection)."""
     if not _ALLOWED_SCHEMES.match(url):
         raise ValueError(f"Only http://, https://, and gs:// URLs are supported, got: {url}")
@@ -191,7 +182,7 @@ def _validate_url(url: str) -> None:
         return
     parsed = urlparse(url)
     hostname = parsed.hostname or ""
-    if _is_private_ip(hostname):
+    if await _is_private_ip(hostname):
         raise ValueError(f"URL points to a private/reserved IP address (blocked for security): {hostname}")
 
 
@@ -241,19 +232,27 @@ async def _fetch_gcs(url: str) -> bytes:
         from ai_pipeline_core.settings import settings
 
         if settings.gcs_service_account_file:
-            client = storage.Client.from_service_account_json(settings.gcs_service_account_file)
+            client = storage.Client.from_service_account_json(settings.gcs_service_account_file)  # pyright: ignore[reportUnknownMemberType]
         else:
             client = storage.Client()
-        blob = client.bucket(bucket_name).blob(blob_path)
-        blob.reload()
+        blob = client.bucket(bucket_name).blob(blob_path)  # pyright: ignore[reportUnknownMemberType]
+        blob.reload()  # pyright: ignore[reportUnknownMemberType]
         if blob.size is not None and blob.size > Document.MAX_CONTENT_SIZE:
             raise ValueError(f"GCS blob exceeds {Document.MAX_CONTENT_SIZE // (1024 * 1024)}MB limit: {url}")
-        content = blob.download_as_bytes()
+        content = blob.download_as_bytes()  # pyright: ignore[reportUnknownMemberType]
         if len(content) > Document.MAX_CONTENT_SIZE:
             raise ValueError(f"Downloaded content exceeds {Document.MAX_CONTENT_SIZE // (1024 * 1024)}MB limit: {url}")
         return content
 
     return await asyncio.to_thread(_download)
+
+
+async def _fetch_url(url: str, client: httpx.AsyncClient, semaphore: asyncio.Semaphore) -> tuple[bytes, str | None]:
+    """Fetch content from URL (HTTP or GCS) with concurrency limiting."""
+    async with semaphore:
+        if url.startswith("gs://"):
+            return await _fetch_gcs(url), None
+        return await _fetch_http(url, client)
 
 
 # ---------------------------------------------------------------------------
@@ -294,14 +293,8 @@ async def resolve_document_inputs(
                 return Attachment(name=name, content=att_input.content, description=att_input.description)  # pyright: ignore[reportArgumentType]
 
             # URL attachment
-            _validate_url(att_input.url)
-            async with semaphore:
-                if att_input.url.startswith("gs://"):
-                    content = await _fetch_gcs(att_input.url)
-                    disposition = None
-                else:
-                    content, disposition = await _fetch_http(att_input.url, client)
-
+            await _validate_url(att_input.url)
+            content, disposition = await _fetch_url(att_input.url, client, semaphore)
             name = att_input.name or _derive_name(att_input.url, disposition)
             if not name:
                 raise ValueError(f"Cannot derive attachment name from URL: {att_input.url}")
@@ -336,20 +329,14 @@ async def resolve_document_inputs(
                     name=doc_input.name,
                     content=doc_input.content,  # pyright: ignore[reportArgumentType]
                     description=doc_input.description or None,
-                    sources=doc_input.sources or None,
-                    origins=doc_input.origins or None,
+                    derived_from=doc_input.derived_from or None,
+                    triggered_by=tuple(DocumentSha256(t) for t in doc_input.triggered_by) if doc_input.triggered_by else None,
                     attachments=attachments or None,
                 )
 
             # URL document
-            _validate_url(doc_input.url)
-            async with semaphore:
-                if doc_input.url.startswith("gs://"):
-                    content_bytes = await _fetch_gcs(doc_input.url)
-                    disposition = None
-                else:
-                    content_bytes, disposition = await _fetch_http(doc_input.url, client)
-
+            await _validate_url(doc_input.url)
+            content_bytes, disposition = await _fetch_url(doc_input.url, client, semaphore)
             name = doc_input.name or _derive_name(doc_input.url, disposition)
             if not name:
                 raise ValueError(f"Cannot derive document name from URL: {doc_input.url}")
@@ -358,8 +345,8 @@ async def resolve_document_inputs(
                 name=name,
                 content=content_bytes,
                 description=doc_input.description or None,
-                sources=doc_input.sources or None,
-                origins=doc_input.origins or None,
+                derived_from=doc_input.derived_from or None,
+                triggered_by=tuple(DocumentSha256(t) for t in doc_input.triggered_by) if doc_input.triggered_by else None,
                 attachments=attachments or None,
             )
 

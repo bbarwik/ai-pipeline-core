@@ -4,13 +4,13 @@ from datetime import timedelta
 
 import pytest
 
-from ai_pipeline_core.document_store import (
-    DocumentNode,
+from ai_pipeline_core.document_store._protocol import (
     DocumentStore,
     get_document_store,
     set_document_store,
 )
-from ai_pipeline_core.documents._types import DocumentSha256, RunScope
+from ai_pipeline_core.document_store._models import DocumentNode, FlowCompletion
+from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 from ai_pipeline_core.documents.document import Document
 
 
@@ -58,6 +58,12 @@ class _DummyStore:
 
     async def find_by_source(self, source_values: list[str], document_type: type[Document], *, max_age: timedelta | None = None) -> dict[str, Document]:
         return {}
+
+    async def save_flow_completion(self, run_scope: RunScope, flow_name: str, input_sha256s: tuple[str, ...], output_sha256s: tuple[str, ...]) -> None:
+        pass
+
+    async def get_flow_completion(self, run_scope: RunScope, flow_name: str, *, max_age: timedelta | None = None) -> FlowCompletion | None:
+        return None
 
     def flush(self) -> None:
         pass

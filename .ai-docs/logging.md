@@ -1,13 +1,18 @@
 # MODULE: logging
 # CLASSES: LoggingConfig
 # PURPOSE: Logging infrastructure for AI Pipeline Core.
-# SIZE: ~8KB
+# VERSION: 0.10.0
+# AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
-# === IMPORTS ===
-from ai_pipeline_core import LoggingConfig, get_logger, get_pipeline_logger, setup_logging
+## Imports
 
-# === TYPES & CONSTANTS ===
+```python
+from ai_pipeline_core import LoggingConfig, get_pipeline_logger, setup_logging
+```
 
+## Types & Constants
+
+```python
 DEFAULT_LOG_LEVELS = {
     "ai_pipeline_core": "INFO",
     "ai_pipeline_core.documents": "INFO",
@@ -16,8 +21,11 @@ DEFAULT_LOG_LEVELS = {
     "ai_pipeline_core.testing": "DEBUG",
 }
 
-# === PUBLIC API ===
+```
 
+## Public API
+
+```python
 class LoggingConfig:
     """Manages logging configuration for the pipeline.
 
@@ -37,7 +45,7 @@ Configuration precedence:
         self.config_path = config_path or self._get_default_config_path()
         self._config: dict[str, Any] | None = None
 
-    def apply(self):
+    def apply(self) -> None:
         """Apply the logging configuration."""
         config = self.load_config()
         logging.config.dictConfig(config)
@@ -64,15 +72,17 @@ Configuration precedence:
         return self._config
 
 
-# === FUNCTIONS ===
+```
 
-def setup_logging(config_path: Path | None = None, level: str | None = None):
+## Functions
+
+```python
+def setup_logging(config_path: Path | None = None, level: str | None = None) -> None:
     """Setup logging for the AI Pipeline Core library.
 
     Initializes logging configuration for the pipeline system.
-
-    IMPORTANT: Call setup_logging exactly once in your application entry point
-    (for example, in main()). Do not call at import time or in library modules.
+    Call once at your application entry point. If not called explicitly,
+    ``get_pipeline_logger()`` will auto-initialize with defaults on first use.
 
     Args:
         config_path: Optional path to YAML logging configuration file.
@@ -95,7 +105,7 @@ def setup_logging(config_path: Path | None = None, level: str | None = None):
             # Also set for Prefect
             os.environ["PREFECT_LOGGING_LEVEL"] = level
 
-def get_pipeline_logger(name: str):
+def get_pipeline_logger(name: str) -> logging.Logger:
     """Get a logger for pipeline components.
 
     Returns a Prefect-integrated logger with the OTel span-event bridge
@@ -124,18 +134,23 @@ def get_pipeline_logger(name: str):
 
     return logger
 
-# === EXAMPLES (from tests/) ===
+```
 
-# Example: Setup logging basic
-# Source: tests/logging/test_logging_config.py:88
+## Examples
+
+**Setup logging basic** (`tests/logging/test_logging_config.py:88`)
+
+```python
 @patch("ai_pipeline_core.logging.logging_config.LoggingConfig.apply")
 def test_setup_logging_basic(self, mock_apply: Mock) -> None:
     """Test basic setup_logging call."""
     setup_logging()
     mock_apply.assert_called_once()
+```
 
-# Example: Get pipeline logger ensures setup
-# Source: tests/logging/test_logging_config.py:127
+**Get pipeline logger ensures setup** (`tests/logging/test_logging_config.py:127`)
+
+```python
 @patch("ai_pipeline_core.logging.logging_config.setup_logging")
 @patch("ai_pipeline_core.logging.logging_config.get_logger")
 def test_get_pipeline_logger_ensures_setup(self, mock_get_logger: Mock, mock_setup: Mock) -> None:
@@ -153,9 +168,11 @@ def test_get_pipeline_logger_ensures_setup(self, mock_get_logger: Mock, mock_set
     mock_setup.assert_called_once()
     mock_get_logger.assert_called_with("test.module")
     assert logger == mock_logger
+```
 
-# Example: Get pipeline logger reuses config
-# Source: tests/logging/test_logging_config.py:144
+**Get pipeline logger reuses config** (`tests/logging/test_logging_config.py:144`)
+
+```python
 @patch("ai_pipeline_core.logging.logging_config.get_logger")
 def test_get_pipeline_logger_reuses_config(self, mock_get_logger: Mock) -> None:
     """Test that subsequent calls don't re-setup logging."""
@@ -175,9 +192,11 @@ def test_get_pipeline_logger_reuses_config(self, mock_get_logger: Mock) -> None:
         mock_setup.assert_not_called()
 
         assert mock_get_logger.call_count == 2
+```
 
-# Example: Setup logging with config path
-# Source: tests/logging/test_logging_config.py:110
+**Setup logging with config path** (`tests/logging/test_logging_config.py:110`)
+
+```python
 @patch("ai_pipeline_core.logging.logging_config.LoggingConfig")
 def test_setup_logging_with_config_path(self, mock_config_class: Mock, tmp_path: Path) -> None:
     """Test setup_logging with custom config path."""
@@ -189,9 +208,11 @@ def test_setup_logging_with_config_path(self, mock_config_class: Mock, tmp_path:
 
     mock_config_class.assert_called_once_with(config_file)
     mock_instance.apply.assert_called_once()
+```
 
-# Example: Setup logging with level
-# Source: tests/logging/test_logging_config.py:95
+**Setup logging with level** (`tests/logging/test_logging_config.py:95`)
+
+```python
 @patch("ai_pipeline_core.logging.logging_config.get_logger")
 @patch("ai_pipeline_core.logging.logging_config.LoggingConfig.apply")
 def test_setup_logging_with_level(self, mock_apply: Mock, mock_get_logger: Mock) -> None:
@@ -207,25 +228,31 @@ def test_setup_logging_with_level(self, mock_apply: Mock, mock_get_logger: Mock)
 
     # Should set Prefect env
     assert os.environ["PREFECT_LOGGING_LEVEL"] == "DEBUG"
+```
 
-# Example: Default config path from env
-# Source: tests/logging/test_logging_config.py:14
+**Default config path from env** (`tests/logging/test_logging_config.py:14`)
+
+```python
 def test_default_config_path_from_env(self):
     """Test getting config path from environment."""
     with patch.dict(os.environ, {"AI_PIPELINE_LOGGING_CONFIG": "/path/to/config.yml"}):
         config = LoggingConfig()
         assert config.config_path == Path("/path/to/config.yml")
+```
 
-# Example: Default config path from prefect env
-# Source: tests/logging/test_logging_config.py:20
+**Default config path from prefect env** (`tests/logging/test_logging_config.py:20`)
+
+```python
 def test_default_config_path_from_prefect_env(self):
     """Test getting config path from Prefect environment."""
     with patch.dict(os.environ, {"PREFECT_LOGGING_SETTINGS_PATH": "/prefect/config.yml"}):
         config = LoggingConfig()
         assert config.config_path == Path("/prefect/config.yml")
+```
 
-# Example: Load default config when no file
-# Source: tests/logging/test_logging_config.py:50
+**Load default config when no file** (`tests/logging/test_logging_config.py:50`)
+
+```python
 def test_load_default_config_when_no_file(self):
     """Test loading default config when no file exists."""
     config = LoggingConfig()
@@ -235,3 +262,4 @@ def test_load_default_config_when_no_file(self):
     assert "formatters" in loaded
     assert "handlers" in loaded
     assert "loggers" in loaded
+```

@@ -1,12 +1,14 @@
 """Tests for V3 tracing features: events, wrapper merging, split indexes."""
 
 import time
+
+import pytest
 from pathlib import Path
 from unittest.mock import Mock
 
 import yaml
 
-from ai_pipeline_core.observability import LocalTraceWriter, TraceDebugConfig, WriteJob
+from ai_pipeline_core.observability._debug import LocalTraceWriter, TraceDebugConfig, WriteJob
 
 
 class TestEventsWriting:
@@ -148,7 +150,7 @@ class TestSplitIndexes:
         assert llm_index["format_version"] == 3
         assert llm_index["llm_call_count"] == 1
         assert llm_index["total_tokens"] == 1500
-        assert llm_index["total_cost"] == 0.05
+        assert llm_index["total_cost"] == pytest.approx(0.05)
 
         # Check LLM call entry has parent context
         call = llm_index["calls"][0]

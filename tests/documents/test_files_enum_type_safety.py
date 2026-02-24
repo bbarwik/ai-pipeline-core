@@ -1,7 +1,6 @@
 """Test to demonstrate type-safe FILES enum usage."""
 
 from enum import StrEnum
-from typing import ClassVar
 
 from ai_pipeline_core.documents import Document
 
@@ -19,7 +18,7 @@ class InputDocument(Document):
 
     # Proper type annotation for type safety
     # Use the same base type but assign the specific enum
-    FILES: ClassVar[type[AllowedInputFiles]] = AllowedInputFiles
+    FILES = AllowedInputFiles
 
     def get_type(self) -> str:
         return "input"
@@ -76,4 +75,4 @@ def test_files_enum_validation():
             description=None,
         )
     assert "Invalid filename" in str(exc_info.value)
-    assert "Allowed names" in str(exc_info.value)
+    assert "Allowed:" in str(exc_info.value)

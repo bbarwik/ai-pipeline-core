@@ -1,8 +1,7 @@
 """Tests for Phase 7: Static validation at definition/decoration time.
 
 Tests class name collision detection, @pipeline_flow annotation validation,
-@pipeline_task DocumentList rejection, return type enforcement, and
-PipelineDeployment flow chain validation.
+return type enforcement, input type enforcement, and PipelineDeployment flow chain validation.
 """
 
 # pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportPrivateUsage=false, reportUnusedClass=false
@@ -19,7 +18,7 @@ from ai_pipeline_core import (
     pipeline_flow,
     pipeline_task,
 )
-from ai_pipeline_core.pipeline.decorators import _find_non_document_leaves
+from ai_pipeline_core.pipeline._type_validation import find_non_document_leaves
 
 # --- Document subclasses for testing ---
 
@@ -48,32 +47,32 @@ class SampleResult(DeploymentResult):
 
 
 @pipeline_flow()
-async def alpha_to_beta(project_name: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[BetaDocument]:
+async def alpha_to_beta(run_id: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[BetaDocument]:
     return [BetaDocument(name="beta.txt", content=b"beta")]
 
 
 @pipeline_flow()
-async def beta_to_gamma(project_name: str, documents: list[BetaDocument], flow_options: FlowOptions) -> list[GammaDocument]:
+async def beta_to_gamma(run_id: str, documents: list[BetaDocument], flow_options: FlowOptions) -> list[GammaDocument]:
     return [GammaDocument(name="gamma.txt", content=b"gamma")]
 
 
 @pipeline_flow()
-async def alpha_to_gamma(project_name: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[GammaDocument]:
+async def alpha_to_gamma(run_id: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[GammaDocument]:
     return [GammaDocument(name="gamma.txt", content=b"gamma")]
 
 
 @pipeline_flow()
-async def gamma_to_delta(project_name: str, documents: list[GammaDocument], flow_options: FlowOptions) -> list[DeltaDocument]:
+async def gamma_to_delta(run_id: str, documents: list[GammaDocument], flow_options: FlowOptions) -> list[DeltaDocument]:
     return [DeltaDocument(name="delta.txt", content=b"delta")]
 
 
 @pipeline_flow()
-async def needs_delta(project_name: str, documents: list[DeltaDocument], flow_options: FlowOptions) -> list[AlphaDocument]:
+async def needs_delta(run_id: str, documents: list[DeltaDocument], flow_options: FlowOptions) -> list[AlphaDocument]:
     return [AlphaDocument(name="alpha.txt", content=b"alpha")]
 
 
 @pipeline_flow()
-async def union_input_flow(project_name: str, documents: list[BetaDocument | DeltaDocument], flow_options: FlowOptions) -> list[GammaDocument]:
+async def union_input_flow(run_id: str, documents: list[BetaDocument | DeltaDocument], flow_options: FlowOptions) -> list[GammaDocument]:
     return [GammaDocument(name="gamma.txt", content=b"gamma")]
 
 
@@ -145,7 +144,7 @@ class TestFlowAnnotationValidation:
         with pytest.raises(TypeError, match="does not contain Document subclasses"):
 
             @pipeline_flow()
-            async def bad_flow(project_name: str, documents: list[Document], flow_options: FlowOptions) -> list[str]:
+            async def bad_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[str]:
                 return []
 
     def test_rejects_dict_return_type(self):
@@ -153,14 +152,14 @@ class TestFlowAnnotationValidation:
         with pytest.raises(TypeError, match="does not contain Document subclasses"):
 
             @pipeline_flow()
-            async def bad_flow(project_name: str, documents: list[Document], flow_options: FlowOptions) -> dict[str, Any]:
+            async def bad_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> dict[str, Any]:
                 return {}
 
     def test_accepts_document_return_type(self):
         """Flow returning list[Document] is accepted."""
 
         @pipeline_flow()
-        async def good_flow(project_name: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def good_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
             return []
 
         assert good_flow.output_document_types == [Document]  # type: ignore[attr-defined]
@@ -169,7 +168,7 @@ class TestFlowAnnotationValidation:
         """Flow returning list[ConcreteDocument] is accepted."""
 
         @pipeline_flow()
-        async def good_flow(project_name: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[BetaDocument]:
+        async def good_flow(run_id: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[BetaDocument]:
             return []
 
         assert good_flow.output_document_types == [BetaDocument]  # type: ignore[attr-defined]
@@ -178,7 +177,7 @@ class TestFlowAnnotationValidation:
         """Flow with no return annotation is allowed (no validation triggered)."""
 
         @pipeline_flow()
-        async def flow_without_return(project_name: str, documents: list[Document], flow_options: FlowOptions):
+        async def flow_without_return(run_id: str, documents: list[Document], flow_options: FlowOptions):
             return []
 
         # No error — missing annotation means no validation
@@ -189,51 +188,24 @@ class TestFlowAnnotationValidation:
         with pytest.raises(TypeError, match="return annotation does not contain"):
 
             @pipeline_flow()
-            async def my_flow(project_name: str, documents: list[Document], flow_options: FlowOptions) -> list[str]:
+            async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[str]:
                 return []
 
+    def test_rejects_first_param_not_run_id(self):
+        """Flow whose first parameter is not named 'run_id' is rejected."""
+        with pytest.raises(TypeError, match="first parameter must be named 'run_id'"):
 
-# --------------------------------------------------------------------------- #
-# @pipeline_task DocumentList rejection tests
-# --------------------------------------------------------------------------- #
+            @pipeline_flow()
+            async def bad_flow(project_name: str, documents: list[Document], flow_options: FlowOptions) -> list[AlphaDocument]:
+                return []
 
-
-class TestTaskDocumentListRejection:
-    """Test @pipeline_task rejects stale DocumentList references."""
-
-    def test_rejects_document_list_in_parameter(self):
-        """Task with DocumentList parameter annotation is rejected."""
-        with pytest.raises(TypeError, match=r"DocumentList.*removed"):
-
-            @pipeline_task
-            async def bad_task(docs: "DocumentList") -> None:  # type: ignore  # noqa: F821
-                pass
-
-    def test_rejects_document_list_in_return(self):
-        """Task with DocumentList return annotation is rejected."""
-        with pytest.raises(TypeError, match=r"DocumentList.*removed"):
+    def test_rejects_no_annotations(self):
+        """Task with no annotations is rejected."""
+        with pytest.raises(TypeError, match="missing return type annotation"):
 
             @pipeline_task
-            async def bad_task() -> "DocumentList":  # type: ignore  # noqa: F821
-                pass
-
-    def test_accepts_list_document(self):
-        """Task with list[Document] annotation is accepted."""
-
-        @pipeline_task
-        async def good_task(docs: list[Document]) -> list[Document]:
-            return docs
-
-        # No error
-
-    def test_accepts_no_annotations(self):
-        """Task with no annotations is accepted when persist=False."""
-
-        @pipeline_task(persist=False)
-        async def simple_task(x: int) -> int:
-            return x
-
-        # No error
+            async def simple_task(x: int):
+                return x
 
 
 # --------------------------------------------------------------------------- #
@@ -242,7 +214,7 @@ class TestTaskDocumentListRejection:
 
 
 class TestTaskReturnTypeValidation:
-    """Test @pipeline_task return type annotation enforcement when persist=True."""
+    """Test @pipeline_task return type annotation enforcement."""
 
     # --- Accepted types ---
 
@@ -362,84 +334,86 @@ class TestTaskReturnTypeValidation:
             async def t() -> object:
                 return None
 
-    # --- persist=False opts out ---
+    # --- Removed parameter ---
 
-    def test_persist_false_allows_int(self):
-        @pipeline_task(persist=False)
-        async def t() -> int:
-            return 0
+    def test_persist_parameter_rejected(self):
+        """persist parameter was removed — using it raises TypeError."""
+        with pytest.raises(TypeError):
+            pipeline_task(persist=False)
 
-    def test_persist_false_allows_no_annotation(self):
-        @pipeline_task(persist=False)
-        async def t():
-            pass
+    # --- Error message guidance ---
 
-    def test_persist_false_allows_str(self):
-        @pipeline_task(persist=False)
-        async def t() -> str:
-            return ""
+    def test_error_message_guides_to_document_create(self):
+        """Error message for non-Document return type includes Document.create() guidance."""
+        with pytest.raises(TypeError, match=r"Document\.create\(\)") as exc_info:
+
+            @pipeline_task
+            async def t() -> int:
+                return 0
+
+        assert "auto-serializes" in str(exc_info.value)
 
 
 # --------------------------------------------------------------------------- #
-# _find_non_document_leaves unit tests
+# find_non_document_leaves unit tests
 # --------------------------------------------------------------------------- #
 
 
 class TestFindNonDocumentLeaves:
-    """Direct unit tests for the _find_non_document_leaves helper."""
+    """Direct unit tests for the find_non_document_leaves helper."""
 
     def test_none_type(self):
-        assert _find_non_document_leaves(type(None)) == []
+        assert find_non_document_leaves(type(None)) == []
 
     def test_document_subclass(self):
-        assert _find_non_document_leaves(AlphaDocument) == []
+        assert find_non_document_leaves(AlphaDocument) == []
 
     def test_base_document(self):
-        assert _find_non_document_leaves(Document) == []
+        assert find_non_document_leaves(Document) == []
 
     def test_int(self):
-        assert _find_non_document_leaves(int) == [int]
+        assert find_non_document_leaves(int) == [int]
 
     def test_str(self):
-        assert _find_non_document_leaves(str) == [str]
+        assert find_non_document_leaves(str) == [str]
 
     def test_list_document(self):
-        assert _find_non_document_leaves(list[AlphaDocument]) == []
+        assert find_non_document_leaves(list[AlphaDocument]) == []
 
     def test_list_str(self):
-        assert _find_non_document_leaves(list[str]) == [str]
+        assert find_non_document_leaves(list[str]) == [str]
 
     def test_bare_list(self):
-        assert _find_non_document_leaves(list) != []
+        assert find_non_document_leaves(list) != []
 
     def test_bare_tuple(self):
-        assert _find_non_document_leaves(tuple) != []
+        assert find_non_document_leaves(tuple) != []
 
     def test_union_all_documents(self):
-        assert _find_non_document_leaves(AlphaDocument | BetaDocument) == []
+        assert find_non_document_leaves(AlphaDocument | BetaDocument) == []
 
     def test_union_with_none(self):
-        assert _find_non_document_leaves(AlphaDocument | None) == []
+        assert find_non_document_leaves(AlphaDocument | None) == []
 
     def test_union_mixed(self):
-        result = _find_non_document_leaves(AlphaDocument | int)
+        result = find_non_document_leaves(AlphaDocument | int)
         assert result == [int]
 
     def test_tuple_fixed(self):
-        assert _find_non_document_leaves(tuple[AlphaDocument, BetaDocument]) == []
+        assert find_non_document_leaves(tuple[AlphaDocument, BetaDocument]) == []
 
     def test_tuple_variable_length(self):
-        assert _find_non_document_leaves(tuple[AlphaDocument, ...]) == []
+        assert find_non_document_leaves(tuple[AlphaDocument, ...]) == []
 
     def test_tuple_of_lists(self):
-        assert _find_non_document_leaves(tuple[list[AlphaDocument], list[BetaDocument]]) == []
+        assert find_non_document_leaves(tuple[list[AlphaDocument], list[BetaDocument]]) == []
 
     def test_tuple_mixed_invalid(self):
-        result = _find_non_document_leaves(tuple[AlphaDocument, int])
+        result = find_non_document_leaves(tuple[AlphaDocument, int])
         assert result == [int]
 
     def test_any_rejected(self):
-        assert _find_non_document_leaves(Any) != []
+        assert find_non_document_leaves(Any) != []
 
 
 # --------------------------------------------------------------------------- #
@@ -457,7 +431,7 @@ class TestDeploymentFlowChainValidation:
             flows = [alpha_to_beta, beta_to_gamma]  # type: ignore[reportAssignmentType]
 
             @staticmethod
-            def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                 return SampleResult(success=True)
 
         assert ValidChain.name == "valid-chain"
@@ -469,7 +443,7 @@ class TestDeploymentFlowChainValidation:
             flows = [alpha_to_beta]  # type: ignore[reportAssignmentType]
 
             @staticmethod
-            def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                 return SampleResult(success=True)
 
         assert SingleFlow.name == "single-flow"
@@ -483,7 +457,7 @@ class TestDeploymentFlowChainValidation:
                 flows = [alpha_to_beta, needs_delta]  # type: ignore[reportAssignmentType]
 
                 @staticmethod
-                def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+                def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                     return SampleResult(success=True)
 
     def test_three_step_chain_valid(self):
@@ -493,7 +467,7 @@ class TestDeploymentFlowChainValidation:
             flows = [alpha_to_beta, beta_to_gamma, gamma_to_delta]  # type: ignore[reportAssignmentType]
 
             @staticmethod
-            def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                 return SampleResult(success=True)
 
         assert ThreeStepChain.name == "three-step-chain"
@@ -507,7 +481,7 @@ class TestDeploymentFlowChainValidation:
             flows = [alpha_to_beta, union_input_flow]  # type: ignore[reportAssignmentType]
 
             @staticmethod
-            def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                 return SampleResult(success=True)
 
         assert UnionChain.name == "union-chain"
@@ -522,7 +496,7 @@ class TestDeploymentFlowChainValidation:
                 flows = [alpha_to_gamma, union_input_flow]  # type: ignore[reportAssignmentType]
 
                 @staticmethod
-                def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+                def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                     return SampleResult(success=True)
 
     def test_three_step_chain_broken_at_step_three(self):
@@ -535,7 +509,7 @@ class TestDeploymentFlowChainValidation:
                 flows = [alpha_to_beta, alpha_to_gamma, needs_delta]  # type: ignore[reportAssignmentType]
 
                 @staticmethod
-                def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+                def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                     return SampleResult(success=True)
 
 
@@ -550,7 +524,7 @@ class TestDeploymentDuplicateFlows:
                 flows = [alpha_to_beta, alpha_to_beta]  # type: ignore[reportAssignmentType]
 
                 @staticmethod
-                def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+                def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                     return SampleResult(success=True)
 
     def test_different_flows_accepted(self):
@@ -560,7 +534,7 @@ class TestDeploymentDuplicateFlows:
             flows = [alpha_to_beta, beta_to_gamma]  # type: ignore[reportAssignmentType]
 
             @staticmethod
-            def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                 return SampleResult(success=True)
 
         assert len(DiffFlows.flows) == 2
@@ -591,7 +565,7 @@ class TestDeploymentBuildResultRequired:
             flows = [alpha_to_beta]  # type: ignore[reportAssignmentType]
 
             @staticmethod
-            def build_result(project_name: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                 return SampleResult(success=True)
 
         class ChildDeployment(ParentDeployment):

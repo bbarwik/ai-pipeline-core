@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ai_pipeline_core.observability import ArtifactStore, ContentWriter, TraceDebugConfig
+from ai_pipeline_core.observability._debug import ArtifactStore, ContentWriter, TraceDebugConfig
 
 from tests.observability.test_helpers import reconstruct_span_content
 
