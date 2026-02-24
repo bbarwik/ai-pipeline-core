@@ -147,28 +147,28 @@ class TestEstimatedMinutes:
         async def my_task() -> None:
             pass
 
-        assert my_task.estimated_minutes == 5  # type: ignore[attr-defined]
+        assert my_task.estimated_minutes == 5
 
     def test_task_default_estimated_minutes(self):
         @pipeline_task
         async def my_task() -> None:
             pass
 
-        assert my_task.estimated_minutes == 1  # type: ignore[attr-defined]
+        assert my_task.estimated_minutes == 1
 
     def test_flow_stores_estimated_minutes(self):
         @pipeline_flow(estimated_minutes=30)
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return []
 
-        assert my_flow.estimated_minutes == 30  # type: ignore[attr-defined]
+        assert my_flow.estimated_minutes == 30
 
     def test_flow_default_estimated_minutes(self):
         @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return []
 
-        assert my_flow.estimated_minutes == 1  # type: ignore[attr-defined]
+        assert my_flow.estimated_minutes == 1
 
     def test_task_rejects_zero(self):
         with pytest.raises(ValueError, match="estimated_minutes must be >= 1"):
@@ -181,7 +181,7 @@ class TestEstimatedMinutes:
         with pytest.raises(ValueError, match="estimated_minutes must be >= 1"):
 
             @pipeline_flow(estimated_minutes=0)
-            async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+            async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
                 return []
 
 
@@ -196,29 +196,21 @@ class TestFlowAnnotationExtraction:
         async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return []
 
-        assert my_flow.input_document_types == [InputDocument]  # type: ignore[attr-defined]
+        assert my_flow.input_document_types == [InputDocument]
 
     def test_extracts_output_types(self):
         @pipeline_flow()
         async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return []
 
-        assert my_flow.output_document_types == [OutputDocument]  # type: ignore[attr-defined]
+        assert my_flow.output_document_types == [OutputDocument]
 
     def test_extracts_union_input_types(self):
         @pipeline_flow()
         async def my_flow(run_id: str, documents: list[InputDocument | AltInputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return []
 
-        assert set(my_flow.input_document_types) == {InputDocument, AltInputDocument}  # type: ignore[attr-defined]
-
-    def test_base_document_annotation(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
-            return []
-
-        assert my_flow.input_document_types == [Document]  # type: ignore[attr-defined]
-        assert my_flow.output_document_types == [Document]  # type: ignore[attr-defined]
+        assert set(my_flow.input_document_types) == {InputDocument, AltInputDocument}
 
 
 # --------------------------------------------------------------------------- #
@@ -234,7 +226,7 @@ class TestDocumentAutoSave:
         try:
 
             @pipeline_task
-            async def my_task() -> list[Document]:
+            async def my_task() -> list[OutputDocument]:
                 return [OutputDocument(name="out.txt", content=b"output")]
 
             result = await my_task()
@@ -253,7 +245,7 @@ class TestDocumentAutoSave:
         try:
 
             @pipeline_task
-            async def my_task() -> list[Document]:
+            async def my_task() -> list[OutputDocument]:
                 return [OutputDocument(name="out.txt", content=b"output")]
 
             result = await my_task()
@@ -267,7 +259,7 @@ class TestDocumentAutoSave:
         try:
 
             @pipeline_task
-            async def my_task() -> list[Document]:
+            async def my_task() -> list[OutputDocument]:
                 return [OutputDocument(name="out.txt", content=b"output")]
 
             result = await my_task()
@@ -284,7 +276,7 @@ class TestDocumentAutoSave:
         try:
 
             @pipeline_task
-            async def my_task() -> Document:
+            async def my_task() -> OutputDocument:
                 return OutputDocument(name="single.txt", content=b"data")
 
             await my_task()
@@ -305,7 +297,7 @@ class TestFlowRunContext:
         captured_scope: list[str] = []
 
         @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             ctx = get_run_context()
             assert ctx is not None
             captured_scope.append(ctx.run_scope)
@@ -316,7 +308,7 @@ class TestFlowRunContext:
 
     async def test_run_context_cleared_after_flow(self):
         @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return []
 
         await my_flow("myproject", [], FlowOptions())
@@ -329,7 +321,7 @@ class TestFlowRunContext:
             captured: list[str] = []
 
             @pipeline_flow()
-            async def inner_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+            async def inner_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
                 ctx = get_run_context()
                 assert ctx is not None
                 captured.append(ctx.run_scope)
@@ -349,7 +341,7 @@ class TestFlowRunContext:
         captured_scope: list[str] = []
 
         @pipeline_flow(name="custom_name")
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             ctx = get_run_context()
             assert ctx is not None
             captured_scope.append(ctx.run_scope)
@@ -362,7 +354,7 @@ class TestFlowRunContext:
         """RunContext should be cleared even if the flow raises."""
 
         @pipeline_flow()
-        async def failing_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def failing_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             raise RuntimeError("boom")
 
         with pytest.raises(RuntimeError, match="boom"):
@@ -389,7 +381,7 @@ class TestPersistenceGracefulDegradation:
         try:
 
             @pipeline_task
-            async def my_task() -> list[Document]:
+            async def my_task() -> list[OutputDocument]:
                 return [OutputDocument(name="out.txt", content=b"output")]
 
             # Should not raise
@@ -586,7 +578,7 @@ class TestPipelineFlowDecorator:
 
     async def test_flow_bare_decorator(self):
         @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return list([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
@@ -599,7 +591,7 @@ class TestPipelineFlowDecorator:
 
     async def test_flow_with_parentheses(self):
         @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return list([OutputDocument(name="modified.txt", content=b"modified")])
 
         assert isinstance(my_flow, Flow)
@@ -614,7 +606,7 @@ class TestPipelineFlowDecorator:
             trace_ignore_input=True,
             trace_ignore_output=False,
         )
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return list([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
@@ -627,7 +619,7 @@ class TestPipelineFlowDecorator:
             retries=1,
             timeout_seconds=600,
         )
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return list([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
@@ -638,9 +630,9 @@ class TestPipelineFlowDecorator:
         @pipeline_flow()
         async def my_flow(
             run_id: str,
-            documents: list[Document],
+            documents: list[InputDocument],
             flow_options: FlowOptions,
-        ) -> list[Document]:
+        ) -> list[OutputDocument]:
             assert run_id == "project"
             assert len(documents) == 1
             assert documents[0].name == "test.txt"
@@ -657,7 +649,7 @@ class TestPipelineFlowDecorator:
 
     async def test_flow_async(self):
         @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             await asyncio.sleep(0.01)
             return list([OutputDocument(name="output.txt", content=b"output")])
 
@@ -672,13 +664,13 @@ class TestPipelineFlowDecorator:
     async def test_flow_invalid_signature(self):
         with pytest.raises(TypeError, match="must have exactly 3 parameters"):
 
-            @pipeline_flow()  # type: ignore[arg-type]
-            async def my_flow(run_id: str) -> list[Document]:  # type: ignore[misc]
+            @pipeline_flow()
+            async def my_flow(run_id: str) -> list[OutputDocument]:
                 return list([])
 
     async def test_flow_invalid_return_type(self):
         @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return "invalid"  # type: ignore
 
         docs = list([InputDocument(name="test.txt", content=b"test")])
@@ -691,8 +683,8 @@ class TestPipelineFlowDecorator:
         class CustomOptions(FlowOptions):
             custom_field: str = "custom"
 
-        @pipeline_flow()  # type: ignore[arg-type]
-        async def my_flow(run_id: str, documents: list[Document], flow_options: CustomOptions) -> list[Document]:
+        @pipeline_flow()
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: CustomOptions) -> list[OutputDocument]:
             assert flow_options.custom_field == "custom"
             return list([OutputDocument(name="output.txt", content=b"output")])
 
@@ -714,7 +706,7 @@ class TestPipelineFlowDecorator:
         def on_complete(flow, flow_run, state):
             pass
 
-        @pipeline_flow(  # type: ignore[arg-type]
+        @pipeline_flow(
             trace_level="off",
             trace_ignore_input=True,
             trace_ignore_output=True,
@@ -736,7 +728,7 @@ class TestPipelineFlowDecorator:
             log_prints=True,
             on_completion=[on_complete],
         )
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return list([OutputDocument(name="output.txt", content=b"output")])
 
         assert isinstance(my_flow, Flow)
@@ -748,7 +740,7 @@ class TestPipelineFlowDecorator:
             pass
 
         @pipeline_flow(trace_level="always")
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             await add_one()
             return list([OutputDocument(name="output.txt", content=b"output")])
 
@@ -766,7 +758,7 @@ class TestPipelineFlowDecorator:
         with patch("ai_pipeline_core.pipeline.decorators.set_trace_cost") as mock_set_cost:
 
             @pipeline_flow(trace_cost=0.15)
-            async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+            async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
                 return list([OutputDocument(name="output.txt", content=b"output")])
 
             assert isinstance(my_flow, Flow)
@@ -808,8 +800,8 @@ class TestSyncFunctionRejection:
 
             @cast(Any, pipeline_flow())
             def sync_flow(  # pyright: ignore[reportUnusedFunction]
-                run_id: str, documents: list[Document], flow_options: FlowOptions
-            ) -> list[Document]:
+                run_id: str, documents: list[InputDocument], flow_options: FlowOptions
+            ) -> list[OutputDocument]:
                 return list([OutputDocument(name="output.txt", content=b"output")])
 
     def test_sync_function_with_pipeline_flow_with_params_raises_error(self):
@@ -819,8 +811,8 @@ class TestSyncFunctionRejection:
 
             @cast(Any, pipeline_flow(name="sync_flow", retries=2))
             def sync_flow(  # pyright: ignore[reportUnusedFunction]
-                run_id: str, documents: list[Document], flow_options: FlowOptions
-            ) -> list[Document]:
+                run_id: str, documents: list[InputDocument], flow_options: FlowOptions
+            ) -> list[OutputDocument]:
                 return list([OutputDocument(name="output.txt", content=b"output")])
 
 
@@ -855,8 +847,8 @@ class TestDoubleTracingDetection:
             @pipeline_flow()
             @trace
             async def my_flow(  # pyright: ignore[reportUnusedFunction]
-                run_id: str, documents: list[Document], flow_options: FlowOptions
-            ) -> list[Document]:
+                run_id: str, documents: list[InputDocument], flow_options: FlowOptions
+            ) -> list[OutputDocument]:
                 return list([OutputDocument(name="output.txt", content=b"output")])
 
     def test_pipeline_flow_then_trace_raises_error(self):
@@ -867,8 +859,8 @@ class TestDoubleTracingDetection:
             @trace
             @pipeline_flow()
             async def my_flow(  # pyright: ignore[reportUnusedFunction]
-                run_id: str, documents: list[Document], flow_options: FlowOptions
-            ) -> list[Document]:
+                run_id: str, documents: list[InputDocument], flow_options: FlowOptions
+            ) -> list[OutputDocument]:
                 return list([OutputDocument(name="output.txt", content=b"output")])
 
     def test_multiple_trace_then_pipeline_task_raises_error(self):
@@ -901,7 +893,7 @@ class TestDoubleTracingDetection:
 
     async def test_normal_pipeline_flow_still_works(self):
         @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
             return list([OutputDocument(name="output.txt", content=b"output")])
 
         docs = list([InputDocument(name="test.txt", content=b"test")])

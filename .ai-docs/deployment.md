@@ -1,5 +1,5 @@
 # MODULE: deployment
-# CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, Deployer, RemoteDeployment
+# CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
 # VERSION: 0.10.0
@@ -9,21 +9,36 @@
 
 ```python
 from ai_pipeline_core import DeploymentContext, DeploymentResult, PipelineDeployment, RemoteDeployment, run_remote_deployment
-from ai_pipeline_core.deployment import CompletedRun, DeploymentResultData, FailedRun, FlowStatus, PendingRun, ProgressRun, RunState
+from ai_pipeline_core.deployment import CompletedRun, DeploymentResultData, FailedRun, FlowStatus, PendingRun, ProgressCallback, ProgressRun, RunResponse, RunState, progress_update
 ```
 
 ## Types & Constants
 
 ```python
-HEARTBEAT_INTERVAL_SECONDS = 30
+RunResponse = Annotated[
+    PendingRun | ProgressRun | CompletedRun | FailedRun,
+    Discriminator("type"),
+]
 
-UV_TARGET_PLATFORM = "x86_64-unknown-linux-gnu"
+ProgressCallback = Callable[[float, str], Awaitable[None]]
 
-PIP_TARGET_PLATFORMS = ("manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64", "linux_x86_64")
+```
 
-TARGET_PYTHON_VERSION = "3.12"
+## Internal Types
 
-TARGET_ABI = "cp312"
+```python
+class _OutputDocument(BaseModel):
+    """Document metadata in deployment results. Binary content is None."""
+    sha256: DocumentSha256
+    name: str
+    class_name: str
+    mime_type: str
+    size: int
+    description: str = ''
+    content: str | None = None
+    attachments: tuple[OutputAttachment, ...] = ()
+    model_config = ConfigDict(frozen=True)
+
 
 ```
 
@@ -39,7 +54,7 @@ class DeploymentResult(BaseModel):
     """Base class for deployment results."""
     success: bool
     error: str | None = None
-    documents: tuple[OutputDocument, ...] = ()
+    documents: tuple[_OutputDocument, ...] = ()
     model_config = ConfigDict(frozen=True)
 
 
@@ -125,7 +140,7 @@ Features enabled by default:
             publisher = _create_publisher(settings)
             store = create_document_store(
                 settings,
-                summary_generator=build_summary_generator(),
+                summary_generator=_build_summary_generator(),
             )
             set_document_store(store)
             try:
@@ -166,9 +181,9 @@ Features enabled by default:
     def build_result(run_id: str, documents: list[Document], options: TOptions) -> TResult:
         """Extract typed result from pipeline documents loaded from DocumentStore.
 
-        Only called when the pipeline runs to completion (last step included).
-        For partial runs (--start/--end that don't reach the last step), this method
-        is NOT called — the pipeline returns a default partial result instead.
+        Called for both full runs and partial runs (--start/--end). For partial runs,
+        _build_partial_result() delegates here by default — override _build_partial_result()
+        to customize partial run results.
         """
         ...
 
@@ -583,38 +598,6 @@ class FailedRun(_RunBase):
     result: DeploymentResultData | None = None
 
 
-class Deployer:
-    """Deploy Prefect flows with fully bundled dependencies.
-
-Build pipeline:
-    wheel build → dependency lock → download wheels → bundle tarball → GCS upload → Prefect deployment
-
-Worker install (pull step):
-    extract tarball → uv pip install --system --no-index --find-links wheels/ ./project.whl"""
-    def __init__(self) -> None:
-        self.config = self._load_config()
-        self._validate_prefect_settings()
-        self._project_wheel_name: str = ""
-
-    async def run(self) -> None:
-        """Execute the complete deployment pipeline: build, upload, deploy."""
-        print("=" * 70)
-        print(f"Prefect Deployment: {self.config['name']} v{self.config['version']}")
-        print(f"Target: gs://{self.config['bucket']}/{self.config['folder']}")
-        print("Strategy: Bundled Wheels (Offline Install)")
-        print("=" * 70)
-        print()
-
-        bundle = await asyncio.to_thread(self._build_bundle)
-        await self._upload_bundle(bundle)
-        await self._deploy_via_api()
-
-        print()
-        print("=" * 70)
-        self._success("Deployment complete!")
-        print("=" * 70)
-
-
 class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
     """Typed client for calling a remote PipelineDeployment via Prefect.
 
@@ -698,21 +681,7 @@ Mirror type contract:
 ## Functions
 
 ```python
-def build_summary_generator() -> SummaryGenerator | None:
-    """Build a summary generator callable from settings, or None if disabled/unavailable."""
-    if not settings.doc_summary_enabled:
-        return None
-
-    from ai_pipeline_core.document_store._summary_llm import generate_document_summary
-
-    model = settings.doc_summary_model
-
-    async def _generator(name: str, excerpt: str) -> str:
-        return await generate_document_summary(name, excerpt, model=model)
-
-    return _generator
-
-async def update(fraction: float, message: str = "") -> None:
+async def progress_update(fraction: float, message: str = "") -> None:
     """Report intra-flow progress (0.0-1.0). No-op without context.
 
     Publishes a ProgressEvent via the publisher and updates Prefect flow run
@@ -804,20 +773,6 @@ async def run_remote_deployment(
 
 ## Examples
 
-**Path format matches deployer** (`tests/deployment/test_remote_deployment.py:212`)
-
-```python
-def test_path_format_matches_deployer(self):
-    class SamplePipeline(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-        trace_level: ClassVar[TraceLevel] = "off"
-
-    path = SamplePipeline().deployment_path
-    flow_name, deployment_name = path.split("/")
-    assert flow_name == "sample-pipeline"
-    assert deployment_name == "sample_pipeline"
-    assert "-" not in deployment_name
-```
-
 **Default creation** (`tests/deployment/test_deployment_base.py:72`)
 
 ```python
@@ -836,14 +791,6 @@ def test_deployment_result_data(self):
     assert data.success is True
     dumped = data.model_dump()
     assert "success" in dumped
-```
-
-**Noop without context** (`tests/deployment/test_progress.py:26`)
-
-```python
-async def test_noop_without_context(self):
-    """Test update is a no-op when no context is set."""
-    await update(0.5, "test")  # Should not raise
 ```
 
 **Subclass specific trace names** (`tests/deployment/test_remote_deployment.py:441`)
@@ -897,6 +844,31 @@ def test_union_doc_arg_is_union_type(self):
     args = extract_generic_params(Foo, RemoteDeployment)
     assert isinstance(args[0], types.UnionType)
     assert set(args[0].__args__) == {AlphaDoc, BetaDoc}
+```
+
+**Union in first position** (`tests/deployment/test_remote_deployment.py:622`)
+
+```python
+def test_union_in_first_position(self):
+    class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
+        trace_level: ClassVar[TraceLevel] = "off"
+
+    result = extract_generic_params(Foo, RemoteDeployment)
+    assert isinstance(result[0], types.UnionType)
+    assert result[1] is FlowOptions
+    assert result[2] is SimpleResult
+```
+
+**Union with three plus doc types** (`tests/deployment/test_remote_deployment.py:577`)
+
+```python
+def test_union_with_three_plus_doc_types(self):
+    class Foo(RemoteDeployment[AlphaDoc | BetaDoc | GammaDoc, FlowOptions, SimpleResult]):
+        trace_level: ClassVar[TraceLevel] = "off"
+
+    args = extract_generic_params(Foo, RemoteDeployment)
+    assert isinstance(args[0], types.UnionType)
+    assert len(args[0].__args__) == 3
 ```
 
 

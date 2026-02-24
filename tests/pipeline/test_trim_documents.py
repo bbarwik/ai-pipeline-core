@@ -78,9 +78,9 @@ class TestPipelineTraceTrimDocuments:
         @pipeline_flow(trace_trim_documents=True, name="test_flow")
         async def flow_func(  # pyright: ignore[reportUnusedFunction]
             run_id: str,
-            documents: list[Document],
+            documents: list[InputFlowDoc],
             flow_options: FlowOptions,
-        ) -> list[Document]:
+        ) -> list[OutputFlowDoc]:
             return [OutputFlowDoc.create_root(name=f"output_{doc.name}", content=doc.content, reason="test input") for doc in documents]
 
         mock_trace.assert_called_once()
@@ -101,9 +101,9 @@ class TestPipelineTraceTrimDocuments:
         @pipeline_flow(trace_trim_documents=False, name="test_flow")
         async def flow_func(  # pyright: ignore[reportUnusedFunction]
             run_id: str,
-            documents: list[Document],
+            documents: list[InputFlowDoc],
             flow_options: FlowOptions,
-        ) -> list[Document]:
+        ) -> list[OutputFlowDoc]:
             return [OutputFlowDoc.create_root(name=f"output_{doc.name}", content=doc.content, reason="test input") for doc in documents]
 
         mock_trace.assert_called_once()
@@ -123,9 +123,9 @@ class TestPipelineTraceTrimDocuments:
         @pipeline_flow(name="test_flow")
         async def flow_func(  # pyright: ignore[reportUnusedFunction]
             run_id: str,
-            documents: list[Document],
+            documents: list[InputFlowDoc],
             flow_options: FlowOptions,
-        ) -> list[Document]:
+        ) -> list[OutputFlowDoc]:
             return [OutputFlowDoc.create_root(name=f"output_{doc.name}", content=doc.content, reason="test input") for doc in documents]
 
         mock_trace.assert_called_once()
@@ -152,9 +152,9 @@ class TestPipelineTraceTrimDocuments:
         @pipeline_flow(trace_trim_documents=True)
         async def process_flow(
             run_id: str,
-            documents: list[Document],
+            documents: list[InputFlowDoc],
             flow_options: FlowOptions,
-        ) -> list[Document]:
+        ) -> list[OutputFlowDoc]:
             return [
                 OutputFlowDoc.create(
                     name=f"{run_id}_{doc.name}",
@@ -183,9 +183,9 @@ class TestPipelineTraceTrimDocuments:
         @pipeline_flow(trace_trim_documents=False)
         async def full_flow(
             run_id: str,
-            documents: list[Document],
+            documents: list[InputFlowDoc],
             flow_options: FlowOptions,
-        ) -> list[Document]:
+        ) -> list[OutputFlowDoc]:
             task_doc = WorkTaskDoc.create_root(name="task.txt", content="a" * 500, reason="test input")
             trimmed = await trim_task(task_doc)
 

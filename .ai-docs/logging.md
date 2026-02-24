@@ -10,19 +10,6 @@
 from ai_pipeline_core import LoggingConfig, get_pipeline_logger, setup_logging
 ```
 
-## Types & Constants
-
-```python
-DEFAULT_LOG_LEVELS = {
-    "ai_pipeline_core": "INFO",
-    "ai_pipeline_core.documents": "INFO",
-    "ai_pipeline_core.llm": "INFO",
-    "ai_pipeline_core.pipeline": "INFO",
-    "ai_pipeline_core.testing": "DEBUG",
-}
-
-```
-
 ## Public API
 
 ```python
@@ -98,7 +85,7 @@ def setup_logging(config_path: Path | None = None, level: str | None = None) -> 
         # Override level if provided
         if level:
             # Set for our loggers
-            for logger_name in DEFAULT_LOG_LEVELS:
+            for logger_name in _DEFAULT_LOG_LEVELS:
                 logger = get_logger(logger_name)
                 logger.setLevel(level)
 

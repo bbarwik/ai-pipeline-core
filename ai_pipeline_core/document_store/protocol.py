@@ -13,7 +13,9 @@ from ai_pipeline_core.documents.document import Document
 from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 
 __all__ = [
+    "DocumentNode",
     "DocumentReader",
+    "FlowCompletion",
     "get_document_store",
 ]
 

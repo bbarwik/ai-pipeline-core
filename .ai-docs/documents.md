@@ -1,5 +1,5 @@
 # MODULE: documents
-# CLASSES: Attachment, TaskDocumentContext, Document
+# CLASSES: Attachment, TaskDocumentContext, Document, RunContext
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Document system for AI pipeline flows.
 # VERSION: 0.10.0
@@ -8,7 +8,7 @@
 ## Imports
 
 ```python
-from ai_pipeline_core import Attachment, Document, DocumentSha256, RunScope, TaskDocumentContext, ensure_extension, find_document, is_document_sha256, replace_extension, sanitize_url
+from ai_pipeline_core import Attachment, Document, DocumentSha256, RunContext, RunScope, TaskDocumentContext, ensure_extension, find_document, get_run_context, is_document_sha256, replace_extension, reset_run_context, sanitize_url, set_run_context
 ```
 
 ## Types & Constants
@@ -478,7 +478,7 @@ Attachments:
             if files_enum is not None:
                 members = [f"{cls.__name__}.FILES.{m.name}" for m in files_enum]
                 if len(members) == 1:
-                    hint = f"\nFIX: Use {members[0]}, or use create()/create_root()/derive() which auto-defaults the name for single-file document types."
+                    hint = f"\nFIX: Use name={members[0]} in create()/create_root()/derive()."
                 else:
                     hint = f"\nFIX: Use one of: {', '.join(members)}"
             raise DocumentNameError(f"Invalid filename '{name}' for {cls.__name__}. Allowed: {allowed_str}{hint}")
@@ -592,7 +592,7 @@ Attachments:
     @cached_property
     def approximate_tokens_count(self) -> int:
         """Approximate token count (tiktoken gpt-4 encoding). Images=TOKENS_PER_IMAGE, PDFs/other=1024."""
-        enc = get_tiktoken_encoding()
+        enc = _get_tiktoken_encoding()
         if self.is_text:
             total = len(enc.encode(self.text))
         elif self.is_image:
@@ -618,6 +618,26 @@ Attachments:
 
     @overload
     def as_pydantic_model(self, model_type: type[TModel]) -> TModel: ...
+
+    @overload
+    def as_pydantic_model(self, model_type: type[list[TModel]]) -> list[TModel]: ...
+
+    def as_pydantic_model(self, model_type: type[TModel] | type[list[TModel]]) -> TModel | list[TModel]:
+        """Parse JSON/YAML content and validate against a Pydantic model. Supports single and list types."""
+        data = self.as_yaml() if is_yaml_mime_type(self.mime_type) else self.as_json()
+
+        if get_origin(model_type) is list:
+            if not isinstance(data, list):
+                raise ValueError(f"Expected list data for {model_type}, got {type(data)}")
+            item_type = get_args(model_type)[0]
+            if not (isinstance(item_type, type) and issubclass(item_type, BaseModel)):
+                raise TypeError(f"List item type must be a BaseModel subclass, got {item_type}")
+            result_list = [item_type.model_validate(entry) for entry in cast(list[Any], data)]
+            return cast(list[TModel], result_list)
+
+        # At this point model_type must be type[TModel], not type[list[TModel]]
+        single_model = cast(type[TModel], model_type)
+        return single_model.model_validate(data)
 
     def as_yaml(self) -> Any:
         """Parse content as YAML via ruamel.yaml."""
@@ -798,16 +818,17 @@ Attachments:
         return self
 
 
+@dataclass(frozen=True, slots=True)
+class RunContext:
+    """Immutable context for a pipeline run, carried via ContextVar."""
+    run_scope: RunScope
+
+
 ```
 
 ## Functions
 
 ```python
-@functools.cache
-def get_tiktoken_encoding() -> tiktoken.Encoding:
-    """Lazy-cached tiktoken encoding. Deferred to first use, cached forever."""
-    return tiktoken.encoding_for_model("gpt-4")
-
 def sanitize_url(url: str) -> str:
     """Sanitize URL or query string for use as a filename (max 100 chars)."""
     # Remove protocol if it's a URL
@@ -883,6 +904,18 @@ def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
     available = sorted({type(d).__name__ for d in documents})
     raise DocumentValidationError(f"No document of type '{doc_type.__name__}' found. Available types: {', '.join(available) or 'none'}")
 
+def get_run_context() -> RunContext | None:
+    """Get the current run context, or None if not set."""
+    return _run_context.get()
+
+def set_run_context(ctx: RunContext) -> Token[RunContext | None]:
+    """Set the run context. Returns a token for restoring the previous value."""
+    return _run_context.set(ctx)
+
+def reset_run_context(token: Token[RunContext | None]) -> None:
+    """Reset the run context to its previous value using a token from set_run_context."""
+    _run_context.reset(token)
+
 ```
 
 ## Examples
@@ -936,6 +969,15 @@ def test_document_mime_type(self):
     """Document.mime_type returns detected MIME type."""
     doc = ConcreteTestDocument.create_root(name="data.json", content={"key": "value"}, reason="test input")
     assert doc.mime_type == "application/json"
+```
+
+**Document no detected mime type** (`tests/documents/test_document_core.py:934`)
+
+```python
+def test_document_no_detected_mime_type(self):
+    """Document has no detected_mime_type attribute (renamed to mime_type)."""
+    doc = ConcreteTestDocument.create_root(name="test.txt", content="hello", reason="test input")
+    assert not hasattr(doc, "detected_mime_type")
 ```
 
 
@@ -999,4 +1041,13 @@ def test_content_plus_attachments_exceeding_limit_rejected(self):
             content=b"A" * 30,  # 30 bytes
             attachments=(Attachment(name="a.txt", content=b"B" * 25),),  # total 55 > 50
         )
+```
+
+**Model copy clears attachments** (`tests/documents/test_document_attachments.py:162`)
+
+```python
+def test_model_copy_clears_attachments(self):
+    doc = SampleFlowDoc(name="test.txt", content=b"Hello")
+    with pytest.raises(TypeError, match=r"model_copy.*not supported"):
+        doc.model_copy(update={"attachments": ()})
 ```

@@ -116,7 +116,7 @@ async def _emit_progress(
             logger.warning("Progress label update failed: %s", e)
 
 
-async def update(fraction: float, message: str = "") -> None:
+async def progress_update(fraction: float, message: str = "") -> None:
     """Report intra-flow progress (0.0-1.0). No-op without context.
 
     Publishes a ProgressEvent via the publisher and updates Prefect flow run
@@ -194,5 +194,5 @@ def _flow_context(
 
 __all__ = [
     "_flow_context",
-    "update",
+    "progress_update",
 ]

@@ -1,5 +1,5 @@
 # MODULE: document_store
-# CLASSES: DocumentReader
+# CLASSES: DocumentReader, FlowCompletion, DocumentNode
 # DEPENDS: Protocol
 # PURPOSE: Document store protocol and backends for AI pipeline flows.
 # VERSION: 0.10.0
@@ -9,6 +9,7 @@
 
 ```python
 from ai_pipeline_core import DocumentReader, get_document_store
+from ai_pipeline_core.document_store import DocumentNode, FlowCompletion
 ```
 
 ## Public API
@@ -67,6 +68,31 @@ Users should depend on this protocol when they only need to read documents."""
     async def load_summaries(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         """Load summaries by SHA256."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class FlowCompletion:
+    """Record of a successful flow execution for resume cache.
+
+Written after a flow returns successfully. Resume checks this record
+instead of inferring completion from document presence (which gives
+false positives when a flow crashes after partial output)."""
+    flow_name: str
+    input_sha256s: tuple[str, ...]
+    output_sha256s: tuple[str, ...]
+    stored_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentNode:
+    """Lightweight document metadata without content or attachments."""
+    sha256: DocumentSha256
+    class_name: str
+    name: str
+    description: str = ''
+    derived_from: tuple[str, ...] = ()
+    triggered_by: tuple[str, ...] = ()
+    summary: str = ''
 
 
 ```
@@ -197,4 +223,25 @@ async def test_load_nodes_by_sha256s(populated_store: MemoryDocumentStore):
 def test_get_document_store_returns_none_by_default():
     """Before any set call, the store is None."""
     assert get_document_store() is None
+```
+
+**Set and get document store** (`tests/document_store/test_protocol.py:99`)
+
+```python
+def test_set_and_get_document_store():
+    """Setting a store makes it retrievable."""
+    store = _DummyStore()
+    set_document_store(store)
+    assert get_document_store() is store
+```
+
+
+## Error Examples
+
+**Create document store rejects non settings** (`tests/document_store/test_local.py:417`)
+
+```python
+def test_create_document_store_rejects_non_settings(self):
+    with pytest.raises(AttributeError):
+        create_document_store("not_settings")  # type: ignore[arg-type]
 ```

@@ -30,7 +30,7 @@ from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
 from ._helpers import init_observability_best_effort
-from .base import DeploymentContext, DeploymentResult, PipelineDeployment, _create_publisher, build_summary_generator
+from .base import DeploymentContext, DeploymentResult, PipelineDeployment, _build_summary_generator, _create_publisher
 
 logger = get_pipeline_logger(__name__)
 
@@ -102,7 +102,7 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
     debug_processor = _init_debug_tracing(wd) if not getattr(opts, "no_trace", False) else None
 
     # Create document store — DualDocumentStore (ClickHouse + local) when configured, local-only otherwise
-    summary_generator = build_summary_generator()
+    summary_generator = _build_summary_generator()
     if settings.clickhouse_host:
         primary = create_document_store(settings)
         secondary = LocalDocumentStore(base_path=wd)

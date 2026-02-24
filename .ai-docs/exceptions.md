@@ -7,7 +7,7 @@
 ## Imports
 
 ```python
-from ai_pipeline_core import DocumentNameError, DocumentSizeError, DocumentValidationError, LLMError, PipelineCoreError
+from ai_pipeline_core import DocumentNameError, DocumentSizeError, DocumentValidationError, LLMError, OutputDegenerationError, PipelineCoreError
 ```
 
 ## Public API

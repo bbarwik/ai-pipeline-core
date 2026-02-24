@@ -41,7 +41,7 @@ class _FlowLike(Protocol[FO_contra]):
     def __call__(
         self,
         run_id: str,
-        documents: list[Document],
+        documents: Sequence[Document],
         flow_options: FO_contra,
     ) -> Coroutine[Any, Any, list[Document]]: ...
 
@@ -269,6 +269,8 @@ def pipeline_task(  # noqa: UP047
                 f"Document.create() auto-serializes str, bytes, dict, list, and BaseModel.\n"
                 f"For non-document functions, use plain async def with @trace instead of @pipeline_task."
             )
+        if contains_bare_document(hints["return"]):
+            raise TypeError(f"@pipeline_task '{fname}' uses bare 'Document' class in return type. Use specific Document subclasses (e.g., MyDocument) instead.")
 
         @wraps(fn)
         async def _wrapper(*args: Any, **kwargs: Any) -> R_co:
@@ -379,7 +381,7 @@ def pipeline_flow(
     on_cancellation: list[FlowStateHook[Any, Any]] | None = None,
     on_crashed: list[FlowStateHook[Any, Any]] | None = None,
     on_running: list[FlowStateHook[Any, Any]] | None = None,
-) -> Callable[[Callable[..., Coroutine[Any, Any, list[Document]]]], _FlowLike[Any]]:
+) -> Callable[[Callable[..., Coroutine[Any, Any, Sequence[Document]]]], _FlowLike[Any]]:
     """Decorate an async function as a traced Prefect flow with annotation-driven document types.
 
     Extracts input/output document types from the function's type annotations
@@ -414,7 +416,7 @@ def pipeline_flow(
 
     flow_decorator: Callable[..., Any] = _prefect_flow
 
-    def _apply(fn: Callable[..., Coroutine[Any, Any, list[Document]]]) -> _FlowLike[Any]:
+    def _apply(fn: Callable[..., Coroutine[Any, Any, Sequence[Document]]]) -> _FlowLike[Any]:
         fname = callable_name(fn, "flow")
 
         if not inspect.iscoroutinefunction(fn):
@@ -456,14 +458,26 @@ def pipeline_flow(
         # Extract input types from documents parameter annotation
         resolved_input_types: list[type[Document]]
         if params[1].name in hints:
-            resolved_input_types = parse_document_types_from_annotation(hints[params[1].name])
+            input_annotation = hints[params[1].name]
+            if contains_bare_document(input_annotation):
+                raise TypeError(
+                    f"@pipeline_flow '{fname}' uses bare 'Document' class in input annotation. "
+                    f"Use specific Document subclasses (e.g., list[MyDocument]) instead."
+                )
+            resolved_input_types = parse_document_types_from_annotation(input_annotation)
         else:
             resolved_input_types = []
 
         # Extract output types from return annotation
         resolved_output_types: list[type[Document]]
         if "return" in hints:
-            resolved_output_types = parse_document_types_from_annotation(hints["return"])
+            return_annotation = hints["return"]
+            if contains_bare_document(return_annotation):
+                raise TypeError(
+                    f"@pipeline_flow '{fname}' uses bare 'Document' class in return annotation. "
+                    f"Use specific Document subclasses (e.g., list[MyDocument]) instead."
+                )
+            resolved_output_types = parse_document_types_from_annotation(return_annotation)
         else:
             resolved_output_types = []
 
@@ -509,7 +523,7 @@ def pipeline_flow(
 
             if trace_cost is not None and trace_cost > 0:
                 set_trace_cost(trace_cost)
-            if not isinstance(result, list):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard
+            if not isinstance(result, list):
                 raise TypeError(f"Flow '{fname}' must return list[Document], got {type(result).__name__}")
 
             # Track flow I/O
@@ -790,7 +804,7 @@ async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture,
 
 ## Error Examples
 
-**Pipeline task then trace raises error** (`tests/pipeline/test_decorators.py:840`)
+**Pipeline task then trace raises error** (`tests/pipeline/test_decorators.py:832`)
 
 ```python
 def test_pipeline_task_then_trace_raises_error(self):
@@ -804,7 +818,7 @@ def test_pipeline_task_then_trace_raises_error(self):
             pass
 ```
 
-**Pipeline flow then trace raises error** (`tests/pipeline/test_decorators.py:862`)
+**Pipeline flow then trace raises error** (`tests/pipeline/test_decorators.py:854`)
 
 ```python
 def test_pipeline_flow_then_trace_raises_error(self):
@@ -815,12 +829,12 @@ def test_pipeline_flow_then_trace_raises_error(self):
         @trace
         @pipeline_flow()
         async def my_flow(  # pyright: ignore[reportUnusedFunction]
-            run_id: str, documents: list[Document], flow_options: FlowOptions
-        ) -> list[Document]:
+            run_id: str, documents: list[InputDocument], flow_options: FlowOptions
+        ) -> list[OutputDocument]:
             return list([OutputDocument(name="output.txt", content=b"output")])
 ```
 
-**Sync function with pipeline task raises error** (`tests/pipeline/test_decorators.py:786`)
+**Sync function with pipeline task raises error** (`tests/pipeline/test_decorators.py:778`)
 
 ```python
 def test_sync_function_with_pipeline_task_raises_error(self):
@@ -833,7 +847,7 @@ def test_sync_function_with_pipeline_task_raises_error(self):
             return x * 2
 ```
 
-**Sync function with pipeline task with params raises error** (`tests/pipeline/test_decorators.py:795`)
+**Sync function with pipeline task with params raises error** (`tests/pipeline/test_decorators.py:787`)
 
 ```python
 def test_sync_function_with_pipeline_task_with_params_raises_error(self):
@@ -846,7 +860,7 @@ def test_sync_function_with_pipeline_task_with_params_raises_error(self):
             return x * 2
 ```
 
-**Trace then pipeline task raises error** (`tests/pipeline/test_decorators.py:830`)
+**Trace then pipeline task raises error** (`tests/pipeline/test_decorators.py:822`)
 
 ```python
 def test_trace_then_pipeline_task_raises_error(self):

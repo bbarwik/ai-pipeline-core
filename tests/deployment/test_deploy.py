@@ -12,7 +12,7 @@ from pydantic import Field
 from prefect.deployments.runner import RunnerDeployment
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, pipeline_flow
-from ai_pipeline_core.deployment.deploy import Deployer
+from ai_pipeline_core.deployment.deploy import _Deployer as Deployer
 
 
 class TestDeployer:
@@ -481,7 +481,11 @@ class TestPlatformTargeting:
 
     def test_compile_targets_worker_platform(self) -> None:
         """uv pip compile must use --python-platform to target linux worker."""
-        from ai_pipeline_core.deployment.deploy import PIP_TARGET_PLATFORMS, TARGET_PYTHON_VERSION, UV_TARGET_PLATFORM
+        from ai_pipeline_core.deployment.deploy import (
+            _PIP_TARGET_PLATFORMS as PIP_TARGET_PLATFORMS,
+            _TARGET_PYTHON_VERSION as TARGET_PYTHON_VERSION,
+            _UV_TARGET_PLATFORM as UV_TARGET_PLATFORM,
+        )
 
         deployer = _make_deployer()
         commands_run: list[str] = []

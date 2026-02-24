@@ -41,6 +41,7 @@ from .exceptions import (
     DocumentSizeError,
     DocumentValidationError,
     LLMError,
+    OutputDegenerationError,
     PipelineCoreError,
 )
 from .llm import (
@@ -83,6 +84,7 @@ __all__ = [
     "LoggingConfig",
     "ModelName",
     "ModelOptions",
+    "OutputDegenerationError",
     "OutputRule",
     "OutputT",
     "PipelineCoreError",

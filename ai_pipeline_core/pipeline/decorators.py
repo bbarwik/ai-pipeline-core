@@ -6,7 +6,7 @@ enforce async-only execution, and auto-save documents to the DocumentStore.
 
 import datetime
 import inspect
-from collections.abc import Callable, Coroutine, Iterable
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from functools import wraps
 from typing import (
     Any,
@@ -51,6 +51,7 @@ from ai_pipeline_core.observability._tracking._models import DocumentEventType
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
 from ai_pipeline_core.pipeline._type_validation import (
     callable_name,
+    contains_bare_document,
     find_non_document_leaves,
     is_already_traced,
     parse_document_types_from_annotation,
@@ -94,7 +95,7 @@ class _FlowLike(Protocol[FO_contra]):
     def __call__(
         self,
         run_id: str,
-        documents: list[Document],
+        documents: Sequence[Document],
         flow_options: FO_contra,
     ) -> Coroutine[Any, Any, list[Document]]: ...
 
@@ -409,6 +410,8 @@ def pipeline_task(  # noqa: UP047
                 f"Document.create() auto-serializes str, bytes, dict, list, and BaseModel.\n"
                 f"For non-document functions, use plain async def with @trace instead of @pipeline_task."
             )
+        if contains_bare_document(hints["return"]):
+            raise TypeError(f"@pipeline_task '{fname}' uses bare 'Document' class in return type. Use specific Document subclasses (e.g., MyDocument) instead.")
 
         @wraps(fn)
         async def _wrapper(*args: Any, **kwargs: Any) -> R_co:
@@ -523,7 +526,7 @@ def pipeline_flow(
     on_cancellation: list[FlowStateHook[Any, Any]] | None = None,
     on_crashed: list[FlowStateHook[Any, Any]] | None = None,
     on_running: list[FlowStateHook[Any, Any]] | None = None,
-) -> Callable[[Callable[..., Coroutine[Any, Any, list[Document]]]], _FlowLike[Any]]:
+) -> Callable[[Callable[..., Coroutine[Any, Any, Sequence[Document]]]], _FlowLike[Any]]:
     """Decorate an async function as a traced Prefect flow with annotation-driven document types.
 
     Extracts input/output document types from the function's type annotations
@@ -558,7 +561,7 @@ def pipeline_flow(
 
     flow_decorator: Callable[..., Any] = _prefect_flow
 
-    def _apply(fn: Callable[..., Coroutine[Any, Any, list[Document]]]) -> _FlowLike[Any]:
+    def _apply(fn: Callable[..., Coroutine[Any, Any, Sequence[Document]]]) -> _FlowLike[Any]:
         fname = callable_name(fn, "flow")
 
         if not inspect.iscoroutinefunction(fn):
@@ -600,14 +603,26 @@ def pipeline_flow(
         # Extract input types from documents parameter annotation
         resolved_input_types: list[type[Document]]
         if params[1].name in hints:
-            resolved_input_types = parse_document_types_from_annotation(hints[params[1].name])
+            input_annotation = hints[params[1].name]
+            if contains_bare_document(input_annotation):
+                raise TypeError(
+                    f"@pipeline_flow '{fname}' uses bare 'Document' class in input annotation. "
+                    f"Use specific Document subclasses (e.g., list[MyDocument]) instead."
+                )
+            resolved_input_types = parse_document_types_from_annotation(input_annotation)
         else:
             resolved_input_types = []
 
         # Extract output types from return annotation
         resolved_output_types: list[type[Document]]
         if "return" in hints:
-            resolved_output_types = parse_document_types_from_annotation(hints["return"])
+            return_annotation = hints["return"]
+            if contains_bare_document(return_annotation):
+                raise TypeError(
+                    f"@pipeline_flow '{fname}' uses bare 'Document' class in return annotation. "
+                    f"Use specific Document subclasses (e.g., list[MyDocument]) instead."
+                )
+            resolved_output_types = parse_document_types_from_annotation(return_annotation)
         else:
             resolved_output_types = []
 
@@ -653,7 +668,7 @@ def pipeline_flow(
 
             if trace_cost is not None and trace_cost > 0:
                 set_trace_cost(trace_cost)
-            if not isinstance(result, list):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard
+            if not isinstance(result, list):
                 raise TypeError(f"Flow '{fname}' must return list[Document], got {type(result).__name__}")
 
             # Track flow I/O

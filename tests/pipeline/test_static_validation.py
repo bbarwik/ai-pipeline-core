@@ -144,7 +144,7 @@ class TestFlowAnnotationValidation:
         with pytest.raises(TypeError, match="does not contain Document subclasses"):
 
             @pipeline_flow()
-            async def bad_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[str]:
+            async def bad_flow(run_id: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[str]:
                 return []
 
     def test_rejects_dict_return_type(self):
@@ -152,17 +152,8 @@ class TestFlowAnnotationValidation:
         with pytest.raises(TypeError, match="does not contain Document subclasses"):
 
             @pipeline_flow()
-            async def bad_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> dict[str, Any]:
+            async def bad_flow(run_id: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> dict[str, Any]:
                 return {}
-
-    def test_accepts_document_return_type(self):
-        """Flow returning list[Document] is accepted."""
-
-        @pipeline_flow()
-        async def good_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
-            return []
-
-        assert good_flow.output_document_types == [Document]  # type: ignore[attr-defined]
 
     def test_accepts_concrete_document_return_type(self):
         """Flow returning list[ConcreteDocument] is accepted."""
@@ -177,7 +168,7 @@ class TestFlowAnnotationValidation:
         """Flow with no return annotation is allowed (no validation triggered)."""
 
         @pipeline_flow()
-        async def flow_without_return(run_id: str, documents: list[Document], flow_options: FlowOptions):
+        async def flow_without_return(run_id: str, documents: list[AlphaDocument], flow_options: FlowOptions):
             return []
 
         # No error — missing annotation means no validation
@@ -188,7 +179,7 @@ class TestFlowAnnotationValidation:
         with pytest.raises(TypeError, match="return annotation does not contain"):
 
             @pipeline_flow()
-            async def my_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[str]:
+            async def my_flow(run_id: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[str]:
                 return []
 
     def test_rejects_first_param_not_run_id(self):
@@ -222,11 +213,6 @@ class TestTaskReturnTypeValidation:
         @pipeline_task
         async def t() -> AlphaDocument:
             return AlphaDocument(name="a.txt", content=b"a")
-
-    def test_accepts_base_document(self):
-        @pipeline_task
-        async def t() -> Document:
-            return Document(name="a.txt", content=b"a")
 
     def test_accepts_list_document(self):
         @pipeline_task
@@ -511,6 +497,113 @@ class TestDeploymentFlowChainValidation:
                 @staticmethod
                 def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
                     return SampleResult(success=True)
+
+
+# --------------------------------------------------------------------------- #
+# Bare Document rejection tests (TDD: written before implementation)
+# --------------------------------------------------------------------------- #
+
+
+class TestBareDocumentRejection:
+    """Bare Document (not a subclass) must be rejected in pipeline decorator annotations.
+
+    The framework requires specific Document subclasses for type safety and
+    document flow tracking. Using bare Document bypasses the type system's
+    ability to validate document flow between tasks/flows.
+    """
+
+    # --- @pipeline_flow output ---
+
+    def test_flow_rejects_bare_document_output(self):
+        """Flow returning list[Document] is rejected — must use concrete subclass."""
+        with pytest.raises(TypeError, match="bare 'Document'"):
+
+            @pipeline_flow()
+            async def f(run_id: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[Document]:
+                return []
+
+    def test_flow_rejects_bare_document_in_union_output(self):
+        """Flow returning list[Document | BetaDocument] is rejected — bare Document in union."""
+        with pytest.raises(TypeError, match="bare 'Document'"):
+
+            @pipeline_flow()
+            async def f(run_id: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[Document | BetaDocument]:
+                return []
+
+    # --- @pipeline_flow input ---
+
+    def test_flow_rejects_bare_document_input(self):
+        """Flow with documents: list[Document] is rejected — must use concrete subclass."""
+        with pytest.raises(TypeError, match="bare 'Document'"):
+
+            @pipeline_flow()
+            async def f(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[AlphaDocument]:
+                return []
+
+    def test_flow_rejects_bare_document_in_union_input(self):
+        """Flow with documents: list[Document | AlphaDocument] is rejected."""
+        with pytest.raises(TypeError, match="bare 'Document'"):
+
+            @pipeline_flow()
+            async def f(run_id: str, documents: list[Document | AlphaDocument], flow_options: FlowOptions) -> list[BetaDocument]:
+                return []
+
+    # --- @pipeline_task ---
+
+    def test_task_rejects_bare_document_return(self):
+        """Task returning bare Document is rejected."""
+        with pytest.raises(TypeError, match="bare 'Document'"):
+
+            @pipeline_task
+            async def t() -> Document: ...
+
+    def test_task_rejects_bare_document_list_return(self):
+        """Task returning list[Document] is rejected."""
+        with pytest.raises(TypeError, match="bare 'Document'"):
+
+            @pipeline_task
+            async def t() -> list[Document]:
+                return []
+
+    def test_task_rejects_bare_document_or_none(self):
+        """Task returning Document | None is rejected."""
+        with pytest.raises(TypeError, match="bare 'Document'"):
+
+            @pipeline_task
+            async def t() -> Document | None:
+                return None
+
+    def test_task_rejects_bare_document_in_tuple(self):
+        """Task returning tuple containing bare Document is rejected."""
+        with pytest.raises(TypeError, match="bare 'Document'"):
+
+            @pipeline_task
+            async def t() -> tuple[Document, AlphaDocument]: ...
+
+    # --- Positive cases (concrete subclasses accepted) ---
+
+    def test_flow_accepts_concrete_subclasses(self):
+        @pipeline_flow()
+        async def f(run_id: str, documents: list[AlphaDocument], flow_options: FlowOptions) -> list[BetaDocument]:
+            return []
+
+    def test_task_accepts_concrete_subclass(self):
+        @pipeline_task
+        async def t() -> AlphaDocument: ...
+
+    def test_task_accepts_concrete_list(self):
+        @pipeline_task
+        async def t() -> list[AlphaDocument]:
+            return []
+
+    def test_task_accepts_concrete_union(self):
+        @pipeline_task
+        async def t() -> AlphaDocument | BetaDocument: ...
+
+    def test_task_accepts_concrete_or_none(self):
+        @pipeline_task
+        async def t() -> AlphaDocument | None:
+            return None
 
 
 class TestDeploymentDuplicateFlows:

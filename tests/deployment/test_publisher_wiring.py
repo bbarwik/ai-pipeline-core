@@ -246,7 +246,7 @@ class TestRunPublisherIntegration:
         set_document_store(store)
 
         # Patch heartbeat interval to be very short
-        with patch("ai_pipeline_core.deployment.base.HEARTBEAT_INTERVAL_SECONDS", 0.01):
+        with patch("ai_pipeline_core.deployment.base._HEARTBEAT_INTERVAL_SECONDS", 0.01):
             try:
                 deployment = _WiringDeployment()
                 doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")

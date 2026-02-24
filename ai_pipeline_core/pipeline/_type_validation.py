@@ -7,6 +7,7 @@ on @pipeline_task and @pipeline_flow targets.
 
 __all__ = [
     "callable_name",
+    "contains_bare_document",
     "find_non_document_leaves",
     "flatten_union",
     "is_already_traced",
@@ -109,6 +110,24 @@ def find_non_document_leaves(tp: Any) -> list[Any]:
 
     # Everything else is invalid (int, str, Any, object, dict, etc.)
     return [tp]
+
+
+def contains_bare_document(tp: Any) -> bool:
+    """Check if a type annotation contains bare Document class (not a subclass).
+
+    Walks through Union, list, and tuple annotations recursively.
+    Returns True if bare ``Document`` is found anywhere in the annotation tree.
+    """
+    if tp is Document:
+        return True
+    if tp is type(None):
+        return False
+    origin = get_origin(tp)
+    if origin is Union or isinstance(tp, types.UnionType):
+        return any(contains_bare_document(arg) for arg in get_args(tp))
+    if origin in {list, tuple}:
+        return any(contains_bare_document(arg) for arg in get_args(tp) if arg is not Ellipsis)
+    return False
 
 
 def parse_document_types_from_annotation(annotation: Any) -> list[type[Document]]:

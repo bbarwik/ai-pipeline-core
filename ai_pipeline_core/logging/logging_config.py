@@ -14,14 +14,13 @@ import yaml
 from prefect.logging import get_logger
 
 __all__ = [
-    "DEFAULT_LOG_LEVELS",
     "LoggingConfig",
     "get_pipeline_logger",
     "setup_logging",
 ]
 
 # Default log levels for different components
-DEFAULT_LOG_LEVELS = {
+_DEFAULT_LOG_LEVELS = {
     "ai_pipeline_core": "INFO",
     "ai_pipeline_core.documents": "INFO",
     "ai_pipeline_core.llm": "INFO",
@@ -162,7 +161,7 @@ def setup_logging(config_path: Path | None = None, level: str | None = None) -> 
         # Override level if provided
         if level:
             # Set for our loggers
-            for logger_name in DEFAULT_LOG_LEVELS:
+            for logger_name in _DEFAULT_LOG_LEVELS:
                 logger = get_logger(logger_name)
                 logger.setLevel(level)
 

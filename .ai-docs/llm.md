@@ -8,7 +8,7 @@
 ## Imports
 
 ```python
-from ai_pipeline_core import Citation, Conversation, ModelName, ModelOptions
+from ai_pipeline_core import Citation, Conversation, ConversationContent, ModelName, ModelOptions
 ```
 
 ## Rules
@@ -39,6 +39,8 @@ type ModelName = (
 SYSTEM_PROMPT_DOCUMENT_NAME = "system_prompt"
 
 CHARS_PER_TOKEN = 4
+
+ConversationContent = str | Document | list[Document]
 
 ```
 
@@ -232,6 +234,90 @@ Attachment rendering in LLM context:
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[None]": ...
+
+    @overload
+    async def send_spec(
+        self,
+        spec: PromptSpec[U],
+        *,
+        documents: list[Document] | None = None,
+        include_input_documents: bool = True,
+        purpose: str | None = None,
+        expected_cost: float | None = None,
+    ) -> "Conversation[U]": ...
+
+    async def send_spec(
+        self,
+        spec: PromptSpec[Any],
+        *,
+        documents: list[Document] | None = None,
+        include_input_documents: bool = True,
+        purpose: str | None = None,
+        expected_cost: float | None = None,
+    ) -> "Conversation[Any]":
+        """Send a PromptSpec to the LLM.
+
+        Adds documents to context (or messages for follow-up specs), renders the
+        prompt, and dispatches to send() or send_structured() based on output_type.
+
+        For specs with output_structure, sets stop sequences at </result> and
+        auto-extracts content — conv.content returns clean text.
+
+        For follow-up specs (follows is set), documents go to messages instead of
+        context. If the follow-up declares input_documents and documents are passed,
+        they are listed in the prompt text with their runtime id, name, description.
+        """
+        is_follow_up = spec.follows is not None
+
+        # Warning for missing documents (only for non-follow-up specs)
+        if not is_follow_up and spec.input_documents and not documents and include_input_documents:
+            logger.warning(
+                "PromptSpec '%s' declares input_documents (%s) but no documents were passed to send_spec().",
+                spec.__class__.__name__,
+                ", ".join(d.__name__ for d in spec.input_documents),
+            )
+
+        # Place documents in context (initial specs) or messages (follow-ups)
+        if documents:
+            if is_follow_up:
+                conv = self.with_documents(documents)
+            else:
+                conv = self.with_context(*documents)
+        else:
+            conv = self
+
+        # Set stop sequence when output_structure is set (result tag wrapping)
+        if spec.output_structure is not None:
+            opts = conv.model_options or ModelOptions()
+            if RESULT_CLOSE not in (opts.stop or ()):
+                stop = (*opts.stop, RESULT_CLOSE) if opts.stop else (RESULT_CLOSE,)
+                conv = conv.with_model_options(opts.model_copy(update={"stop": stop}))  # nosemgrep: no-document-model-copy
+
+        # Determine whether to include input documents in prompt text
+        # Follow-ups: only include if the spec declares its own input_documents AND documents are passed
+        if is_follow_up:
+            effective_include_docs = bool(spec.input_documents) and documents is not None
+        else:
+            effective_include_docs = include_input_documents
+
+        prompt_text = render_text(spec, documents=documents, include_input_documents=effective_include_docs)
+        trace_purpose = purpose or spec.__class__.__name__
+
+        # Dispatch to structured or text generation
+        if spec.output_type is not str:
+            return await conv.send_structured(
+                prompt_text,
+                response_format=cast(type[BaseModel], spec.output_type),
+                purpose=trace_purpose,
+                expected_cost=expected_cost,
+            )
+
+        result = await conv.send(prompt_text, purpose=trace_purpose, expected_cost=expected_cost)
+
+        if spec.output_structure is not None:
+            return result.model_copy(update={"extract_result_tags": True})
+
+        return result
 
     async def send_structured(
         self,

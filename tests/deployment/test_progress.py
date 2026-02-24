@@ -10,14 +10,18 @@ import pytest
 from ai_pipeline_core.deployment._publishers import MemoryPublisher
 from ai_pipeline_core.deployment._types import ProgressEvent
 from ai_pipeline_core.deployment.contract import FlowStatus
-from ai_pipeline_core.deployment.progress import _ProgressContext, _flow_context, update
+from ai_pipeline_core.deployment.progress import _ProgressContext, _flow_context, progress_update
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.pipeline import pipeline_flow
 from ai_pipeline_core.pipeline.options import FlowOptions
 
 
+class _ProgressInputDoc(Document):
+    """Minimal input document for progress integration tests."""
+
+
 class _ProgressTestDoc(Document):
-    """Minimal document for progress integration tests."""
+    """Minimal output document for progress integration tests."""
 
 
 class TestUpdate:
@@ -25,7 +29,7 @@ class TestUpdate:
 
     async def test_noop_without_context(self):
         """Test update is a no-op when no context is set."""
-        await update(0.5, "test")  # Should not raise
+        await progress_update(0.5, "test")  # Should not raise
 
     async def test_updates_labels(self):
         """Test labels are updated when context is set."""
@@ -43,7 +47,7 @@ class TestUpdate:
             completed_minutes=0.0,
         ):
             with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await update(0.5, "halfway")
+                await progress_update(0.5, "halfway")
 
         mock_client.update_flow_run_labels.assert_called_once()
 
@@ -63,8 +67,8 @@ class TestUpdate:
             completed_minutes=0.0,
         ):
             with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await update(-0.5, "negative")
-                await update(1.5, "over")
+                await progress_update(-0.5, "negative")
+                await progress_update(1.5, "over")
 
         calls = mock_client.update_flow_run_labels.call_args_list
         assert len(calls) == 2
@@ -92,7 +96,7 @@ class TestUpdateLabels:
             completed_minutes=1.0,
         ):
             with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await update(0.5, "halfway")
+                await progress_update(0.5, "halfway")
 
         mock_client.update_flow_run_labels.assert_called_once()
         labels = mock_client.update_flow_run_labels.call_args.kwargs["labels"]
@@ -120,7 +124,7 @@ class TestUpdateLabels:
             completed_minutes=0.0,
         ):
             with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await update(0.5, "msg")
+                await progress_update(0.5, "msg")
 
         mock_client.update_flow_run_labels.assert_not_called()
 
@@ -141,7 +145,7 @@ class TestUpdateLabels:
             completed_minutes=0.0,
         ):
             with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await update(0.5, "msg")  # Must not raise
+                await progress_update(0.5, "msg")  # Must not raise
 
 
 class TestFlowContext:
@@ -228,12 +232,12 @@ class TestProgressContext:
 @pipeline_flow(estimated_minutes=1)
 async def _progress_test_flow(
     run_id: str,
-    documents: list[Document],
+    documents: list[_ProgressInputDoc],
     flow_options: FlowOptions,
 ) -> list[_ProgressTestDoc]:
     """Test flow that calls progress_update."""
-    await update(0.25, "quarter")
-    await update(0.75, "three-quarters")
+    await progress_update(0.25, "quarter")
+    await progress_update(0.75, "three-quarters")
     return [_ProgressTestDoc.create_root(name="test.md", content="done", reason="test input")]
 
 
@@ -316,7 +320,7 @@ class TestInvalidFlowRunId:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await update(0.5, "halfway")  # Must not raise ValueError
+                await progress_update(0.5, "halfway")  # Must not raise ValueError
 
         # Label update should be skipped for invalid UUID
         mock_client.update_flow_run_labels.assert_not_called()
@@ -344,7 +348,7 @@ class TestPublisherIntegration:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await update(0.5, "halfway")
+                await progress_update(0.5, "halfway")
                 # Allow fire-and-forget task to complete
                 await asyncio.sleep(0.01)
 
@@ -379,7 +383,7 @@ class TestPublisherIntegration:
             publisher=failing_pub,
         ):
             with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await update(0.5, "test")  # Must not raise
+                await progress_update(0.5, "test")  # Must not raise
                 await asyncio.sleep(0.01)
 
         # Labels should still be updated even if publisher fails
@@ -402,7 +406,7 @@ class TestPublisherIntegration:
             publisher=None,
         ):
             with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await update(0.5, "msg")  # Should work fine without publisher
+                await progress_update(0.5, "msg")  # Should work fine without publisher
 
         # Labels should still be updated
         mock_client.update_flow_run_labels.assert_called_once()
@@ -428,7 +432,7 @@ class TestPublisherIntegration:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await update(0.5, "halfway")
+                await progress_update(0.5, "halfway")
                 await asyncio.sleep(0.01)
 
         assert len(pub.events) == 1

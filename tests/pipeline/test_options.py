@@ -157,7 +157,7 @@ class TestDocumentsFlowWithInheritedOptions:
         """Test pipeline_flow with base FlowOptions."""
 
         @pipeline_flow()
-        async def test_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+        async def test_flow(run_id: str, documents: list[FlowInputDocument], flow_options: FlowOptions) -> list[FlowOutputDocument]:
             assert isinstance(run_id, str)
             assert isinstance(flow_options, FlowOptions)
             return list([FlowOutputDocument(name="output", content=b"test")])
@@ -175,12 +175,12 @@ class TestDocumentsFlowWithInheritedOptions:
             batch_size: int = Field(default=10, gt=0)
             enable_logging: bool = Field(default=True)
 
-        @pipeline_flow()  # type: ignore[arg-type]
+        @pipeline_flow()
         async def test_flow(
             run_id: str,
-            documents: list[Document],
+            documents: list[FlowInputDocument],
             flow_options: CustomFlowOptions,
-        ) -> list[Document]:
+        ) -> list[FlowOutputDocument]:
             assert isinstance(flow_options, CustomFlowOptions)
             assert isinstance(flow_options, FlowOptions)
             assert flow_options.core_model == "custom-core"
@@ -210,8 +210,8 @@ class TestDocumentsFlowWithInheritedOptions:
             processing_modes: list[str] = Field(default_factory=lambda: ["fast", "accurate"])
             metadata: dict[str, Any] = Field(default_factory=dict)
 
-        @pipeline_flow()  # type: ignore[arg-type]
-        async def advanced_flow(run_id: str, documents: list[Document], flow_options: AdvancedFlowOptions) -> list[Document]:
+        @pipeline_flow()
+        async def advanced_flow(run_id: str, documents: list[FlowInputDocument], flow_options: AdvancedFlowOptions) -> list[FlowOutputDocument]:
             assert flow_options.core_model == "gemini-3-pro"
             assert flow_options.small_model == "custom-small"
             assert flow_options.api_config.endpoint == "https://custom.api.com"
@@ -242,8 +242,8 @@ class TestDocumentsFlowWithInheritedOptions:
         class StrictFlowOptions(FlowOptions):
             required_field: str  # No default - required field
 
-        @pipeline_flow()  # type: ignore[arg-type]
-        async def strict_flow(run_id: str, documents: list[Document], flow_options: StrictFlowOptions) -> list[Document]:
+        @pipeline_flow()
+        async def strict_flow(run_id: str, documents: list[FlowInputDocument], flow_options: StrictFlowOptions) -> list[FlowOutputDocument]:
             assert flow_options.required_field == "test-value"
             return list([FlowOutputDocument(name="output", content=b"test")])
 
@@ -267,8 +267,8 @@ class TestDocumentsFlowWithInheritedOptions:
         class SpecificProjectOptions(BaseProjectOptions):
             feature_flags: dict[str, bool] = Field(default_factory=dict)
 
-        @pipeline_flow()  # type: ignore[arg-type]
-        async def multi_level_flow(run_id: str, documents: list[Document], flow_options: SpecificProjectOptions) -> list[Document]:
+        @pipeline_flow()
+        async def multi_level_flow(run_id: str, documents: list[FlowInputDocument], flow_options: SpecificProjectOptions) -> list[FlowOutputDocument]:
             assert flow_options.core_model == "gemini-3-pro"
             assert flow_options.organization == "custom-org"
             assert flow_options.environment == "production"
@@ -302,9 +302,9 @@ class TestDocumentsFlowWithInheritedOptions:
         @pipeline_flow()
         async def convert_input_documents(
             run_id: str,
-            documents: list[Document],
+            documents: list[FlowInputDocument],
             flow_options: ProjectFlowOptions,
-        ) -> list[Document]:
+        ) -> list[FlowOutputDocument]:
             assert isinstance(flow_options.primary_models, list)
             assert isinstance(flow_options.small_models_list, list)
             assert isinstance(flow_options.search_models, list)

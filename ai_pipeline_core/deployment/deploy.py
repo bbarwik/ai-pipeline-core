@@ -42,14 +42,14 @@ from prefect_gcp.cloud_storage import GcpCredentials, GcsBucket  # pyright: igno
 from ai_pipeline_core.settings import settings
 
 __all__ = [
-    "Deployer",
-    "main",
+    "_Deployer",
+    "_main",
 ]
 
-UV_TARGET_PLATFORM = "x86_64-unknown-linux-gnu"
-PIP_TARGET_PLATFORMS = ("manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64", "linux_x86_64")
-TARGET_PYTHON_VERSION = "3.12"
-TARGET_ABI = "cp312"
+_UV_TARGET_PLATFORM = "x86_64-unknown-linux-gnu"
+_PIP_TARGET_PLATFORMS = ("manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64", "linux_x86_64")
+_TARGET_PYTHON_VERSION = "3.12"
+_TARGET_ABI = "cp312"
 
 
 def _filter_lock_file(lock_file: Path, exclude_names: set[str]) -> None:
@@ -68,7 +68,7 @@ def _is_excluded_package(line: str, exclude_names: set[str]) -> bool:
     return pkg_name in exclude_names
 
 
-class Deployer:
+class _Deployer:
     """Deploy Prefect flows with fully bundled dependencies.
 
     Build pipeline:
@@ -210,19 +210,19 @@ class Deployer:
             find_links = f"--find-links {shlex.quote(str(wheels_dir))}" if vendor_names else ""
             self._run(
                 f"uv pip compile pyproject.toml -o {shlex.quote(str(lock_file))} "
-                f"--python-platform {UV_TARGET_PLATFORM} --python-version {TARGET_PYTHON_VERSION} "
+                f"--python-platform {_UV_TARGET_PLATFORM} --python-version {_TARGET_PYTHON_VERSION} "
                 f"{find_links}"
             )
 
             # 4. Filter vendor packages from lock file (already have their wheels) and download public deps
             if vendor_names:
                 _filter_lock_file(lock_file, vendor_names)
-            platform_flags = " ".join(f"--platform {p}" for p in PIP_TARGET_PLATFORMS)
-            self._info(f"Downloading dependency wheels (linux_x86_64/python{TARGET_PYTHON_VERSION})...")
+            platform_flags = " ".join(f"--platform {p}" for p in _PIP_TARGET_PLATFORMS)
+            self._info(f"Downloading dependency wheels (linux_x86_64/python{_TARGET_PYTHON_VERSION})...")
             self._run(
                 f"pip download -r {shlex.quote(str(lock_file))} -d {shlex.quote(str(wheels_dir))} "
-                f"{platform_flags} --python-version {TARGET_PYTHON_VERSION} "
-                f"--implementation cp --abi {TARGET_ABI} --abi abi3 --abi none "
+                f"{platform_flags} --python-version {_TARGET_PYTHON_VERSION} "
+                f"--implementation cp --abi {_TARGET_ABI} --abi abi3 --abi none "
                 f"--only-binary :all: --no-deps"
             )
 
@@ -377,7 +377,7 @@ class Deployer:
         print("=" * 70)
 
 
-def main() -> None:
+def _main() -> None:
     """Command-line interface for deployment script."""
     parser = argparse.ArgumentParser(
         description="Deploy Prefect flows with bundled wheels (offline install)",
@@ -397,7 +397,7 @@ Prerequisites:
     parser.parse_args()
 
     try:
-        deployer = Deployer()
+        deployer = _Deployer()
         asyncio.run(deployer.run())
     except KeyboardInterrupt:
         print("\n\u2717 Deployment cancelled by user", file=sys.stderr)
@@ -409,4 +409,4 @@ Prerequisites:
 
 
 if __name__ == "__main__":
-    main()
+    _main()

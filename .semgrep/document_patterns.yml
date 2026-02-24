@@ -11,9 +11,9 @@ rules:
       - pattern: |
           tiktoken.encoding_for_model(...)
       - pattern-not-inside: |
-          def get_tiktoken_encoding(...):
+          def _get_tiktoken_encoding(...):
               ...
-    message: "Use get_tiktoken_encoding() cached wrapper instead of direct call"
+    message: "Use _get_tiktoken_encoding() cached wrapper instead of direct call"
     severity: ERROR
     languages: [python]
     paths:

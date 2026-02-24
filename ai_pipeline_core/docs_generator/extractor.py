@@ -220,23 +220,44 @@ def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:  # noq
                     symbol_map[name] = public_module
                     break
 
-    # Discover values (NewType, TypeAlias, Constants) from private files
-    # that are re-exported via __all__ but were skipped during initial parsing.
-    # Classes and functions from private files are already handled by the remap above.
-    known_values = set(table.values)
+    # Discover symbols from private files that are re-exported via __all__
+    # but were skipped during initial parsing (build_symbol_table skips _-prefixed files).
+    known_symbols = set(table.classes) | set(table.functions) | set(table.values)
     for public_module, exports in public_exports.items():
-        missing_values = exports - set(table.classes) - set(table.functions) - known_values
-        if not missing_values:
+        missing = exports - known_symbols
+        if not missing:
             continue
         subdir = source_dir / public_module
         for py_file in sorted(subdir.rglob("*.py")):
             if py_file.name == "__init__.py":
                 continue
             module = parse_module(py_file)
+            for cls in module.classes:
+                if cls.name in missing:
+                    table.classes[cls.name] = cls
+                    table.class_to_module[cls.name] = public_module
+            for func in module.functions:
+                if func.name in missing:
+                    table.functions[func.name] = func
+                    table.function_to_module[func.name] = public_module
             for val in module.values:
-                if val.name in missing_values:
+                if val.name in missing:
                     table.values[val.name] = val
                     table.value_to_module[val.name] = public_module
+
+    # Discover _CapitalizedName classes from private files so _collect_internal_types
+    # can resolve them when they appear in public API field annotations or signatures.
+    for subdir in sorted(source_dir.iterdir()):
+        if not subdir.is_dir() or subdir.name.startswith("_"):
+            continue
+        for py_file in sorted(subdir.rglob("*.py")):
+            if py_file.name == "__init__.py" or not py_file.name.startswith("_"):
+                continue
+            module = parse_module(py_file)
+            for cls in module.classes:
+                if cls.name not in table.classes and cls.name.startswith("_") and len(cls.name) > 1 and cls.name[1].isupper():
+                    table.classes[cls.name] = cls
+                    table.class_to_module[cls.name] = subdir.name
 
 
 def _parse_dunder_all(init_file: Path) -> set[str]:
@@ -375,6 +396,8 @@ def _extract_value(node: ast.stmt, source_lines: list[str], module_path: str) ->
             return ValueInfo(name=name, source=get_source(source_lines, node), kind="NewType", is_public=is_public_name(name), module_path=module_path)
         if name.isupper() and is_public_name(name) and len(name) > 1:
             return ValueInfo(name=name, source=get_source(source_lines, node), kind="Constant", is_public=True, module_path=module_path)
+        if is_public_name(name) and name[0].isupper() and _looks_like_type_alias(node.value):
+            return ValueInfo(name=name, source=get_source(source_lines, node), kind="TypeAlias", is_public=True, module_path=module_path)
     # PEP 695 type alias: type Name = ...
     if isinstance(node, ast.TypeAlias):
         name = node.name.id
@@ -386,6 +409,11 @@ def _extract_value(node: ast.stmt, source_lines: list[str], module_path: str) ->
             name = node.target.id
             return ValueInfo(name=name, source=get_source(source_lines, node), kind="TypeAlias", is_public=is_public_name(name), module_path=module_path)
     return None
+
+
+def _looks_like_type_alias(node: ast.expr) -> bool:
+    """Check if an expression looks like a type alias (Subscript or union via |)."""
+    return isinstance(node, ast.Subscript) or (isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr))
 
 
 def _is_newtype_call(node: ast.Call) -> bool:

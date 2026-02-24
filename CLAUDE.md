@@ -210,7 +210,7 @@ This section documents capabilities the framework must provide to applications.
 - Mirror types — local Document subclasses whose `class_name` must match remote types
 
 **Progress Tracking:**
-- `await progress.update(fraction, message)` for intra-flow progress
+- `await progress.progress_update(fraction, message)` for intra-flow progress
 - Pub/Sub push + Prefect labels pull
 - Weighted calculation based on `estimated_minutes`
 

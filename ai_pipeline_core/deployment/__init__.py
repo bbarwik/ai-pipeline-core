@@ -11,7 +11,7 @@ from .contract import (
     RunResponse,
     RunState,
 )
-from .progress import update as progress_update
+from .progress import progress_update
 from .remote import ProgressCallback, RemoteDeployment
 
 __all__ = [

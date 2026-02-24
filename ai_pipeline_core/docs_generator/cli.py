@@ -390,8 +390,8 @@ def _render_module_section(
         lines.append("")
         lines.append("```python")
         for val in data.values:
-            first = val.source.strip().splitlines()[0] if val.source.strip() else val.name
-            lines.append(first)
+            source = val.source.strip() if val.source.strip() else val.name
+            lines.extend(source.splitlines())
         lines.append("```")
         lines.append("")
 

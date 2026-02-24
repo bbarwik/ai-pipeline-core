@@ -56,7 +56,7 @@ from ._helpers import (
     init_observability_best_effort,
 )
 from ._publishers import NoopPublisher
-from ._resolve import DocumentInput, OutputDocument, build_output_document, resolve_document_inputs
+from ._resolve import DocumentInput, _OutputDocument, build_output_document, resolve_document_inputs
 from ._types import (
     CompletedEvent,
     ErrorCode,
@@ -116,10 +116,10 @@ def _create_publisher(settings_obj: Settings) -> ResultPublisher:
     return NoopPublisher()
 
 
-HEARTBEAT_INTERVAL_SECONDS = 30
+_HEARTBEAT_INTERVAL_SECONDS = 30
 
 
-def build_summary_generator() -> SummaryGenerator | None:
+def _build_summary_generator() -> SummaryGenerator | None:
     """Build a summary generator callable from settings, or None if disabled/unavailable."""
     if not settings.doc_summary_enabled:
         return None
@@ -159,7 +159,7 @@ def _compute_run_scope(run_id: str, documents: list[Document], options: FlowOpti
 async def _heartbeat_loop(publisher: ResultPublisher, run_id: str) -> None:
     """Publish heartbeat signals at regular intervals until cancelled."""
     while True:
-        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
         try:
             await publisher.publish_heartbeat(run_id)
         except Exception as e:
@@ -177,7 +177,7 @@ class DeploymentResult(BaseModel):
 
     success: bool
     error: str | None = None
-    documents: tuple[OutputDocument, ...] = ()
+    documents: tuple[_OutputDocument, ...] = ()
 
     model_config = ConfigDict(frozen=True)
 
@@ -285,9 +285,9 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     def build_result(run_id: str, documents: list[Document], options: TOptions) -> TResult:
         """Extract typed result from pipeline documents loaded from DocumentStore.
 
-        Only called when the pipeline runs to completion (last step included).
-        For partial runs (--start/--end that don't reach the last step), this method
-        is NOT called — the pipeline returns a default partial result instead.
+        Called for both full runs and partial runs (--start/--end). For partial runs,
+        _build_partial_result() delegates here by default — override _build_partial_result()
+        to customize partial run results.
         """
         ...
 
@@ -754,7 +754,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             publisher = _create_publisher(settings)
             store = create_document_store(
                 settings,
-                summary_generator=build_summary_generator(),
+                summary_generator=_build_summary_generator(),
             )
             set_document_store(store)
             try:
@@ -792,9 +792,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
 
 __all__ = [
-    "HEARTBEAT_INTERVAL_SECONDS",
     "DeploymentContext",
     "DeploymentResult",
     "PipelineDeployment",
-    "build_summary_generator",
 ]

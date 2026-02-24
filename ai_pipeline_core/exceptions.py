@@ -9,6 +9,7 @@ __all__ = [
     "DocumentSizeError",
     "DocumentValidationError",
     "LLMError",
+    "OutputDegenerationError",
     "PipelineCoreError",
 ]
 

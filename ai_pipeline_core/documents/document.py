@@ -83,7 +83,7 @@ def _is_test_module(cls: type) -> bool:
 
 
 @functools.cache
-def get_tiktoken_encoding() -> tiktoken.Encoding:
+def _get_tiktoken_encoding() -> tiktoken.Encoding:
     """Lazy-cached tiktoken encoding. Deferred to first use, cached forever."""
     return tiktoken.encoding_for_model("gpt-4")
 
@@ -408,7 +408,7 @@ class Document(BaseModel, Generic[TContent]):
             if files_enum is not None:
                 members = [f"{cls.__name__}.FILES.{m.name}" for m in files_enum]
                 if len(members) == 1:
-                    hint = f"\nFIX: Use {members[0]}, or use create()/create_root()/derive() which auto-defaults the name for single-file document types."
+                    hint = f"\nFIX: Use name={members[0]} in create()/create_root()/derive()."
                 else:
                     hint = f"\nFIX: Use one of: {', '.join(members)}"
             raise DocumentNameError(f"Invalid filename '{name}' for {cls.__name__}. Allowed: {allowed_str}{hint}")
@@ -571,7 +571,7 @@ class Document(BaseModel, Generic[TContent]):
     @cached_property
     def approximate_tokens_count(self) -> int:
         """Approximate token count (tiktoken gpt-4 encoding). Images=TOKENS_PER_IMAGE, PDFs/other=1024."""
-        enc = get_tiktoken_encoding()
+        enc = _get_tiktoken_encoding()
         if self.is_text:
             total = len(enc.encode(self.text))
         elif self.is_image:

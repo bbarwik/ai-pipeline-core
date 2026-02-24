@@ -21,16 +21,16 @@ Auto-generated API reference. Do not edit manually. Run: `make docs-ai-build`
 
 Pipeline deployment utilities for unified, type-safe deployments.
 
-**Source**: 2,400 lines of code | [Full guide](deployment.md)
+**Source**: 2,398 lines of code | [Full guide](deployment.md)
 
 ### Types & Constants
 
 ```python
-HEARTBEAT_INTERVAL_SECONDS = 30
-UV_TARGET_PLATFORM = "x86_64-unknown-linux-gnu"
-PIP_TARGET_PLATFORMS = ("manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64", "linux_x86_64")
-TARGET_PYTHON_VERSION = "3.12"
-TARGET_ABI = "cp312"
+RunResponse = Annotated[
+    PendingRun | ProgressRun | CompletedRun | FailedRun,
+    Discriminator("type"),
+]
+ProgressCallback = Callable[[float, str], Awaitable[None]]
 ```
 
 ### Classes
@@ -49,7 +49,7 @@ class DeploymentResult(BaseModel):
     # Fields
     success: bool
     error: str | None = None
-    documents: tuple[OutputDocument, ...] = ()
+    documents: tuple[_OutputDocument, ...] = ()
     model_config = ConfigDict(frozen=True)
 
 
@@ -147,15 +147,6 @@ class FailedRun(_RunBase):
     result: DeploymentResultData | None = None
 
 
-class Deployer:
-    """Deploy Prefect flows with fully bundled dependencies."""
-
-    # Methods
-    def __init__(self) -> None: ...
-    def run(self) -> None:
-        """Execute the complete deployment pipeline: build, upload, deploy."""
-
-
 class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
     """Typed client for calling a remote PipelineDeployment via Prefect."""
 
@@ -178,10 +169,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
 ### Functions
 
 ```python
-def build_summary_generator() -> SummaryGenerator | None:
-    """Build a summary generator callable from settings, or None if disabled/unavailable."""
-
-async def update(fraction: float, message: str='') -> None:
+async def progress_update(fraction: float, message: str='') -> None:
     """Report intra-flow progress (0.0-1.0). No-op without context."""
 
 async def run_remote_deployment(deployment_name: str, parameters: dict[str, Any], on_progress: ProgressCallback | None=None) -> Any:
@@ -193,7 +181,7 @@ async def run_remote_deployment(deployment_name: str, parameters: dict[str, Any]
 
 Document store protocol and backends for AI pipeline flows.
 
-**Source**: 2,111 lines of code | [Full guide](document_store.md)
+**Source**: 2,115 lines of code | [Full guide](document_store.md)
 
 ### Classes
 
@@ -220,6 +208,29 @@ class DocumentReader(Protocol):
         """Load lightweight metadata for ALL documents in a run scope."""
     def load_summaries(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         """Load summaries by SHA256."""
+
+
+class FlowCompletion:
+    """Record of a successful flow execution for resume cache."""
+
+    # Fields
+    flow_name: str
+    input_sha256s: tuple[str, ...]
+    output_sha256s: tuple[str, ...]
+    stored_at: datetime
+
+
+class DocumentNode:
+    """Lightweight document metadata without content or attachments."""
+
+    # Fields
+    sha256: DocumentSha256
+    class_name: str
+    name: str
+    description: str = ''
+    derived_from: tuple[str, ...] = ()
+    triggered_by: tuple[str, ...] = ()
+    summary: str = ''
 ```
 
 ### Functions
@@ -391,6 +402,9 @@ class Document(BaseModel, Generic[TContent]):
     def as_json(self) -> Any:
         """Parse content as JSON."""
     def as_pydantic_model(self, model_type: type[TModel]) -> TModel: ...
+    def as_pydantic_model(self, model_type: type[list[TModel]]) -> list[TModel]: ...
+    def as_pydantic_model(self, model_type: type[TModel] | type[list[TModel]]) -> TModel | list[TModel]:
+        """Parse JSON/YAML content and validate against a Pydantic model. Supports single and list types."""
     def as_yaml(self) -> Any:
         """Parse content as YAML via ruamel.yaml."""
     def content_sha256(self) -> str:
@@ -417,14 +431,18 @@ class Document(BaseModel, Generic[TContent]):
         """Reject documents where the same SHA256 appears in both derived_from and triggered_by."""
     def validate_total_size(self) -> Self:
         """Validate that total document size (content + attachments) is within limits."""
+
+
+class RunContext:
+    """Immutable context for a pipeline run, carried via ContextVar."""
+
+    # Fields
+    run_scope: RunScope
 ```
 
 ### Functions
 
 ```python
-def get_tiktoken_encoding() -> tiktoken.Encoding:
-    """Lazy-cached tiktoken encoding. Deferred to first use, cached forever."""
-
 def sanitize_url(url: str) -> str:
     """Sanitize URL or query string for use as a filename (max 100 chars)."""
 
@@ -439,12 +457,21 @@ def replace_extension(name: str, ext: str) -> str:
 
 def find_document(documents: Sequence[Any], doc_type: type[T]) -> T:
     """Find a document of the given type in a sequence."""
+
+def get_run_context() -> RunContext | None:
+    """Get the current run context, or None if not set."""
+
+def set_run_context(ctx: RunContext) -> Token[RunContext | None]:
+    """Set the run context. Returns a token for restoring the previous value."""
+
+def reset_run_context(token: Token[RunContext | None]) -> None:
+    """Reset the run context to its previous value using a token from set_run_context."""
 ```
 
 
 ## exceptions
 
-**Source**: 23 lines of code | [Full guide](exceptions.md)
+**Source**: 24 lines of code | [Full guide](exceptions.md)
 
 ### Classes
 
@@ -484,8 +511,25 @@ Large Language Model integration via LiteLLM proxy.
 
 ```python
 type ModelName = (
+    Literal[
+        # Core models
+        "gemini-3-pro",
+        "gpt-5.1",
+        # Small models
+        "gemini-3-flash",
+        "gpt-5-mini",
+        "grok-4.1-fast",
+        # Search models
+        "gemini-3-flash-search",
+        "gpt-5-mini-search",
+        "grok-4.1-fast-search",
+        "sonar-pro-search",
+    ]
+    | str
+)
 SYSTEM_PROMPT_DOCUMENT_NAME = "system_prompt"
 CHARS_PER_TOKEN = 4
+ConversationContent = str | Document | list[Document]
 ```
 
 ### Classes
@@ -569,6 +613,9 @@ class Conversation(BaseModel, Generic[T]):
     def send(self, content: ConversationContent, *, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[None]':
         """Send message, returns NEW Conversation with response."""
     def send_spec(self, spec: PromptSpec[str], *, documents: list[Document] | None=None, include_input_documents: bool=True, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[None]': ...
+    def send_spec(self, spec: PromptSpec[U], *, documents: list[Document] | None=None, include_input_documents: bool=True, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[U]': ...
+    def send_spec(self, spec: PromptSpec[Any], *, documents: list[Document] | None=None, include_input_documents: bool=True, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[Any]':
+        """Send a PromptSpec to the LLM."""
     def send_structured(self, content: ConversationContent, response_format: type[U], *, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[U]':
         """Send message expecting structured response, returns NEW Conversation[U] with .parsed."""
     def with_assistant_message(self, content: str) -> 'Conversation[T]':
@@ -592,13 +639,7 @@ class Conversation(BaseModel, Generic[T]):
 
 Logging infrastructure for AI Pipeline Core.
 
-**Source**: 157 lines of code | [Full guide](logging.md)
-
-### Types & Constants
-
-```python
-DEFAULT_LOG_LEVELS = {
-```
+**Source**: 156 lines of code | [Full guide](logging.md)
 
 ### Classes
 
@@ -630,7 +671,13 @@ def get_pipeline_logger(name: str) -> logging.Logger:
 
 Observability system for AI pipelines.
 
-**Source**: 2,834 lines of code | [Full guide](observability.md)
+**Source**: 2,851 lines of code | [Full guide](observability.md)
+
+### Types & Constants
+
+```python
+TraceLevel = Literal["always", "debug", "off"]
+```
 
 ### Classes
 
@@ -664,7 +711,7 @@ def set_trace_cost(cost: float | str) -> None:
 
 Pipeline framework primitives — decorators, flow options, and concurrency limits.
 
-**Source**: 1,010 lines of code | [Full guide](pipeline.md)
+**Source**: 1,041 lines of code | [Full guide](pipeline.md)
 
 ### Types & Constants
 
@@ -711,7 +758,7 @@ class FlowOptions(BaseSettings):
 def pipeline_task(__fn: Callable[..., Coroutine[Any, Any, R_co]] | None=None, /, *, trace_level: TraceLevel='always', trace_ignore_input: bool=False, trace_ignore_output: bool=False, trace_ignore_inputs: list[str] | None=None, trace_input_formatter: Callable[..., str] | None=None, trace_output_formatter: Callable[..., str] | None=None, trace_cost: float | None=None, expected_cost: float | None=None, trace_trim_documents: bool=True, estimated_minutes: int=1, name: str | None=None, description: str | None=None, tags: Iterable[str] | None=None, version: str | None=None, cache_policy: CachePolicy | type[NotSet]=NotSet, cache_key_fn: Callable[[TaskRunContext, dict[str, Any]], str | None] | None=None, cache_expiration: datetime.timedelta | None=None, task_run_name: TaskRunNameValueOrCallable | None=None, retries: int | None=None, retry_delay_seconds: int | float | list[float] | Callable[[int], list[float]] | None=None, retry_jitter_factor: float | None=None, persist_result: bool | None=None, result_storage: ResultStorage | str | None=None, result_serializer: ResultSerializer | str | None=None, result_storage_key: str | None=None, cache_result_in_memory: bool=True, timeout_seconds: int | float | None=None, log_prints: bool | None=False, refresh_cache: bool | None=None, on_completion: list[StateHookCallable] | None=None, on_failure: list[StateHookCallable] | None=None, retry_condition_fn: RetryConditionCallable | None=None, viz_return_value: bool | None=None, asset_deps: list[str | Asset] | None=None) -> _TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], _TaskLike[R_co]]:
     """Decorate an async function as a traced Prefect task with document auto-save."""
 
-def pipeline_flow(*, trace_level: TraceLevel='always', trace_ignore_input: bool=False, trace_ignore_output: bool=False, trace_ignore_inputs: list[str] | None=None, trace_input_formatter: Callable[..., str] | None=None, trace_output_formatter: Callable[..., str] | None=None, trace_cost: float | None=None, expected_cost: float | None=None, trace_trim_documents: bool=True, estimated_minutes: int=1, stub: bool=False, name: str | None=None, version: str | None=None, flow_run_name: Callable[[], str] | str | None=None, retries: int | None=None, retry_delay_seconds: int | float | None=None, task_runner: TaskRunner[PrefectFuture[Any]] | None=None, description: str | None=None, timeout_seconds: int | float | None=None, validate_parameters: bool=True, persist_result: bool | None=None, result_storage: ResultStorage | str | None=None, result_serializer: ResultSerializer | str | None=None, cache_result_in_memory: bool=True, log_prints: bool | None=None, on_completion: list[FlowStateHook[Any, Any]] | None=None, on_failure: list[FlowStateHook[Any, Any]] | None=None, on_cancellation: list[FlowStateHook[Any, Any]] | None=None, on_crashed: list[FlowStateHook[Any, Any]] | None=None, on_running: list[FlowStateHook[Any, Any]] | None=None) -> Callable[[Callable[..., Coroutine[Any, Any, list[Document]]]], _FlowLike[Any]]:
+def pipeline_flow(*, trace_level: TraceLevel='always', trace_ignore_input: bool=False, trace_ignore_output: bool=False, trace_ignore_inputs: list[str] | None=None, trace_input_formatter: Callable[..., str] | None=None, trace_output_formatter: Callable[..., str] | None=None, trace_cost: float | None=None, expected_cost: float | None=None, trace_trim_documents: bool=True, estimated_minutes: int=1, stub: bool=False, name: str | None=None, version: str | None=None, flow_run_name: Callable[[], str] | str | None=None, retries: int | None=None, retry_delay_seconds: int | float | None=None, task_runner: TaskRunner[PrefectFuture[Any]] | None=None, description: str | None=None, timeout_seconds: int | float | None=None, validate_parameters: bool=True, persist_result: bool | None=None, result_storage: ResultStorage | str | None=None, result_serializer: ResultSerializer | str | None=None, cache_result_in_memory: bool=True, log_prints: bool | None=None, on_completion: list[FlowStateHook[Any, Any]] | None=None, on_failure: list[FlowStateHook[Any, Any]] | None=None, on_cancellation: list[FlowStateHook[Any, Any]] | None=None, on_crashed: list[FlowStateHook[Any, Any]] | None=None, on_running: list[FlowStateHook[Any, Any]] | None=None) -> Callable[[Callable[..., Coroutine[Any, Any, Sequence[Document]]]], _FlowLike[Any]]:
     """Decorate an async function as a traced Prefect flow with annotation-driven document types."""
 
 async def safe_gather(*coroutines: Coroutine[Any, Any, T], label: str='', raise_if_all_fail: bool=True) -> list[T]:

@@ -217,8 +217,9 @@ def flatten_methods(cls: ClassInfo, table: SymbolTable) -> tuple[MethodInfo, ...
 
     Uses "child-first, first-match wins" to approximate Python's MRO:
     child methods > left base > right base > grandparent.
+    Preserves @overload variants (multiple methods with the same name).
     """
-    method_map: dict[str, tuple[MethodInfo, str]] = {}
+    method_map: dict[str, list[tuple[MethodInfo, str]]] = {}
     visited: set[str] = set()
 
     def collect(c: ClassInfo) -> None:
@@ -227,7 +228,9 @@ def flatten_methods(cls: ClassInfo, table: SymbolTable) -> tuple[MethodInfo, ...
         visited.add(c.name)
         for method in c.methods:
             if method.name not in method_map:
-                method_map[method.name] = (method, c.name)
+                method_map[method.name] = []
+            if not method_map[method.name] or method_map[method.name][0][1] == c.name:
+                method_map[method.name].append((method, c.name))
         for base_name in c.bases:
             clean = base_name.split("[")[0]
             if clean in table.classes and clean not in EXTERNAL_STUBS:
@@ -236,23 +239,24 @@ def flatten_methods(cls: ClassInfo, table: SymbolTable) -> tuple[MethodInfo, ...
     collect(cls)
 
     result: list[MethodInfo] = []
-    for method, source_class in method_map.values():
-        if source_class != cls.name:
-            if source_class in EXTERNAL_STUBS:
-                continue
-            method = MethodInfo(  # noqa: PLW2901
-                name=method.name,
-                signature=method.signature,
-                docstring=method.docstring,
-                source=method.source,
-                is_property=method.is_property,
-                is_classmethod=method.is_classmethod,
-                is_abstract=method.is_abstract,
-                line_count=method.line_count,
-                is_inherited=True,
-                inherited_from=source_class,
-            )
-        result.append(method)
+    for entries in method_map.values():
+        for method, source_class in entries:
+            if source_class != cls.name:
+                if source_class in EXTERNAL_STUBS:
+                    continue
+                method = MethodInfo(  # noqa: PLW2901
+                    name=method.name,
+                    signature=method.signature,
+                    docstring=method.docstring,
+                    source=method.source,
+                    is_property=method.is_property,
+                    is_classmethod=method.is_classmethod,
+                    is_abstract=method.is_abstract,
+                    line_count=method.line_count,
+                    is_inherited=True,
+                    inherited_from=source_class,
+                )
+            result.append(method)
 
     return tuple(_sort_methods(result))
 
@@ -503,10 +507,11 @@ def _collect_internal_types(
     module_name: str,
 ) -> list[ClassInfo]:
     """Find private classes from the same module that are referenced in public signatures."""
-    # Build text blob from all public signatures and sources
+    # Build text blob from all public signatures, sources, and class field annotations
     parts: list[str] = [f.source for f in public_functions]
     for c in public_classes:
         parts.extend(m.signature for m in c.methods if is_public_name(m.name))
+        parts.extend(type_ann for _, type_ann, _, _ in c.class_vars if type_ann)
     blob = " ".join(parts)
 
     referenced = set(_PRIVATE_TYPE_RE.findall(blob))

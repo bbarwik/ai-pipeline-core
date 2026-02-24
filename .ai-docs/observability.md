@@ -8,7 +8,39 @@
 ## Imports
 
 ```python
-from ai_pipeline_core import TraceInfo, set_trace_cost, trace
+from ai_pipeline_core import TraceInfo, TraceLevel, set_trace_cost, trace
+```
+
+## Types & Constants
+
+```python
+TraceLevel = Literal["always", "debug", "off"]
+
+```
+
+## Internal Types
+
+```python
+@dataclass(frozen=True, slots=True)
+class _TraceConfig:
+    """Pre-computed parameters for a traced function."""
+    observe_name: str
+    sig: inspect.Signature
+    session_id: str | None
+    user_id: str | None
+    metadata: dict[str, Any]
+    tags: list[str]
+    span_type: str | None
+    ignore_input: bool
+    ignore_output: bool
+    ignore_inputs: list[str] | None
+    input_formatter: Callable[..., str] | None
+    output_formatter: Callable[..., str] | None
+    ignore_exceptions: bool
+    preserve_global_context: bool
+    trim_documents: bool
+
+
 ```
 
 ## Public API
@@ -108,11 +140,7 @@ def trace(  # noqa: UP047
         Raises:
             TypeError: If function is already decorated with @pipeline_task or @pipeline_flow.
         """
-        # Check if this is already a traced pipeline_task or pipeline_flow
-        # This happens when @trace is applied after @pipeline_task/@pipeline_flow
         if hasattr(f, "__is_traced__") and f.__is_traced__:  # type: ignore[attr-defined]
-            # Check if it's a Prefect Task or Flow object (they have specific attributes)
-            # Prefect objects have certain attributes that regular functions don't
             is_prefect_task = hasattr(f, "fn") and hasattr(f, "submit") and hasattr(f, "map")
             is_prefect_flow = hasattr(f, "fn") and hasattr(f, "serve")
             if is_prefect_task or is_prefect_flow:
@@ -123,159 +151,49 @@ def trace(  # noqa: UP047
                     f"include tracing automatically."
                 )
 
-        # Handle 'debug' level logic - only trace when LMNR_DEBUG is "true"
         debug_value = settings.lmnr_debug or os.getenv("LMNR_DEBUG", "")
         if level == "debug" and debug_value.lower() != "true":
             return f
 
-        # --- Pre-computation (done once when the function is decorated) ---
-        # NOTE: _initialise_laminar() is NOT called here (at decoration/import time)
-        # to allow LMNR_SPAN_CONTEXT to be set before Laminar.initialize() runs.
-        # It's called lazily in the wrapper functions at first execution.
-        sig = inspect.signature(f)
+        cfg = _TraceConfig(
+            observe_name=name or f.__name__,
+            sig=inspect.signature(f),
+            session_id=session_id,
+            user_id=user_id,
+            metadata=metadata if metadata is not None else {},
+            tags=tags if tags is not None else [],
+            span_type=span_type,
+            ignore_input=ignore_input,
+            ignore_output=ignore_output,
+            ignore_inputs=ignore_inputs,
+            input_formatter=input_formatter,
+            output_formatter=output_formatter,
+            ignore_exceptions=ignore_exceptions,
+            preserve_global_context=preserve_global_context,
+            trim_documents=trim_documents,
+        )
         is_coroutine = inspect.iscoroutinefunction(f)
-        observe_name = name or f.__name__
-        bound_observe = observe
 
-        bound_session_id = session_id
-        bound_user_id = user_id
-        bound_metadata = metadata if metadata is not None else {}
-        bound_tags = tags if tags is not None else []
-        bound_span_type = span_type
-        bound_ignore_input = ignore_input
-        bound_ignore_output = ignore_output
-        bound_ignore_inputs = ignore_inputs
-        bound_input_formatter = input_formatter
-        bound_output_formatter = output_formatter
-        bound_ignore_exceptions = ignore_exceptions
-        bound_preserve_global_context = preserve_global_context
-        bound_trim_documents = trim_documents
-
-        # Shared trimming logic for input/output formatters
-        def _trim_formatted(formatted: Any) -> str:
-            """Apply document trimming to formatter output (str or data)."""
-            if isinstance(formatted, str):
-                try:
-                    data = json.loads(formatted)
-                    return json.dumps(trim_documents_in_data(data))
-                except (json.JSONDecodeError, TypeError):
-                    return formatted
-            trimmed = trim_documents_in_data(formatted)
-            return json.dumps(trimmed) if not isinstance(trimmed, str) else trimmed
-
-        def _serialize_and_trim(obj: Any) -> str:
-            """Serialize to JSON, parse, trim documents, re-serialize."""
-            serialized = json.dumps(obj, default=_serialize_for_tracing)
-            return json.dumps(trim_documents_in_data(json.loads(serialized)))
-
-        def _create_trimming_input_formatter(*args: Any, **kwargs: Any) -> str:
-            if bound_input_formatter:
-                return _trim_formatted(bound_input_formatter(*args, **kwargs))
-            # No custom formatter — build dict from parameter names (like Laminar)
-            params = list(sig.parameters.keys())
-            data: dict[str, Any] = {params[i]: arg for i, arg in enumerate(args) if i < len(params)}
-            data.update(kwargs)
-            return _serialize_and_trim(data)
-
-        def _create_trimming_output_formatter(result: Any) -> str:
-            if bound_output_formatter:
-                return _trim_formatted(bound_output_formatter(result))
-            return _serialize_and_trim(result)
-
-        # --- Helper function for runtime logic ---
-        def _prepare_and_get_observe_params(runtime_kwargs: dict[str, Any]) -> dict[str, Any]:
-            """Inspects runtime args, manages TraceInfo, and returns params for lmnr.observe.
-
-            Modifies runtime_kwargs in place to inject TraceInfo if the function expects it.
-
-            Returns:
-                Dictionary of parameters for lmnr.observe decorator.
-            """
-            trace_info = runtime_kwargs.get("trace_info")
-            if not isinstance(trace_info, TraceInfo):
-                trace_info = TraceInfo()
-                if "trace_info" in sig.parameters:
-                    runtime_kwargs["trace_info"] = trace_info
-
-            observe_params = trace_info.get_observe_kwargs()
-            observe_params["name"] = observe_name
-
-            # Override with decorator-level session_id and user_id if provided
-            if bound_session_id:
-                observe_params["session_id"] = bound_session_id
-            if bound_user_id:
-                observe_params["user_id"] = bound_user_id
-            if bound_metadata:
-                observe_params["metadata"] = bound_metadata
-            if bound_tags:
-                observe_params["tags"] = observe_params.get("tags", []) + bound_tags
-            if bound_span_type:
-                observe_params["span_type"] = bound_span_type
-
-            # Add the new Laminar parameters
-            if bound_ignore_input:
-                observe_params["ignore_input"] = bound_ignore_input
-            if bound_ignore_output:
-                observe_params["ignore_output"] = bound_ignore_output
-            if bound_ignore_inputs is not None:
-                observe_params["ignore_inputs"] = bound_ignore_inputs
-
-            # Use trimming formatters if trim_documents is enabled
-            if bound_trim_documents:
-                # Use the trimming formatters (which may wrap custom formatters)
-                observe_params["input_formatter"] = _create_trimming_input_formatter
-                observe_params["output_formatter"] = _create_trimming_output_formatter
-            else:
-                # Use custom formatters directly if provided
-                if bound_input_formatter is not None:
-                    observe_params["input_formatter"] = bound_input_formatter
-                if bound_output_formatter is not None:
-                    observe_params["output_formatter"] = bound_output_formatter
-
-            if bound_ignore_exceptions:
-                observe_params["ignore_exceptions"] = bound_ignore_exceptions
-            if bound_preserve_global_context:
-                observe_params["preserve_global_context"] = bound_preserve_global_context
-
-            return observe_params
-
-        # --- The actual wrappers ---
         @wraps(f)
         def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            """Synchronous wrapper for traced function.
-
-            Returns:
-                The result of the wrapped function.
-            """
-            # Lazy initialization: called at first execution, not at decoration time.
-            # This allows LMNR_SPAN_CONTEXT to be set before Laminar.initialize().
             _initialise_laminar()
-            observe_params = _prepare_and_get_observe_params(kwargs)
-            observed_func = bound_observe(**observe_params)(f)
+            observe_params = _prepare_observe_params(cfg, kwargs)
+            observed_func = observe(**observe_params)(f)
             return observed_func(*args, **kwargs)
 
         @wraps(f)
         async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            """Asynchronous wrapper for traced function.
-
-            Returns:
-                The result of the wrapped function.
-            """
-            # Lazy initialization: called at first execution, not at decoration time.
-            # This allows LMNR_SPAN_CONTEXT to be set before Laminar.initialize().
+            """Async wrapper with Laminar tracing."""
             _initialise_laminar()
-            observe_params = _prepare_and_get_observe_params(kwargs)
-            observed_func = bound_observe(**observe_params)(f)
+            observe_params = _prepare_observe_params(cfg, kwargs)
+            observed_func = observe(**observe_params)(f)
             return await observed_func(*args, **kwargs)  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
 
         wrapper = async_wrapper if is_coroutine else sync_wrapper
-
-        # Mark function as traced for detection by pipeline decorators
         wrapper.__is_traced__ = True  # type: ignore[attr-defined]
 
-        # Preserve the original function signature
         with contextlib.suppress(AttributeError, ValueError):
-            wrapper.__signature__ = sig  # type: ignore[attr-defined]
+            wrapper.__signature__ = cfg.sig  # type: ignore[attr-defined]
 
         return cast(Callable[P, R], wrapper)
 

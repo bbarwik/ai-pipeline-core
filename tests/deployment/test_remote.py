@@ -28,7 +28,7 @@ class SampleOutputDoc(Document):
 
 
 @pipeline_flow()
-async def sample_flow(run_id: str, documents: list[Document], flow_options: FlowOptions) -> list[Document]:
+async def sample_flow(run_id: str, documents: list[SampleInputDoc], flow_options: FlowOptions) -> list[SampleOutputDoc]:
     """Sample flow for testing."""
     return []
 
