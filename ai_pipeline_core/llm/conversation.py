@@ -6,6 +6,7 @@ instances with response properties derived from the last ModelResponse.
 """
 
 import asyncio
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -465,9 +466,18 @@ class Conversation(BaseModel, Generic[T]):
                 response = self._restore_response(response, substitutor, response_format)
 
             Laminar.set_span_output([response.content])
-            span.set_attributes(response.get_laminar_metadata())  # pyright: ignore[reportArgumentType]
+
+            span_attrs = response.get_laminar_metadata()
+            if response.reasoning_content:
+                span_attrs["reasoning_content"] = response.reasoning_content
+            if response.citations:
+                span_attrs["citations"] = json.dumps(
+                    [{"title": c.title, "url": c.url} for c in response.citations],
+                    indent=2,
+                )
             if purpose:
-                span.set_attribute("purpose", purpose)
+                span_attrs["purpose"] = purpose
+            span.set_attributes(span_attrs)  # pyright: ignore[reportArgumentType]
 
             return new_messages, response
 

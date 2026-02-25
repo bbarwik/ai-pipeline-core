@@ -348,6 +348,80 @@ class TestDocumentXmlTrimming:
         assert "trimmed" not in text
 
 
+class TestPlainTextNotTrimmed:
+    """Bug: plain text LLM messages (task instructions, prompts) are trimmed like document content."""
+
+    def test_plain_text_message_not_trimmed(self, writer: ContentWriter, tmp_path: Path) -> None:
+        """Plain text user messages must NOT be trimmed — only document <content> should be.
+
+        Task instructions like '# Task\nAnalyze the...' are critical for debugging
+        and should be preserved in full in the trace.
+        """
+        task_instruction = (
+            "# Task\n\n"
+            "Now write the Analysis Context for the research definition.\n\n"
+            "The Analysis Context is the ONLY background information the research agent receives. "
+            "It must contain everything needed to understand the subject, the landscape, and the "
+            "known challenges: what is hard to find, commonly misunderstood, restricted, or "
+            "unreliable in this area.\n\n"
+            "Include specific details about the entities, relationships, and terminology that "
+            "the agent needs to know before starting research."
+        )
+        assert len(task_instruction) > _CONTENT_TRIM_THRESHOLD  # Confirm it exceeds threshold
+
+        messages = [{"role": "user", "content": task_instruction}]
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        writer.write(messages, tmp_path, "input")
+
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+
+        # Full text must be preserved — no trimming
+        assert part["content"] == task_instruction
+        assert "truncated" not in part or part.get("truncated") is not True
+        assert "trimmed" not in part["content"]
+
+    def test_plain_text_multipart_message_not_trimmed(self, writer: ContentWriter, tmp_path: Path) -> None:
+        """Plain text parts in multipart messages must NOT be trimmed."""
+        long_text = "Analyze the following data carefully. " * 20  # ~740 chars
+        assert len(long_text) > _CONTENT_TRIM_THRESHOLD
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": long_text},
+                ],
+            }
+        ]
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        writer.write(messages, tmp_path, "input")
+
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+
+        assert part["content"] == long_text
+        assert "trimmed" not in part["content"]
+
+    def test_document_xml_still_trimmed(self, writer: ContentWriter, tmp_path: Path) -> None:
+        """Document XML content should still be trimmed (only <content> inner text)."""
+        document_xml = "<document>\n<id>ABC123</id>\n<name>report.md</name>\n<content>\n" + "x" * (_CONTENT_TRIM_THRESHOLD * 3) + "\n</content>\n</document>"
+        messages = [{"role": "user", "content": document_xml}]
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        writer.write(messages, tmp_path, "input")
+
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+
+        # Document content should be trimmed
+        assert "trimmed" in part["content"]
+        # But XML metadata preserved
+        assert "<id>ABC123</id>" in part["content"]
+
+
 class TestYamlMultilineFormatting:
     """Bug: strings with trailing spaces use escaped \\n instead of YAML block scalar."""
 

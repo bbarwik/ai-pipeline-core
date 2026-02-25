@@ -254,7 +254,7 @@ class ContentWriter:
             "size_bytes": text_bytes,
         }
 
-        if text_bytes > _CONTENT_TRIM_THRESHOLD:
+        if text_bytes > _CONTENT_TRIM_THRESHOLD and "<document>" in text:
             entry["content"] = _trim_document_xml_content(text)
             entry["truncated"] = True
             entry["original_size_bytes"] = text_bytes

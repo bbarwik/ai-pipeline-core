@@ -16,5 +16,7 @@
     "reportOptionalMemberAccess": "warning",
     "reportReturnType": "warning",
     "reportAssignmentType": "warning",
-    "reportUnnecessaryTypeIgnoreComment": false
+    "reportUnnecessaryTypeIgnoreComment": false,
+    "reportUntypedFunctionDecorator": false,
+    "reportUntypedClassDecorator": false
 }
