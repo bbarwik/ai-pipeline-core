@@ -330,3 +330,29 @@ class TestDocumentTrimming:
         assert isinstance(content, str)
         assert len(content) < len(text_251)
         assert " ... [trimmed 51 chars] ... " in content
+
+    def test_trim_document_xml_content_no_content_tag_falls_back(self):
+        from ai_pipeline_core.observability._trimming import _trim_document_xml_content
+
+        plain_text = "x" * 300
+        result = _trim_document_xml_content(plain_text)
+        assert "[trimmed" in result
+
+    def test_trim_document_content_non_dict_returns_as_is(self):
+        from ai_pipeline_core.observability._trimming import _trim_document_content
+
+        assert _trim_document_content("not a dict") == "not a dict"  # type: ignore[arg-type]
+
+    def test_trim_document_content_dict_without_required_keys(self):
+        from ai_pipeline_core.observability._trimming import _trim_document_content
+
+        assert _trim_document_content({"foo": "bar"}) == {"foo": "bar"}
+
+    def test_trim_documents_in_data_tuple(self):
+        from ai_pipeline_core.observability._trimming import trim_documents_in_data
+
+        data = ({"class_name": "Doc", "content": "x" * 300}, "plain")
+        result = trim_documents_in_data(data)
+        assert isinstance(result, tuple)
+        assert "[trimmed" in result[0]["content"]
+        assert result[1] == "plain"

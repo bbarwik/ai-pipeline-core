@@ -327,3 +327,97 @@ class TestFlowCompletion:
         await secondary.save_flow_completion(RunScope("proj/run1"), "flow_a", (), ())
         result = await dual.get_flow_completion(RunScope("proj/run1"), "flow_a")
         assert result is None  # Primary doesn't have it
+
+
+class TestFindBySourceDelegation:
+    @pytest.mark.asyncio
+    async def test_delegates_to_primary(self):
+        primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
+        dual = DualDocumentStore(primary=primary, secondary=secondary)
+        doc = DualReportDoc(name="a.md", content=b"content", derived_from=("https://example.com/src-1",))
+        await primary.save(doc, RunScope("run1"))
+        result = await dual.find_by_source(["https://example.com/src-1"], DualReportDoc)
+        assert "https://example.com/src-1" in result
+
+
+class TestSaveFlowCompletionSecondaryFailure:
+    @pytest.mark.asyncio
+    async def test_secondary_failure_does_not_propagate(self):
+        class FailingSaveCompletion(MemoryDocumentStore):
+            async def save_flow_completion(self, run_scope, flow_name, input_sha256s, output_sha256s):
+                raise RuntimeError("secondary failed")
+
+        primary = MemoryDocumentStore()
+        dual = DualDocumentStore(primary=primary, secondary=FailingSaveCompletion())
+        await dual.save_flow_completion(RunScope("run1"), "flow_a", (), ())
+        p = await primary.get_flow_completion(RunScope("run1"), "flow_a")
+        assert p is not None
+
+
+class TestSummaryWorkerIntegration:
+    def test_with_summary_generator(self):
+        async def _gen(name: str, excerpt: str) -> str:
+            return f"Summary of {name}"
+
+        primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
+        dual = DualDocumentStore(primary=primary, secondary=secondary, summary_generator=_gen)
+        assert dual._summary_worker is not None
+        dual.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_save_schedules_summary(self):
+        scheduled = []
+
+        async def _gen(name: str, excerpt: str) -> str:
+            return f"Summary of {name}"
+
+        primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
+        dual = DualDocumentStore(primary=primary, secondary=secondary, summary_generator=_gen)
+
+        def tracking_schedule(doc):
+            scheduled.append(doc.name)
+
+        dual._summary_worker.schedule = tracking_schedule
+        doc = _make("a.md", "content")
+        await dual.save(doc, RunScope("run1"))
+        assert "a.md" in scheduled
+        dual.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_save_batch_schedules_summaries(self):
+        scheduled = []
+
+        async def _gen(name: str, excerpt: str) -> str:
+            return f"Summary of {name}"
+
+        primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
+        dual = DualDocumentStore(primary=primary, secondary=secondary, summary_generator=_gen)
+
+        def tracking_schedule(doc):
+            scheduled.append(doc.name)
+
+        dual._summary_worker.schedule = tracking_schedule
+        docs = [_make("a.md", "aaa"), _make("b.md", "bbb")]
+        await dual.save_batch(docs, RunScope("run1"))
+        assert "a.md" in scheduled
+        assert "b.md" in scheduled
+        dual.shutdown()
+
+    def test_flush_flushes_summary_worker(self):
+        flushed = []
+
+        async def _gen(name: str, excerpt: str) -> str:
+            return "summary"
+
+        primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
+        dual = DualDocumentStore(primary=primary, secondary=secondary, summary_generator=_gen)
+        orig_flush = dual._summary_worker.flush
+
+        def tracking_flush():
+            flushed.append(True)
+            orig_flush()
+
+        dual._summary_worker.flush = tracking_flush
+        dual.flush()
+        assert flushed
+        dual.shutdown()

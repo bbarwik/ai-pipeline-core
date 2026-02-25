@@ -780,7 +780,7 @@ class ClickHouseDocumentStore:
             f"    di.name, di.description, di.derived_from, di.triggered_by,"
             f"    di.attachment_names, di.attachment_descriptions, di.attachment_sha256s,"
             f"    ROW_NUMBER() OVER (PARTITION BY matched_source ORDER BY di.stored_at DESC, di.document_sha256 DESC) AS rn"
-            f"  FROM {TABLE_DOCUMENT_INDEX} FINAL AS di"
+            f"  FROM {TABLE_DOCUMENT_INDEX} AS di FINAL"
             f"  WHERE di.class_name = {{class_name:String}}"
             f"  AND hasAny(di.derived_from, {{source_values:Array(String)}})"
             f"  {age_filter}"
@@ -789,7 +789,7 @@ class ClickHouseDocumentStore:
             f"   m.attachment_names, m.attachment_descriptions, m.attachment_sha256s,"
             f"   dc.content, length(dc.content)"
             f" FROM matched AS m"
-            f" JOIN {TABLE_DOCUMENT_CONTENT} FINAL AS dc ON m.content_sha256 = dc.content_sha256"
+            f" JOIN {TABLE_DOCUMENT_CONTENT} AS dc FINAL ON m.content_sha256 = dc.content_sha256"
             f" WHERE m.rn = 1 AND m.matched_source IN {{source_values:Array(String)}}",
             parameters=params,
         )

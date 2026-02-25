@@ -466,3 +466,87 @@ class TestFlowCompletion:
         await store.save_flow_completion(RunScope("proj"), "flow_a", (), ())
         result = await store.get_flow_completion(RunScope("proj"), "flow_a", max_age=timedelta(seconds=0))
         assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# find_by_source tests
+# ---------------------------------------------------------------------------
+
+
+class TestFindBySource:
+    @pytest.mark.asyncio
+    async def test_empty_returns_empty(self, store: MemoryDocumentStore):
+        result = await store.find_by_source([], DocA)
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_finds_by_derived_from(self, store: MemoryDocumentStore):
+        doc = DocA.create(name="out.txt", content="output", derived_from=("https://example.com",))
+        await store.save(doc, RunScope("run1"))
+        result = await store.find_by_source(["https://example.com"], DocA)
+        assert "https://example.com" in result
+        assert result["https://example.com"].sha256 == doc.sha256
+
+    @pytest.mark.asyncio
+    async def test_filters_by_type(self, store: MemoryDocumentStore):
+        doc_a = DocA.create(name="a.txt", content="aaa", derived_from=("https://src.com",))
+        doc_b = DocB.create(name="b.txt", content="bbb", derived_from=("https://src.com",))
+        await store.save(doc_a, RunScope("run1"))
+        await store.save(doc_b, RunScope("run1"))
+        result = await store.find_by_source(["https://src.com"], DocA)
+        assert result["https://src.com"].sha256 == doc_a.sha256
+
+    @pytest.mark.asyncio
+    async def test_no_match_returns_empty(self, store: MemoryDocumentStore):
+        doc = DocA.create(name="a.txt", content="aaa", derived_from=("https://other.com",))
+        await store.save(doc, RunScope("run1"))
+        result = await store.find_by_source(["https://nope.com"], DocA)
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_ignores_max_age(self, store: MemoryDocumentStore):
+        doc = DocA.create(name="a.txt", content="aaa", derived_from=("https://src.com",))
+        await store.save(doc, RunScope("run1"))
+        result = await store.find_by_source(["https://src.com"], DocA, max_age=timedelta(seconds=0))
+        assert "https://src.com" in result
+
+
+class TestUpdateSummaryNonexistent:
+    @pytest.mark.asyncio
+    async def test_update_summary_nonexistent_noop(self, store: MemoryDocumentStore):
+        await store.update_summary(DocumentSha256("NONEXISTENT" * 4 + "AAAA"), "summary")
+        assert store._summaries == {}
+
+
+class TestHasDocumentsExpectedFiles:
+    @pytest.mark.asyncio
+    async def test_expected_files_all_present(self, store: MemoryDocumentStore):
+        from enum import StrEnum
+
+        class Files(StrEnum):
+            REPORT = "report.md"
+            DATA = "data.json"
+
+        class FileDoc(Document):
+            FILES = Files
+
+        doc1 = FileDoc.create_root(name="report.md", content="r", reason="test")
+        doc2 = FileDoc.create_root(name="data.json", content="d", reason="test")
+        await store.save(doc1, RunScope("run1"))
+        await store.save(doc2, RunScope("run1"))
+        assert await store.has_documents(RunScope("run1"), FileDoc) is True
+
+    @pytest.mark.asyncio
+    async def test_expected_files_missing_one(self, store: MemoryDocumentStore):
+        from enum import StrEnum
+
+        class Files2(StrEnum):
+            REPORT = "report.md"
+            DATA = "data.json"
+
+        class FileDoc2(Document):
+            FILES = Files2
+
+        doc = FileDoc2.create_root(name="report.md", content="r", reason="test")
+        await store.save(doc, RunScope("run1"))
+        assert await store.has_documents(RunScope("run1"), FileDoc2) is False

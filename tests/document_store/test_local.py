@@ -416,6 +416,21 @@ class TestFactory:
         store = create_document_store(settings)
         assert isinstance(store, LocalDocumentStore)
 
+    def test_create_document_store_returns_clickhouse_when_host_configured(self):
+        from unittest.mock import MagicMock, patch
+
+        from ai_pipeline_core.settings import Settings
+
+        settings = Settings(clickhouse_host="ch.example.com", clickhouse_password="secret")
+        mock_ch_cls = MagicMock()
+        with (
+            patch("ai_pipeline_core.document_store._factory.ClickHouseDocumentStore", mock_ch_cls, create=True),
+            patch.dict("sys.modules", {"ai_pipeline_core.document_store._clickhouse": MagicMock(ClickHouseDocumentStore=mock_ch_cls)}),
+        ):
+            store = create_document_store(settings)
+        mock_ch_cls.assert_called_once()
+        assert mock_ch_cls.return_value is store
+
     def test_create_document_store_rejects_non_settings(self):
         with pytest.raises(AttributeError):
             create_document_store("not_settings")  # type: ignore[arg-type]
@@ -907,3 +922,181 @@ class TestNonAtomicWriteRace:
             f"First: {corrupt_reads[0]}. "
             f"Writes must be atomic (tempfile + os.replace) to prevent truncation window."
         )
+
+
+# ---------------------------------------------------------------------------
+# find_by_source tests
+# ---------------------------------------------------------------------------
+
+
+class TestFindBySource:
+    @pytest.mark.asyncio
+    async def test_empty_returns_empty(self, store: LocalDocumentStore):
+        result = await store.find_by_source([], ReportDoc)
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_finds_by_derived_from(self, store: LocalDocumentStore):
+        doc = ReportDoc.create(name="report.md", content="output", derived_from=("https://example.com",))
+        await store.save(doc, RunScope("run1"))
+        result = await store.find_by_source(["https://example.com"], ReportDoc)
+        assert "https://example.com" in result
+        assert result["https://example.com"].sha256 == doc.sha256
+
+    @pytest.mark.asyncio
+    async def test_filters_by_type(self, store: LocalDocumentStore):
+        doc_r = ReportDoc.create(name="report.md", content="rpt", derived_from=("https://src.com",))
+        doc_d = DataDoc.create(name="data.json", content="dat", derived_from=("https://src.com",))
+        await store.save(doc_r, RunScope("run1"))
+        await store.save(doc_d, RunScope("run1"))
+        result = await store.find_by_source(["https://src.com"], ReportDoc)
+        assert result["https://src.com"].sha256 == doc_r.sha256
+
+    @pytest.mark.asyncio
+    async def test_newest_wins(self, store: LocalDocumentStore, tmp_path: Path):
+        doc1 = ReportDoc.create(name="v1.md", content="version1", derived_from=("https://src.com",))
+        doc2 = ReportDoc.create(name="v2.md", content="version2", derived_from=("https://src.com",))
+        await store.save(doc1, RunScope("run1"))
+        await store.save(doc2, RunScope("run1"))
+        # Backdate doc1's stored_at to make doc2 newer
+        for meta_path in tmp_path.rglob("*.meta.json"):
+            meta = json.loads(meta_path.read_text())
+            if meta.get("name") == "v1.md":
+                meta["stored_at"] = "2020-01-01T00:00:00+00:00"
+                meta_path.write_text(json.dumps(meta))
+        result = await store.find_by_source(["https://src.com"], ReportDoc)
+        assert result["https://src.com"].name == "v2.md"
+
+    @pytest.mark.asyncio
+    async def test_max_age_filters(self, store: LocalDocumentStore, tmp_path: Path):
+        doc = ReportDoc.create(name="old.md", content="old", derived_from=("https://src.com",))
+        await store.save(doc, RunScope("run1"))
+        # Backdate all meta files
+        for meta_path in tmp_path.rglob("*.meta.json"):
+            meta = json.loads(meta_path.read_text())
+            meta["stored_at"] = "2020-01-01T00:00:00+00:00"
+            meta_path.write_text(json.dumps(meta))
+        result = await store.find_by_source(["https://src.com"], ReportDoc, max_age=timedelta(hours=1))
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_no_match(self, store: LocalDocumentStore):
+        doc = ReportDoc.create(name="a.md", content="aaa", derived_from=("https://other.com",))
+        await store.save(doc, RunScope("run1"))
+        result = await store.find_by_source(["https://nope.com"], ReportDoc)
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_base(self, tmp_path: Path):
+        store = LocalDocumentStore(base_path=tmp_path / "nonexistent")
+        result = await store.find_by_source(["https://src.com"], ReportDoc)
+        assert result == {}
+
+
+class TestFlowCompletionEdgeCases:
+    @pytest.mark.asyncio
+    async def test_missing_stored_at_returns_none(self, store: LocalDocumentStore):
+        scope = RunScope("proj/run1")
+        await store.save_flow_completion(scope, "flow_a", (), ())
+        path = store.base_path / ".flow_completions" / "proj__run1" / "flow_a.json"
+        data = json.loads(path.read_text())
+        del data["stored_at"]
+        path.write_text(json.dumps(data))
+        result = await store.get_flow_completion(scope, "flow_a")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_stored_at_returns_none(self, store: LocalDocumentStore):
+        scope = RunScope("proj/run1")
+        await store.save_flow_completion(scope, "flow_a", (), ())
+        path = store.base_path / ".flow_completions" / "proj__run1" / "flow_a.json"
+        data = json.loads(path.read_text())
+        data["stored_at"] = "not-a-date"
+        path.write_text(json.dumps(data))
+        result = await store.get_flow_completion(scope, "flow_a")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_missing_flow_name_fallback(self, store: LocalDocumentStore):
+        scope = RunScope("proj/run1")
+        await store.save_flow_completion(scope, "flow_a", (), ())
+        path = store.base_path / ".flow_completions" / "proj__run1" / "flow_a.json"
+        data = json.loads(path.read_text())
+        del data["flow_name"]
+        path.write_text(json.dumps(data))
+        result = await store.get_flow_completion(scope, "flow_a")
+        assert result is not None
+        assert result.flow_name == "flow_a"
+
+
+class TestAttachmentPathTraversal:
+    @pytest.mark.asyncio
+    async def test_attachment_path_traversal_rejected(self, store: LocalDocumentStore):
+        with pytest.raises(Exception, match="path traversal"):
+            Attachment(name="../../../etc/passwd", content=b"evil")
+
+
+class TestCheckStoredAtEdgeCases:
+    @pytest.mark.asyncio
+    async def test_invalid_stored_at_in_has_documents(self, store: LocalDocumentStore, tmp_path: Path):
+        await store.save(_make(ReportDoc, "a.md"), RunScope("run1"))
+        for meta_path in tmp_path.rglob("*.meta.json"):
+            meta = json.loads(meta_path.read_text())
+            meta["stored_at"] = "not-a-date"
+            meta_path.write_text(json.dumps(meta))
+        assert await store.has_documents(RunScope("run1"), ReportDoc, max_age=timedelta(hours=1)) is False
+
+    @pytest.mark.asyncio
+    async def test_missing_stored_at_in_find_by_source(self, store: LocalDocumentStore, tmp_path: Path):
+        doc = ReportDoc.create(name="a.md", content="aaa", derived_from=("https://src.com",))
+        await store.save(doc, RunScope("run1"))
+        for meta_path in tmp_path.rglob("*.meta.json"):
+            meta = json.loads(meta_path.read_text())
+            del meta["stored_at"]
+            meta_path.write_text(json.dumps(meta))
+        # Without cutoff, missing stored_at returns empty string as sort_key, should still work
+        result = await store.find_by_source(["https://src.com"], ReportDoc)
+        assert "https://src.com" in result
+
+
+class TestUpdateSummaryLocal:
+    @pytest.mark.asyncio
+    async def test_update_summary_nonexistent_noop(self, store: LocalDocumentStore):
+        await store.update_summary(DocumentSha256("NONEXISTENT" * 4 + "AAAA"), "summary")
+
+
+class TestHasDocumentsExpectedFilesLocal:
+    @pytest.mark.asyncio
+    async def test_expected_files_with_max_age(self, store: LocalDocumentStore, tmp_path: Path):
+        from enum import StrEnum
+
+        class Files3(StrEnum):
+            REPORT = "report.md"
+            DATA = "data.json"
+
+        class FileDoc3(Document):
+            FILES = Files3
+
+        doc1 = FileDoc3.create_root(name="report.md", content="r", reason="test")
+        doc2 = FileDoc3.create_root(name="data.json", content="d", reason="test")
+        await store.save(doc1, RunScope("run1"))
+        await store.save(doc2, RunScope("run1"))
+        assert await store.has_documents(RunScope("run1"), FileDoc3, max_age=timedelta(hours=1)) is True
+
+    @pytest.mark.asyncio
+    async def test_expected_files_expired(self, store: LocalDocumentStore, tmp_path: Path):
+        from enum import StrEnum
+
+        class Files4(StrEnum):
+            REPORT = "report.md"
+
+        class FileDoc4(Document):
+            FILES = Files4
+
+        doc = FileDoc4.create_root(name="report.md", content="r", reason="test")
+        await store.save(doc, RunScope("run1"))
+        for meta_path in tmp_path.rglob("*.meta.json"):
+            meta = json.loads(meta_path.read_text())
+            meta["stored_at"] = "2020-01-01T00:00:00+00:00"
+            meta_path.write_text(json.dumps(meta))
+        assert await store.has_documents(RunScope("run1"), FileDoc4, max_age=timedelta(hours=1)) is False

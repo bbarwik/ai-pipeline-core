@@ -422,3 +422,183 @@ def test_read_version_missing_file(tmp_path):
     from ai_pipeline_core.docs_generator.cli import _read_version
 
     assert _read_version(tmp_path) == ""
+
+
+# ---------------------------------------------------------------------------
+# Utility function coverage
+# ---------------------------------------------------------------------------
+
+
+class TestConsolidateCodeBlocks:
+    def test_merges_consecutive_blocks(self):
+        from ai_pipeline_core.docs_generator.cli import _consolidate_code_blocks
+
+        content = "```\n\n```python\ncode\n```"
+        result = _consolidate_code_blocks(content)
+        assert "```\n\n```python" not in result
+
+    def test_no_change_without_consecutive(self):
+        from ai_pipeline_core.docs_generator.cli import _consolidate_code_blocks
+
+        content = "```python\ncode\n```\n\nSome text\n```python\nmore code\n```"
+        result = _consolidate_code_blocks(content)
+        assert result == content
+
+
+class TestNormalizeWhitespace:
+    def test_strips_trailing(self):
+        from ai_pipeline_core.docs_generator.cli import _normalize_whitespace
+
+        result = _normalize_whitespace("line1   \nline2  \n")
+        assert result == "line1\nline2\n\n" or result == "line1\nline2\n"
+        assert "   " not in result  # trailing spaces stripped
+
+    def test_ends_with_newline(self):
+        from ai_pipeline_core.docs_generator.cli import _normalize_whitespace
+
+        result = _normalize_whitespace("content")
+        assert result.endswith("\n")
+
+
+class TestBuildImportMapEdgeCases:
+    def test_no_init_file(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _build_import_map
+
+        result = _build_import_map(tmp_path / "nonexistent")
+        assert result == {}
+
+    def test_syntax_error(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _build_import_map
+
+        src = tmp_path / "pkg"
+        src.mkdir()
+        (src / "__init__.py").write_text("def broken(:\n")
+        result = _build_import_map(src)
+        assert result == {}
+
+    def test_no_all(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _build_import_map
+
+        src = tmp_path / "pkg"
+        src.mkdir()
+        (src / "__init__.py").write_text("from .mod import Foo\n")
+        result = _build_import_map(src)
+        assert result == {}
+
+    def test_absolute_import(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _build_import_map
+
+        src = tmp_path / "ai_pipeline_core"
+        src.mkdir()
+        (src / "__init__.py").write_text('from ai_pipeline_core.documents import Document\n__all__ = ["Document"]\n')
+        result = _build_import_map(src)
+        assert "Document" in result.get("documents", [])
+
+
+class TestBuildModuleImportMap:
+    def test_discovers_subpackage_symbols(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _build_module_import_map
+
+        src = tmp_path / "pkg"
+        src.mkdir()
+        (src / "__init__.py").write_text('__all__ = ["TopLevel"]\n')
+        sub = src / "submod"
+        sub.mkdir()
+        (sub / "__init__.py").write_text('__all__ = ["SubSymbol"]\n')
+        result = _build_module_import_map(src)
+        assert "SubSymbol" in result.get("submod", [])
+
+    def test_skips_private_modules(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _build_module_import_map
+
+        src = tmp_path / "pkg"
+        src.mkdir()
+        (src / "__init__.py").write_text("__all__ = []\n")
+        priv = src / "_private"
+        priv.mkdir()
+        (priv / "__init__.py").write_text('__all__ = ["Secret"]\n')
+        result = _build_module_import_map(src)
+        assert "_private" not in result
+
+
+class TestCountModuleLines:
+    def test_directory_module(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _count_module_lines
+
+        src = tmp_path / "pkg"
+        src.mkdir()
+        mod = src / "mymod"
+        mod.mkdir()
+        (mod / "__init__.py").write_text("# comment\n\nfoo = 1\nbar = 2\n")
+        (mod / "helpers.py").write_text("x = 1\n\ny = 2\n")
+        count = _count_module_lines(src, "mymod")
+        assert count == 4  # foo, bar, x, y (comments/blanks excluded)
+
+    def test_single_file_module(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _count_module_lines
+
+        src = tmp_path / "pkg"
+        src.mkdir()
+        (src / "simple.py").write_text("a = 1\n# comment\nb = 2\n\n")
+        count = _count_module_lines(src, "simple")
+        assert count == 2
+
+    def test_missing_module(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _count_module_lines
+
+        src = tmp_path / "pkg"
+        src.mkdir()
+        count = _count_module_lines(src, "nonexistent")
+        assert count == 0
+
+
+class TestReadModulePurposeSyntaxError:
+    def test_syntax_error_returns_empty(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _read_module_purpose
+
+        src = tmp_path / "pkg"
+        mod = src / "bad"
+        mod.mkdir(parents=True)
+        (mod / "__init__.py").write_text("def broken(:\n")
+        assert _read_module_purpose(src, "bad") == ""
+
+
+class TestMainCheckSubcommand:
+    def test_main_no_command(self):
+        result = main([])
+        assert result == 1
+
+    def test_main_check_missing_output(self, tmp_path):
+        src, tests, output = _make_repo(tmp_path)
+        result = main([
+            "--source-dir",
+            str(src),
+            "--output-dir",
+            str(output),
+            "check",
+        ])
+        assert result == 1
+
+
+class TestParseAllNames:
+    def test_empty_file(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _parse_all_names
+
+        f = tmp_path / "empty.py"
+        f.write_text("")
+        result = _parse_all_names(f)
+        assert result == set()
+
+    def test_nonexistent_file(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _parse_all_names
+
+        result = _parse_all_names(tmp_path / "nope.py")
+        assert result == set()
+
+    def test_syntax_error(self, tmp_path):
+        from ai_pipeline_core.docs_generator.cli import _parse_all_names
+
+        f = tmp_path / "bad.py"
+        f.write_text("def broken(:\n")
+        result = _parse_all_names(f)
+        assert result == set()

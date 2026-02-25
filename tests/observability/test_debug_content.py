@@ -455,3 +455,360 @@ class TestYamlMultilineFormatting:
 
         raw_yaml = (tmp_path / "output.yaml").read_text()
         assert "\\n" not in raw_yaml
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests: _structure_message_part branches, _convert_types branches,
+# _is_llm_messages/_is_document_list edge cases, _structure_image branches
+# ---------------------------------------------------------------------------
+
+
+class TestIsLlmMessagesEdgeCases:
+    def test_empty_list(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        ref = writer.write([], tmp_path, "test")
+        assert ref["type"] == "file"
+        content = yaml.safe_load((tmp_path / "test.yaml").read_text())
+        assert content["type"] == "generic"
+
+    def test_not_all_dicts(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        data = [{"role": "user", "content": "hi"}, "not-a-dict"]
+        writer.write(data, tmp_path, "test")
+        content = yaml.safe_load((tmp_path / "test.yaml").read_text())
+        assert content["type"] == "generic"
+
+
+class TestMessagePartBranches:
+    def test_tool_use_part(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "search", "input": {"query": "test"}},
+                ],
+                "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "search"}}],
+            }
+        ]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+        assert part["type"] == "tool_use"
+        assert part["name"] == "search"
+        assert "tool_calls" in content["messages"][0]
+
+    def test_tool_result_string_content(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [
+            {
+                "role": "tool",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "is_error": False, "content": "result text"},
+                ],
+                "tool_call_id": "t1",
+                "name": "search",
+            }
+        ]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+        assert part["type"] == "tool_result"
+        assert part["tool_use_id"] == "t1"
+        assert "tool_call_id" in content["messages"][0]
+        assert "name" in content["messages"][0]
+
+    def test_tool_result_list_content(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [
+            {
+                "role": "tool",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t2",
+                        "content": [{"type": "text", "text": "inner"}],
+                    },
+                ],
+            }
+        ]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+        assert part["type"] == "tool_result"
+        assert isinstance(part["content"], list)
+
+    def test_tool_result_other_content(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [
+            {
+                "role": "tool",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t3", "content": 42},
+                ],
+            }
+        ]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+        assert part["type"] == "tool_result"
+
+    def test_unknown_part_type(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "custom_thing", "data": "abc"}],
+            }
+        ]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+        assert part["type"] == "unknown"
+        assert part["original_type"] == "custom_thing"
+
+    def test_content_none(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [{"role": "assistant", "content": None}]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        assert content["messages"][0]["parts"] == []
+
+    def test_content_unknown_type(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [{"role": "user", "content": 12345}]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+        assert part["type"] == "unknown"
+
+    def test_function_call_in_msg(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [
+            {
+                "role": "assistant",
+                "content": "call func",
+                "function_call": {"name": "get_weather", "arguments": "{}"},
+            }
+        ]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        assert "function_call" in content["messages"][0]
+
+
+class TestStructureImageBranches:
+    def test_image_url_not_data_uri(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "https://example.com/img.png", "detail": "low"}},
+                ],
+            }
+        ]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+        assert part["type"] == "image_url"
+        assert part["url"] == "https://example.com/img.png"
+
+    def test_image_url_bad_data_uri(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/broken"}},
+                ],
+            }
+        ]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+        assert part["type"] == "image_parse_error"
+
+    def test_anthropic_image_type(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": "AQID"},
+                    },
+                ],
+            }
+        ]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+        assert part["type"] == "image"
+        assert part["format"] == "jpeg"
+
+    def test_anthropic_image_non_base64(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "url", "media_type": "image/png"},
+                    },
+                ],
+            }
+        ]
+        writer.write(messages, tmp_path, "input")
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        part = content["messages"][0]["parts"][0]
+        assert part["type"] == "image"
+        assert part["source_type"] == "url"
+
+
+class TestStructureDocumentsBranches:
+    def test_binary_document_content(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        docs = [{"class_name": "BinaryDoc", "name": "img.png", "content": "data:image/png;base64,AAAA"}]
+        writer.write(docs, tmp_path, "docs")
+        content = yaml.safe_load((tmp_path / "docs.yaml").read_text())
+        doc_entry = content["documents"][0]
+        assert doc_entry["content"] == "[binary content removed]"
+
+    def test_non_string_content(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        docs = [{"class_name": "NumberDoc", "name": "val.txt", "content": 42}]
+        writer.write(docs, tmp_path, "docs")
+        content = yaml.safe_load((tmp_path / "docs.yaml").read_text())
+        doc_entry = content["documents"][0]
+        assert doc_entry["content"] == "42"
+
+    def test_document_with_attachments(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        docs = [
+            {
+                "class_name": "AttDoc",
+                "name": "main.txt",
+                "content": "main content",
+                "attachments": [
+                    {"name": "att.txt", "content": "att content", "description": "an attachment"},
+                    {"name": "bin.png", "content": "data:image/png;base64,AAAA"},
+                ],
+            }
+        ]
+        writer.write(docs, tmp_path, "docs")
+        content = yaml.safe_load((tmp_path / "docs.yaml").read_text())
+        doc_entry = content["documents"][0]
+        assert doc_entry["attachment_count"] == 2
+        assert doc_entry["attachments"][0]["name"] == "att.txt"
+        assert doc_entry["attachments"][0]["description"] == "an attachment"
+        assert doc_entry["attachments"][1]["content"] == "[binary content removed]"
+
+    def test_non_dict_attachments_skipped(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        docs = [
+            {
+                "class_name": "Doc",
+                "name": "main.txt",
+                "content": "content",
+                "attachments": ["not-a-dict", {"name": "real.txt", "content": "ok"}],
+            }
+        ]
+        writer.write(docs, tmp_path, "docs")
+        content = yaml.safe_load((tmp_path / "docs.yaml").read_text())
+        doc_entry = content["documents"][0]
+        assert doc_entry["attachment_count"] == 1
+
+
+class TestConvertTypesBranches:
+    def test_secret_str(self, tmp_path: Path) -> None:
+        from pydantic import SecretStr
+
+        no_redact_config = TraceDebugConfig(path=tmp_path, redact_patterns=())
+        w = ContentWriter(no_redact_config)
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        data = {"secret": SecretStr("value123")}
+        w.write(data, tmp_path, "test")
+        content = (tmp_path / "test.yaml").read_text()
+        assert "[REDACTED:SecretStr]" in content
+
+    def test_bytes_short(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        data = {"data": b"\x01\x02\x03"}
+        writer.write(data, tmp_path, "test")
+        content = (tmp_path / "test.yaml").read_text()
+        assert "bytes: 3 bytes" in content
+        assert "preview" in content
+
+    def test_bytes_long(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        data = {"data": b"\x00" * 200}
+        writer.write(data, tmp_path, "test")
+        content = (tmp_path / "test.yaml").read_text()
+        assert "bytes: 200 bytes" in content
+        assert "preview" not in content
+
+    def test_enum_value(self, writer: ContentWriter, tmp_path: Path) -> None:
+        from enum import Enum
+
+        class Color(Enum):
+            RED = "red"
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        data = {"color": Color.RED}
+        writer.write(data, tmp_path, "test")
+        content = (tmp_path / "test.yaml").read_text()
+        assert "red" in content
+
+    def test_pydantic_model(self, writer: ContentWriter, tmp_path: Path) -> None:
+        from pydantic import BaseModel
+
+        class Item(BaseModel):
+            val: int = 10
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        data = {"item": Item()}
+        writer.write(data, tmp_path, "test")
+        content = (tmp_path / "test.yaml").read_text()
+        assert "10" in content
+
+    def test_frozenset(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        data = {"fs": frozenset({"b", "a"})}
+        writer.write(data, tmp_path, "test")
+        content = (tmp_path / "test.yaml").read_text()
+        assert "- a" in content
+        assert "- b" in content
+
+    def test_tuple_content(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        data = {"items": (1, 2, 3)}
+        writer.write(data, tmp_path, "test")
+        content = (tmp_path / "test.yaml").read_text()
+        assert "1" in content
+        assert "3" in content
+
+    def test_unknown_type_str_fallback(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        class Custom:
+            def __str__(self) -> str:
+                return "custom_repr"
+
+        data = {"obj": Custom()}
+        writer.write(data, tmp_path, "test")
+        content = (tmp_path / "test.yaml").read_text()
+        assert "custom_repr" in content
+
+    def test_unknown_type_str_fails(self, writer: ContentWriter, tmp_path: Path) -> None:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        class BadStr:
+            def __str__(self) -> str:
+                raise RuntimeError("no str")
+
+        data = {"obj": BadStr()}
+        writer.write(data, tmp_path, "test")
+        content = (tmp_path / "test.yaml").read_text()
+        assert "<BadStr>" in content

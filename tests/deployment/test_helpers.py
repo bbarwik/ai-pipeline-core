@@ -86,3 +86,34 @@ class SampleDeployment(PipelineDeployment[FlowOptions, SampleResult]):
     def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
         """Build result."""
         return SampleResult(success=True)
+
+
+# ---------------------------------------------------------------------------
+# Tests for init_observability_best_effort (coverage for _helpers.py lines 13-23)
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch
+
+
+class TestInitObservabilityBestEffort:
+    @patch("ai_pipeline_core.observability._initialization.initialize_observability")
+    def test_success(self, mock_init):
+        from ai_pipeline_core.deployment._helpers import init_observability_best_effort
+
+        init_observability_best_effort()
+        mock_init.assert_called_once()
+
+    @patch("ai_pipeline_core.observability.tracing._initialise_laminar")
+    @patch("ai_pipeline_core.observability._initialization.initialize_observability", side_effect=RuntimeError("fail"))
+    def test_fallback_to_laminar(self, mock_init, mock_laminar):
+        from ai_pipeline_core.deployment._helpers import init_observability_best_effort
+
+        init_observability_best_effort()
+        mock_laminar.assert_called_once()
+
+    @patch("ai_pipeline_core.observability.tracing._initialise_laminar", side_effect=ImportError("no lmnr"))
+    @patch("ai_pipeline_core.observability._initialization.initialize_observability", side_effect=RuntimeError("fail"))
+    def test_both_fail_swallowed(self, mock_init, mock_laminar):
+        from ai_pipeline_core.deployment._helpers import init_observability_best_effort
+
+        init_observability_best_effort()  # should not raise
