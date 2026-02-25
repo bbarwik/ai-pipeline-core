@@ -86,16 +86,17 @@ def _classify_error(exc: BaseException) -> ErrorCode:
     return ErrorCode.UNKNOWN
 
 
-def _create_publisher(settings_obj: Settings) -> ResultPublisher:
-    """Create publisher based on environment configuration.
+def _create_publisher(settings_obj: Settings, service_type: str) -> ResultPublisher:
+    """Create publisher based on environment and deployment configuration.
 
-    Returns PubSubPublisher when Pub/Sub is configured, NoopPublisher otherwise.
+    Returns PubSubPublisher when Pub/Sub is configured and service_type is set,
+    NoopPublisher otherwise.
     """
+    if not service_type:
+        return NoopPublisher()
     if settings_obj.pubsub_project_id and settings_obj.pubsub_topic_id:
         if not settings_obj.clickhouse_host:
             raise ValueError("PubSubPublisher requires CLICKHOUSE_HOST for task_results durability")
-        if not settings_obj.service_type:
-            raise ValueError("PubSubPublisher requires SERVICE_TYPE for CloudEvents source identification")
         from ._pubsub import PubSubPublisher
         from ._task_results import ClickHouseTaskResultStore
 
@@ -110,7 +111,7 @@ def _create_publisher(settings_obj: Settings) -> ResultPublisher:
         return PubSubPublisher(
             project_id=settings_obj.pubsub_project_id,
             topic_id=settings_obj.pubsub_topic_id,
-            service_type=settings_obj.service_type,
+            service_type=service_type,
             result_store=result_store,
         )
     return NoopPublisher()
@@ -271,6 +272,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
+    pubsub_service_type: ClassVar[str] = ""
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
@@ -800,7 +802,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else str(uuid4())  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
             os.environ["LMNR_SESSION_ID"] = flow_run_id
 
-            publisher = _create_publisher(settings)
+            publisher = _create_publisher(settings, deployment.pubsub_service_type)
             store = create_document_store(
                 settings,
                 summary_generator=_build_summary_generator(),

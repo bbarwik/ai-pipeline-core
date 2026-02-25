@@ -12,6 +12,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from google.cloud.pubsub_v1 import PublisherClient
+
 from ai_pipeline_core.exceptions import PipelineCoreError
 from ai_pipeline_core.logging import get_pipeline_logger
 
@@ -71,13 +73,8 @@ class PubSubPublisher:
         service_type: str,
         result_store: TaskResultStore,
     ) -> None:
-        try:
-            from google.cloud import pubsub_v1  # pyright: ignore[reportAttributeAccessIssue, reportMissingTypeStubs, reportUnknownVariableType]
-        except ImportError:
-            raise ImportError("google-cloud-pubsub required. Install: pip install ai-pipeline-core[pubsub]") from None
-
-        self._client = pubsub_v1.PublisherClient()  # pyright: ignore[reportUnknownMemberType]
-        self._topic_path: str = self._client.topic_path(project_id, topic_id)  # pyright: ignore[reportUnknownMemberType]
+        self._client = PublisherClient()
+        self._topic_path: str = self._client.topic_path(project_id, topic_id)
         self._service_type = service_type
         self._result_store = result_store
         self._sequencer = TimestampSequencer()
@@ -114,9 +111,9 @@ class PubSubPublisher:
         last_error: Exception | None = None
         for attempt in range(CRITICAL_MAX_RETRIES):
             try:
-                future = self._client.publish(self._topic_path, data, **attributes)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+                future = self._client.publish(self._topic_path, data, **attributes)
                 await asyncio.wait_for(
-                    asyncio.wrap_future(future),  # pyright: ignore[reportUnknownArgumentType]
+                    asyncio.wrap_future(future),
                     timeout=CRITICAL_TIMEOUT_SECONDS,
                 )
                 return
@@ -229,7 +226,7 @@ class PubSubPublisher:
         """Shut down the result store executor and close the Pub/Sub client."""
         self._result_store.shutdown()
         try:
-            self._client.stop()  # pyright: ignore[reportUnknownMemberType]
+            self._client.stop()
         except Exception as e:
             logger.warning("Pub/Sub client stop failed: %s", e)
 

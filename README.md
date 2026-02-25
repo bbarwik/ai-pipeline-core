@@ -575,6 +575,7 @@ Orchestrates multi-flow pipelines with resume, per-flow uploads, and event publi
 ```python
 class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
     flows: ClassVar = [flow_1, flow_2, flow_3]
+    pubsub_service_type: ClassVar = "research"  # Enables Pub/Sub event publishing
 
     @staticmethod
     def build_result(
@@ -608,7 +609,7 @@ prefect_flow = pipeline.as_prefect_flow()
 Features:
 - **Per-flow resume**: Skips flows with a `FlowCompletion` record in the store (explicit completion tracking, not document-presence inference). Configurable `cache_ttl` (default 24h)
 - **Type chain validation**: At class definition time, validates that at least one of each flow's declared input types is producible by preceding flows (union semantics)
-- **Event publishing**: Per-flow start/completion notifications via Pub/Sub (`pubsub_project_id`, `pubsub_topic_id`)
+- **Event publishing**: Lifecycle events (started, progress, heartbeat, completed, failed) via Pub/Sub. Enabled by setting `pubsub_service_type` ClassVar on the deployment class. Requires `PUBSUB_PROJECT_ID` and `PUBSUB_TOPIC_ID` env vars for infrastructure config
 - **Concurrency limits**: Cross-run enforcement via Prefect global concurrency limits
 - **CLI mode**: `--start N` / `--end N` for step control, `DualDocumentStore` when ClickHouse is configured
 
@@ -993,9 +994,9 @@ DOC_SUMMARY_ENABLED=true
 DOC_SUMMARY_MODEL=gemini-3-flash
 
 # Optional: Pub/Sub event delivery (deployment progress/status)
+# Requires pubsub_service_type ClassVar on the PipelineDeployment subclass
 PUBSUB_PROJECT_ID=your-gcp-project
 PUBSUB_TOPIC_ID=pipeline-events
-SERVICE_TYPE=your-service-name
 ```
 
 ### Settings Management
@@ -1052,6 +1053,8 @@ from ai_pipeline_core.llm import ModelOptions
 make test              # Run all tests
 make test-cov          # Run with coverage report
 make test-clickhouse   # ClickHouse integration tests (requires Docker)
+make test-pubsub       # Pub/Sub emulator integration tests (requires Docker)
+make test-pubsub-live  # Pub/Sub tests against real GCP (requires PUBSUB_PROJECT_ID, PUBSUB_TOPIC_ID)
 ```
 
 ### Code Quality

@@ -21,6 +21,14 @@ test:
 test-clickhouse:
 	@uv run pytest -m clickhouse $(EXTRA_ARGS)
 
+.PHONY: test-pubsub
+test-pubsub:
+	@uv run pytest -m pubsub $(EXTRA_ARGS)
+
+.PHONY: test-pubsub-live
+test-pubsub-live:
+	@uv run pytest -m pubsub_live $(EXTRA_ARGS)
+
 .PHONY: test-cov
 test-cov:
 	@uv run pytest \

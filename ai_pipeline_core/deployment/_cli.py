@@ -119,7 +119,7 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
         run_id = cast(str, opts.run_id or wd.name)  # pyright: ignore[reportAttributeAccessIssue]
 
     context = DeploymentContext()
-    publisher = _create_publisher(settings)
+    publisher = _create_publisher(settings, deployment.pubsub_service_type)
 
     with ExitStack() as stack:
         if trace_name:

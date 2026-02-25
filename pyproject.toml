@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.10.6"
+version = "0.11.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -35,6 +35,7 @@ dependencies = [
     "clickhouse-connect>=0.10.0",
     "opentelemetry-sdk>=1.39.1",
     "prefect-gcp>=0.6.15",
+    "google-cloud-pubsub>=2.0",
 ]
 
 [project.scripts]
@@ -63,10 +64,6 @@ dev = [
     "vulture==2.14",
     "pylint>=3.0.0",
 ]
-pubsub = [
-    "google-cloud-pubsub>=2.0",
-]
-
 [tool.pytest.ini_options]
 minversion = "8.0"
 asyncio_mode = "auto"
@@ -74,13 +71,15 @@ asyncio_default_fixture_loop_scope = "function"
 addopts = '''
   --doctest-modules
   --quiet
-  -m 'not integration and not clickhouse'
+  -m 'not integration and not clickhouse and not pubsub and not pubsub_live'
 '''
 strict = true
 testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "clickhouse: marks tests requiring a ClickHouse container (deselect with '-m \"not clickhouse\"')",
+    "pubsub: marks tests requiring GCP Pub/Sub emulator via testcontainers",
+    "pubsub_live: marks tests requiring real GCP Pub/Sub (needs PUBSUB_PROJECT_ID in .env)",
     "ai_docs: test included as example in .ai-docs/ guides",
 ]
 
@@ -167,7 +166,7 @@ convention = "google"
 "tests/pipeline/test_limits.py" = ["PLC2801"]
 "ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912", "BLE001", "TID251"]
 "ai_pipeline_core/deployment/remote.py" = ["UP046", "UP047", "TID251"]
-"ai_pipeline_core/deployment/_pubsub.py" = ["PLC0415", "BLE001"]
+"ai_pipeline_core/deployment/_pubsub.py" = ["BLE001"]
 "ai_pipeline_core/deployment/progress.py" = ["RUF029", "BLE001", "TID251"]
 "ai_pipeline_core/documents/document.py" = ["PLR0904"]
 "ai_pipeline_core/document_store/_factory.py" = ["F821", "PLC0415"]
@@ -278,7 +277,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.10.6"
+current_version = "0.11.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"

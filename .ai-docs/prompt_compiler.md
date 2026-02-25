@@ -2,7 +2,7 @@
 # CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.10.6
+# VERSION: 0.11.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -409,12 +409,15 @@ def render_multi_line_messages(spec: PromptSpec) -> list[tuple[str, str]]:
 
     Each entry is ``(field_name, "<field_name>value</field_name>")``.
     Order matches field declaration order on the spec class.
+
+    Includes both declared MultiLineFields and regular fields whose values
+    exceed the inline limit (auto-promoted).
     """
     spec_cls = type(spec)
     result: list[tuple[str, str]] = []
     for field_name, field_info in spec_cls.model_fields.items():
-        if is_multi_line_field(field_info):
-            value = str(getattr(spec, field_name))
+        value = str(getattr(spec, field_name))
+        if is_multi_line_field(field_info) or _is_long_or_multiline(value):
             result.append((field_name, f"<{field_name}>{value}</{field_name}>"))
     return result
 
@@ -585,7 +588,7 @@ def test_guide_valid(tmp_path: Path, temp_modules: list[str]) -> None:
     assert guide_cls._resolved_path == template_file.resolve()
 ```
 
-**Is multi line field detection** (`tests/prompt_compiler/test_multi_line_field.py:141`)
+**Is multi line field detection** (`tests/prompt_compiler/test_multi_line_field.py:142`)
 
 ```python
 def test_is_multi_line_field_detection() -> None:

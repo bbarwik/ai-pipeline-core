@@ -140,7 +140,6 @@ class Settings(BaseSettings):
     # Pub/Sub event delivery
     pubsub_project_id: str = ""
     pubsub_topic_id: str = ""
-    service_type: str = ""
 
 
 settings = Settings()

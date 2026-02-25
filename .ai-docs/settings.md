@@ -1,7 +1,7 @@
 # MODULE: settings
 # CLASSES: Settings
 # DEPENDS: BaseSettings
-# VERSION: 0.10.6
+# VERSION: 0.11.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -89,7 +89,6 @@ Check for empty values before using service-specific settings."""
     doc_summary_model: str = 'gemini-3-flash'
     pubsub_project_id: str = ''
     pubsub_topic_id: str = ''
-    service_type: str = ''
 
 
 ```

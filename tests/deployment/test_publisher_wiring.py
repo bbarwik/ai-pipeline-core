@@ -88,7 +88,7 @@ class TestCreatePublisher:
         mock_settings = MagicMock()
         mock_settings.pubsub_project_id = ""
         mock_settings.pubsub_topic_id = ""
-        publisher = _create_publisher(mock_settings)
+        publisher = _create_publisher(mock_settings, "research")
         assert isinstance(publisher, NoopPublisher)
 
     def test_returns_noop_when_topic_id_missing(self):
@@ -96,7 +96,15 @@ class TestCreatePublisher:
         mock_settings = MagicMock()
         mock_settings.pubsub_project_id = "my-project"
         mock_settings.pubsub_topic_id = ""
-        publisher = _create_publisher(mock_settings)
+        publisher = _create_publisher(mock_settings, "research")
+        assert isinstance(publisher, NoopPublisher)
+
+    def test_returns_noop_when_service_type_empty(self):
+        """Empty service_type → NoopPublisher regardless of other config."""
+        mock_settings = MagicMock()
+        mock_settings.pubsub_project_id = "my-project"
+        mock_settings.pubsub_topic_id = "events"
+        publisher = _create_publisher(mock_settings, "")
         assert isinstance(publisher, NoopPublisher)
 
     def test_raises_when_clickhouse_missing(self):
@@ -106,17 +114,7 @@ class TestCreatePublisher:
         mock_settings.pubsub_topic_id = "events"
         mock_settings.clickhouse_host = ""
         with pytest.raises(ValueError, match="CLICKHOUSE_HOST"):
-            _create_publisher(mock_settings)
-
-    def test_raises_when_service_type_missing(self):
-        """Pub/Sub configured but no service_type → ValueError."""
-        mock_settings = MagicMock()
-        mock_settings.pubsub_project_id = "my-project"
-        mock_settings.pubsub_topic_id = "events"
-        mock_settings.clickhouse_host = "clickhouse.local"
-        mock_settings.service_type = ""
-        with pytest.raises(ValueError, match="SERVICE_TYPE"):
-            _create_publisher(mock_settings)
+            _create_publisher(mock_settings, "research")
 
     def test_creates_pubsub_publisher_when_configured(self):
         """Full config → PubSubPublisher."""
@@ -129,14 +127,13 @@ class TestCreatePublisher:
         mock_settings.clickhouse_user = "default"
         mock_settings.clickhouse_password = ""
         mock_settings.clickhouse_secure = True
-        mock_settings.service_type = "research"
 
         with (
             patch("ai_pipeline_core.deployment._pubsub.PubSubPublisher") as mock_pub_cls,
             patch("ai_pipeline_core.deployment._task_results.ClickHouseTaskResultStore") as mock_store_cls,
         ):
             mock_pub_cls.return_value = MagicMock(spec=ResultPublisher)
-            _create_publisher(mock_settings)
+            _create_publisher(mock_settings, "research")
             mock_store_cls.assert_called_once()
             mock_pub_cls.assert_called_once()
 

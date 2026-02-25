@@ -361,21 +361,3 @@ class TestPubSubPublisher:
                 await pub.publish_started(event)
 
         assert mock_client.publish.call_count == CRITICAL_MAX_RETRIES
-
-
-class TestPubSubPublisherImportError:
-    """Test PubSubPublisher raises helpful ImportError when google-cloud-pubsub is missing."""
-
-    def test_missing_dependency_raises(self):
-        """PubSubPublisher.__init__ raises ImportError with install hint."""
-        mock_result_store = AsyncMock()
-
-        with patch.dict("sys.modules", {"google.cloud.pubsub_v1": None, "google.cloud": MagicMock(), "google": MagicMock()}):
-            with patch("builtins.__import__", side_effect=ImportError("No module named 'google.cloud.pubsub_v1'")):
-                with pytest.raises(ImportError, match="google-cloud-pubsub required"):
-                    PubSubPublisher(
-                        project_id="test",
-                        topic_id="events",
-                        service_type="research",
-                        result_store=mock_result_store,
-                    )

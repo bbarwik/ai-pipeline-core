@@ -52,7 +52,12 @@ class TestClassifyError:
 class TestCreatePublisher:
     def test_noop_when_no_pubsub(self):
         s = Settings(pubsub_project_id="", pubsub_topic_id="")
-        publisher = _create_publisher(s)
+        publisher = _create_publisher(s, "research")
+        assert isinstance(publisher, NoopPublisher)
+
+    def test_noop_when_no_service_type(self):
+        s = Settings(pubsub_project_id="proj", pubsub_topic_id="topic")
+        publisher = _create_publisher(s, "")
         assert isinstance(publisher, NoopPublisher)
 
     def test_missing_clickhouse_raises(self):
@@ -60,20 +65,9 @@ class TestCreatePublisher:
             pubsub_project_id="proj",
             pubsub_topic_id="topic",
             clickhouse_host="",
-            service_type="svc",
         )
         with pytest.raises(ValueError, match="CLICKHOUSE_HOST"):
-            _create_publisher(s)
-
-    def test_missing_service_type_raises(self):
-        s = Settings(
-            pubsub_project_id="proj",
-            pubsub_topic_id="topic",
-            clickhouse_host="ch-host",
-            service_type="",
-        )
-        with pytest.raises(ValueError, match="SERVICE_TYPE"):
-            _create_publisher(s)
+            _create_publisher(s, "svc")
 
 
 # ---------------------------------------------------------------------------

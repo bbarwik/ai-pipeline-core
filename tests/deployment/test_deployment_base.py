@@ -219,6 +219,22 @@ class TestPipelineDeploymentValidation:
         assert MyDeployment.name == "my-deployment"
         assert MyDeployment.options_type is FlowOptions
         assert MyDeployment.result_type is ValidResult
+        assert MyDeployment.pubsub_service_type == ""
+
+    def test_pubsub_service_type_classvar(self):
+        """pubsub_service_type defaults to empty and can be overridden."""
+
+        class WithServiceType(PipelineDeployment[FlowOptions, ValidResult]):
+            """Deployment with pubsub_service_type."""
+
+            flows = [valid_flow]  # type: ignore[reportAssignmentType]
+            pubsub_service_type = "research"
+
+            @staticmethod
+            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
+                return ValidResult(success=True)
+
+        assert WithServiceType.pubsub_service_type == "research"
 
     def test_name_starts_with_test_raises(self):
         """Test that 'Test' prefix raises TypeError."""

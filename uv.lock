@@ -9,10 +9,11 @@ resolution-markers = [
 
 [[package]]
 name = "ai-pipeline-core"
-version = "0.10.5"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "clickhouse-connect" },
+    { name = "google-cloud-pubsub" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "lmnr" },
@@ -45,16 +46,13 @@ dev = [
     { name = "testcontainers" },
     { name = "vulture" },
 ]
-pubsub = [
-    { name = "google-cloud-pubsub" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "basedpyright", marker = "extra == 'dev'", specifier = "==1.37.3" },
     { name = "bump2version", marker = "extra == 'dev'", specifier = ">=1.0.1" },
     { name = "clickhouse-connect", specifier = ">=0.10.0" },
-    { name = "google-cloud-pubsub", marker = "extra == 'pubsub'", specifier = ">=2.0" },
+    { name = "google-cloud-pubsub", specifier = ">=2.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "interrogate", marker = "extra == 'dev'", specifier = "==1.7.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
@@ -81,7 +79,7 @@ requires-dist = [
     { name = "tiktoken", specifier = ">=0.12.0" },
     { name = "vulture", marker = "extra == 'dev'", specifier = "==2.14" },
 ]
-provides-extras = ["dev", "pubsub"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "aiosqlite"

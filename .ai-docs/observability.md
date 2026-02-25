@@ -2,7 +2,7 @@
 # CLASSES: TraceInfo
 # DEPENDS: BaseModel
 # PURPOSE: Observability system for AI pipelines.
-# VERSION: 0.10.6
+# VERSION: 0.11.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

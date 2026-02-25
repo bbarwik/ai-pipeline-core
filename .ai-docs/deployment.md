@@ -2,7 +2,7 @@
 # CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.10.6
+# VERSION: 0.11.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -70,6 +70,7 @@ Features enabled by default:
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
+    pubsub_service_type: ClassVar[str] = ''
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
@@ -137,7 +138,7 @@ Features enabled by default:
             flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else str(uuid4())  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
             os.environ["LMNR_SESSION_ID"] = flow_run_id
 
-            publisher = _create_publisher(settings)
+            publisher = _create_publisher(settings, deployment.pubsub_service_type)
             store = create_document_store(
                 settings,
                 summary_generator=_build_summary_generator(),
@@ -786,6 +787,85 @@ async def run_remote_deployment(
 
 ## Examples
 
+**Progress update events have correct flow name** (`tests/deployment/test_pubsub_progress.py:261`)
+
+```python
+async def test_progress_update_events_have_correct_flow_name(
+    self,
+    real_publisher: PublisherWithStore,
+    pubsub_topic: PubSubTestResources,
+    pubsub_memory_store: MemoryDocumentStore,
+):
+    """progress_update() events carry the correct flow_name."""
+    deployment = _ProgressReportingDeployment()
+    await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store)
+
+    await asyncio.sleep(FIRE_AND_FORGET_FLUSH_SECONDS)
+
+    events = pull_events(pubsub_topic, expected_count=PROGRESS_REPORTING_EVENT_COUNT)
+    progress = _progress_events(events)
+
+    intra_flow = [e for e in progress if e.data["status"] == "progress"]
+    for evt in intra_flow:
+        assert evt.data["flow_name"] == "_progress_reporting_flow"
+```
+
+**Progress update events arrive on pubsub** (`tests/deployment/test_pubsub_progress.py:213`)
+
+```python
+async def test_progress_update_events_arrive_on_pubsub(
+    self,
+    real_publisher: PublisherWithStore,
+    pubsub_topic: PubSubTestResources,
+    pubsub_memory_store: MemoryDocumentStore,
+):
+    """progress_update() calls inside a flow publish PROGRESS events to real Pub/Sub."""
+    deployment = _ProgressReportingDeployment()
+    await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store)
+
+    # Yield event loop so fire-and-forget publish tasks complete before
+    # we block with synchronous pull_events()
+    await asyncio.sleep(FIRE_AND_FORGET_FLUSH_SECONDS)
+
+    events = pull_events(pubsub_topic, expected_count=PROGRESS_REPORTING_EVENT_COUNT)
+    progress = _progress_events(events)
+
+    # 5 progress events: STARTED + 3x PROGRESS + COMPLETED
+    intra_flow = [e for e in progress if e.data["status"] == "progress"]
+    assert len(intra_flow) == 3
+
+    messages = [e.data["message"] for e in intra_flow]
+    assert set(messages) == {"quarter done", "halfway there", "almost done"}
+```
+
+**Progress update step progress values** (`tests/deployment/test_pubsub_progress.py:237`)
+
+```python
+async def test_progress_update_step_progress_values(
+    self,
+    real_publisher: PublisherWithStore,
+    pubsub_topic: PubSubTestResources,
+    pubsub_memory_store: MemoryDocumentStore,
+):
+    """progress_update() events carry correct step_progress fractions."""
+    deployment = _ProgressReportingDeployment()
+    await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store)
+
+    await asyncio.sleep(FIRE_AND_FORGET_FLUSH_SECONDS)
+
+    events = pull_events(pubsub_topic, expected_count=PROGRESS_REPORTING_EVENT_COUNT)
+    progress = _progress_events(events)
+
+    intra_flow = [e for e in progress if e.data["status"] == "progress"]
+    step_progresses = sorted(e.data["step_progress"] for e in intra_flow)
+    assert step_progresses == [0.25, 0.5, 0.75]
+
+    # All report step=1 (single-flow deployment) and total_steps=1
+    for evt in intra_flow:
+        assert evt.data["step"] == 1
+        assert evt.data["total_steps"] == 1
+```
+
 **Default creation** (`tests/deployment/test_deployment_base.py:72`)
 
 ```python
@@ -845,43 +925,6 @@ def test_three_params_from_remote_deployment(self):
     assert result[0] is AlphaDoc
     assert result[1] is FlowOptions
     assert result[2] is SimpleResult
-```
-
-**Union doc arg is union type** (`tests/deployment/test_remote_deployment.py:104`)
-
-```python
-def test_union_doc_arg_is_union_type(self):
-    class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-        trace_level: ClassVar[TraceLevel] = "off"
-
-    args = extract_generic_params(Foo, RemoteDeployment)
-    assert isinstance(args[0], types.UnionType)
-    assert set(args[0].__args__) == {AlphaDoc, BetaDoc}
-```
-
-**Union in first position** (`tests/deployment/test_remote_deployment.py:622`)
-
-```python
-def test_union_in_first_position(self):
-    class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-        trace_level: ClassVar[TraceLevel] = "off"
-
-    result = extract_generic_params(Foo, RemoteDeployment)
-    assert isinstance(result[0], types.UnionType)
-    assert result[1] is FlowOptions
-    assert result[2] is SimpleResult
-```
-
-**Union with three plus doc types** (`tests/deployment/test_remote_deployment.py:577`)
-
-```python
-def test_union_with_three_plus_doc_types(self):
-    class Foo(RemoteDeployment[AlphaDoc | BetaDoc | GammaDoc, FlowOptions, SimpleResult]):
-        trace_level: ClassVar[TraceLevel] = "off"
-
-    args = extract_generic_params(Foo, RemoteDeployment)
-    assert isinstance(args[0], types.UnionType)
-    assert len(args[0].__args__) == 3
 ```
 
 
