@@ -6,6 +6,7 @@ enforce async-only execution, and auto-save documents to the DocumentStore.
 
 import datetime
 import inspect
+import json
 from collections.abc import Callable, Coroutine, Iterable, Sequence
 from functools import wraps
 from typing import (
@@ -27,6 +28,7 @@ from prefect.results import ResultSerializer, ResultStorage
 from prefect.task_runners import TaskRunner
 from prefect.tasks import task as _prefect_task
 from prefect.utilities.annotations import NotSet
+from pydantic import BaseModel
 
 from ai_pipeline_core.document_store._protocol import get_document_store
 from ai_pipeline_core.documents import Document
@@ -59,6 +61,7 @@ from ai_pipeline_core.pipeline._type_validation import (
     validate_input_types,
 )
 from ai_pipeline_core.pipeline.options import FlowOptions
+from ai_pipeline_core.replay._capture import serialize_kwargs
 
 logger = get_pipeline_logger(__name__)
 
@@ -216,6 +219,57 @@ async def _persist_documents(
     except Exception:
         _emit_store_events(deduped or documents, DocumentEventType.STORE_SAVE_FAILED)
         logger.warning("Failed to persist documents from '%s'", label, exc_info=True)
+
+
+# --------------------------------------------------------------------------- #
+# Replay payload helpers
+# --------------------------------------------------------------------------- #
+def _attach_task_replay_payload(fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any], fname: str) -> None:
+    """Build and attach a TaskReplay payload to the current Laminar span."""
+    try:
+        sig = inspect.signature(fn)
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+
+        replay_payload = {
+            "version": 1,
+            "payload_type": "pipeline_task",
+            "function_path": f"{fn.__module__}:{fn.__qualname__}",
+            "arguments": serialize_kwargs(bound.arguments),
+        }
+        Laminar.set_span_attributes({"replay.payload": json.dumps(replay_payload)})
+    except Exception:
+        logger.debug("Failed to attach task replay payload for '%s'", fname, exc_info=True)
+
+
+def _attach_flow_replay_payload(
+    fn: Callable[..., Any],
+    run_id: str,
+    documents: list[Any],
+    flow_options: Any,
+    fname: str,
+) -> None:
+    """Build and attach a FlowReplay payload to the current Laminar span."""
+    try:
+        doc_refs = [{"$doc_ref": doc.sha256, "class_name": type(doc).__name__, "name": doc.name} for doc in documents if isinstance(doc, Document)]
+
+        options_dict: dict[str, Any] = {}
+        if isinstance(flow_options, BaseModel):
+            options_dict = flow_options.model_dump(mode="json")
+        elif isinstance(flow_options, dict):
+            options_dict = flow_options
+
+        replay_payload = {
+            "version": 1,
+            "payload_type": "pipeline_flow",
+            "function_path": f"{fn.__module__}:{fn.__qualname__}",
+            "run_id": run_id,
+            "documents": doc_refs,
+            "flow_options": options_dict,
+        }
+        Laminar.set_span_attributes({"replay.payload": json.dumps(replay_payload)})
+    except Exception:
+        logger.debug("Failed to attach flow replay payload for '%s'", fname, exc_info=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -439,6 +493,9 @@ def pipeline_task(  # noqa: UP047
                 ctx = TaskDocumentContext(created=task_ctx.created)
                 docs = _extract_documents(result)
                 await _persist_documents(docs, fname, ctx)
+
+            # Replay payload capture
+            _attach_task_replay_payload(fn, args, kwargs, fname)
 
             return result
 
@@ -681,6 +738,9 @@ def pipeline_flow(
             if get_run_context() is not None and get_document_store() is not None:
                 ctx = TaskDocumentContext(created=task_ctx.created)
                 await _persist_documents(result, fname, ctx)
+
+            # Replay payload capture
+            _attach_flow_replay_payload(fn, run_id, documents, flow_options, fname)
 
             return result
 

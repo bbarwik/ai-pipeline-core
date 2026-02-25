@@ -2,7 +2,7 @@
 # CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.10.5
+# VERSION: 0.10.6
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -339,36 +339,6 @@ Pydantic fields (dynamic input values):
 ## Functions
 
 ```python
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point for prompt compiler operations."""
-    parser = argparse.ArgumentParser(prog="prompt_compiler", description="Prompt compiler CLI")
-    subparsers = parser.add_subparsers(dest="command")
-
-    # inspect
-    inspect_parser = subparsers.add_parser("inspect", help="Show detailed anatomy of a single spec")
-    inspect_parser.add_argument("spec", help="Spec class name or module.path:ClassName")
-    inspect_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
-
-    # render
-    render_parser = subparsers.add_parser("render", help="Render a prompt preview with placeholder values")
-    render_parser.add_argument("spec", help="Spec class name or module.path:ClassName")
-    render_parser.add_argument("--no-input-documents", action="store_true", help="Hide input document listing")
-    render_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
-
-    # compile (also discovers and lists specs)
-    compile_parser = subparsers.add_parser("compile", help="Discover, list, and compile all specs to .prompts/")
-    compile_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
-
-    args = parser.parse_args(argv)
-
-    handlers = {"inspect": _cmd_inspect, "render": _cmd_render, "compile": _cmd_compile}
-    handler = handlers.get(args.command)
-    if handler is None:
-        parser.print_help()
-        return 1
-
-    return handler(args)
-
 def render_text(
     spec: PromptSpec,
     *,
@@ -563,57 +533,78 @@ def test_render_full_prompt_spec_workflow() -> None:
     assert "# Output Structure\n\n## Key Findings" in rendered
 ```
 
-**Main compile empty dir** (`tests/prompt_compiler/test_cli.py:349`)
+**Role normalizes text** (`tests/prompt_compiler/test_components.py:169`)
 
 ```python
-def test_main_compile_empty_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    ret = main(["compile", "--root", str(tmp_path)])
-    assert ret == 0
-    capsys.readouterr()  # Consume output; we only verify it doesn't crash
+def test_role_normalizes_text() -> None:
+    class NormalizedRole(Role):
+        """Role doc."""
+
+        text = """
+            experienced evaluator
+        """
+
+    assert NormalizedRole.text == "experienced evaluator"
 ```
 
-**Main compile finds specs** (`tests/prompt_compiler/test_cli.py:341`)
+**Rule accepts exactly max lines** (`tests/prompt_compiler/test_components.py:195`)
 
 ```python
-def test_main_compile_finds_specs(capsys: pytest.CaptureFixture[str]) -> None:
-    ret = main(["compile", "--root", str(Path.cwd())])
-    assert ret == 0
-    out = capsys.readouterr().out
-    assert "spec(s) found:" in out
-    assert "Name" in out  # table header
+def test_rule_accepts_exactly_max_lines() -> None:
+    text = "\n".join(f"line {i}" for i in range(1, MAX_RULE_LINES + 1))
+    cls = type("ExactLinesRule", (Rule,), {"__doc__": "Doc.", "text": text})
+    assert cls.text == text
 ```
 
-**Main inspect basemodel output** (`tests/prompt_compiler/test_cli.py:422`)
+**Guide allows h2 and deeper headers** (`tests/prompt_compiler/test_components.py:308`)
 
 ```python
-def test_main_inspect_basemodel_output(capsys: pytest.CaptureFixture[str]) -> None:
-    ret = main(["inspect", f"{StructuredInspectSpec.__module__}:StructuredInspectSpec"])
-    assert ret == 0
-    out = capsys.readouterr().out
-    assert "Type: CliPayload" in out
+def test_guide_allows_h2_and_deeper_headers(tmp_path: Path, temp_modules: list[str]) -> None:
+    template_file = tmp_path / "ok_header.txt"
+    template_file.write_text("## H2 header\n### H3 header\n#### H4 header\n", encoding="utf-8")
+
+    module_name = f"mod_h2_{uuid4().hex}"
+    _register_module(temp_modules, module_name, module_file=tmp_path / "module.py")
+
+    guide_cls = _build_guide_class(module_name, "OkHeaderGuide", "ok_header.txt")
+    assert "## H2 header" in guide_cls.render()
 ```
 
-**Main inspect not found** (`tests/prompt_compiler/test_cli.py:439`)
+**Guide valid** (`tests/prompt_compiler/test_components.py:246`)
 
 ```python
-def test_main_inspect_not_found(capsys: pytest.CaptureFixture[str]) -> None:
-    ret = main(["inspect", "NoSuchSpec12345"])
-    assert ret == 1
-    err = capsys.readouterr().err
-    assert "not found" in err
+def test_guide_valid(tmp_path: Path, temp_modules: list[str]) -> None:
+    template_file = tmp_path / "guide.txt"
+    template_file.write_text("## Guide Content\nSome info.", encoding="utf-8")
+
+    module_name = f"guide_mod_{uuid4().hex}"
+    _register_module(temp_modules, module_name, module_file=tmp_path / "module.py")
+
+    guide_cls = _build_guide_class(module_name, "ValidGuide", "guide.txt")
+    assert "## Guide Content" in guide_cls.render()
+    assert guide_cls._resolved_path == template_file.resolve()
 ```
 
-**Main inspect with guides** (`tests/prompt_compiler/test_cli.py:429`)
+**Is multi line field detection** (`tests/prompt_compiler/test_multi_line_field.py:141`)
 
 ```python
-def test_main_inspect_with_guides(capsys: pytest.CaptureFixture[str]) -> None:
-    """Inspect a spec that has guides — covers the guides section rendering."""
-    ret = main(["inspect", "examples.showcase_prompt_compiler:IssueOptimisticSpec"])
-    assert ret == 0
-    out = capsys.readouterr().out
-    assert "Guides (2):" in out
-    assert "RiskAssessmentFramework" in out
-    assert "chars)" in out
+def test_is_multi_line_field_detection() -> None:
+    """is_multi_line_field correctly identifies multi-line fields."""
+    from ai_pipeline_core.prompt_compiler import MultiLineField
+    from ai_pipeline_core.prompt_compiler.spec import is_multi_line_field
+
+    class DetectSpec(PromptSpec):
+        """Doc."""
+
+        input_documents = ()
+        role = MlRole
+        task = "Do it"
+
+        regular: str = Field(description="Regular field")
+        review: str = MultiLineField(description="Review text")
+
+    assert is_multi_line_field(DetectSpec.model_fields["review"]) is True
+    assert is_multi_line_field(DetectSpec.model_fields["regular"]) is False
 ```
 
 

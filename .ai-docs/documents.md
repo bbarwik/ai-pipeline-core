@@ -2,7 +2,7 @@
 # CLASSES: Attachment, TaskDocumentContext, Document, RunContext
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.10.5
+# VERSION: 0.10.6
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

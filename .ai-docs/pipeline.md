@@ -2,7 +2,7 @@
 # CLASSES: LimitKind, PipelineLimit, FlowOptions
 # DEPENDS: BaseSettings, StrEnum
 # PURPOSE: Pipeline framework primitives — decorators, flow options, and concurrency limits.
-# VERSION: 0.10.5
+# VERSION: 0.10.6
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -299,6 +299,9 @@ def pipeline_task(  # noqa: UP047
                 docs = _extract_documents(result)
                 await _persist_documents(docs, fname, ctx)
 
+            # Replay payload capture
+            _attach_task_replay_payload(fn, args, kwargs, fname)
+
             return result
 
         traced_fn = trace(
@@ -536,6 +539,9 @@ def pipeline_flow(
             if get_run_context() is not None and get_document_store() is not None:
                 ctx = TaskDocumentContext(created=task_ctx.created)
                 await _persist_documents(result, fname, ctx)
+
+            # Replay payload capture
+            _attach_flow_replay_payload(fn, run_id, documents, flow_options, fname)
 
             return result
 

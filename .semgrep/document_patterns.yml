@@ -35,6 +35,8 @@ rules:
         - "**/observability/_tracking/**"
         - "**/prompt_compiler/_*.py"
         - "**/prompt_compiler/api.py"
+        - "**/replay/_execute.py"
+        - "**/replay/cli.py"
 
   - id: no-model-convert-legacy
     pattern: $DOC.model_convert(...)

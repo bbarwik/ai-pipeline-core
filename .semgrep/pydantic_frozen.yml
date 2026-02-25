@@ -17,6 +17,10 @@ rules:
     message: "Mutable collection type on frozen Pydantic model — use tuple/frozenset"
     severity: ERROR
     languages: [python]
+    paths:
+      exclude:
+        # Replay payloads use dict[str, Any] for YAML-deserialized arbitrary data
+        - "**/replay/types.py"
 
   - id: mutable-field-default
     pattern-either:

@@ -403,6 +403,72 @@ class Conversation(BaseModel, Generic[T]):
             update["parsed"] = restored
         return response.model_copy(update=update)  # nosemgrep: no-document-model-copy
 
+    # --- Replay payload ---
+
+    def _build_replay_payload(
+        self,
+        content: ConversationContent,
+        response_format: type[BaseModel] | None,
+        purpose: str | None,
+        response: ModelResponse[Any],
+    ) -> dict[str, Any]:
+        """Build a replay payload dict capturing the full conversation state."""
+        from ai_pipeline_core.replay._capture import serialize_prior_messages
+
+        # Serialize context as document references
+        ctx_refs = [{"$doc_ref": d.sha256, "class_name": d.__class__.__name__, "name": d.name} for d in self.context]
+
+        # Extract prompt text
+        prompt: str
+        if isinstance(content, str):
+            prompt = content
+        elif isinstance(content, Document):
+            prompt = content.text if content.is_text else f"[Document: {content.name}]"
+        elif isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, Document):
+                    parts.append(item.text if item.is_text else f"[Document: {item.name}]")
+                else:
+                    parts.append(str(item))
+            prompt = "\n".join(parts)
+
+        # Serialize response format as importable path
+        rf_path: str | None = None
+        if response_format is not None:
+            rf_path = f"{response_format.__module__}:{response_format.__qualname__}"
+
+        # Build model options dict (use self.model_options, not effective_options,
+        # because effective_options may include substitutor system_prompt that
+        # would be re-applied during replay execution)
+        options_dict: dict[str, Any] = {}
+        if self.model_options is not None:
+            options_dict = self.model_options.model_dump(exclude_defaults=True)
+
+        payload: dict[str, Any] = {
+            "version": 1,
+            "payload_type": "conversation",
+            "model": self.model,
+            "model_options": options_dict,
+            "prompt": prompt,
+            "response_format": rf_path,
+            "purpose": purpose,
+            "context": ctx_refs,
+            "history": serialize_prior_messages(self.messages),
+            "enable_substitutor": self.enable_substitutor,
+            "extract_result_tags": self.extract_result_tags,
+            "original": {
+                "cost": response.cost,
+                "tokens": {
+                    "input": response.usage.prompt_tokens,
+                    "output": response.usage.completion_tokens,
+                    "cached": response.usage.cached_tokens,
+                    "reasoning": response.usage.reasoning_tokens,
+                },
+            },
+        }
+        return payload
+
     # --- Send methods ---
 
     async def _execute_send(
@@ -478,6 +544,17 @@ class Conversation(BaseModel, Generic[T]):
             if purpose:
                 span_attrs["purpose"] = purpose
             span.set_attributes(span_attrs)  # pyright: ignore[reportArgumentType]
+
+            # Build and attach replay payload for trace-based replay
+            try:
+                span.set_attribute(
+                    "replay.payload",
+                    json.dumps(
+                        self._build_replay_payload(content, response_format, purpose, response),
+                    ),
+                )
+            except Exception:
+                logger.debug("Failed to build replay payload", exc_info=True)
 
             return new_messages, response
 

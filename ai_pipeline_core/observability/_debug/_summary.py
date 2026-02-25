@@ -6,9 +6,21 @@ cost breakdown, and navigation guide. No LLM dependencies — pure text formatti
 
 from typing import Any
 
+import yaml
+
+from ai_pipeline_core.logging import get_pipeline_logger
+
 from ._config import SpanInfo, TraceState
 
+logger = get_pipeline_logger(__name__)
+
 _FOUR_SPACES = "    "
+
+_REPLAY_FILENAMES: dict[str, str] = {
+    "conversation.yaml": "conversation",
+    "task.yaml": "task",
+    "flow.yaml": "flow",
+}
 
 
 def generate_summary(trace: TraceState) -> str:
@@ -41,6 +53,11 @@ def generate_summary(trace: TraceState) -> str:
         "- Each span directory: `span.yaml` (metadata), `input.yaml`, `output.yaml`, `events.yaml` (log records)",
         "",
     ])
+
+    # Replay section (only if replay files exist)
+    replay_lines = _build_replay_section(trace)
+    if replay_lines:
+        lines.extend(replay_lines)
 
     # Root span
     if trace.root_span_id and trace.root_span_id in trace.spans:
@@ -79,6 +96,81 @@ def generate_costs(trace: TraceState) -> str | None:
 
     lines = ["# Cost by Task", "", _format_markdown_table(headers, rows), ""]
     return "\n".join(lines)
+
+
+def _build_replay_section(trace: TraceState) -> list[str]:
+    """Scan span directories for replay YAML files and build a ## Replay section.
+
+    Groups files by payload type with relative paths and example CLI commands.
+    Returns empty list if no replay files found.
+    """
+    found: dict[str, list[tuple[str, dict[str, Any]]]] = {}  # label -> [(relative_path, yaml_data)]
+
+    for span in sorted(trace.spans.values(), key=lambda s: s.order):
+        for filename, label in _REPLAY_FILENAMES.items():
+            replay_path = span.path / filename
+            if not replay_path.exists():
+                continue
+            relative = replay_path.relative_to(trace.path).as_posix()
+            data: dict[str, Any] = {}
+            try:
+                data = yaml.safe_load(replay_path.read_text(encoding="utf-8")) or {}
+            except (yaml.YAMLError, OSError) as e:
+                logger.debug("Failed to parse replay file %s: %s", replay_path, e)
+            found.setdefault(label, []).append((relative, data))
+
+    if not found:
+        return []
+
+    lines = ["## Replay", "", "Re-execute any captured boundary with `ai-replay run <file> --import <your_app>`.", ""]
+
+    for label in ("conversation", "task", "flow"):
+        entries = found.get(label)
+        if not entries:
+            continue
+        lines.append(f"**{label.title()}s** ({len(entries)}):")
+        for rel_path, data in entries:
+            detail = _replay_entry_detail(label, data)
+            lines.append(f"- `{rel_path}`{detail}")
+        lines.append("")
+
+    # Example commands
+    first_path = next(iter(next(iter(found.values()))))[0]
+    lines.extend([
+        "```bash",
+        f"ai-replay show {first_path}",
+        f"ai-replay run {first_path} --import my_app.tasks",
+        f"ai-replay run {first_path} --set model=grok-4.1-fast --import my_app.tasks",
+        "```",
+        "",
+    ])
+
+    return lines
+
+
+def _replay_entry_detail(label: str, data: dict[str, Any]) -> str:
+    """Format a short detail suffix for a replay entry line."""
+    if label == "conversation":
+        model = data.get("model", "")
+        original = data.get("original", {})
+        cost = original.get("cost")
+        suffix = f" — {model}" if model else ""
+        if cost is not None:
+            suffix += f" (${cost:.4f})"
+        return suffix
+    if label == "task":
+        fn = data.get("function_path", "")
+        name = fn.rsplit(":", 1)[-1] if ":" in fn else fn
+        return f" — {name}" if name else ""
+    if label == "flow":
+        fn = data.get("function_path", "")
+        name = fn.rsplit(":", 1)[-1] if ":" in fn else fn
+        doc_count = len(data.get("documents", []))
+        suffix = f" — {name}" if name else ""
+        if doc_count:
+            suffix += f" ({doc_count} docs)"
+        return suffix
+    return ""
 
 
 def _format_markdown_table(headers: list[str], rows: list[list[str]]) -> str:

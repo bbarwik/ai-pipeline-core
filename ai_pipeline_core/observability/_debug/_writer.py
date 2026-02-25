@@ -7,9 +7,10 @@ import shutil
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock, Thread
-from typing import Any
+from typing import Any, ClassVar
 
 import yaml
 
@@ -316,6 +317,8 @@ class LocalTraceWriter:
                 encoding="utf-8",
             )
 
+            self._write_replay_file(job, span_dir)
+
             # Write events.yaml (OTel span events including log records from the bridge)
             if job.events:
                 events_data = self._format_span_events(job.events)
@@ -393,7 +396,29 @@ class LocalTraceWriter:
             "tags": attributes.get("prefect.tags", []),
         }
 
-    _EXCLUDED_ATTRIBUTES: frozenset[str] = frozenset({"lmnr.span.input", "lmnr.span.output"})
+    _REPLAY_FILENAMES: ClassVar[dict[str, str]] = {
+        "conversation": "conversation.yaml",
+        "pipeline_task": "task.yaml",
+        "pipeline_flow": "flow.yaml",
+    }
+
+    def _write_replay_file(self, job: WriteJob, span_dir: Path) -> None:
+        """Extract replay.payload from span attributes and write as typed YAML."""
+        replay_json = job.attributes.get("replay.payload")
+        if not (replay_json and isinstance(replay_json, str)):
+            return
+        try:
+            replay_data = json.loads(replay_json)
+            payload_type = replay_data.get("payload_type", "conversation")
+            filename = self._REPLAY_FILENAMES.get(payload_type, "replay.yaml")
+            (span_dir / filename).write_text(
+                yaml.dump(replay_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+        except (json.JSONDecodeError, OSError) as e:
+            logger.debug("Failed to write replay file for span %s: %s", job.span_id, e)
+
+    _EXCLUDED_ATTRIBUTES: frozenset[str] = frozenset({"lmnr.span.input", "lmnr.span.output", "replay.payload"})
 
     @staticmethod
     def _build_span_metadata_v3(  # noqa: PLR0917

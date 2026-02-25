@@ -287,6 +287,60 @@ This section documents capabilities the framework must provide to applications.
 - **Correlation IDs** for distributed tracing
 - **Automatic context capture** — worker, module, function captured automatically
 
+### 2.8 Replay (`replay/`)
+
+**Automatic capture and re-execution of any pipeline boundary** — every LLM conversation, `@pipeline_task`, and `@pipeline_flow` call produces a typed replay YAML file alongside its trace output.
+
+**Three Payload Types (frozen Pydantic models):**
+- `ConversationReplay` — captures `Conversation.send()`/`send_structured()`: model, model_options, prompt, context docs, multi-turn history, response_format class path
+- `TaskReplay` — captures `@pipeline_task`: function path (`module:qualname`), all arguments (Documents as `$doc_ref` references, BaseModels as dicts, primitives as-is)
+- `FlowReplay` — captures `@pipeline_flow`: function path, run_id, document references, flow_options
+
+**Each payload type has:** `to_yaml()`, `from_yaml(text)`, `execute(store_base)` methods.
+
+**Document References** — documents are referenced by SHA256, not inlined:
+```yaml
+analysis:
+  $doc_ref: LX36TAADYWU2UMV64RANK7FI2MZEVY3DAFLXWACQFFCZRDS46SPQ
+  class_name: AnalysisDocument
+  name: analysis_CAONCJVGJIS5.md
+```
+
+**Capture Flow:**
+1. Execution boundary completes (LLM call, task, flow)
+2. Capture hook builds replay payload dict (Documents → `$doc_ref`)
+3. Payload attached as `replay.payload` JSON string to Laminar span attribute
+4. Trace writer extracts it, writes `conversation.yaml`/`task.yaml`/`flow.yaml` to span directory
+5. Attribute excluded from `span.yaml` via `_EXCLUDED_ATTRIBUTES`
+
+**Replay Flow:**
+1. Load YAML → parse into typed payload
+2. Infer store base (walk up to `.trace/` parent) or accept explicit `--store`
+3. Resolve `$doc_ref` references from LocalDocumentStore (6-char SHA256 prefix glob)
+4. Validate BaseModel arguments via function type hints
+5. Execute: build Conversation and send, or import function and call
+
+**CLI Tool** (`ai-replay` / `python -m ai_pipeline_core.replay`):
+- `run <file>` — Execute replay YAML. Flags: `--store`, `--set KEY=VALUE`, `--import MODULE`, `--output-dir`, `--no-trace`
+- `show <file>` — Pretty-print payload summary
+- `--import` remaps `__main__:X` references to the imported module (required when original ran as script)
+- `--output-dir` — Override output directory (default: `{replay_file_stem}_replay/` next to the replay file)
+- `--no-trace` — Skip tracing setup, only save `output.yaml` without `.trace/` directory
+
+**Replay Output:**
+- Results saved to `output_dir/output.yaml` (content, usage, cost, timestamp)
+- Full OTel tracing via `LocalDebugSpanProcessor` writes to `output_dir/.trace/`
+- Trace output includes `summary.md`, `llm_calls.yaml`, `costs.md`, and per-span directories with nested replay YAMLs (enabling recursive replay debugging)
+- Tracing initialized via `_init_replay_tracing()` which registers a processor with the OTel TracerProvider
+
+**Module Structure:**
+- `types.py` — Payload Pydantic models, DocumentRef, HistoryEntry, `infer_store_base()`
+- `_capture.py` — `serialize_kwargs()`, `serialize_prior_messages()` (Document/BaseModel/Enum/container serialization)
+- `_resolve.py` — `resolve_document_ref()` (SHA256 glob resolution), `_find_document_class()` (registry + `__subclasses__()` fallback)
+- `_deserialize.py` — `resolve_doc_refs()` (recursive `$doc_ref` walker), `resolve_task_kwargs()` (type-hint validation), `_import_by_path()`
+- `_execute.py` — `execute_conversation/task/flow()`
+- `cli.py` — argparse CLI with `run` and `show` subcommands, `_init_replay_tracing()`, `_serialize_result()`, `_write_output()`
+
 ---
 
 ## 3. LLM Implementation Rules

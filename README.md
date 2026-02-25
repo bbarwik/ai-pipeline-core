@@ -23,6 +23,7 @@ AI Pipeline Core is a production-ready framework that combines document processi
 - **Image Processing**: Automatic image tiling/splitting for LLM vision models with model-specific presets
 - **Observability**: Built-in distributed tracing via Laminar (LMNR) with cost tracking, local trace debugging, and ClickHouse-based tracking
 - **Prompt Compiler**: Type-safe prompt specifications replacing Jinja2 templates — typed Python classes for roles, rules, guides, and output formats with definition-time validation and a CLI tool for inspection
+- **Replay**: Capture and re-execute any LLM conversation, pipeline task, or flow from human-editable YAML files with document resolution via SHA256 references
 - **Deployment**: Unified pipeline execution for local, CLI, and production environments with per-flow resume and dual-store support
 
 ## Installation
@@ -31,9 +32,10 @@ AI Pipeline Core is a production-ready framework that combines document processi
 pip install ai-pipeline-core
 ```
 
-This installs two CLI commands:
+This installs three CLI commands:
 - `ai-prompt-compiler` — discover, inspect, render, and compile prompt specifications
 - `ai-pipeline-deploy` — build and deploy pipelines to Prefect Cloud
+- `ai-replay` — execute or inspect replay YAML files from trace output
 
 ### Requirements
 
@@ -821,6 +823,105 @@ ai-prompt-compiler render my_package.specs:AnalysisSpec
 python -m ai_pipeline_core.prompt_compiler inspect AnalysisSpec
 ```
 
+### Replay
+
+Every LLM conversation, pipeline task, and pipeline flow is automatically captured as a replay YAML file alongside traces. Replay files contain everything needed to re-execute the call — documents are referenced by SHA256 hash and resolved from the local store at replay time.
+
+**Replay files in trace output:**
+
+```
+.trace/001_my_flow/002_extract_insights/
+    span.yaml              # Timing, tokens, cost (unchanged)
+    input.yaml             # Trimmed browsable view (unchanged)
+    output.yaml            # Response content (unchanged)
+    task.yaml              # NEW — replay payload with $doc_ref references
+    003_insight_extraction/
+        conversation.yaml  # NEW — LLM conversation replay
+```
+
+**Inspect a replay file:**
+
+```bash
+ai-replay show .trace/.../conversation.yaml
+# Type: ConversationReplay
+# Model: gemini-3-flash
+# Options: {'reasoning_effort': 'low'}
+# Response format: my_app.models:DocumentInsight
+# Context docs: 1
+# Prompt: Extract structured insights from the analysis.
+```
+
+**Re-execute with the same parameters:**
+
+```bash
+ai-replay run .trace/.../conversation.yaml --import my_app.tasks
+```
+
+**Override fields before execution:**
+
+```bash
+# Switch model
+ai-replay run .trace/.../conversation.yaml --import my_app --set model=grok-4.1-fast
+
+# Change prompt
+ai-replay run .trace/.../conversation.yaml --import my_app --set prompt="Summarize in 3 bullet points"
+```
+
+**Replay task and flow payloads:**
+
+```bash
+ai-replay run .trace/.../task.yaml --import my_app
+ai-replay run .trace/.../flow.yaml --import my_app
+```
+
+The `--import` flag is required when the original script was run as `__main__` — it imports the module so Document subclasses and functions are registered, and automatically remaps `__main__:X` references to the correct module path.
+
+**Output directory and tracing:**
+
+By default, replay writes results to `{replay_file_stem}_replay/` next to the replay file. The output directory contains:
+
+```
+conversation_replay/
+    output.yaml     # Execution result (content, usage, cost, timestamp)
+    .trace/         # Full trace from replay execution
+        summary.md
+        llm_calls.yaml
+        costs.md
+        001_root_span/
+            conversation.yaml  # Replayable again!
+```
+
+Override with `--output-dir` or skip tracing with `--no-trace`:
+
+```bash
+# Custom output directory
+ai-replay run conversation.yaml --import my_app --output-dir ./my_output
+
+# Skip tracing (only save output.yaml)
+ai-replay run conversation.yaml --import my_app --no-trace
+```
+
+**Programmatic replay:**
+
+```python
+from ai_pipeline_core.replay import ConversationReplay
+
+# Load from YAML
+replay = ConversationReplay.from_yaml(yaml_text)
+
+# Modify fields
+replay = replay.model_copy(update={"model": "grok-4.1-fast"})
+
+# Execute
+result = await replay.execute(store_base=Path("./output"))
+print(result.content)
+```
+
+**Three payload types:**
+- `ConversationReplay` — captures `Conversation.send()` / `send_structured()` with model, prompt, context docs, multi-turn history, and response_format
+- `TaskReplay` — captures `@pipeline_task` calls with function path and all arguments (Documents as `$doc_ref` references)
+- `FlowReplay` — captures `@pipeline_flow` calls with function path, run_id, documents, and flow_options
+
 ### Local Trace Debugging
 
 When running via `run_cli()`, trace spans are automatically saved to `<working_dir>/.trace/` for
@@ -839,14 +940,17 @@ The directory structure mirrors the execution flow. Each new run overwrites the 
       input.yaml          # Span input (block scalar YAML for multiline)
       output.yaml         # Span output
       events.yaml         # OTel span events (log records)
+      flow.yaml           # Replay payload (for @pipeline_flow spans)
       002_task_1/
           span.yaml
           input.yaml
           output.yaml
+          task.yaml        # Replay payload (for @pipeline_task spans)
           003_analyze/
               span.yaml
               input.yaml
               output.yaml
+              conversation.yaml  # Replay payload (for LLM conversation spans)
 ```
 
 Duplicate LLM spans are filtered by default (every `Conversation` call creates both a DEFAULT and an inner LLM span). Use `verbose=True` in `TraceDebugConfig` to include all spans.
@@ -1011,6 +1115,7 @@ ai-pipeline-core/
 |   |-- observability/     # Tracing, tracking, and debug trace writer
 |   |-- pipeline/          # Pipeline decorators, FlowOptions, and concurrency limits
 |   |-- prompt_compiler/   # Type-safe prompt specs, rendering, and CLI tool
+|   |-- replay/            # Trace-based replay system (capture, serialize, resolve, execute)
 |   |-- settings.py        # Configuration management (Pydantic BaseSettings)
 |   +-- exceptions.py      # Framework exceptions (LLMError, DocumentNameError, etc.)
 |-- tests/                 # Comprehensive test suite
