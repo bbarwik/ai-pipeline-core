@@ -64,34 +64,47 @@ def _render_documents_actual(documents: Sequence[Document]) -> str:
     return _render_document_listing(items)
 
 
-def _render_field_value(spec_cls: type[PromptSpec], field_name: str, value: str, label: str) -> str:
-    """Render a single inline field value. Rejects long or multiline values."""
-    if len(value) > MAX_FIELD_VALUE_LENGTH or "\n" in value:
-        msg = (
-            f"PromptSpec '{spec_cls.__name__}' field '{field_name}' has a long or multiline value ({len(value)} chars). "
-            f"Field parameters are for short, single-line values (up to {MAX_FIELD_VALUE_LENGTH} chars). "
-            f"Use MultiLineField(description='...') for long/multiline content, "
-            f"or pass it as a Document via input_documents and send_spec(documents=[...])."
-        )
-        logger.warning(msg)
-        raise ValueError(msg)
+def _is_long_or_multiline(value: str) -> bool:
+    """Check whether a field value exceeds the inline limit or contains newlines."""
+    return len(value) > MAX_FIELD_VALUE_LENGTH or "\n" in value
+
+
+def _warn_auto_promoted(spec_cls: type[PromptSpec], field_name: str, value: str) -> None:
+    """Log a warning when a regular Field value is auto-promoted to multi-line treatment."""
+    logger.warning(
+        "PromptSpec '%s' field '%s' has a long or multiline value (%d chars). "
+        "Field parameters are for short, single-line values (up to %d chars). "
+        "Use MultiLineField(description='...') for long/multiline content, "
+        "or pass it as a Document via input_documents and send_spec(documents=[...]).",
+        spec_cls.__name__,
+        field_name,
+        len(value),
+        MAX_FIELD_VALUE_LENGTH,
+    )
+
+
+def _render_field_value(label: str, value: str) -> str:
+    """Render a single inline field value."""
     return f"**{label}:**\n{value}"
 
 
 def _render_context_fields(spec: PromptSpec) -> list[str]:
     """Render field values for the Context section.
 
-    Multi-line fields produce a reference placeholder; regular fields are inlined.
+    Multi-line fields and auto-promoted regular fields produce a reference placeholder;
+    short single-line regular fields are inlined.
     """
     spec_cls = type(spec)
     parts: list[str] = []
     for field_name, field_info in spec_cls.model_fields.items():
         label = field_info.description or field_name
-        if is_multi_line_field(field_info):
+        value = str(getattr(spec, field_name))
+        if is_multi_line_field(field_info) or _is_long_or_multiline(value):
+            if not is_multi_line_field(field_info):
+                _warn_auto_promoted(spec_cls, field_name, value)
             parts.append(f"**{label}:** (provided in <{field_name}> tags in previous message)")
         else:
-            value = str(getattr(spec, field_name))
-            parts.append(_render_field_value(spec_cls, field_name, value, label))
+            parts.append(_render_field_value(label, value))
     return parts
 
 
@@ -166,12 +179,15 @@ def render_multi_line_messages(spec: PromptSpec) -> list[tuple[str, str]]:
 
     Each entry is ``(field_name, "<field_name>value</field_name>")``.
     Order matches field declaration order on the spec class.
+
+    Includes both declared MultiLineFields and regular fields whose values
+    exceed the inline limit (auto-promoted).
     """
     spec_cls = type(spec)
     result: list[tuple[str, str]] = []
     for field_name, field_info in spec_cls.model_fields.items():
-        if is_multi_line_field(field_info):
-            value = str(getattr(spec, field_name))
+        value = str(getattr(spec, field_name))
+        if is_multi_line_field(field_info) or _is_long_or_multiline(value):
             result.append((field_name, f"<{field_name}>{value}</{field_name}>"))
     return result
 

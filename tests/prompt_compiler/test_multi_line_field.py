@@ -4,7 +4,8 @@ Multi-line fields are declared via MultiLineField(description=...) and are:
 - Combined into a single XML-tagged user message sent BEFORE the main prompt (not inlined)
 - Rendered with a --- separator in preview/compile output
 - Referenced in the prompt Context section as "(provided in <tag> tags in previous message)"
-- Regular (non-multi-line) fields that contain newlines or exceed 500 chars raise ValueError at render time
+- Regular (non-multi-line) fields that contain newlines or exceed 500 chars are auto-promoted
+  to multi-line treatment with a warning
 """
 
 from unittest.mock import patch
@@ -342,14 +343,14 @@ def test_render_preview_no_separator_when_no_multi_line_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Regular field: hard error for long/multiline values (regression)
+# Regular field: auto-promotion for long/multiline values (regression)
 # ---------------------------------------------------------------------------
 
 
-def test_regular_field_raises_on_multiline_value() -> None:
-    """Regular Field with multiline value raises ValueError at render time."""
+def test_regular_field_multiline_value_auto_promoted() -> None:
+    """Regular Field with multiline value is auto-promoted to multi-line treatment (no ValueError)."""
 
-    class StrictSpec(PromptSpec):
+    class AutoSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -358,14 +359,15 @@ def test_regular_field_raises_on_multiline_value() -> None:
 
         feedback: str = Field(description="Feedback")
 
-    with pytest.raises(ValueError, match=r"multi_line=True|MultiLineField|multiline"):
-        render_text(StrictSpec(feedback="line1\nline2"))
+    rendered = render_text(AutoSpec(feedback="line1\nline2"))
+    assert "line1\nline2" not in rendered
+    assert "(provided in <feedback> tags in previous message)" in rendered
 
 
-def test_regular_field_raises_on_long_value() -> None:
-    """Regular Field with value exceeding MAX_FIELD_VALUE_LENGTH raises ValueError at render time."""
+def test_regular_field_long_value_auto_promoted() -> None:
+    """Regular Field with value exceeding MAX_FIELD_VALUE_LENGTH is auto-promoted (no ValueError)."""
 
-    class StrictSpec(PromptSpec):
+    class AutoSpec(PromptSpec):
         """Doc."""
 
         input_documents = ()
@@ -375,8 +377,53 @@ def test_regular_field_raises_on_long_value() -> None:
         feedback: str = Field(description="Feedback")
 
     long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
-    with pytest.raises(ValueError, match=r"multi_line=True|MultiLineField|exceeds"):
-        render_text(StrictSpec(feedback=long_value))
+    rendered = render_text(AutoSpec(feedback=long_value))
+    assert long_value not in rendered
+    assert "(provided in <feedback> tags in previous message)" in rendered
+
+
+def test_regular_field_auto_promoted_included_in_multi_line_messages() -> None:
+    """Auto-promoted regular fields are included in render_multi_line_messages output."""
+    from ai_pipeline_core.prompt_compiler.render import render_multi_line_messages
+
+    class AutoSpec(PromptSpec):
+        """Doc."""
+
+        input_documents = ()
+        role = MlRole
+        task = "Do it"
+
+        feedback: str = Field(description="Feedback")
+        item: str = Field(description="Item")
+
+    long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
+    spec = AutoSpec(feedback=long_value, item="short")
+    messages = render_multi_line_messages(spec)
+    field_names = [name for name, _ in messages]
+    assert "feedback" in field_names
+    assert "item" not in field_names
+
+
+def test_regular_field_auto_promoted_warning_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """Auto-promoted regular fields emit a warning."""
+    import logging
+
+    class WarnSpec(PromptSpec):
+        """Doc."""
+
+        input_documents = ()
+        role = MlRole
+        task = "Do it"
+
+        feedback: str = Field(description="Feedback")
+
+    with caplog.at_level(logging.WARNING):
+        render_text(WarnSpec(feedback="line1\nline2"))
+
+    assert len(caplog.records) == 1
+    assert "feedback" in caplog.records[0].message
+    assert "WarnSpec" in caplog.records[0].message
+    assert "MultiLineField" in caplog.records[0].message
 
 
 def test_regular_field_short_value_no_error() -> None:

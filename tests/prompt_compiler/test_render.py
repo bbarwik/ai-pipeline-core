@@ -673,7 +673,7 @@ def test_render_full_prompt_spec_workflow() -> None:
 
 
 class TestFieldValueValidation:
-    """Regular field values exceeding MAX_FIELD_VALUE_LENGTH or containing newlines raise ValueError."""
+    """Regular field values exceeding MAX_FIELD_VALUE_LENGTH or containing newlines are auto-promoted to multi-line treatment."""
 
     def test_short_single_line_renders_inline(self):
         """Short single-line values render as plain '**label:**\\nvalue'."""
@@ -690,8 +690,8 @@ class TestFieldValueValidation:
         assert "**Research topic:**\nMarket dynamics" in rendered
         assert "<topic>" not in rendered
 
-    def test_long_value_raises(self):
-        """Values exceeding MAX_FIELD_VALUE_LENGTH raise ValueError with actionable message."""
+    def test_long_value_treated_as_multi_line(self):
+        """Values exceeding MAX_FIELD_VALUE_LENGTH are auto-promoted to multi-line (no ValueError)."""
 
         class LongSpec(PromptSpec):
             """Doc."""
@@ -702,11 +702,14 @@ class TestFieldValueValidation:
             review_text: str = Field(description="Review feedback")
 
         long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
-        with pytest.raises(ValueError, match="MultiLineField"):
-            render_text(LongSpec(review_text=long_value))
+        rendered = render_text(LongSpec(review_text=long_value))
+        # Value is NOT inlined in Context
+        assert long_value not in rendered
+        # Reference placeholder is present
+        assert "(provided in <review_text> tags in previous message)" in rendered
 
-    def test_multiline_value_raises(self):
-        """Multiline values raise ValueError with actionable message."""
+    def test_multiline_value_treated_as_multi_line(self):
+        """Multiline values are auto-promoted to multi-line (no ValueError)."""
 
         class MultilineSpec(PromptSpec):
             """Doc."""
@@ -716,8 +719,11 @@ class TestFieldValueValidation:
             task = "Task"
             feedback: str = Field(description="Reviewer feedback")
 
-        with pytest.raises(ValueError, match="MultiLineField"):
-            render_text(MultilineSpec(feedback="First line\nSecond line"))
+        rendered = render_text(MultilineSpec(feedback="First line\nSecond line"))
+        # Value is NOT inlined
+        assert "First line\nSecond line" not in rendered
+        # Reference placeholder is present
+        assert "(provided in <feedback> tags in previous message)" in rendered
 
     def test_exactly_at_limit_not_rejected(self):
         """Value exactly at MAX_FIELD_VALUE_LENGTH is accepted."""
@@ -736,7 +742,7 @@ class TestFieldValueValidation:
         assert "<text>" not in rendered
 
     def test_long_value_logs_warning(self, caplog: pytest.LogCaptureFixture):
-        """Long field values emit a warning before raising."""
+        """Long field values emit a warning when auto-promoted."""
         import logging
 
         class WarnSpec(PromptSpec):
@@ -748,7 +754,7 @@ class TestFieldValueValidation:
             review: str = Field(description="Review")
 
         long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
-        with caplog.at_level(logging.WARNING), pytest.raises(ValueError):
+        with caplog.at_level(logging.WARNING):
             render_text(WarnSpec(review=long_value))
 
         assert len(caplog.records) == 1
@@ -758,7 +764,7 @@ class TestFieldValueValidation:
         assert "MultiLineField" in msg
 
     def test_multiline_value_logs_warning(self, caplog: pytest.LogCaptureFixture):
-        """Multiline field values emit a warning before raising."""
+        """Multiline field values emit a warning when auto-promoted."""
         import logging
 
         class WarnMultiSpec(PromptSpec):
@@ -769,7 +775,7 @@ class TestFieldValueValidation:
             task = "Task"
             note: str = Field(description="Note")
 
-        with caplog.at_level(logging.WARNING), pytest.raises(ValueError):
+        with caplog.at_level(logging.WARNING):
             render_text(WarnMultiSpec(note="line1\nline2"))
 
         assert len(caplog.records) == 1
@@ -793,3 +799,20 @@ class TestFieldValueValidation:
             render_text(NoWarnSpec(item="short"))
 
         assert len(caplog.records) == 0
+
+    def test_auto_promoted_field_in_multi_line_messages(self):
+        """Auto-promoted regular fields appear in render_multi_line_messages output."""
+        from ai_pipeline_core.prompt_compiler.render import render_multi_line_messages
+
+        class AutoSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = RenderRole
+            task = "Task"
+            feedback: str = Field(description="Feedback")
+
+        spec = AutoSpec(feedback="line1\nline2")
+        messages = render_multi_line_messages(spec)
+        assert len(messages) == 1
+        assert messages[0] == ("feedback", "<feedback>line1\nline2</feedback>")
