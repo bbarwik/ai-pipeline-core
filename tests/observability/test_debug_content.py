@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from ai_pipeline_core.observability._debug import ContentWriter, TraceDebugConfig
+from ai_pipeline_core.observability._trimming import _CONTENT_TRIM_THRESHOLD
 
 
 @pytest.fixture
@@ -276,3 +277,107 @@ class TestContentTruncation:
         file_size = len(file_content.encode("utf-8"))
         assert file_size <= 600  # Allow margin for truncation message
         assert "[TRUNCATED:" in file_content or file_size < 10000
+
+
+class TestDocumentXmlTrimming:
+    """Bug: trimming cuts through XML document tags instead of only trimming <content>."""
+
+    def test_llm_message_trims_only_document_content(self, writer: ContentWriter, tmp_path: Path) -> None:
+        """When an LLM message contains <document> XML, only the <content> inner text should be trimmed.
+
+        The XML metadata (<id>, <name>, <description>) must be preserved intact.
+        """
+        document_xml = (
+            "<document>\n"
+            "<id>ABC123</id>\n"
+            "<name>research_task.md</name>\n"
+            "<description>Research objective</description>\n"
+            "<content>\n" + "x" * (_CONTENT_TRIM_THRESHOLD * 2) + "\n</content>\n"
+            "</document>"
+        )
+        messages = [{"role": "user", "content": document_xml}]
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        writer.write(messages, tmp_path, "input")
+
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        text = content["messages"][0]["parts"][0]["content"]
+
+        # XML metadata must be fully preserved
+        assert "<id>ABC123</id>" in text
+        assert "<name>research_task.md</name>" in text
+        assert "<description>Research objective</description>" in text
+        assert "</document>" in text
+        # Only the inner content of <content> should be trimmed
+        assert "trimmed" in text
+
+    def test_llm_message_trims_only_content_in_multi_document(self, writer: ContentWriter, tmp_path: Path) -> None:
+        """Multiple <document> blocks: each should have only its <content> trimmed."""
+        long_content = "y" * (_CONTENT_TRIM_THRESHOLD * 2)
+        text_with_docs = (
+            "<document>\n<id>DOC1</id>\n<name>first.md</name>\n"
+            f"<content>\n{long_content}\n</content>\n</document>\n\n"
+            "<document>\n<id>DOC2</id>\n<name>second.md</name>\n"
+            f"<content>\n{long_content}\n</content>\n</document>"
+        )
+        messages = [{"role": "user", "content": text_with_docs}]
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        writer.write(messages, tmp_path, "input")
+
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        text = content["messages"][0]["parts"][0]["content"]
+
+        assert "<id>DOC1</id>" in text
+        assert "<id>DOC2</id>" in text
+        assert "<name>first.md</name>" in text
+        assert "<name>second.md</name>" in text
+
+    def test_llm_message_short_document_not_trimmed(self, writer: ContentWriter, tmp_path: Path) -> None:
+        """Documents with short <content> should not be trimmed."""
+        document_xml = "<document>\n<id>SHORT</id>\n<name>small.md</name>\n<content>\nShort text\n</content>\n</document>"
+        messages = [{"role": "user", "content": document_xml}]
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        writer.write(messages, tmp_path, "input")
+
+        content = yaml.safe_load((tmp_path / "input.yaml").read_text())
+        text = content["messages"][0]["parts"][0]["content"]
+
+        assert "Short text" in text
+        assert "trimmed" not in text
+
+
+class TestYamlMultilineFormatting:
+    """Bug: strings with trailing spaces use escaped \\n instead of YAML block scalar."""
+
+    def test_generic_multiline_string_uses_block_style(self, writer: ContentWriter, tmp_path: Path) -> None:
+        """Multiline generic content must use YAML block scalar (|), not escaped \\n."""
+        multiline = "Line 1\nLine 2\nLine 3"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        writer.write(multiline, tmp_path, "test")
+
+        raw_yaml = (tmp_path / "test.yaml").read_text()
+        # Must NOT contain literal \n escape sequences
+        assert "\\n" not in raw_yaml
+        # Must use block scalar indicator
+        assert "|-" in raw_yaml or "| " in raw_yaml or "|\n" in raw_yaml
+
+    def test_multiline_string_with_trailing_spaces_uses_block_style(self, writer: ContentWriter, tmp_path: Path) -> None:
+        """Strings with trailing spaces on lines must still use block scalar, not escaped \\n."""
+        text_with_trailing = "Line with trailing spaces  \nAnother line  \nFinal line"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        writer.write(text_with_trailing, tmp_path, "test")
+
+        raw_yaml = (tmp_path / "test.yaml").read_text()
+        # Must NOT contain literal \n escape sequences
+        assert "\\n" not in raw_yaml
+
+    def test_llm_message_with_trailing_spaces_uses_block_style(self, writer: ContentWriter, tmp_path: Path) -> None:
+        """LLM message text with trailing spaces must use block scalar formatting."""
+        messages = [{"role": "assistant", "content": "Result:  \n- Item 1  \n- Item 2"}]
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        writer.write(messages, tmp_path, "output")
+
+        raw_yaml = (tmp_path / "output.yaml").read_text()
+        assert "\\n" not in raw_yaml

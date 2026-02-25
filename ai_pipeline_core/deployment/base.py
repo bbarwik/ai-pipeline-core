@@ -13,7 +13,7 @@ import contextlib
 import hashlib
 import os
 from abc import abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
 from types import MappingProxyType
@@ -380,7 +380,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     async def run(
         self,
         run_id: str,
-        documents: list[Document],
+        documents: Sequence[Document],
         options: TOptions,
         context: DeploymentContext,
         publisher: ResultPublisher | None = None,
@@ -672,7 +672,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     def run_local(
         self,
         run_id: str,
-        documents: list[Document],
+        documents: Sequence[Document],
         options: TOptions,
         context: DeploymentContext | None = None,
         publisher: ResultPublisher | None = None,

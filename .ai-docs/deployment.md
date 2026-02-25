@@ -2,7 +2,7 @@
 # CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.10.2
+# VERSION: 0.10.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -191,7 +191,7 @@ Features enabled by default:
     async def run(
         self,
         run_id: str,
-        documents: list[Document],
+        documents: Sequence[Document],
         options: TOptions,
         context: DeploymentContext,
         publisher: ResultPublisher | None = None,
@@ -501,7 +501,7 @@ Features enabled by default:
     def run_local(
         self,
         run_id: str,
-        documents: list[Document],
+        documents: Sequence[Document],
         options: TOptions,
         context: DeploymentContext | None = None,
         publisher: ResultPublisher | None = None,

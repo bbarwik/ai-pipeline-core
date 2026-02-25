@@ -2,7 +2,7 @@
 # CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.10.2
+# VERSION: 0.10.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -36,6 +36,8 @@ APPROX_CHARS_PER_TOKEN = 4
 
 MAX_RULE_LINES = 5
 
+MAX_FIELD_VALUE_LENGTH = 500
+
 RESULT_TAG = "result"
 
 RESULT_OPEN = f"<{RESULT_TAG}>"
@@ -49,6 +51,14 @@ RESULT_CLOSE = f"</{RESULT_TAG}>"
 ```python
 class Role:
     """Base class for LLM role definitions.
+
+Role text is rendered into the **user message**, not the system prompt. The renderer
+produces ``"You are a/an {text}."`` as the first section of the compiled prompt text,
+which is sent via ``Conversation.send()`` / ``send_spec()`` as a user message.
+
+This is not a system prompt. Role does not set, replace, or interact with the
+system prompt in any way. It is purely a section in the user message produced
+by ``render_text()``.
 
 Must define a non-empty docstring and a ``text`` ClassVar on every Role subclass.
 Must not end Role text with sentence punctuation (.!?) — the renderer adds a period automatically.
@@ -170,7 +180,11 @@ in XML automatically when they are added to the Conversation via ``with_context(
 ``with_document()``. Use ``Document.create()`` to wrap dicts, lists, or BaseModel instances.
 
 Pydantic fields (dynamic input values):
-    Any field declared with ``Field(description=...)`` becomes a dynamic input."""
+    Any field declared with ``Field(description=...)`` becomes a dynamic input.
+    Fields are for short, single-line parameter values (up to 500 characters) — e.g.,
+    a topic name, finding type, or formatting instruction. Longer or multiline content
+    (e.g., review feedback, website content, another model's output) must be passed as
+    a Document via ``input_documents`` and ``send_spec(documents=[...])``."""
     model_config = ConfigDict(frozen=True, extra='forbid')
     follows: ClassVar[type['PromptSpec'] | None]
     input_documents: ClassVar[tuple[type[Document], ...]]
@@ -354,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
 def render_text(
     spec: PromptSpec,
     *,
-    documents: list[Document] | None = None,
+    documents: Sequence[Document] | None = None,
     include_input_documents: bool = True,
 ) -> str:
     """Render a PromptSpec instance to prompt text.
@@ -381,9 +395,9 @@ def render_text(
             context_parts.append(_render_documents_preview(spec_cls))
 
     for field_name, field_info in spec_cls.model_fields.items():
-        value = getattr(spec, field_name)
+        value = str(getattr(spec, field_name))
         label = field_info.description or field_name
-        context_parts.append(f"**{label}:**\n{value}")
+        context_parts.append(_render_field_value(spec_cls, field_name, value, label))
 
     if context_parts:
         sections.append("# Context\n\n" + "\n\n".join(context_parts))
@@ -460,7 +474,7 @@ def test_rule_valid() -> None:
     assert ValidRule.text == "Do not fail."
 ```
 
-**Render full prompt spec workflow** (`tests/prompt_compiler/test_render.py:629`)
+**Render full prompt spec workflow** (`tests/prompt_compiler/test_render.py:631`)
 
 ```python
 def test_render_full_prompt_spec_workflow() -> None:

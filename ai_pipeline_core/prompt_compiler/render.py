@@ -1,12 +1,18 @@
 """Rendering logic for prompt specifications."""
 
 import re
+from collections.abc import Sequence
 
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.logging import get_pipeline_logger
 
 from .spec import PromptSpec
 
+logger = get_pipeline_logger(__name__)
+
 _VOWELS = frozenset("aeiouAEIOU")
+
+MAX_FIELD_VALUE_LENGTH = 500
 
 RESULT_TAG = "result"
 RESULT_OPEN = f"<{RESULT_TAG}>"
@@ -52,16 +58,32 @@ def _render_documents_preview(spec_cls: type[PromptSpec]) -> str:
     return _render_document_listing(items)
 
 
-def _render_documents_actual(documents: list[Document]) -> str:
+def _render_documents_actual(documents: Sequence[Document]) -> str:
     """Render document listing from actual Document instances."""
     items = [(f"[{doc.id}] {doc.name}", doc.description or "") for doc in documents]
     return _render_document_listing(items)
 
 
+def _render_field_value(spec_cls: type[PromptSpec], field_name: str, value: str, label: str) -> str:
+    """Render a single field value, wrapping long/multiline values in XML tags."""
+    if len(value) > MAX_FIELD_VALUE_LENGTH or "\n" in value:
+        logger.warning(
+            "PromptSpec '%s' field '%s' has a long or multiline value (%d chars). "
+            "Field parameters are for short, single-line values (up to %d chars). "
+            "Pass longer content as a Document via input_documents and send_spec(documents=[...]).",
+            spec_cls.__name__,
+            field_name,
+            len(value),
+            MAX_FIELD_VALUE_LENGTH,
+        )
+        return f"**{label}:**\n<{field_name}>{value}</{field_name}>"
+    return f"**{label}:**\n{value}"
+
+
 def render_text(
     spec: PromptSpec,
     *,
-    documents: list[Document] | None = None,
+    documents: Sequence[Document] | None = None,
     include_input_documents: bool = True,
 ) -> str:
     """Render a PromptSpec instance to prompt text.
@@ -88,9 +110,9 @@ def render_text(
             context_parts.append(_render_documents_preview(spec_cls))
 
     for field_name, field_info in spec_cls.model_fields.items():
-        value = getattr(spec, field_name)
+        value = str(getattr(spec, field_name))
         label = field_info.description or field_name
-        context_parts.append(f"**{label}:**\n{value}")
+        context_parts.append(_render_field_value(spec_cls, field_name, value, label))
 
     if context_parts:
         sections.append("# Context\n\n" + "\n\n".join(context_parts))

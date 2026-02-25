@@ -2,7 +2,7 @@
 # CLASSES: ModelOptions, Citation, Conversation
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.10.2
+# VERSION: 0.10.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -229,7 +229,7 @@ Attachment rendering in LLM context:
         self,
         spec: PromptSpec[str],
         *,
-        documents: list[Document] | None = None,
+        documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
         purpose: str | None = None,
         expected_cost: float | None = None,
@@ -240,7 +240,7 @@ Attachment rendering in LLM context:
         self,
         spec: PromptSpec[U],
         *,
-        documents: list[Document] | None = None,
+        documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
         purpose: str | None = None,
         expected_cost: float | None = None,
@@ -250,7 +250,7 @@ Attachment rendering in LLM context:
         self,
         spec: PromptSpec[Any],
         *,
-        documents: list[Document] | None = None,
+        documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
         purpose: str | None = None,
         expected_cost: float | None = None,

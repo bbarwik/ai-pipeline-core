@@ -536,7 +536,7 @@ Key features:
 - Document auto-save to DocumentStore (returned documents are extracted and persisted)
 - Source validation (warns if referenced SHA256s don't exist in store)
 
-**Input type validation** — all `@pipeline_task` parameters must be annotated with serializable types. Allowed: `str`, `int`, `float`, `bool`, `Path`, `UUID`, `None`, `Any`, Document subclasses, FlowOptions subclasses, frozen BaseModel, Enum, and `list`/`tuple`/`dict[str, ...]`/`Union` containers thereof. Non-serializable types (mutable models, plain classes) are rejected at decoration time.
+**Input type validation** — all `@pipeline_task` parameters must be annotated with serializable types. Allowed: `str`, `int`, `float`, `bool`, `Path`, `UUID`, `None`, `Any`, Document subclasses, FlowOptions subclasses, frozen BaseModel, Enum, `NewType` wrappers of valid types, and `list`/`tuple`/`dict[str, ...]`/`Union` containers thereof. Non-serializable types (mutable models, plain classes) are rejected at decoration time.
 
 #### `@pipeline_flow`
 

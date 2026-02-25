@@ -170,10 +170,14 @@ _VALID_SCALAR_TYPES: tuple[type, ...] = (str, int, float, bool, type(None), UUID
 _VALID_CONTAINER_ORIGINS: set[type] = {list, tuple}
 
 
-def _is_valid_input_type(tp: Any) -> bool:  # noqa: PLR0911
+def _is_valid_input_type(tp: Any) -> bool:  # noqa: PLR0911, C901
     """Check if a type annotation is a valid JSON-serializable input type."""
     if tp is type(None):
         return True
+
+    # NewType (e.g., DocumentSha256 = NewType("DocumentSha256", str)) — validate the underlying type
+    if hasattr(tp, "__supertype__"):
+        return _is_valid_input_type(tp.__supertype__)
 
     if isinstance(tp, type):
         if tp in _VALID_SCALAR_TYPES or issubclass(tp, (Document, FlowOptions, Enum)):

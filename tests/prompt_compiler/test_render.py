@@ -1,5 +1,6 @@
 """Tests for prompt_compiler.render (rendering logic)."""
 
+import logging
 import sys
 from collections.abc import Generator
 from pathlib import Path
@@ -12,6 +13,7 @@ from pydantic import Field
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.prompt_compiler.components import Guide, OutputRule, Role, Rule
 from ai_pipeline_core.prompt_compiler.render import (
+    MAX_FIELD_VALUE_LENGTH,
     RESULT_OPEN,
     _format_numbered_rule,
     _pascal_to_title,
@@ -664,3 +666,129 @@ def test_render_full_prompt_spec_workflow() -> None:
     assert "# Rules\n\n1. Cite specific evidence" in rendered
     assert "# Output Rules\n\n1. Use prose paragraphs" in rendered
     assert "# Output Structure\n\n## Key Findings" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Long field value XML wrapping tests
+# ---------------------------------------------------------------------------
+
+
+class TestLongFieldValueWrapping:
+    """Field values exceeding MAX_FIELD_VALUE_LENGTH or containing newlines are wrapped in XML tags."""
+
+    def test_short_single_line_renders_inline(self):
+        """Short single-line values render as plain '**label:**\\nvalue'."""
+
+        class ShortSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = RenderRole
+            task = "Task"
+            topic: str = Field(description="Research topic")
+
+        rendered = render_text(ShortSpec(topic="Market dynamics"))
+        assert "**Research topic:**\nMarket dynamics" in rendered
+        assert "<topic>" not in rendered
+
+    def test_long_value_wrapped_in_xml(self):
+        """Values exceeding MAX_FIELD_VALUE_LENGTH are wrapped in XML tags using field name."""
+
+        class LongSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = RenderRole
+            task = "Task"
+            review_text: str = Field(description="Review feedback")
+
+        long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
+        rendered = render_text(LongSpec(review_text=long_value))
+        assert f"**Review feedback:**\n<review_text>{long_value}</review_text>" in rendered
+
+    def test_multiline_value_wrapped_in_xml(self):
+        """Multiline values are wrapped in XML tags even if under length limit."""
+
+        class MultilineSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = RenderRole
+            task = "Task"
+            feedback: str = Field(description="Reviewer feedback")
+
+        multiline = "First line\nSecond line"
+        rendered = render_text(MultilineSpec(feedback=multiline))
+        assert f"**Reviewer feedback:**\n<feedback>{multiline}</feedback>" in rendered
+
+    def test_exactly_at_limit_not_wrapped(self):
+        """Value exactly at MAX_FIELD_VALUE_LENGTH is not wrapped."""
+
+        class ExactSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = RenderRole
+            task = "Task"
+            text: str = Field(description="Some text")
+
+        exact_value = "x" * MAX_FIELD_VALUE_LENGTH
+        rendered = render_text(ExactSpec(text=exact_value))
+        assert f"**Some text:**\n{exact_value}" in rendered
+        assert "<text>" not in rendered
+
+    def test_long_value_logs_warning(self, caplog: pytest.LogCaptureFixture):
+        """Long field values emit a warning with guidance on correct usage."""
+
+        class WarnSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = RenderRole
+            task = "Task"
+            review: str = Field(description="Review")
+
+        long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
+        with caplog.at_level(logging.WARNING):
+            render_text(WarnSpec(review=long_value))
+
+        assert len(caplog.records) == 1
+        msg = caplog.records[0].message
+        assert "review" in msg
+        assert "WarnSpec" in msg
+        assert "Document" in msg
+
+    def test_multiline_value_logs_warning(self, caplog: pytest.LogCaptureFixture):
+        """Multiline field values emit a warning with guidance on correct usage."""
+
+        class WarnMultiSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = RenderRole
+            task = "Task"
+            note: str = Field(description="Note")
+
+        with caplog.at_level(logging.WARNING):
+            render_text(WarnMultiSpec(note="line1\nline2"))
+
+        assert len(caplog.records) == 1
+        msg = caplog.records[0].message
+        assert "note" in msg
+        assert "WarnMultiSpec" in msg
+
+    def test_short_value_no_warning(self, caplog: pytest.LogCaptureFixture):
+        """Short single-line values produce no warning."""
+
+        class NoWarnSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = RenderRole
+            task = "Task"
+            item: str = Field(description="Item")
+
+        with caplog.at_level(logging.WARNING):
+            render_text(NoWarnSpec(item="short"))
+
+        assert len(caplog.records) == 0

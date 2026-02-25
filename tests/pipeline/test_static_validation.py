@@ -6,7 +6,7 @@ return type enforcement, input type enforcement, and PipelineDeployment flow cha
 
 # pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportPrivateUsage=false, reportUnusedClass=false
 
-from typing import Any
+from typing import Any, NewType
 
 import pytest
 
@@ -18,6 +18,7 @@ from ai_pipeline_core import (
     pipeline_flow,
     pipeline_task,
 )
+from ai_pipeline_core.documents import DocumentSha256
 from ai_pipeline_core.pipeline._type_validation import find_non_document_leaves
 
 # --- Document subclasses for testing ---
@@ -675,3 +676,50 @@ class TestDeploymentBuildResultRequired:
 
         # Should not raise — no flows attribute means skip validation
         assert not hasattr(AbstractMiddle, "name")
+
+
+# --------------------------------------------------------------------------- #
+# NewType input validation tests
+# --------------------------------------------------------------------------- #
+
+CustomId = NewType("CustomId", str)
+Score = NewType("Score", float)
+
+
+class TestNewTypeInputValidation:
+    """NewType wrapping valid scalar types must be accepted in pipeline task inputs."""
+
+    def test_bare_newtype(self):
+        @pipeline_task
+        async def t(value: DocumentSha256) -> AlphaDocument:
+            return AlphaDocument(name="a.txt", content=b"a")
+
+    def test_custom_newtype_str(self):
+        @pipeline_task
+        async def t(value: CustomId) -> AlphaDocument:
+            return AlphaDocument(name="a.txt", content=b"a")
+
+    def test_custom_newtype_float(self):
+        @pipeline_task
+        async def t(value: Score) -> AlphaDocument:
+            return AlphaDocument(name="a.txt", content=b"a")
+
+    def test_tuple_of_newtype(self):
+        @pipeline_task
+        async def t(hashes: tuple[DocumentSha256, ...]) -> AlphaDocument:
+            return AlphaDocument(name="a.txt", content=b"a")
+
+    def test_list_of_newtype(self):
+        @pipeline_task
+        async def t(hashes: list[DocumentSha256]) -> AlphaDocument:
+            return AlphaDocument(name="a.txt", content=b"a")
+
+    def test_newtype_in_union(self):
+        @pipeline_task
+        async def t(value: DocumentSha256 | None) -> AlphaDocument:
+            return AlphaDocument(name="a.txt", content=b"a")
+
+    def test_dict_str_newtype(self):
+        @pipeline_task
+        async def t(mapping: dict[str, DocumentSha256]) -> AlphaDocument:
+            return AlphaDocument(name="a.txt", content=b"a")

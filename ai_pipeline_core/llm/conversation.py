@@ -464,7 +464,7 @@ class Conversation(BaseModel, Generic[T]):
             if substitutor:
                 response = self._restore_response(response, substitutor, response_format)
 
-            Laminar.set_span_output(response.content)
+            Laminar.set_span_output([response.content])
             span.set_attributes(response.get_laminar_metadata())  # pyright: ignore[reportArgumentType]
             if purpose:
                 span.set_attribute("purpose", purpose)
@@ -499,7 +499,7 @@ class Conversation(BaseModel, Generic[T]):
         self,
         spec: PromptSpec[str],
         *,
-        documents: list[Document] | None = None,
+        documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
         purpose: str | None = None,
         expected_cost: float | None = None,
@@ -510,7 +510,7 @@ class Conversation(BaseModel, Generic[T]):
         self,
         spec: PromptSpec[U],
         *,
-        documents: list[Document] | None = None,
+        documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
         purpose: str | None = None,
         expected_cost: float | None = None,
@@ -520,7 +520,7 @@ class Conversation(BaseModel, Generic[T]):
         self,
         spec: PromptSpec[Any],
         *,
-        documents: list[Document] | None = None,
+        documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
         purpose: str | None = None,
         expected_cost: float | None = None,

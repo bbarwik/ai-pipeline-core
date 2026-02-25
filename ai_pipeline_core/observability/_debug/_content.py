@@ -18,7 +18,7 @@ import yaml
 from pydantic import BaseModel, SecretStr
 
 from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.observability._trimming import _CONTENT_TRIM_THRESHOLD, _is_binary_content, _trim_content_string
+from ai_pipeline_core.observability._trimming import _CONTENT_TRIM_THRESHOLD, _is_binary_content, _trim_content_string, _trim_document_xml_content
 
 from ._config import TraceDebugConfig
 
@@ -31,7 +31,10 @@ class _BlockStringDumper(yaml.SafeDumper):
 
 def _block_string_representer(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
     if "\n" in data:
-        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+        # Strip trailing whitespace from each line — YAML block scalars cannot represent
+        # trailing spaces, causing PyYAML to fall back to double-quoted style with \n escapes.
+        cleaned = "\n".join(line.rstrip() for line in data.split("\n"))
+        return dumper.represent_scalar("tag:yaml.org,2002:str", cleaned, style="|")
     return dumper.represent_scalar("tag:yaml.org,2002:str", data)
 
 
@@ -237,7 +240,11 @@ class ContentWriter:
         }, size
 
     def _structure_text_element(self, text: str, sequence: int) -> dict[str, Any]:
-        """Structure a text element with inline trimming."""
+        """Structure a text element with inline trimming.
+
+        Uses document-aware trimming for text containing <document> XML blocks —
+        only the <content> inner text is trimmed, preserving XML metadata tags.
+        """
         text = self._redact(text)
         text_bytes = len(text.encode("utf-8"))
 
@@ -248,7 +255,7 @@ class ContentWriter:
         }
 
         if text_bytes > _CONTENT_TRIM_THRESHOLD:
-            entry["content"] = _trim_content_string(text)
+            entry["content"] = _trim_document_xml_content(text)
             entry["truncated"] = True
             entry["original_size_bytes"] = text_bytes
         else:

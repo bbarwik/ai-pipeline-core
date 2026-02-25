@@ -24,6 +24,25 @@ def _trim_content_string(content: str) -> str:
     return content[:_CONTENT_TRIM_KEEP] + f" ... [trimmed {trimmed_chars} chars] ... " + content[-_CONTENT_TRIM_KEEP:]
 
 
+_DOCUMENT_CONTENT_PATTERN = re.compile(r"(<content>)(.*?)(</content>)", re.DOTALL)
+
+
+def _trim_document_xml_content(text: str) -> str:
+    """Trim only the <content>...</content> sections within document XML.
+
+    Preserves all XML metadata (<id>, <name>, <description>) intact.
+    Falls back to plain _trim_content_string when no <content> tags are found.
+    """
+    if "<content>" not in text:
+        return _trim_content_string(text)
+
+    def _replace_inner(match: re.Match[str]) -> str:
+        open_tag, inner, close_tag = match.group(1), match.group(2), match.group(3)
+        return open_tag + _trim_content_string(inner) + close_tag
+
+    return _DOCUMENT_CONTENT_PATTERN.sub(_replace_inner, text)
+
+
 def _trim_attachment_list(attachments: list[Any]) -> list[Any]:
     """Trim attachment content in a serialized attachment list.
 
@@ -93,5 +112,6 @@ __all__ = [
     "_trim_attachment_list",
     "_trim_content_string",
     "_trim_document_content",
+    "_trim_document_xml_content",
     "trim_documents_in_data",
 ]

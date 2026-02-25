@@ -236,7 +236,7 @@ class TestConversationTracing:
             conv = Conversation(model="test-model")
             await conv.send("test")
 
-        assert captured["output"] == "LLM says hello"
+        assert captured["output"] == ["LLM says hello"]
 
     @pytest.mark.asyncio
     async def test_span_attributes_include_model_metadata(self, monkeypatch):

@@ -612,6 +612,23 @@ Document size assumptions when using higher-complexity algorithms.
 
 Functions or match/case blocks with >80% structural similarity must be consolidated. Use parameterization, helper functions, or lookup tables.
 
+### 5.10 Actionable Error and Warning Messages
+
+Warning and error messages must include not only what went wrong, but also how to fix it and how to do it correctly. The reader (often an AI coding agent) should be able to resolve the issue from the message alone without consulting documentation.
+
+```python
+# Wrong — states the problem but not the solution
+logger.warning("Field '%s' value is too long (%d chars).", field_name, len(value))
+
+# Correct — states the problem, the correct usage, and how to fix it
+logger.warning(
+    "PromptSpec '%s' field '%s' has a long or multiline value (%d chars). "
+    "Field parameters are for short, single-line values (up to %d chars). "
+    "Pass longer content as a Document via input_documents and send_spec(documents=[...]).",
+    spec_name, field_name, len(value), MAX_LENGTH,
+)
+```
+
 ---
 
 ## 6. Deployment & Operations

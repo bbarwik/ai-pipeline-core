@@ -30,6 +30,14 @@ def _require_text(cls: type, *, kind: str, max_lines: int | None = None) -> None
 class Role:
     """Base class for LLM role definitions.
 
+    Role text is rendered into the **user message**, not the system prompt. The renderer
+    produces ``"You are a/an {text}."`` as the first section of the compiled prompt text,
+    which is sent via ``Conversation.send()`` / ``send_spec()`` as a user message.
+
+    This is not a system prompt. Role does not set, replace, or interact with the
+    system prompt in any way. It is purely a section in the user message produced
+    by ``render_text()``.
+
     Must define a non-empty docstring and a ``text`` ClassVar on every Role subclass.
     Must not end Role text with sentence punctuation (.!?) — the renderer adds a period automatically.
     Must use domain-neutral Roles for specs that handle multiple domains — a PromptSpec

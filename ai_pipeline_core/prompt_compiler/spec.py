@@ -144,6 +144,10 @@ class PromptSpec(BaseModel, Generic[OutputT]):
 
     Pydantic fields (dynamic input values):
         Any field declared with ``Field(description=...)`` becomes a dynamic input.
+        Fields are for short, single-line parameter values (up to 500 characters) — e.g.,
+        a topic name, finding type, or formatting instruction. Longer or multiline content
+        (e.g., review feedback, website content, another model's output) must be passed as
+        a Document via ``input_documents`` and ``send_spec(documents=[...])``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
