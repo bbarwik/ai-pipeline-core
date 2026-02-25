@@ -2,20 +2,20 @@
 # CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.10.4
+# VERSION: 0.10.5
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import Guide, OutputRule, PromptSpec, Role, Rule, render_preview, render_text
+from ai_pipeline_core import Guide, MultiLineField, OutputRule, PromptSpec, Role, Rule, render_preview, render_text
 ```
 
 ## Rules
 
 1. Must define a non-empty docstring and a ``text`` ClassVar on every Role subclass.
 2. Must not end Role text with sentence punctuation (.!?) — the renderer adds a period automatically.
-3. Must use domain-neutral Roles for specs that handle multiple domains — a PromptSpec
+3. Must use domain-neutral Roles for specs that handle multiple domains — a PromptSpec parameterized by domain (e.g., finding_type field that can be "risk", "opportunity", or "question") needs a Role that doesn't bias toward any single domain.
 4. Must define a non-empty docstring and a ``text`` ClassVar on every Rule subclass (max 5 lines).
 5. Must define a non-empty docstring and a ``text`` ClassVar on every OutputRule subclass (max 5 lines).
 6. Must define a non-empty docstring and a ``template`` ClassVar on every Guide subclass.
@@ -25,9 +25,11 @@ from ai_pipeline_core import Guide, OutputRule, PromptSpec, Role, Rule, render_p
 10. Must define task on every PromptSpec subclass.
 11. Must define role and input_documents on standalone specs (not required when ``follows`` is set).
 12. Must use ``Field(description='...')`` for all dynamic Pydantic fields on PromptSpec subclasses.
-13. Must include all Guides that define terminology referenced in the task text — missing Guides
-14. Must ensure task vocabulary matches output model field names — when task text uses
-15. Never construct XML manually (f-string ``<document>`` tags) — the framework wraps Documents
+13. Must include all Guides that define terminology referenced in the task text — missing Guides cause the LLM to hallucinate definitions for framework-specific terms.
+14. Must ensure task vocabulary matches output model field names — when task text uses domain-specific terms but the output BaseModel has generic field names, add explicit mapping instructions in the task text.
+15. Cannot combine ``output_structure`` with structured output (``PromptSpec[BaseModel]``) — output_structure is only for text specs.
+16. Never reference XML tags in OutputRules when output_structure is set — the framework adds ``<result>`` wrapping automatically.
+17. Never construct XML manually (f-string ``<document>`` tags) — the framework wraps Documents in XML automatically when they are added to the Conversation via ``with_context()`` or ``with_document()``. Use ``Document.create()`` to wrap dicts, lists, or BaseModel instances.
 
 ## Types & Constants
 
@@ -174,6 +176,8 @@ references (types), not instances. Actual Document instances are passed via
 
 ``output_structure`` automatically enables ``<result>`` XML wrapping and auto-extraction
 in ``send_spec()``.
+Cannot combine ``output_structure`` with structured output (``PromptSpec[BaseModel]``) — output_structure is only for text specs.
+Never reference XML tags in OutputRules when output_structure is set — the framework adds ``<result>`` wrapping automatically.
 
 Never construct XML manually (f-string ``<document>`` tags) — the framework wraps Documents
 in XML automatically when they are added to the Conversation via ``with_context()`` or
@@ -394,10 +398,7 @@ def render_text(
         else:
             context_parts.append(_render_documents_preview(spec_cls))
 
-    for field_name, field_info in spec_cls.model_fields.items():
-        value = str(getattr(spec, field_name))
-        label = field_info.description or field_name
-        context_parts.append(_render_field_value(spec_cls, field_name, value, label))
+    context_parts.extend(_render_context_fields(spec))
 
     if context_parts:
         sections.append("# Context\n\n" + "\n\n".join(context_parts))
@@ -433,18 +434,63 @@ def render_text(
 
     return "\n\n".join(sections)
 
+def render_multi_line_messages(spec: PromptSpec) -> list[tuple[str, str]]:
+    """Return XML-tagged message blocks for multi-line fields.
+
+    Each entry is ``(field_name, "<field_name>value</field_name>")``.
+    Order matches field declaration order on the spec class.
+    """
+    spec_cls = type(spec)
+    result: list[tuple[str, str]] = []
+    for field_name, field_info in spec_cls.model_fields.items():
+        if is_multi_line_field(field_info):
+            value = str(getattr(spec, field_name))
+            result.append((field_name, f"<{field_name}>{value}</{field_name}>"))
+    return result
+
 def render_preview(spec_class: type[PromptSpec], *, include_input_documents: bool = True) -> str:
     """Render a spec CLASS with placeholder values for dynamic fields.
 
     Uses `model_construct()` to bypass validation, allowing placeholder strings
     regardless of field type.
+
+    Multi-line fields are shown as XML blocks before the prompt, separated by ``---``.
     """
     placeholders = {field_name: f"{{{field_name}}}" for field_name in spec_class.model_fields}
     instance = spec_class.model_construct(**placeholders)  # pyright: ignore[reportArgumentType] — placeholders are intentionally untyped strings
+
+    # Build multi-line field preview blocks
+    ml_blocks: list[str] = []
+    for field_name, field_info in spec_class.model_fields.items():
+        if is_multi_line_field(field_info):
+            ml_blocks.append(f"<{field_name}>{{{field_name}}}</{field_name}>")
+
     text = render_text(instance, include_input_documents=include_input_documents)
+
     if spec_class.follows is not None:
-        return f"[Follows: {spec_class.follows.__name__}]\n\n{text}"
+        text = f"[Follows: {spec_class.follows.__name__}]\n\n{text}"
+
+    if ml_blocks:
+        return "\n".join(ml_blocks) + "\n\n---\n\n" + text
     return text
+
+def MultiLineField(*, description: str, **kwargs: Any) -> Any:
+    """Declare a multi-line field on a PromptSpec.
+
+    Multi-line fields are combined into a single XML-tagged user message sent
+    before the main prompt, not inlined in the Context section. Each field is
+    wrapped as ``<field_name>value</field_name>``. Use for content that is long
+    or multiline — e.g., review feedback, website content, another model's output.
+
+    Must provide ``description``. Accepts all other ``Field()`` keyword arguments
+    (``default``, ``default_factory``, etc.).
+    """
+    return Field(description=description, json_schema_extra={_MULTI_LINE_KEY: True}, **kwargs)
+
+def is_multi_line_field(field_info: FieldInfo) -> bool:
+    """Check whether a FieldInfo was created via MultiLineField."""
+    extra = field_info.json_schema_extra
+    return isinstance(extra, dict) and bool(extra.get(_MULTI_LINE_KEY))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
 ```
 
@@ -474,7 +520,7 @@ def test_rule_valid() -> None:
     assert ValidRule.text == "Do not fail."
 ```
 
-**Render full prompt spec workflow** (`tests/prompt_compiler/test_render.py:631`)
+**Render full prompt spec workflow** (`tests/prompt_compiler/test_render.py:630`)
 
 ```python
 def test_render_full_prompt_spec_workflow() -> None:

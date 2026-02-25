@@ -2,7 +2,7 @@
 # CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.10.4
+# VERSION: 0.10.5
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -279,6 +279,12 @@ Features enabled by default:
             # Precompute flow minutes for progress calculation
             flow_minutes = tuple(getattr(f, "estimated_minutes", 1) for f in self.flows)
 
+            # Resume tracking: accumulate output SHA256s from skipped flows
+            # so the first non-skipped flow loads by SHA256 instead of by type
+            resumed_sha256s: set[str] | None = None
+            executed_output_sha256s: set[str] = set()
+            last_flow_output_sha256s: tuple[str, ...] = ()
+
             for i in range(start_step - 1, end_step):
                 step = i + 1
                 flow_fn = self.flows[i]
@@ -291,6 +297,11 @@ Features enabled by default:
                     completion = await store.get_flow_completion(run_scope, flow_name, max_age=self.cache_ttl)
                     if completion is not None:
                         logger.info("[%d/%d] Resume: skipping %s (completion record found)", step, total_steps, flow_name)
+                        if resumed_sha256s is None:
+                            resumed_sha256s = {d.sha256 for d in input_docs}
+                            resumed_sha256s.update(executed_output_sha256s)
+                        resumed_sha256s.update(completion.output_sha256s)
+                        last_flow_output_sha256s = completion.output_sha256s
                         cached_msg = f"Resumed from store: {flow_name}"
                         await self._update_progress_labels(
                             flow_run_id,
@@ -345,7 +356,16 @@ Features enabled by default:
 
                 # Load input documents from store
                 input_types = getattr(flow_fn, "input_document_types", [])
-                if store and input_types:
+                if resumed_sha256s is not None and store and input_types:
+                    current_docs = await _load_documents_by_sha256s(  # pyright: ignore[reportUnreachable]  # reachable on 2nd+ loop iteration after resume skip
+                        store,
+                        resumed_sha256s,
+                        input_types,
+                        self._all_document_types(),
+                        run_scope,
+                    )
+                    resumed_sha256s = None
+                elif store and input_types:
                     current_docs = await store.load(run_scope, input_types)
                 else:
                     current_docs = input_docs
@@ -363,14 +383,14 @@ Features enabled by default:
                     completed_minutes=completed_mins,
                     publisher=publisher,
                 ):
-                    await flow_fn(run_id, current_docs, options)
+                    result_docs = await flow_fn(run_id, current_docs, options)
 
                 # Record flow completion for resume (only after successful execution)
+                output_sha256s = tuple(d.sha256 for d in result_docs)
+                executed_output_sha256s.update(output_sha256s)
+                last_flow_output_sha256s = output_sha256s
                 if store:
-                    output_types = getattr(flow_fn, "output_document_types", [])
                     input_sha256s = tuple(d.sha256 for d in current_docs)
-                    output_docs = await store.load(run_scope, output_types) if output_types else []
-                    output_sha256s = tuple(d.sha256 for d in output_docs)
                     await store.save_flow_completion(run_scope, flow_name, input_sha256s, output_sha256s)
 
                 completed_msg = f"Completed: {flow_name}"
@@ -416,18 +436,11 @@ Features enabled by default:
             output_docs = tuple(build_output_document(doc) for doc in all_docs)
             result = result.model_copy(update={"documents": output_docs})  # nosemgrep: no-document-model-copy
 
-            # Compute chain_context from final flow output documents
-            final_output_docs: list[Document] = []
-            if store:
-                last_flow = self.flows[end_step - 1]
-                last_output_types = getattr(last_flow, "output_document_types", [])
-                if last_output_types:
-                    final_output_docs = await store.load(run_scope, last_output_types)
-
+            # Compute chain_context from the last flow's actual outputs
             chain_context = {
                 "version": 1,
                 "run_scope": str(run_scope),
-                "output_document_refs": [doc.sha256 for doc in final_output_docs],
+                "output_document_refs": list(last_flow_output_sha256s),
             }
 
             # Publish task.completed event

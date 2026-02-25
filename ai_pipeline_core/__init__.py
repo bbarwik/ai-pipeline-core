@@ -58,7 +58,7 @@ from .logging import (
 )
 from .observability.tracing import TraceInfo, TraceLevel, set_trace_cost, trace
 from .pipeline import FlowOptions, LimitKind, PipelineLimit, pipeline_concurrency, pipeline_flow, pipeline_task, safe_gather, safe_gather_indexed
-from .prompt_compiler import Guide, OutputRule, OutputT, PromptSpec, Role, Rule, render_preview, render_text
+from .prompt_compiler import Guide, MultiLineField, OutputRule, OutputT, PromptSpec, Role, Rule, render_preview, render_text
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
 
@@ -84,6 +84,7 @@ __all__ = [
     "LoggingConfig",
     "ModelName",
     "ModelOptions",
+    "MultiLineField",
     "OutputDegenerationError",
     "OutputRule",
     "OutputT",

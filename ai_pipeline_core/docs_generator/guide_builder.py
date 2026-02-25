@@ -267,18 +267,36 @@ def flatten_methods(cls: ClassInfo, table: SymbolTable) -> tuple[MethodInfo, ...
 
 
 def extract_rules(classes: list[ClassInfo]) -> list[str]:
-    """Extract rules from docstrings (lines starting with constraint keywords)."""
+    """Extract rules from docstrings (lines starting with constraint keywords).
+
+    Continuation lines (non-empty, non-keyword lines following a keyword line)
+    are joined with a space to form the complete rule text.
+    """
     rules: list[str] = []
     seen: set[str] = set()
 
     for cls in classes:
         if not cls.docstring:
             continue
-        for line in cls.docstring.splitlines():
-            stripped = line.strip()
-            if any(stripped.lower().startswith(prefix) for prefix in _RULE_PREFIXES) and stripped not in seen:
-                rules.append(stripped)
-                seen.add(stripped)
+        lines = cls.docstring.splitlines()
+        i = 0
+        while i < len(lines):
+            stripped = lines[i].strip()
+            if any(stripped.lower().startswith(prefix) for prefix in _RULE_PREFIXES):
+                parts = [stripped]
+                i += 1
+                while i < len(lines):
+                    cont = lines[i].strip()
+                    if not cont or any(cont.lower().startswith(p) for p in _RULE_PREFIXES):
+                        break
+                    parts.append(cont)
+                    i += 1
+                full_rule = " ".join(parts)
+                if full_rule not in seen:
+                    rules.append(full_rule)
+                    seen.add(full_rule)
+            else:
+                i += 1
     return rules
 
 

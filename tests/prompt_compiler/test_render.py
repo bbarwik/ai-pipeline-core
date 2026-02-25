@@ -1,6 +1,5 @@
 """Tests for prompt_compiler.render (rendering logic)."""
 
-import logging
 import sys
 from collections.abc import Generator
 from pathlib import Path
@@ -673,8 +672,8 @@ def test_render_full_prompt_spec_workflow() -> None:
 # ---------------------------------------------------------------------------
 
 
-class TestLongFieldValueWrapping:
-    """Field values exceeding MAX_FIELD_VALUE_LENGTH or containing newlines are wrapped in XML tags."""
+class TestFieldValueValidation:
+    """Regular field values exceeding MAX_FIELD_VALUE_LENGTH or containing newlines raise ValueError."""
 
     def test_short_single_line_renders_inline(self):
         """Short single-line values render as plain '**label:**\\nvalue'."""
@@ -691,8 +690,8 @@ class TestLongFieldValueWrapping:
         assert "**Research topic:**\nMarket dynamics" in rendered
         assert "<topic>" not in rendered
 
-    def test_long_value_wrapped_in_xml(self):
-        """Values exceeding MAX_FIELD_VALUE_LENGTH are wrapped in XML tags using field name."""
+    def test_long_value_raises(self):
+        """Values exceeding MAX_FIELD_VALUE_LENGTH raise ValueError with actionable message."""
 
         class LongSpec(PromptSpec):
             """Doc."""
@@ -703,11 +702,11 @@ class TestLongFieldValueWrapping:
             review_text: str = Field(description="Review feedback")
 
         long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
-        rendered = render_text(LongSpec(review_text=long_value))
-        assert f"**Review feedback:**\n<review_text>{long_value}</review_text>" in rendered
+        with pytest.raises(ValueError, match="MultiLineField"):
+            render_text(LongSpec(review_text=long_value))
 
-    def test_multiline_value_wrapped_in_xml(self):
-        """Multiline values are wrapped in XML tags even if under length limit."""
+    def test_multiline_value_raises(self):
+        """Multiline values raise ValueError with actionable message."""
 
         class MultilineSpec(PromptSpec):
             """Doc."""
@@ -717,12 +716,11 @@ class TestLongFieldValueWrapping:
             task = "Task"
             feedback: str = Field(description="Reviewer feedback")
 
-        multiline = "First line\nSecond line"
-        rendered = render_text(MultilineSpec(feedback=multiline))
-        assert f"**Reviewer feedback:**\n<feedback>{multiline}</feedback>" in rendered
+        with pytest.raises(ValueError, match="MultiLineField"):
+            render_text(MultilineSpec(feedback="First line\nSecond line"))
 
-    def test_exactly_at_limit_not_wrapped(self):
-        """Value exactly at MAX_FIELD_VALUE_LENGTH is not wrapped."""
+    def test_exactly_at_limit_not_rejected(self):
+        """Value exactly at MAX_FIELD_VALUE_LENGTH is accepted."""
 
         class ExactSpec(PromptSpec):
             """Doc."""
@@ -738,7 +736,8 @@ class TestLongFieldValueWrapping:
         assert "<text>" not in rendered
 
     def test_long_value_logs_warning(self, caplog: pytest.LogCaptureFixture):
-        """Long field values emit a warning with guidance on correct usage."""
+        """Long field values emit a warning before raising."""
+        import logging
 
         class WarnSpec(PromptSpec):
             """Doc."""
@@ -749,17 +748,18 @@ class TestLongFieldValueWrapping:
             review: str = Field(description="Review")
 
         long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING), pytest.raises(ValueError):
             render_text(WarnSpec(review=long_value))
 
         assert len(caplog.records) == 1
         msg = caplog.records[0].message
         assert "review" in msg
         assert "WarnSpec" in msg
-        assert "Document" in msg
+        assert "MultiLineField" in msg
 
     def test_multiline_value_logs_warning(self, caplog: pytest.LogCaptureFixture):
-        """Multiline field values emit a warning with guidance on correct usage."""
+        """Multiline field values emit a warning before raising."""
+        import logging
 
         class WarnMultiSpec(PromptSpec):
             """Doc."""
@@ -769,7 +769,7 @@ class TestLongFieldValueWrapping:
             task = "Task"
             note: str = Field(description="Note")
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING), pytest.raises(ValueError):
             render_text(WarnMultiSpec(note="line1\nline2"))
 
         assert len(caplog.records) == 1
@@ -779,6 +779,7 @@ class TestLongFieldValueWrapping:
 
     def test_short_value_no_warning(self, caplog: pytest.LogCaptureFixture):
         """Short single-line values produce no warning."""
+        import logging
 
         class NoWarnSpec(PromptSpec):
             """Doc."""

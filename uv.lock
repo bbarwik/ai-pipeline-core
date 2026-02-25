@@ -9,7 +9,7 @@ resolution-markers = [
 
 [[package]]
 name = "ai-pipeline-core"
-version = "0.10.4"
+version = "0.10.5"
 source = { editable = "." }
 dependencies = [
     { name = "clickhouse-connect" },

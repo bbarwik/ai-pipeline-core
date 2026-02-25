@@ -763,6 +763,22 @@ class AnalysisSpec(PromptSpec):
     project_name: str = Field(description="Project name")
 ```
 
+**Multi-line fields** — use `MultiLineField` for long or multiline content (e.g., review feedback, website content). All multi-line fields are combined into a single XML-tagged user message sent before the main prompt, not inlined in the Context section. Regular `Field()` values must be short, single-line strings (up to 500 chars) — exceeding this raises `ValueError` at render time:
+
+```python
+from ai_pipeline_core import PromptSpec, MultiLineField
+from pydantic import Field
+
+class ReviewSpec(PromptSpec):
+    """Analyze a review."""
+    role = ResearchAnalyst
+    input_documents = (SourceDocument,)
+    task = "Analyze the review and identify key themes."
+
+    project_name: str = Field(description="Project name")          # Short, inline in prompt
+    review: str = MultiLineField(description="Review text")        # Sent as <review>...</review> message
+```
+
 **Rendering and sending:**
 
 ```python

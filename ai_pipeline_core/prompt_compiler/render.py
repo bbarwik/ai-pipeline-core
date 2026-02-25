@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
 
-from .spec import PromptSpec
+from .spec import PromptSpec, is_multi_line_field
 
 logger = get_pipeline_logger(__name__)
 
@@ -65,19 +65,34 @@ def _render_documents_actual(documents: Sequence[Document]) -> str:
 
 
 def _render_field_value(spec_cls: type[PromptSpec], field_name: str, value: str, label: str) -> str:
-    """Render a single field value, wrapping long/multiline values in XML tags."""
+    """Render a single inline field value. Rejects long or multiline values."""
     if len(value) > MAX_FIELD_VALUE_LENGTH or "\n" in value:
-        logger.warning(
-            "PromptSpec '%s' field '%s' has a long or multiline value (%d chars). "
-            "Field parameters are for short, single-line values (up to %d chars). "
-            "Pass longer content as a Document via input_documents and send_spec(documents=[...]).",
-            spec_cls.__name__,
-            field_name,
-            len(value),
-            MAX_FIELD_VALUE_LENGTH,
+        msg = (
+            f"PromptSpec '{spec_cls.__name__}' field '{field_name}' has a long or multiline value ({len(value)} chars). "
+            f"Field parameters are for short, single-line values (up to {MAX_FIELD_VALUE_LENGTH} chars). "
+            f"Use MultiLineField(description='...') for long/multiline content, "
+            f"or pass it as a Document via input_documents and send_spec(documents=[...])."
         )
-        return f"**{label}:**\n<{field_name}>{value}</{field_name}>"
+        logger.warning(msg)
+        raise ValueError(msg)
     return f"**{label}:**\n{value}"
+
+
+def _render_context_fields(spec: PromptSpec) -> list[str]:
+    """Render field values for the Context section.
+
+    Multi-line fields produce a reference placeholder; regular fields are inlined.
+    """
+    spec_cls = type(spec)
+    parts: list[str] = []
+    for field_name, field_info in spec_cls.model_fields.items():
+        label = field_info.description or field_name
+        if is_multi_line_field(field_info):
+            parts.append(f"**{label}:** (provided in <{field_name}> tags in previous message)")
+        else:
+            value = str(getattr(spec, field_name))
+            parts.append(_render_field_value(spec_cls, field_name, value, label))
+    return parts
 
 
 def render_text(
@@ -109,10 +124,7 @@ def render_text(
         else:
             context_parts.append(_render_documents_preview(spec_cls))
 
-    for field_name, field_info in spec_cls.model_fields.items():
-        value = str(getattr(spec, field_name))
-        label = field_info.description or field_name
-        context_parts.append(_render_field_value(spec_cls, field_name, value, label))
+    context_parts.extend(_render_context_fields(spec))
 
     if context_parts:
         sections.append("# Context\n\n" + "\n\n".join(context_parts))
@@ -149,17 +161,45 @@ def render_text(
     return "\n\n".join(sections)
 
 
+def render_multi_line_messages(spec: PromptSpec) -> list[tuple[str, str]]:
+    """Return XML-tagged message blocks for multi-line fields.
+
+    Each entry is ``(field_name, "<field_name>value</field_name>")``.
+    Order matches field declaration order on the spec class.
+    """
+    spec_cls = type(spec)
+    result: list[tuple[str, str]] = []
+    for field_name, field_info in spec_cls.model_fields.items():
+        if is_multi_line_field(field_info):
+            value = str(getattr(spec, field_name))
+            result.append((field_name, f"<{field_name}>{value}</{field_name}>"))
+    return result
+
+
 def render_preview(spec_class: type[PromptSpec], *, include_input_documents: bool = True) -> str:
     """Render a spec CLASS with placeholder values for dynamic fields.
 
     Uses `model_construct()` to bypass validation, allowing placeholder strings
     regardless of field type.
+
+    Multi-line fields are shown as XML blocks before the prompt, separated by ``---``.
     """
     placeholders = {field_name: f"{{{field_name}}}" for field_name in spec_class.model_fields}
     instance = spec_class.model_construct(**placeholders)  # pyright: ignore[reportArgumentType] — placeholders are intentionally untyped strings
+
+    # Build multi-line field preview blocks
+    ml_blocks: list[str] = []
+    for field_name, field_info in spec_class.model_fields.items():
+        if is_multi_line_field(field_info):
+            ml_blocks.append(f"<{field_name}>{{{field_name}}}</{field_name}>")
+
     text = render_text(instance, include_input_documents=include_input_documents)
+
     if spec_class.follows is not None:
-        return f"[Follows: {spec_class.follows.__name__}]\n\n{text}"
+        text = f"[Follows: {spec_class.follows.__name__}]\n\n{text}"
+
+    if ml_blocks:
+        return "\n".join(ml_blocks) + "\n\n---\n\n" + text
     return text
 
 
@@ -172,4 +212,4 @@ def _extract_result(text: str) -> str:  # pyright: ignore[reportUnusedFunction] 
     return match.group(1).strip() if match else text
 
 
-__all__ = ["render_preview", "render_text"]
+__all__ = ["render_multi_line_messages", "render_preview", "render_text"]

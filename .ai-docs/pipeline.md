@@ -2,7 +2,7 @@
 # CLASSES: LimitKind, PipelineLimit, FlowOptions
 # DEPENDS: BaseSettings, StrEnum
 # PURPOSE: Pipeline framework primitives — decorators, flow options, and concurrency limits.
-# VERSION: 0.10.4
+# VERSION: 0.10.5
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -13,7 +13,7 @@ from ai_pipeline_core import FlowOptions, LimitKind, PipelineLimit, pipeline_con
 
 ## Rules
 
-1. Never inherit from FlowOptions for task-level options, writer configs,
+1. Never inherit from FlowOptions for task-level options, writer configs, or programmatically-constructed parameter objects — use BaseModel instead. FlowOptions fields are always subject to env var override, which causes silent, hard-to-debug behavior when field names collide with common env vars (MODE, HOST, PORT, etc.).
 
 ## Types & Constants
 

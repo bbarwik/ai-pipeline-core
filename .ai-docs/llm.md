@@ -2,7 +2,7 @@
 # CLASSES: ModelOptions, Citation, Conversation
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.10.4
+# VERSION: 0.10.5
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -299,6 +299,12 @@ Attachment rendering in LLM context:
             effective_include_docs = bool(spec.input_documents) and documents is not None
         else:
             effective_include_docs = include_input_documents
+
+        # Add multi-line field values as a single user message before the prompt
+        ml_messages = render_multi_line_messages(spec)
+        if ml_messages:
+            combined = "\n".join(xml_block for _, xml_block in ml_messages)
+            conv = conv.model_copy(update={"messages": conv.messages + (_UserMessage(combined),)})
 
         prompt_text = render_text(spec, documents=documents, include_input_documents=effective_include_docs)
         trace_purpose = purpose or spec.__class__.__name__

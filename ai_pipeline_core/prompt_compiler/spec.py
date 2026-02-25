@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from textwrap import dedent
 from typing import Any, ClassVar, Generic, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.fields import FieldInfo
 from typing_extensions import TypeVar
 
@@ -137,6 +137,8 @@ class PromptSpec(BaseModel, Generic[OutputT]):
 
     ``output_structure`` automatically enables ``<result>`` XML wrapping and auto-extraction
     in ``send_spec()``.
+    Cannot combine ``output_structure`` with structured output (``PromptSpec[BaseModel]``) — output_structure is only for text specs.
+    Never reference XML tags in OutputRules when output_structure is set — the framework adds ``<result>`` wrapping automatically.
 
     Never construct XML manually (f-string ``<document>`` tags) — the framework wraps Documents
     in XML automatically when they are added to the Conversation via ``with_context()`` or
@@ -296,4 +298,27 @@ class PromptSpec(BaseModel, Generic[OutputT]):
         _check_unknown_attrs(cls, name)
 
 
-__all__ = ["OutputT", "PromptSpec"]
+_MULTI_LINE_KEY = "multi_line"
+
+
+def MultiLineField(*, description: str, **kwargs: Any) -> Any:
+    """Declare a multi-line field on a PromptSpec.
+
+    Multi-line fields are combined into a single XML-tagged user message sent
+    before the main prompt, not inlined in the Context section. Each field is
+    wrapped as ``<field_name>value</field_name>``. Use for content that is long
+    or multiline — e.g., review feedback, website content, another model's output.
+
+    Must provide ``description``. Accepts all other ``Field()`` keyword arguments
+    (``default``, ``default_factory``, etc.).
+    """
+    return Field(description=description, json_schema_extra={_MULTI_LINE_KEY: True}, **kwargs)
+
+
+def is_multi_line_field(field_info: FieldInfo) -> bool:
+    """Check whether a FieldInfo was created via MultiLineField."""
+    extra = field_info.json_schema_extra
+    return isinstance(extra, dict) and bool(extra.get(_MULTI_LINE_KEY))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+
+
+__all__ = ["MultiLineField", "OutputT", "PromptSpec", "is_multi_line_field"]

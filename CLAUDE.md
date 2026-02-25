@@ -236,7 +236,8 @@ This section documents capabilities the framework must provide to applications.
 - Typed Python classes for roles, rules, guides, and output formats
 - Definition-time validation at import time (not runtime)
 - ClassVars: `role`, `task`, `input_documents`, `rules`, `guides`, `output_rules`, `output_structure`
-- Dynamic fields via Pydantic `Field()` — become template variables
+- Dynamic fields via Pydantic `Field()` — short, single-line values inlined in Context section (max 500 chars, raises `ValueError` if exceeded)
+- Multi-line fields via `MultiLineField(description=...)` — combined into a single XML-tagged user message (`<field_name>value</field_name>`) sent before the main prompt, referenced in Context as "(provided in <tag> tags in previous message)"
 
 **Components** (define once, reuse across specs):
 - `Role` — Actor definition ("experienced research analyst")
@@ -250,9 +251,10 @@ This section documents capabilities the framework must provide to applications.
 - Documents go to messages instead of context for follow-ups
 
 **Rendering:**
-- `render_text(spec, documents=...)` — Render prompt to string
-- `render_preview(spec_class)` — Preview with placeholder values
-- `Conversation.send_spec(spec, documents=...)` — Send to LLM (auto-dispatches text/structured)
+- `render_text(spec, documents=...)` — Render prompt to string (multi-line fields excluded, shown as references)
+- `render_multi_line_messages(spec)` — Returns `list[tuple[str, str]]` of `(field_name, xml_block)` pairs for multi-line fields
+- `render_preview(spec_class)` — Preview with placeholder values; multi-line fields shown as XML blocks before `---` separator, then the main prompt
+- `Conversation.send_spec(spec, documents=...)` — Send to LLM (auto-dispatches text/structured); multi-line fields added as user messages automatically
 
 **Output Structure:**
 - `output_structure` enables `<result>` tag wrapping and stop sequence at `</result>`
@@ -491,7 +493,10 @@ The framework must **not** implement or encourage these patterns:
 - Framework provides test harness utilities requiring zero configuration
 
 **Test-First Bug Fixing:**
-When a bug is discovered, write a failing test first. The test must fail, proving the bug exists. Only then implement the fix. After fixing, the test must pass.
+When a bug is discovered, write a failing test first. The test must assert the **correct** behavior and be marked `@pytest.mark.xfail(reason="...", strict=True)` so it proves the bug exists (xfail = expected failure). Only then implement the fix. After fixing, remove the `xfail` marker — the test becomes a permanent regression guard that prevents the bug from reappearing.
+
+**No Suppression of Tooling Warnings:**
+When linters, type checkers, semgrep, tests, or CI/CD checks report an issue, investigate it fully and fix the root cause. Never use shortcuts: no `# noqa`, `# type: ignore`, `# nosemgrep`, `pytest.skip()`, `xfail` (except for TDD bug proving above), disabling rules, commenting out code, deleting the check, or any other form of suppression. These tools detect real coding problems — silencing them hides bugs instead of fixing them. If a warning is genuinely a false positive, document why in a comment next to the narrowest possible suppression (single line, specific rule code).
 
 ### 4.3 AI-Focused Documentation
 

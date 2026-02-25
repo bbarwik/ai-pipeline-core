@@ -2,7 +2,7 @@
 # CLASSES: DocumentReader, FlowCompletion, DocumentNode
 # DEPENDS: Protocol
 # PURPOSE: Document store protocol and backends for AI pipeline flows.
-# VERSION: 0.10.4
+# VERSION: 0.10.5
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -238,10 +238,11 @@ def test_set_and_get_document_store():
 
 ## Error Examples
 
-**Create document store rejects non settings** (`tests/document_store/test_local.py:419`)
+**Attachment path traversal rejected** (`tests/document_store/test_local.py:1034`)
 
 ```python
-def test_create_document_store_rejects_non_settings(self):
-    with pytest.raises(AttributeError):
-        create_document_store("not_settings")  # type: ignore[arg-type]
+@pytest.mark.asyncio
+async def test_attachment_path_traversal_rejected(self, store: LocalDocumentStore):
+    with pytest.raises(Exception, match="path traversal"):
+        Attachment(name="../../../etc/passwd", content=b"evil")
 ```

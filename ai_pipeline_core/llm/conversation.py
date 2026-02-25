@@ -26,7 +26,7 @@ from ai_pipeline_core._llm_core.types import TOKENS_PER_IMAGE, ContentPart, Imag
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm._images import validated_binary_parts
 from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.prompt_compiler.render import RESULT_CLOSE, _extract_result, render_text
+from ai_pipeline_core.prompt_compiler.render import RESULT_CLOSE, _extract_result, render_multi_line_messages, render_text
 from ai_pipeline_core.prompt_compiler.spec import PromptSpec
 
 from ._substitutor import URLSubstitutor
@@ -579,6 +579,12 @@ class Conversation(BaseModel, Generic[T]):
             effective_include_docs = bool(spec.input_documents) and documents is not None
         else:
             effective_include_docs = include_input_documents
+
+        # Add multi-line field values as a single user message before the prompt
+        ml_messages = render_multi_line_messages(spec)
+        if ml_messages:
+            combined = "\n".join(xml_block for _, xml_block in ml_messages)
+            conv = conv.model_copy(update={"messages": conv.messages + (_UserMessage(combined),)})
 
         prompt_text = render_text(spec, documents=documents, include_input_documents=effective_include_docs)
         trace_purpose = purpose or spec.__class__.__name__

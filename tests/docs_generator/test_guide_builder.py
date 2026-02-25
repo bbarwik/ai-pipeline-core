@@ -330,7 +330,7 @@ def test_flatten_methods_external_stubs_skipped():
 
 
 def test_extract_rules_finds_constraint_keywords():
-    cls = _make_class(docstring="Must validate input.\nCannot be empty.\nNormal text here.")
+    cls = _make_class(docstring="Must validate input.\nCannot be empty.\n\nNormal text here.")
     rules = extract_rules([cls])
     assert len(rules) == 2
     assert "Must validate input." in rules
@@ -348,6 +348,32 @@ def test_extract_rules_empty_docstring():
     cls = _make_class(docstring="")
     rules = extract_rules([cls])
     assert rules == []
+
+
+def test_extract_rules_multiline_continuation():
+    """Rules spanning multiple lines are joined into a single rule."""
+    cls = _make_class(docstring="Must include all Guides — missing Guides\ncause hallucinated definitions.\n\nNormal text here.")
+    rules = extract_rules([cls])
+    assert len(rules) == 1
+    assert rules[0] == "Must include all Guides — missing Guides cause hallucinated definitions."
+
+
+def test_extract_rules_multiline_stops_at_next_keyword():
+    """Continuation stops when the next constraint keyword is reached."""
+    cls = _make_class(docstring="Must validate input\nfor correctness.\nCannot be empty.\nAlways check twice.")
+    rules = extract_rules([cls])
+    assert len(rules) == 3
+    assert rules[0] == "Must validate input for correctness."
+    assert rules[1] == "Cannot be empty."
+    assert rules[2] == "Always check twice."
+
+
+def test_extract_rules_multiline_stops_at_blank_line():
+    """Continuation stops at a blank line."""
+    cls = _make_class(docstring="Must validate input\nfor correctness.\n\nSome other paragraph.")
+    rules = extract_rules([cls])
+    assert len(rules) == 1
+    assert rules[0] == "Must validate input for correctness."
 
 
 # ---------------------------------------------------------------------------
