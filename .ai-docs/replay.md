@@ -2,7 +2,7 @@
 # CLASSES: DocumentRef, HistoryEntry, ConversationReplay, TaskReplay, FlowReplay
 # DEPENDS: BaseModel
 # PURPOSE: First-class replay system for AI pipeline debugging.
-# VERSION: 0.11.0
+# VERSION: 0.11.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

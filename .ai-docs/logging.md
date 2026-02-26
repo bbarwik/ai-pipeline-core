@@ -1,7 +1,7 @@
 # MODULE: logging
 # CLASSES: LoggingConfig
 # PURPOSE: Logging infrastructure for AI Pipeline Core.
-# VERSION: 0.11.0
+# VERSION: 0.11.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

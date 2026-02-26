@@ -717,6 +717,12 @@ result = await client.run(
 
 The client defines local Document subclasses ("mirror types") whose `class_name` must match the remote pipeline's document types exactly. `run_remote_deployment()` is also available as a lower-level function.
 
+**Deterministic run_id**: `RemoteDeployment` derives a deterministic `run_id` from the caller's run_id + document SHA256s + options fingerprint (format: `{run_id}-{sha256[:8]}`). Same inputs always produce the same derived run_id, enabling worker-side flow resume while preventing `task_results` key collisions.
+
+**ClickHouse fallback**: When the remote worker completes but `state.result()` fails (e.g., caller lacks GCS credentials for Prefect's result storage), the framework falls back to reading from the ClickHouse `task_results` table. This requires both the worker and caller to have `CLICKHOUSE_HOST` configured. The worker writes results to `task_results` automatically whenever ClickHouse is available, independent of Pub/Sub configuration.
+
+**run_id validation**: All `run_id` values are validated at entry points — alphanumeric characters, underscores, and hyphens only, max 100 characters.
+
 ### Prompt Compiler
 
 Type-safe prompt specifications that replace Jinja2 templates. Every piece of prompt content is a class or class attribute, validated at definition time (import time).

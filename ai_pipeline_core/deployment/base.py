@@ -11,6 +11,7 @@ creating unified, type-safe pipeline deployments with:
 import asyncio
 import contextlib
 import hashlib
+import json
 import os
 from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
@@ -51,9 +52,11 @@ from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import Settings, settings
 
 from ._helpers import (
+    _CLI_FIELDS,
     class_name_to_deployment_name,
     extract_generic_params,
     init_observability_best_effort,
+    validate_run_id,
 )
 from ._publishers import NoopPublisher
 from ._resolve import DocumentInput, _OutputDocument, build_output_document, resolve_document_inputs
@@ -64,6 +67,7 @@ from ._types import (
     ProgressEvent,
     ResultPublisher,
     StartedEvent,
+    TaskResultStore,
 )
 from .contract import FlowStatus
 from .progress import _flow_context, _safe_uuid
@@ -95,26 +99,34 @@ def _create_publisher(settings_obj: Settings, service_type: str) -> ResultPublis
     if not service_type:
         return NoopPublisher()
     if settings_obj.pubsub_project_id and settings_obj.pubsub_topic_id:
-        if not settings_obj.clickhouse_host:
-            raise ValueError("PubSubPublisher requires CLICKHOUSE_HOST for task_results durability")
         from ._pubsub import PubSubPublisher
-        from ._task_results import ClickHouseTaskResultStore
 
-        result_store = ClickHouseTaskResultStore(
-            host=settings_obj.clickhouse_host,
-            port=settings_obj.clickhouse_port,
-            database=settings_obj.clickhouse_database,
-            username=settings_obj.clickhouse_user,
-            password=settings_obj.clickhouse_password,
-            secure=settings_obj.clickhouse_secure,
-        )
         return PubSubPublisher(
             project_id=settings_obj.pubsub_project_id,
             topic_id=settings_obj.pubsub_topic_id,
             service_type=service_type,
-            result_store=result_store,
         )
     return NoopPublisher()
+
+
+def _create_task_result_store(settings_obj: Settings) -> TaskResultStore | None:
+    """Create ClickHouseTaskResultStore when ClickHouse is configured.
+
+    Independent of Pub/Sub — results are persisted for remote caller fallback
+    whenever ClickHouse is available.
+    """
+    if not settings_obj.clickhouse_host:
+        return None
+    from ._task_results import ClickHouseTaskResultStore
+
+    return ClickHouseTaskResultStore(
+        host=settings_obj.clickhouse_host,
+        port=settings_obj.clickhouse_port,
+        database=settings_obj.clickhouse_database,
+        username=settings_obj.clickhouse_user,
+        password=settings_obj.clickhouse_password,
+        secure=settings_obj.clickhouse_secure,
+    )
 
 
 _HEARTBEAT_INTERVAL_SECONDS = 30
@@ -133,10 +145,6 @@ def _build_summary_generator() -> SummaryGenerator | None:
         return await generate_document_summary(name, excerpt, model=model)
 
     return _generator
-
-
-# Fields added by run_cli()'s _CliOptions that should not affect the run scope fingerprint
-_CLI_FIELDS: frozenset[str] = frozenset({"working_directory", "run_id", "start", "end", "no_trace"})
 
 
 def _compute_run_scope(run_id: str, documents: list[Document], options: FlowOptions) -> RunScope:
@@ -424,6 +432,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         publisher: ResultPublisher | None = None,
         start_step: int = 1,
         end_step: int | None = None,
+        task_result_store: TaskResultStore | None = None,
     ) -> TResult:
         """Execute flows with resume, per-flow uploads, and step control.
 
@@ -435,10 +444,13 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             publisher: Lifecycle event publisher (defaults to NoopPublisher).
             start_step: First flow to execute (1-indexed, default 1).
             end_step: Last flow to execute (inclusive, default all flows).
+            task_result_store: Durable result backup store (writes result for remote caller fallback).
 
         Returns:
             Typed deployment result built from all pipeline documents.
         """
+        validate_run_id(run_id)
+
         if publisher is None:
             publisher = NoopPublisher()
         store = get_document_store()
@@ -670,6 +682,15 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 "output_document_refs": list(last_flow_output_sha256s),
             }
 
+            # Persist result to ClickHouse for remote caller fallback (independent of publisher)
+            if task_result_store:
+                try:
+                    result_json = json.dumps(result.model_dump(), default=str)
+                    chain_context_json = json.dumps(chain_context, default=str)
+                    await task_result_store.write_result(run_id, result_json, chain_context_json)
+                except Exception as e:
+                    logger.warning("Task result store write failed for run_id=%s (non-blocking): %s", run_id, e)
+
             # Publish task.completed event
             await publisher.publish_completed(
                 CompletedEvent(
@@ -803,6 +824,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             os.environ["LMNR_SESSION_ID"] = flow_run_id
 
             publisher = _create_publisher(settings, deployment.pubsub_service_type)
+            task_result_store = _create_task_result_store(settings)
             store = create_document_store(
                 settings,
                 summary_generator=_build_summary_generator(),
@@ -822,11 +844,20 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                         deployment._all_document_types(),
                         start_step_input_types=start_step_input_types,
                     )
-                    result = await deployment.run(run_id, typed_docs, cast(Any, options), context, publisher=publisher)
+                    result = await deployment.run(
+                        run_id,
+                        typed_docs,
+                        cast(Any, options),
+                        context,
+                        publisher=publisher,
+                        task_result_store=task_result_store,
+                    )
                     Laminar.set_span_output(result.model_dump())
                     return result
             finally:
                 await publisher.close()
+                if task_result_store:
+                    task_result_store.shutdown()
                 store.shutdown()
                 set_document_store(None)
 

@@ -23,7 +23,6 @@ from ._types import (
     FailedEvent,
     ProgressEvent,
     StartedEvent,
-    TaskResultStore,
 )
 
 logger = get_pipeline_logger(__name__)
@@ -71,12 +70,10 @@ class PubSubPublisher:
         project_id: str,
         topic_id: str,
         service_type: str,
-        result_store: TaskResultStore,
     ) -> None:
         self._client = PublisherClient()
         self._topic_path: str = self._client.topic_path(project_id, topic_id)
         self._service_type = service_type
-        self._result_store = result_store
         self._sequencer = TimestampSequencer()
 
     def _build_envelope(self, event_type: EventType, run_id: str, data: dict[str, Any]) -> bytes:
@@ -183,10 +180,7 @@ class PubSubPublisher:
         await self._publish(data, self._make_attributes(EventType.HEARTBEAT, run_id), critical=False)
 
     async def publish_completed(self, event: CompletedEvent) -> None:
-        """Publish task.completed event (critical). Writes to result store first."""
-        result_json = json.dumps(event.result, default=str)
-        chain_context_json = json.dumps(event.chain_context, default=str)
-
+        """Publish task.completed event (critical)."""
         data = self._build_envelope(
             EventType.COMPLETED,
             event.run_id,
@@ -200,12 +194,6 @@ class PubSubPublisher:
 
         if len(data) > MAX_PUBSUB_MESSAGE_BYTES:
             raise ResultTooLargeError(f"Completed event ({len(data)} bytes) exceeds {MAX_PUBSUB_MESSAGE_BYTES} byte Pub/Sub limit")
-
-        # Best-effort write to durable store — ClickHouse failure must not block event delivery
-        try:
-            await self._result_store.write_result(event.run_id, result_json, chain_context_json)
-        except Exception as e:
-            logger.warning("Task result store write failed for %s (non-blocking): %s", event.run_id, e)
 
         await self._publish(data, self._make_attributes(EventType.COMPLETED, event.run_id), critical=True)
 
@@ -223,8 +211,7 @@ class PubSubPublisher:
         await self._publish(data, self._make_attributes(EventType.FAILED, event.run_id), critical=True)
 
     async def close(self) -> None:
-        """Shut down the result store executor and close the Pub/Sub client."""
-        self._result_store.shutdown()
+        """Close the Pub/Sub client."""
         try:
             self._client.stop()
         except Exception as e:

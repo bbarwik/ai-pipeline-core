@@ -97,7 +97,7 @@ repos:
           - pre-commit
       - id: check-ai-docs
         name: check .ai-docs/ freshness
-        entry: python -m ai_pipeline_core.docs_generator check
+        entry: scripts/check_ai_docs_freshness.sh
         language: system
         pass_filenames: false
         files: \.py$

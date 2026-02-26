@@ -6,16 +6,17 @@ tracing integration, serialization round-trips, and edge cases.
 
 # pyright: reportPrivateUsage=false
 
+import json
 import types
 from typing import Any, ClassVar
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
 from ai_pipeline_core import DeploymentContext, DeploymentResult, Document, FlowOptions
 from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
-from ai_pipeline_core.deployment.remote import RemoteDeployment
+from ai_pipeline_core.deployment.remote import RemoteDeployment, _get_completed_result, _read_from_task_results
 from ai_pipeline_core.observability.tracing import TraceLevel
 
 
@@ -675,3 +676,265 @@ class TestReportedBugs:
         # Whether accepted or rejected, this documents the behavior
         # The project uses PEP 604 syntax (A | B), so typing.Union is not required
         assert isinstance(accepted, bool)  # always passes — documents behavior
+
+
+# ===================================================================
+# 9. Deterministic remote run_id
+# ===================================================================
+
+from ai_pipeline_core.deployment.remote import _derive_remote_run_id
+
+
+class TestDeriveRemoteRunId:
+    """Tests for deterministic run_id generation from inputs."""
+
+    def test_deterministic_same_inputs(self):
+        """Same documents + options → same derived run_id."""
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        opts = FlowOptions()
+        id1 = _derive_remote_run_id("base-run", [doc], opts)
+        id2 = _derive_remote_run_id("base-run", [doc], opts)
+        assert id1 == id2
+
+    def test_different_docs_different_id(self):
+        """Different document content → different derived run_id."""
+        doc_a = AlphaDoc.create_root(name="a.txt", content="aaa", reason="test")
+        doc_b = AlphaDoc.create_root(name="b.txt", content="bbb", reason="test")
+        opts = FlowOptions()
+        id_a = _derive_remote_run_id("base-run", [doc_a], opts)
+        id_b = _derive_remote_run_id("base-run", [doc_b], opts)
+        assert id_a != id_b
+
+    def test_different_options_different_id(self):
+        """Different options → different derived run_id."""
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+
+        class CustomOptions(FlowOptions):
+            budget: float = 10.0
+
+        opts1 = CustomOptions(budget=10.0)
+        opts2 = CustomOptions(budget=20.0)
+        id1 = _derive_remote_run_id("base-run", [doc], opts1)
+        id2 = _derive_remote_run_id("base-run", [doc], opts2)
+        assert id1 != id2
+
+    def test_format_starts_with_base_run_id(self):
+        """Derived run_id starts with the user's base run_id."""
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        derived = _derive_remote_run_id("my-project", [doc], FlowOptions())
+        assert derived.startswith("my-project-")
+
+    def test_format_alphanumeric_hyphen(self):
+        """Derived run_id matches the allowed pattern."""
+        import re
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        derived = _derive_remote_run_id("run-123", [doc], FlowOptions())
+        assert re.match(r"^[a-zA-Z0-9_-]+$", derived)
+
+    def test_empty_docs_deterministic(self):
+        """Empty documents list still produces deterministic run_id."""
+        opts = FlowOptions()
+        id1 = _derive_remote_run_id("base", [], opts)
+        id2 = _derive_remote_run_id("base", [], opts)
+        assert id1 == id2
+        assert id1.startswith("base-")
+
+    def test_different_base_run_ids(self):
+        """Different base run_id → different derived run_id even with same inputs."""
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        opts = FlowOptions()
+        id_a = _derive_remote_run_id("project-a", [doc], opts)
+        id_b = _derive_remote_run_id("project-b", [doc], opts)
+        assert id_a != id_b
+
+    async def test_execute_passes_derived_run_id_to_prefect(self):
+        """_execute() passes derived (not raw) run_id in Prefect parameters."""
+
+        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello world", reason="test input")
+        with patch(_REMOTE_RUN) as mock_run:
+            mock_run.return_value = SimpleResult(success=True)
+            await Foo().run("my-project", [doc], FlowOptions())
+
+        params = mock_run.call_args[0][1]
+        # run_id in parameters should NOT be the raw "my-project" but derived
+        assert params["run_id"] != "my-project"
+        assert params["run_id"].startswith("my-project-")
+        assert len(params["run_id"]) > len("my-project-")
+        # run_id kwarg must also be passed for ClickHouse fallback wiring
+        assert mock_run.call_args.kwargs["run_id"] == params["run_id"]
+
+    def test_cli_fields_excluded_from_fingerprint(self):
+        """CLI-specific fields (working_directory, start, end) don't affect the derived run_id."""
+        from pathlib import Path
+
+        class CliOptions(FlowOptions):
+            working_directory: Path = Path(".")
+            start: str = ""
+            budget: float = 10.0
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        id_a = _derive_remote_run_id("run", [doc], CliOptions(working_directory=Path("/home/user/project-a")))
+        id_b = _derive_remote_run_id("run", [doc], CliOptions(working_directory=Path("/other/path")))
+        assert id_a == id_b, "working_directory is a CLI field and must not affect the fingerprint"
+
+        id_c = _derive_remote_run_id("run", [doc], CliOptions(budget=20.0))
+        assert id_a != id_c, "non-CLI fields must affect the fingerprint"
+
+
+# ===================================================================
+# 10. ClickHouse fallback in remote polling
+# ===================================================================
+
+
+class TestGetCompletedResult:
+    """Tests for _get_completed_result ClickHouse fallback logic."""
+
+    async def test_returns_state_result_on_success(self):
+        """When state.result() succeeds, return its value directly."""
+        state = AsyncMock()
+        state.result.return_value = {"success": True}
+        result = await _get_completed_result(state, run_id="run-1", deployment_name="test")
+        assert result == {"success": True}
+
+    async def test_fallback_to_clickhouse_on_state_failure(self):
+        """When state.result() fails and ClickHouse has data, return ClickHouse data."""
+        state = AsyncMock()
+        state.result.side_effect = RuntimeError("GCS credentials error")
+
+        ch_data = {"success": True, "report": "from-clickhouse"}
+        with (
+            patch("ai_pipeline_core.deployment.remote.settings") as mock_settings,
+            patch("ai_pipeline_core.deployment.remote._read_from_task_results", return_value=ch_data) as mock_read,
+        ):
+            mock_settings.clickhouse_host = "clickhouse.local"
+            result = await _get_completed_result(state, run_id="run-1", deployment_name="test")
+
+        assert result == ch_data
+        mock_read.assert_awaited_once_with("run-1")
+
+    async def test_re_raises_when_no_run_id(self):
+        """When state.result() fails and run_id is None, re-raise original error."""
+        state = AsyncMock()
+        state.result.side_effect = RuntimeError("GCS error")
+
+        with pytest.raises(RuntimeError, match="GCS error"):
+            await _get_completed_result(state, run_id=None, deployment_name="test")
+
+    async def test_re_raises_when_no_clickhouse(self):
+        """When state.result() fails and clickhouse_host is empty, re-raise original error."""
+        state = AsyncMock()
+        state.result.side_effect = RuntimeError("GCS error")
+
+        with (
+            patch("ai_pipeline_core.deployment.remote.settings") as mock_settings,
+        ):
+            mock_settings.clickhouse_host = ""
+            with pytest.raises(RuntimeError, match="GCS error"):
+                await _get_completed_result(state, run_id="run-1", deployment_name="test")
+
+    async def test_re_raises_when_clickhouse_returns_none(self):
+        """When ClickHouse fallback returns None, re-raise original error."""
+        state = AsyncMock()
+        state.result.side_effect = RuntimeError("GCS error")
+
+        with (
+            patch("ai_pipeline_core.deployment.remote.settings") as mock_settings,
+            patch("ai_pipeline_core.deployment.remote._read_from_task_results", return_value=None),
+        ):
+            mock_settings.clickhouse_host = "clickhouse.local"
+            with pytest.raises(RuntimeError, match="GCS error"):
+                await _get_completed_result(state, run_id="run-1", deployment_name="test")
+
+
+class TestReadFromTaskResults:
+    """Tests for _read_from_task_results best-effort ClickHouse read."""
+
+    async def test_returns_parsed_result(self):
+        """Returns parsed JSON when record exists."""
+        mock_record = MagicMock()
+        mock_record.result = json.dumps({"success": True})
+
+        mock_store = MagicMock()
+        mock_store.read_result = AsyncMock(return_value=mock_record)
+        mock_store.shutdown = MagicMock()
+
+        with patch("ai_pipeline_core.deployment.remote.ClickHouseTaskResultStore", return_value=mock_store):
+            result = await _read_from_task_results("run-1")
+
+        assert result == {"success": True}
+        mock_store.shutdown.assert_called_once()
+
+    async def test_returns_none_when_no_record(self):
+        """Returns None when ClickHouse has no record."""
+        mock_store = MagicMock()
+        mock_store.read_result = AsyncMock(return_value=None)
+        mock_store.shutdown = MagicMock()
+
+        with patch("ai_pipeline_core.deployment.remote.ClickHouseTaskResultStore", return_value=mock_store):
+            result = await _read_from_task_results("run-1")
+
+        assert result is None
+        mock_store.shutdown.assert_called_once()
+
+    async def test_returns_none_on_exception(self):
+        """Returns None and logs warning when ClickHouse read fails."""
+        with patch("ai_pipeline_core.deployment.remote.ClickHouseTaskResultStore", side_effect=OSError("connection refused")):
+            result = await _read_from_task_results("run-1")
+
+        assert result is None
+
+    async def test_shuts_down_store_even_on_read_error(self):
+        """Store is shut down even when read_result raises."""
+        mock_store = MagicMock()
+        mock_store.read_result = AsyncMock(side_effect=RuntimeError("query failed"))
+        mock_store.shutdown = MagicMock()
+
+        with patch("ai_pipeline_core.deployment.remote.ClickHouseTaskResultStore", return_value=mock_store):
+            result = await _read_from_task_results("run-1")
+
+        assert result is None
+        mock_store.shutdown.assert_called_once()
+
+
+# ===================================================================
+# 11. validate_run_id wiring at entry points
+# ===================================================================
+
+
+class TestValidateRunIdWiring:
+    """Verify validate_run_id is actually called at entry points."""
+
+    async def test_remote_deployment_rejects_invalid_base_run_id(self):
+        """RemoteDeployment._execute validates the base run_id before derivation."""
+
+        class Wired(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        with pytest.raises(ValueError, match="contains invalid characters"):
+            await Wired().run("invalid run id with spaces", [doc], FlowOptions())
+
+    async def test_remote_deployment_rejects_empty_run_id(self):
+        """RemoteDeployment._execute validates empty run_id."""
+
+        class Wired2(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        with pytest.raises(ValueError, match="must not be empty"):
+            await Wired2().run("", [doc], FlowOptions())
+
+    async def test_remote_deployment_rejects_too_long_derived_run_id(self):
+        """A 92+ char base run_id produces a derived run_id exceeding 100 chars."""
+
+        class Wired3(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        long_run_id = "a" * 92  # 92 + 1 ('-') + 8 (fingerprint) = 101 > 100
+        with pytest.raises(ValueError, match="Shorten the base run_id"):
+            await Wired3().run(long_run_id, [doc], FlowOptions())

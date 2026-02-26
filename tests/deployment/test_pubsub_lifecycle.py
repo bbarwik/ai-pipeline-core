@@ -257,9 +257,7 @@ class TestPubsubLifecycle:
         completed = [e for e in events if e.event_type == EventType.COMPLETED]
         assert len(completed) == 0
 
-        # Result store should be empty — size guard fires before write_result
-        record = await real_publisher.result_store.read_result("test-run")
-        assert record is None
+        # NO completed event means publish did not happen
 
     async def test_publish_started_failure_aborts_pipeline(
         self,
@@ -267,15 +265,11 @@ class TestPubsubLifecycle:
         pubsub_memory_store: MemoryDocumentStore,
     ):
         """publish_started failure prevents any flow execution; original exception propagates."""
-        from ai_pipeline_core.deployment._task_results import MemoryTaskResultStore
-
-        result_store = MemoryTaskResultStore()
         topic_id = pubsub_topic.topic_path.split("/")[-1]
         failing_publisher = FailingStartedPublisher(
             project_id=pubsub_topic.project_id,
             topic_id=topic_id,
             service_type="test-service",
-            result_store=result_store,
         )
 
         deployment = TwoFlowDeployment()

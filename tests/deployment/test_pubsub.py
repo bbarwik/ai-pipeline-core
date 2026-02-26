@@ -106,10 +106,8 @@ class TestClassifyError:
         assert _classify_error(CustomLLMError("fail")) == ErrorCode.PROVIDER_ERROR
 
 
-def _make_pubsub_publisher() -> tuple[PubSubPublisher, MagicMock, AsyncMock]:
-    """Create a PubSubPublisher with mocked pubsub_v1 and result_store."""
-    mock_result_store = AsyncMock()
-
+def _make_pubsub_publisher() -> tuple[PubSubPublisher, MagicMock]:
+    """Create a PubSubPublisher with mocked pubsub_v1."""
     mock_client = MagicMock()
     mock_client.topic_path.return_value = "projects/test/topics/events"
 
@@ -117,10 +115,9 @@ def _make_pubsub_publisher() -> tuple[PubSubPublisher, MagicMock, AsyncMock]:
     pub._client = mock_client
     pub._topic_path = "projects/test/topics/events"
     pub._service_type = "research"
-    pub._result_store = mock_result_store
     pub._sequencer = TimestampSequencer()
 
-    return pub, mock_client, mock_result_store
+    return pub, mock_client
 
 
 class TestPubSubPublisher:
@@ -128,7 +125,7 @@ class TestPubSubPublisher:
 
     def test_build_envelope_structure(self):
         """_build_envelope produces a valid CloudEvents 1.0 envelope."""
-        pub, _, _ = _make_pubsub_publisher()
+        pub, _ = _make_pubsub_publisher()
         data_bytes = pub._build_envelope("task.started", "run-1", {"flow_run_id": "fr-1"})
         envelope = json.loads(data_bytes)
 
@@ -147,14 +144,14 @@ class TestPubSubPublisher:
 
     def test_build_envelope_seq_is_monotonic(self):
         """Sequential envelopes have strictly increasing seq values."""
-        pub, _, _ = _make_pubsub_publisher()
+        pub, _ = _make_pubsub_publisher()
         env1 = json.loads(pub._build_envelope("task.started", "run-1", {}))
         env2 = json.loads(pub._build_envelope("task.progress", "run-1", {}))
         assert env2["data"]["seq"] > env1["data"]["seq"]
 
     async def test_publish_started_is_critical(self):
         """publish_started uses critical publish path."""
-        pub, mock_client, _ = _make_pubsub_publisher()
+        pub, mock_client = _make_pubsub_publisher()
         event = StartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
 
         mock_future = asyncio.Future()
@@ -168,7 +165,7 @@ class TestPubSubPublisher:
 
     async def test_publish_progress_is_noncritical(self):
         """publish_progress uses non-critical publish path."""
-        pub, mock_client, _ = _make_pubsub_publisher()
+        pub, mock_client = _make_pubsub_publisher()
         event = ProgressEvent(
             run_id="run-1",
             flow_run_id="fr-1",
@@ -190,7 +187,7 @@ class TestPubSubPublisher:
 
     async def test_publish_heartbeat(self):
         """publish_heartbeat publishes task.heartbeat event."""
-        pub, mock_client, _ = _make_pubsub_publisher()
+        pub, mock_client = _make_pubsub_publisher()
 
         mock_future = asyncio.Future()
         mock_future.set_result("msg-id")
@@ -203,7 +200,7 @@ class TestPubSubPublisher:
 
     async def test_heartbeat_contains_timestamp(self):
         """publish_heartbeat includes a timestamp field in the data payload."""
-        pub, mock_client, _ = _make_pubsub_publisher()
+        pub, mock_client = _make_pubsub_publisher()
 
         mock_future = asyncio.Future()
         mock_future.set_result("msg-id")
@@ -216,58 +213,9 @@ class TestPubSubPublisher:
         # Verify it's an ISO format string
         assert "T" in envelope["data"]["timestamp"]
 
-    async def test_publish_completed_writes_before_publish(self):
-        """publish_completed writes to result_store BEFORE publishing to Pub/Sub."""
-        pub, mock_client, mock_result_store = _make_pubsub_publisher()
-
-        call_order = []
-        mock_result_store.write_result.side_effect = lambda *a, **kw: call_order.append("write")
-
-        mock_future = asyncio.Future()
-        mock_future.set_result("msg-id")
-        mock_client.publish.side_effect = lambda *a, **kw: (call_order.append("publish"), mock_future)[1]
-
-        event = CompletedEvent(
-            run_id="run-1",
-            flow_run_id="fr-1",
-            result={"success": True},
-            chain_context={"version": 1},
-            actual_cost=0.0,
-        )
-        await pub.publish_completed(event)
-
-        assert call_order == ["write", "publish"]
-        mock_result_store.write_result.assert_called_once()
-
-    async def test_publish_completed_continues_when_write_result_fails(self):
-        """publish_completed still publishes to Pub/Sub even when write_result raises."""
-        pub, mock_client, mock_result_store = _make_pubsub_publisher()
-
-        mock_result_store.write_result.side_effect = RuntimeError("ClickHouse down")
-
-        mock_future = asyncio.Future()
-        mock_future.set_result("msg-id")
-        mock_client.publish.return_value = mock_future
-
-        event = CompletedEvent(
-            run_id="run-1",
-            flow_run_id="fr-1",
-            result={"success": True},
-            chain_context={"version": 1},
-            actual_cost=0.0,
-        )
-        await pub.publish_completed(event)
-
-        # write_result was called and failed
-        mock_result_store.write_result.assert_called_once()
-        # But publish still happened
-        mock_client.publish.assert_called_once()
-        call_kwargs = mock_client.publish.call_args
-        assert call_kwargs[1]["event_type"] == "task.completed"
-
     async def test_publish_completed_size_guard(self):
         """publish_completed raises ResultTooLargeError for oversized messages."""
-        pub, mock_client, mock_result_store = _make_pubsub_publisher()
+        pub, mock_client = _make_pubsub_publisher()
 
         huge_result = {"data": "x" * (MAX_PUBSUB_MESSAGE_BYTES + 1)}
         event = CompletedEvent(
@@ -281,12 +229,11 @@ class TestPubSubPublisher:
         with pytest.raises(ResultTooLargeError):
             await pub.publish_completed(event)
 
-        # Result store should NOT be written for oversized messages
-        mock_result_store.write_result.assert_not_called()
+        mock_client.publish.assert_not_called()
 
     async def test_publish_failed_is_critical(self):
         """publish_failed uses critical publish path."""
-        pub, mock_client, _ = _make_pubsub_publisher()
+        pub, mock_client = _make_pubsub_publisher()
         event = FailedEvent(
             run_id="run-1",
             flow_run_id="fr-1",
@@ -305,7 +252,7 @@ class TestPubSubPublisher:
 
     def test_make_attributes(self):
         """_make_attributes returns correct Pub/Sub message attributes."""
-        pub, _, _ = _make_pubsub_publisher()
+        pub, _ = _make_pubsub_publisher()
         attrs = pub._make_attributes("task.started", "run-1")
         assert attrs == {
             "service_type": "research",
@@ -315,7 +262,7 @@ class TestPubSubPublisher:
 
     async def test_noncritical_failure_logs_warning(self):
         """Non-critical publish failure is logged but does not raise."""
-        pub, mock_client, _ = _make_pubsub_publisher()
+        pub, mock_client = _make_pubsub_publisher()
 
         mock_future = asyncio.Future()
         mock_future.set_exception(RuntimeError("network error"))
@@ -326,7 +273,7 @@ class TestPubSubPublisher:
 
     async def test_critical_retries_on_failure(self):
         """Critical publish retries with exponential backoff."""
-        pub, mock_client, _ = _make_pubsub_publisher()
+        pub, mock_client = _make_pubsub_publisher()
 
         # First call fails, second succeeds
         fail_future = asyncio.Future()
@@ -344,7 +291,7 @@ class TestPubSubPublisher:
 
     async def test_critical_exhausts_retries(self):
         """Critical publish raises after exhausting all retries."""
-        pub, mock_client, _ = _make_pubsub_publisher()
+        pub, mock_client = _make_pubsub_publisher()
 
         # All calls fail
         def make_fail_future(*args, **kwargs):

@@ -25,7 +25,7 @@ from ai_pipeline_core import (
     pipeline_flow,
 )
 from ai_pipeline_core.deployment import DeploymentContext
-from ai_pipeline_core.deployment._task_results import MemoryTaskResultStore
+
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.document_store._protocol import set_document_store
 
@@ -204,12 +204,10 @@ def _make_live_publisher(resources: LivePubSubResources) -> PubSubPublisher:
     # Ensure emulator env var is NOT set so we hit real GCP
     saved = os.environ.pop("PUBSUB_EMULATOR_HOST", None)
     try:
-        result_store = MemoryTaskResultStore()
         publisher = PubSubPublisher(
             project_id=resources.project_id,
             topic_id=resources.topic_id,
             service_type="test-live-service",
-            result_store=result_store,
         )
     finally:
         if saved is not None:

@@ -28,7 +28,7 @@ from .conftest import (
 )
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
-from ai_pipeline_core.deployment._task_results import MemoryTaskResultStore
+
 
 pytestmark = pytest.mark.pubsub
 
@@ -39,16 +39,14 @@ def _progress_events(events: list[CollectedEvent]) -> list[CollectedEvent]:
 
 
 def _make_fresh_publisher(pubsub_topic: PubSubTestResources) -> PublisherWithStore:
-    """Create a new PubSubPublisher + MemoryTaskResultStore for the second run."""
-    result_store = MemoryTaskResultStore()
+    """Create a new PubSubPublisher for the second run."""
     topic_id = pubsub_topic.topic_path.split("/")[-1]
     publisher = PubSubPublisher(
         project_id=pubsub_topic.project_id,
         topic_id=topic_id,
         service_type="test-service",
-        result_store=result_store,
     )
-    return PublisherWithStore(publisher=publisher, result_store=result_store)
+    return PublisherWithStore(publisher=publisher)
 
 
 class TestResumedFlowCachedStatus:

@@ -60,14 +60,18 @@ class TestCreatePublisher:
         publisher = _create_publisher(s, "")
         assert isinstance(publisher, NoopPublisher)
 
-    def test_missing_clickhouse_raises(self):
+    def test_pubsub_without_clickhouse_creates_publisher(self):
+        """Pub/Sub no longer requires ClickHouse — PubSubPublisher is pure event transport."""
         s = Settings(
             pubsub_project_id="proj",
             pubsub_topic_id="topic",
             clickhouse_host="",
         )
-        with pytest.raises(ValueError, match="CLICKHOUSE_HOST"):
-            _create_publisher(s, "svc")
+        with patch("ai_pipeline_core.deployment._pubsub.PubSubPublisher") as mock_cls:
+            mock_cls.return_value = MagicMock()
+            publisher = _create_publisher(s, "svc")
+            mock_cls.assert_called_once()
+            assert publisher is mock_cls.return_value
 
 
 # ---------------------------------------------------------------------------

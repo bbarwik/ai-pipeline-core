@@ -13,7 +13,7 @@ import pytest
 from google.api_core.exceptions import GoogleAPICallError
 
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
-from ai_pipeline_core.deployment._task_results import MemoryTaskResultStore
+
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 
 from .conftest import (
@@ -82,15 +82,13 @@ def _make_second_publisher(pubsub_topic: PubSubTestResources) -> tuple[PubSubTes
         subscriber_client=sub_client,
     )
 
-    result_store = MemoryTaskResultStore()
     publisher = PubSubPublisher(
         project_id=pubsub_topic.project_id,
         topic_id=topic_id,
         service_type="test-service",
-        result_store=result_store,
     )
 
-    return resources, PublisherWithStore(publisher=publisher, result_store=result_store)
+    return resources, PublisherWithStore(publisher=publisher)
 
 
 class TestChainContext:

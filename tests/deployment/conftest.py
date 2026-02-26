@@ -29,7 +29,6 @@ from ai_pipeline_core import (
 )
 
 from ai_pipeline_core.deployment import DeploymentContext
-from ai_pipeline_core.deployment._task_results import MemoryTaskResultStore
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.document_store._protocol import set_document_store
 
@@ -249,6 +248,7 @@ async def run_pipeline(
     docs: list[Document] | None = None,
     start_step: int = 1,
     end_step: int | None = None,
+    task_result_store: Any = None,
 ) -> PubsubResult:
     """Run a pipeline with the given publisher and store."""
     if docs is None:
@@ -256,6 +256,8 @@ async def run_pipeline(
     kwargs: dict[str, Any] = {"start_step": start_step}
     if end_step is not None:
         kwargs["end_step"] = end_step
+    if task_result_store is not None:
+        kwargs["task_result_store"] = task_result_store
     return await deployment.run(run_id, docs, FlowOptions(), DeploymentContext(), publisher=publisher, **kwargs)
 
 
@@ -309,10 +311,9 @@ class PubSubTestResources:
 
 @dataclass
 class PublisherWithStore:
-    """PubSubPublisher + its MemoryTaskResultStore for test assertions."""
+    """PubSubPublisher for test assertions."""
 
     publisher: PubSubPublisher
-    result_store: MemoryTaskResultStore
 
 
 def _decode_message(message: Any) -> CollectedEvent:
@@ -460,12 +461,10 @@ if _testcontainers_available:
     @pytest.fixture
     def real_publisher(pubsub_topic: PubSubTestResources) -> PublisherWithStore:
         """Create a PubSubPublisher pointed at the emulator topic."""
-        result_store = MemoryTaskResultStore()
         topic_id = pubsub_topic.topic_path.split("/")[-1]
         publisher = PubSubPublisher(
             project_id=pubsub_topic.project_id,
             topic_id=topic_id,
             service_type="test-service",
-            result_store=result_store,
         )
-        return PublisherWithStore(publisher=publisher, result_store=result_store)
+        return PublisherWithStore(publisher=publisher)

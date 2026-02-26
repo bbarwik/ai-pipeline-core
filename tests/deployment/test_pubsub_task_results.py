@@ -1,8 +1,8 @@
-"""Tests for task_results durability backup and reconciliation scenarios.
+"""Tests for task_results durability — result written by PipelineDeployment.run().
 
-Verifies that PubSubPublisher writes results to TaskResultStore, handles store
-failures gracefully, and supports reconciliation when Pub/Sub publish fails
-after a successful result store write.
+Verifies that run() writes results to TaskResultStore when provided,
+handles store failures gracefully, and supports reconciliation when
+Pub/Sub publish fails after a successful result store write.
 """
 
 # pyright: reportPrivateUsage=false, reportArgumentType=false, reportUnusedClass=false
@@ -30,7 +30,7 @@ TWO_FLOW_SUCCESS_EVENT_COUNT = 6
 
 
 class TestTaskResults:
-    """Task result store integration with real Pub/Sub emulator."""
+    """Task result store integration — result written by PipelineDeployment.run()."""
 
     async def test_result_store_contains_correct_result_and_chain_context(
         self,
@@ -40,14 +40,21 @@ class TestTaskResults:
     ):
         """Result store contains the pipeline result and chain_context after a successful run."""
         run_id = "result-store-test"
+        result_store = MemoryTaskResultStore()
         deployment = TwoFlowDeployment()
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id=run_id)
+        await run_pipeline(
+            deployment,
+            real_publisher.publisher,
+            pubsub_memory_store,
+            run_id=run_id,
+            task_result_store=result_store,
+        )
 
         # Drain events to confirm delivery
         pull_events(pubsub_topic, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
 
-        record = await real_publisher.result_store.read_result(run_id)
-        assert record is not None, "result_store should contain a record after successful pipeline run"
+        record = await result_store.read_result(run_id)
+        assert record is not None, "task_result_store should contain a record after successful pipeline run"
 
         result = json.loads(record.result)
         assert result["success"] is True
@@ -60,27 +67,31 @@ class TestTaskResults:
 
     async def test_result_store_failure_does_not_block_completed_event(
         self,
+        real_publisher: PublisherWithStore,
         pubsub_topic: PubSubTestResources,
         pubsub_memory_store,
     ):
         """A failing result store does not prevent task.completed from being published."""
 
         class FailingResultStore(MemoryTaskResultStore):
+            write_called = False
+
             async def write_result(self, run_id: str, result: str, chain_context: str) -> None:
+                self.write_called = True
                 raise RuntimeError("simulated ClickHouse failure")
 
         failing_store = FailingResultStore()
-        topic_id = pubsub_topic.topic_path.split("/")[-1]
-        publisher = PubSubPublisher(
-            project_id=pubsub_topic.project_id,
-            topic_id=topic_id,
-            service_type="test-service",
-            result_store=failing_store,
-        )
 
         deployment = TwoFlowDeployment()
-        await run_pipeline(deployment, publisher, pubsub_memory_store, run_id="failing-store-test")
+        await run_pipeline(
+            deployment,
+            real_publisher.publisher,
+            pubsub_memory_store,
+            run_id="failing-store-test",
+            task_result_store=failing_store,
+        )
 
+        assert failing_store.write_called, "write_result must have been called before publish_completed"
         events = pull_events(pubsub_topic, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
         completed_events = [e for e in events if e.event_type == EventType.COMPLETED]
         assert len(completed_events) == 1, "task.completed must still be published when result store fails"
@@ -92,7 +103,7 @@ class TestTaskResults:
     ):
         """When _publish_critical fails for completed, write_result has already succeeded.
 
-        publish_completed calls write_result BEFORE _publish_critical. So when
+        run() writes to task_result_store BEFORE publisher.publish_completed(). So when
         _publish_critical fails on the completed event, the result is already in the
         store. The exception propagates to run()'s except block, which publishes a
         FailedEvent. The consumer sees 'failed', but the result is recoverable from
@@ -100,7 +111,7 @@ class TestTaskResults:
 
         Call sequence:
         1. _publish_critical(started) -> succeeds (call_count=1)
-        2. _publish_critical(completed) -> write_result succeeds, then _publish_critical raises (call_count=2)
+        2. _publish_critical(completed) -> raises (call_count=2)
         3. run() except block -> publish_failed -> _publish_critical(failed) -> succeeds (call_count=3)
         """
         result_store = MemoryTaskResultStore()
@@ -123,7 +134,6 @@ class TestTaskResults:
             project_id=pubsub_topic.project_id,
             topic_id=topic_id,
             service_type="test-service",
-            result_store=result_store,
         )
 
         run_id = "reconciliation-test"
@@ -131,7 +141,13 @@ class TestTaskResults:
 
         # The run() will raise because publish_completed fails, and run() re-raises after publishing failed
         with pytest.raises(RuntimeError, match="simulated Pub/Sub failure"):
-            await run_pipeline(deployment, publisher, pubsub_memory_store, run_id=run_id)
+            await run_pipeline(
+                deployment,
+                publisher,
+                pubsub_memory_store,
+                run_id=run_id,
+                task_result_store=result_store,
+            )
 
         # Pull events: started + progress events + failed (completed was never published)
         # 1 started + 4 progress + 1 failed = 6
@@ -144,7 +160,7 @@ class TestTaskResults:
 
         # The key assertion: result IS in the store despite the consumer seeing 'failed'
         record = await result_store.read_result(run_id)
-        assert record is not None, "write_result succeeded before _publish_critical failed — result must be recoverable"
+        assert record is not None, "write_result succeeded before publish_completed failed — result must be recoverable"
 
         result = json.loads(record.result)
         assert result["success"] is True

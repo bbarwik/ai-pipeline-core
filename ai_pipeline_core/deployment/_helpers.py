@@ -7,6 +7,30 @@ from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
 
+_RUN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+MAX_RUN_ID_LENGTH = 100
+
+# Fields added by run_cli()'s _CliOptions that should not affect fingerprints (run scope or remote run_id)
+_CLI_FIELDS: frozenset[str] = frozenset({"working_directory", "run_id", "start", "end", "no_trace"})
+
+
+def validate_run_id(run_id: str) -> None:
+    """Validate run_id: alphanumeric + underscore + hyphen, 1-100 chars.
+
+    Must be called at deployment entry points (PipelineDeployment.run, RemoteDeployment._execute, CLI).
+    """
+    if not run_id:
+        raise ValueError("run_id must not be empty")
+    if len(run_id) > MAX_RUN_ID_LENGTH:
+        raise ValueError(
+            f"run_id '{run_id[:20]}...' is {len(run_id)} chars, max is {MAX_RUN_ID_LENGTH}. Shorten the base run_id before passing to the deployment."
+        )
+    if not _RUN_ID_PATTERN.match(run_id):
+        raise ValueError(
+            f"run_id '{run_id}' contains invalid characters. "
+            f"Only alphanumeric characters, underscores, and hyphens are allowed (pattern: {_RUN_ID_PATTERN.pattern})."
+        )
+
 
 def init_observability_best_effort() -> None:
     """Best-effort observability initialization with Laminar fallback."""

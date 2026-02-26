@@ -1,8 +1,10 @@
 """Remote deployment utilities for calling PipelineDeployment flows via Prefect."""
 
 import asyncio
+import hashlib
+import json
 import types
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
 from uuid import UUID
 
@@ -14,8 +16,9 @@ from prefect.deployments.flow_runs import run_deployment
 from prefect.exceptions import ObjectNotFound
 
 from ai_pipeline_core.deployment import DeploymentContext, DeploymentResult
-from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
+from ai_pipeline_core.deployment._helpers import _CLI_FIELDS, class_name_to_deployment_name, extract_generic_params, validate_run_id
 from ai_pipeline_core.deployment._resolve import AttachmentInput, DocumentInput
+from ai_pipeline_core.deployment._task_results import ClickHouseTaskResultStore
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
@@ -52,20 +55,59 @@ def _strip_for_prefect(serialized: dict[str, Any]) -> dict[str, Any]:
 
 
 _POLL_INTERVAL = 5.0
+_REMOTE_RUN_ID_FINGERPRINT_LENGTH = 8
+
+
+def _derive_remote_run_id(run_id: str, documents: Sequence[Document], options: FlowOptions) -> str:
+    """Deterministic run_id from caller's run_id + input fingerprint.
+
+    Same documents + options produce the same derived run_id (enables worker resume).
+    Different inputs produce different derived run_id (prevents task_results collisions).
+    CLI-specific fields (working_directory, start, end, etc.) are excluded from the
+    fingerprint to match _compute_run_scope behavior.
+    """
+    sha256s = sorted(doc.sha256 for doc in documents)
+    exclude = set(_CLI_FIELDS & set(type(options).model_fields))
+    options_json = options.model_dump_json(exclude=exclude, exclude_none=True)
+    fingerprint = hashlib.sha256(f"{':'.join(sha256s)}|{options_json}".encode()).hexdigest()[:_REMOTE_RUN_ID_FINGERPRINT_LENGTH]
+    return f"{run_id}-{fingerprint}"
+
+
+async def _get_completed_result(state: Any, *, run_id: str | None, deployment_name: str) -> Any:
+    """Get result from a completed state, falling back to ClickHouse if Prefect storage fails."""
+    try:
+        return await state.result()
+    except Exception:
+        if run_id and settings.clickhouse_host:
+            ch_result = await _read_from_task_results(run_id)
+            if ch_result is not None:
+                logger.info("Retrieved result from ClickHouse fallback for run_id=%s (deployment: %s)", run_id, deployment_name)
+                return ch_result
+            logger.warning(
+                "ClickHouse fallback found no result for run_id=%s. Ensure the remote worker has CLICKHOUSE_HOST configured.",
+                run_id,
+            )
+        raise
 
 
 async def _poll_remote_flow_run(
     client: PrefectClient,
     flow_run_id: UUID,
     deployment_name: str,
+    *,
     poll_interval: float = _POLL_INTERVAL,
     on_progress: ProgressCallback | None = None,
+    run_id: str | None = None,
 ) -> Any:
     """Poll a remote flow run until final, invoking on_progress callback with progress.
 
     Reads the remote flow run's progress labels on each poll cycle and calls
     on_progress(fraction, message) if provided. Without a callback, no progress
     is reported. Only sends 1.0 on successful completion (not failure).
+
+    When run_id is provided and the run completed successfully but state.result()
+    fails (e.g. GCS credential error), falls back to reading from ClickHouse
+    task_results table.
     """
     last_fraction = 0.0
 
@@ -81,6 +123,8 @@ async def _poll_remote_flow_run(
         if state is not None and state.is_final():
             if on_progress and state.is_completed():
                 await on_progress(1.0, f"[{deployment_name}] Completed")
+            if state.is_completed():
+                return await _get_completed_result(state, run_id=run_id, deployment_name=deployment_name)
             return await state.result()
 
         if on_progress:
@@ -100,15 +144,40 @@ async def _poll_remote_flow_run(
         await asyncio.sleep(poll_interval)
 
 
+async def _read_from_task_results(run_id: str) -> dict[str, Any] | None:
+    """Best-effort read from ClickHouse task_results as fallback for state.result() failures."""
+    try:
+        store = ClickHouseTaskResultStore(
+            host=settings.clickhouse_host,
+            port=settings.clickhouse_port,
+            database=settings.clickhouse_database,
+            username=settings.clickhouse_user,
+            password=settings.clickhouse_password,
+            secure=settings.clickhouse_secure,
+        )
+        try:
+            record = await store.read_result(run_id)
+            return json.loads(record.result) if record else None
+        finally:
+            store.shutdown()
+    except Exception as e:
+        logger.warning("ClickHouse fallback read failed for run_id=%s: %s", run_id, e)
+        return None
+
+
 async def run_remote_deployment(
     deployment_name: str,
     parameters: dict[str, Any],
     on_progress: ProgressCallback | None = None,
+    run_id: str | None = None,
 ) -> Any:
     """Run a remote Prefect deployment with optional progress callback.
 
     Creates the remote flow run immediately (timeout=0) then polls its state,
     invoking on_progress(fraction, message) on each poll cycle if provided.
+
+    When run_id is provided, it is passed to the polling function to enable
+    ClickHouse fallback for result retrieval.
     """
 
     async def _create_and_poll(client: PrefectClient, as_subflow: bool) -> Any:
@@ -119,7 +188,7 @@ async def run_remote_deployment(
             as_subflow=as_subflow,
             timeout=0,
         )
-        return await _poll_remote_flow_run(client, cast(UUID, fr.id), deployment_name, on_progress=on_progress)
+        return await _poll_remote_flow_run(client, cast(UUID, fr.id), deployment_name, on_progress=on_progress, run_id=run_id)
 
     async with get_client() as client:
         try:
@@ -238,8 +307,12 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         on_progress: ProgressCallback | None,
     ) -> TResult:
         """Serialize, call Prefect, deserialize. Wrapped with @trace in __init_subclass__."""
+        validate_run_id(run_id)
+        derived_run_id = _derive_remote_run_id(run_id, documents, options)
+        validate_run_id(derived_run_id)
+
         parameters: dict[str, Any] = {
-            "run_id": run_id,
+            "run_id": derived_run_id,
             "documents": [_strip_for_prefect(doc.serialize_model()) for doc in documents],
             "options": options,
             "context": context,
@@ -249,6 +322,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
             self.deployment_path,
             parameters,
             on_progress=on_progress,
+            run_id=derived_run_id,
         )
 
         if self.trace_cost is not None and self.trace_cost > 0:

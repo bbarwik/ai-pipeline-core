@@ -117,3 +117,62 @@ class TestInitObservabilityBestEffort:
         from ai_pipeline_core.deployment._helpers import init_observability_best_effort
 
         init_observability_best_effort()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Tests for validate_run_id
+# ---------------------------------------------------------------------------
+
+import pytest
+
+from ai_pipeline_core.deployment._helpers import validate_run_id, MAX_RUN_ID_LENGTH
+
+
+class TestValidateRunId:
+    """Tests for run_id format validation."""
+
+    def test_accepts_alphanumeric(self):
+        validate_run_id("research123")
+
+    def test_accepts_underscores(self):
+        validate_run_id("my_run_id")
+
+    def test_accepts_hyphens(self):
+        validate_run_id("my-run-id")
+
+    def test_accepts_mixed(self):
+        validate_run_id("project-A_run-2024-01-15_abc123")
+
+    def test_accepts_single_char(self):
+        validate_run_id("x")
+
+    def test_accepts_max_length(self):
+        validate_run_id("a" * MAX_RUN_ID_LENGTH)
+
+    def test_rejects_empty(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            validate_run_id("")
+
+    def test_rejects_over_max_length(self):
+        with pytest.raises(ValueError, match=f"max is {MAX_RUN_ID_LENGTH}"):
+            validate_run_id("a" * (MAX_RUN_ID_LENGTH + 1))
+
+    def test_rejects_spaces(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_run_id("my run")
+
+    def test_rejects_dots(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_run_id("v1.0.0")
+
+    def test_rejects_slashes(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_run_id("path/to/run")
+
+    def test_rejects_colons(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_run_id("run:scope")
+
+    def test_rejects_at_sign(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_run_id("user@host")

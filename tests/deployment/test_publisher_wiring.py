@@ -23,7 +23,7 @@ from ai_pipeline_core.deployment._types import (
     ResultPublisher,
     StartedEvent,
 )
-from ai_pipeline_core.deployment.base import _create_publisher
+from ai_pipeline_core.deployment.base import _create_publisher, _create_task_result_store
 from ai_pipeline_core.document_store._protocol import set_document_store
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 
@@ -107,20 +107,35 @@ class TestCreatePublisher:
         publisher = _create_publisher(mock_settings, "")
         assert isinstance(publisher, NoopPublisher)
 
-    def test_raises_when_clickhouse_missing(self):
-        """Pub/Sub configured but no ClickHouse → ValueError."""
-        mock_settings = MagicMock()
-        mock_settings.pubsub_project_id = "my-project"
-        mock_settings.pubsub_topic_id = "events"
-        mock_settings.clickhouse_host = ""
-        with pytest.raises(ValueError, match="CLICKHOUSE_HOST"):
-            _create_publisher(mock_settings, "research")
-
     def test_creates_pubsub_publisher_when_configured(self):
-        """Full config → PubSubPublisher."""
+        """Full Pub/Sub config → PubSubPublisher (no ClickHouse required)."""
         mock_settings = MagicMock()
         mock_settings.pubsub_project_id = "my-project"
         mock_settings.pubsub_topic_id = "events"
+
+        with patch("ai_pipeline_core.deployment._pubsub.PubSubPublisher") as mock_pub_cls:
+            mock_pub_cls.return_value = MagicMock(spec=ResultPublisher)
+            _create_publisher(mock_settings, "research")
+            mock_pub_cls.assert_called_once_with(
+                project_id="my-project",
+                topic_id="events",
+                service_type="research",
+            )
+
+
+# --- _create_task_result_store tests ---
+
+
+class TestCreateTaskResultStore:
+    """Test _create_task_result_store factory function."""
+
+    def test_returns_none_when_clickhouse_not_configured(self):
+        mock_settings = MagicMock()
+        mock_settings.clickhouse_host = ""
+        assert _create_task_result_store(mock_settings) is None
+
+    def test_creates_store_when_clickhouse_configured(self):
+        mock_settings = MagicMock()
         mock_settings.clickhouse_host = "clickhouse.local"
         mock_settings.clickhouse_port = 8443
         mock_settings.clickhouse_database = "default"
@@ -128,14 +143,17 @@ class TestCreatePublisher:
         mock_settings.clickhouse_password = ""
         mock_settings.clickhouse_secure = True
 
-        with (
-            patch("ai_pipeline_core.deployment._pubsub.PubSubPublisher") as mock_pub_cls,
-            patch("ai_pipeline_core.deployment._task_results.ClickHouseTaskResultStore") as mock_store_cls,
-        ):
-            mock_pub_cls.return_value = MagicMock(spec=ResultPublisher)
-            _create_publisher(mock_settings, "research")
-            mock_store_cls.assert_called_once()
-            mock_pub_cls.assert_called_once()
+        with patch("ai_pipeline_core.deployment._task_results.ClickHouseTaskResultStore") as mock_cls:
+            result = _create_task_result_store(mock_settings)
+            mock_cls.assert_called_once_with(
+                host="clickhouse.local",
+                port=8443,
+                database="default",
+                username="default",
+                password="",
+                secure=True,
+            )
+            assert result is mock_cls.return_value
 
 
 # --- run() publisher integration tests ---

@@ -2,7 +2,7 @@
 # CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.11.0
+# VERSION: 0.11.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -139,6 +139,7 @@ Features enabled by default:
             os.environ["LMNR_SESSION_ID"] = flow_run_id
 
             publisher = _create_publisher(settings, deployment.pubsub_service_type)
+            task_result_store = _create_task_result_store(settings)
             store = create_document_store(
                 settings,
                 summary_generator=_build_summary_generator(),
@@ -158,11 +159,20 @@ Features enabled by default:
                         deployment._all_document_types(),
                         start_step_input_types=start_step_input_types,
                     )
-                    result = await deployment.run(run_id, typed_docs, cast(Any, options), context, publisher=publisher)
+                    result = await deployment.run(
+                        run_id,
+                        typed_docs,
+                        cast(Any, options),
+                        context,
+                        publisher=publisher,
+                        task_result_store=task_result_store,
+                    )
                     Laminar.set_span_output(result.model_dump())
                     return result
             finally:
                 await publisher.close()
+                if task_result_store:
+                    task_result_store.shutdown()
                 store.shutdown()
                 set_document_store(None)
 
@@ -198,6 +208,7 @@ Features enabled by default:
         publisher: ResultPublisher | None = None,
         start_step: int = 1,
         end_step: int | None = None,
+        task_result_store: TaskResultStore | None = None,
     ) -> TResult:
         """Execute flows with resume, per-flow uploads, and step control.
 
@@ -209,10 +220,13 @@ Features enabled by default:
             publisher: Lifecycle event publisher (defaults to NoopPublisher).
             start_step: First flow to execute (1-indexed, default 1).
             end_step: Last flow to execute (inclusive, default all flows).
+            task_result_store: Durable result backup store (writes result for remote caller fallback).
 
         Returns:
             Typed deployment result built from all pipeline documents.
         """
+        validate_run_id(run_id)
+
         if publisher is None:
             publisher = NoopPublisher()
         store = get_document_store()
@@ -443,6 +457,15 @@ Features enabled by default:
                 "run_scope": str(run_scope),
                 "output_document_refs": list(last_flow_output_sha256s),
             }
+
+            # Persist result to ClickHouse for remote caller fallback (independent of publisher)
+            if task_result_store:
+                try:
+                    result_json = json.dumps(result.model_dump(), default=str)
+                    chain_context_json = json.dumps(chain_context, default=str)
+                    await task_result_store.write_result(run_id, result_json, chain_context_json)
+                except Exception as e:
+                    logger.warning("Task result store write failed for run_id=%s (non-blocking): %s", run_id, e)
 
             # Publish task.completed event
             await publisher.publish_completed(
@@ -741,11 +764,15 @@ async def run_remote_deployment(
     deployment_name: str,
     parameters: dict[str, Any],
     on_progress: ProgressCallback | None = None,
+    run_id: str | None = None,
 ) -> Any:
     """Run a remote Prefect deployment with optional progress callback.
 
     Creates the remote flow run immediately (timeout=0) then polls its state,
     invoking on_progress(fraction, message) on each poll cycle if provided.
+
+    When run_id is provided, it is passed to the polling function to enable
+    ClickHouse fallback for result retrieval.
     """
 
     async def _create_and_poll(client: PrefectClient, as_subflow: bool) -> Any:
@@ -756,7 +783,7 @@ async def run_remote_deployment(
             as_subflow=as_subflow,
             timeout=0,
         )
-        return await _poll_remote_flow_run(client, cast(UUID, fr.id), deployment_name, on_progress=on_progress)
+        return await _poll_remote_flow_run(client, cast(UUID, fr.id), deployment_name, on_progress=on_progress, run_id=run_id)
 
     async with get_client() as client:
         try:
@@ -886,7 +913,7 @@ def test_deployment_result_data(self):
     assert "success" in dumped
 ```
 
-**Subclass specific trace names** (`tests/deployment/test_remote_deployment.py:441`)
+**Subclass specific trace names** (`tests/deployment/test_remote_deployment.py:442`)
 
 ```python
 def test_subclass_specific_trace_names(self):
@@ -899,7 +926,7 @@ def test_subclass_specific_trace_names(self):
     assert PipelineA._execute is not PipelineB._execute
 ```
 
-**Three args returned by helper** (`tests/deployment/test_remote_deployment.py:94`)
+**Three args returned by helper** (`tests/deployment/test_remote_deployment.py:95`)
 
 ```python
 def test_three_args_returned_by_helper(self):
@@ -913,7 +940,7 @@ def test_three_args_returned_by_helper(self):
     assert args[2] is SimpleResult
 ```
 
-**Three params from remote deployment** (`tests/deployment/test_remote_deployment.py:612`)
+**Three params from remote deployment** (`tests/deployment/test_remote_deployment.py:613`)
 
 ```python
 def test_three_params_from_remote_deployment(self):
@@ -930,6 +957,34 @@ def test_three_params_from_remote_deployment(self):
 
 ## Error Examples
 
+**Remote deployment rejects empty run id** (`tests/deployment/test_remote_deployment.py:921`)
+
+```python
+async def test_remote_deployment_rejects_empty_run_id(self):
+    """RemoteDeployment._execute validates empty run_id."""
+
+    class Wired2(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        trace_level: ClassVar[TraceLevel] = "off"
+
+    doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+    with pytest.raises(ValueError, match="must not be empty"):
+        await Wired2().run("", [doc], FlowOptions())
+```
+
+**Remote deployment rejects invalid base run id** (`tests/deployment/test_remote_deployment.py:911`)
+
+```python
+async def test_remote_deployment_rejects_invalid_base_run_id(self):
+    """RemoteDeployment._execute validates the base run_id before derivation."""
+
+    class Wired(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        trace_level: ClassVar[TraceLevel] = "off"
+
+    doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+    with pytest.raises(ValueError, match="contains invalid characters"):
+        await Wired().run("invalid run id with spaces", [doc], FlowOptions())
+```
+
 **Rejects extra fields** (`tests/deployment/test_deployment_base.py:77`)
 
 ```python
@@ -941,7 +996,7 @@ def test_rejects_extra_fields(self):
         DeploymentContext(unknown_field="value")  # type: ignore[call-arg]
 ```
 
-**Rejects int** (`tests/deployment/test_remote_deployment.py:150`)
+**Rejects int** (`tests/deployment/test_remote_deployment.py:151`)
 
 ```python
 def test_rejects_int(self):
@@ -951,7 +1006,7 @@ def test_rejects_int(self):
             trace_level: ClassVar[TraceLevel] = "off"
 ```
 
-**Rejects no generic params** (`tests/deployment/test_remote_deployment.py:180`)
+**Rejects no generic params** (`tests/deployment/test_remote_deployment.py:181`)
 
 ```python
 def test_rejects_no_generic_params(self):
@@ -961,7 +1016,7 @@ def test_rejects_no_generic_params(self):
             trace_level: ClassVar[TraceLevel] = "off"
 ```
 
-**Rejects non deployment result** (`tests/deployment/test_remote_deployment.py:169`)
+**Rejects non deployment result** (`tests/deployment/test_remote_deployment.py:170`)
 
 ```python
 def test_rejects_non_deployment_result(self):
@@ -974,7 +1029,7 @@ def test_rejects_non_deployment_result(self):
             trace_level: ClassVar[TraceLevel] = "off"
 ```
 
-**Rejects non document in union** (`tests/deployment/test_remote_deployment.py:144`)
+**Rejects non document in union** (`tests/deployment/test_remote_deployment.py:145`)
 
 ```python
 def test_rejects_non_document_in_union(self):
@@ -984,35 +1039,12 @@ def test_rejects_non_document_in_union(self):
             trace_level: ClassVar[TraceLevel] = "off"
 ```
 
-**Rejects non document type** (`tests/deployment/test_remote_deployment.py:138`)
+**Rejects non document type** (`tests/deployment/test_remote_deployment.py:139`)
 
 ```python
 def test_rejects_non_document_type(self):
     with pytest.raises(TypeError, match="Document subclass"):
 
         class Bad(RemoteDeployment[str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
-            trace_level: ClassVar[TraceLevel] = "off"
-```
-
-**Rejects non flow options** (`tests/deployment/test_remote_deployment.py:158`)
-
-```python
-def test_rejects_non_flow_options(self):
-    class NotFlowOptions(BaseModel):
-        x: int = 1
-
-    with pytest.raises(TypeError, match="FlowOptions subclass"):
-
-        class Bad(RemoteDeployment[AlphaDoc, NotFlowOptions, SimpleResult]):  # type: ignore[type-var]
-            trace_level: ClassVar[TraceLevel] = "off"
-```
-
-**Rejects two generic params** (`tests/deployment/test_remote_deployment.py:186`)
-
-```python
-def test_rejects_two_generic_params(self):
-    with pytest.raises(TypeError):
-
-        class Bad(RemoteDeployment[FlowOptions, SimpleResult]):  # type: ignore[type-arg]
             trace_level: ClassVar[TraceLevel] = "off"
 ```
