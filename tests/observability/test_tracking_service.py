@@ -267,6 +267,71 @@ class TestRunEndExtended:
         assert row.status == RunStatus.FAILED
 
 
+class TestSpanOrderAssignment:
+    def test_assign_span_order_monotonic(self):
+        service, _ = _make_service()
+        v1 = service.assign_span_order()
+        v2 = service.assign_span_order()
+        v3 = service.assign_span_order()
+        assert (v1, v2, v3) == (1, 2, 3)
+
+    def test_assign_span_order_resets_with_run_context(self):
+        service, _ = _make_service()
+        service.assign_span_order()
+        service.assign_span_order()
+        assert service._span_order_counter == 2
+        run_id = uuid4()
+        service.set_run_context(execution_id=run_id, run_id="proj", flow_name="flow")
+        assert service._span_order_counter == 0
+        v1 = service.assign_span_order()
+        assert v1 == 1
+
+    def test_assign_span_order_resets_on_clear(self):
+        service, _ = _make_service()
+        service.assign_span_order()
+        service.clear_run_context()
+        assert service._span_order_counter == 0
+
+
+class TestSpanContentTracking:
+    def test_track_span_content_writes_correct_table(self):
+        from ai_pipeline_core.observability._tracking._models import TABLE_TRACE_SPAN_CONTENT
+
+        service, mock_writer = _make_service()
+        run_id = uuid4()
+        service.set_run_context(execution_id=run_id, run_id="proj", flow_name="flow")
+        service.track_span_content(
+            span_id="abc",
+            trace_id="0" * 32,
+            span_order=1,
+            input_json='{"x": 1}',
+            output_json='{"y": 2}',
+            replay_payload="",
+            attributes_json="{}",
+            events_json="[]",
+        )
+        assert mock_writer.write.called
+        args = mock_writer.write.call_args
+        assert args[0][0] == TABLE_TRACE_SPAN_CONTENT
+        row = args[0][1][0]
+        assert row.span_id == "abc"
+        assert row.input_json == '{"x": 1}'
+
+    def test_track_span_content_noop_without_context(self):
+        service, mock_writer = _make_service()
+        service.track_span_content(
+            span_id="abc",
+            trace_id="0" * 32,
+            span_order=1,
+            input_json="",
+            output_json="",
+            replay_payload="",
+            attributes_json="{}",
+            events_json="[]",
+        )
+        mock_writer.write.assert_not_called()
+
+
 class TestFlushAndShutdown:
     def test_flush_delegates(self):
         service, mock_writer = _make_service()

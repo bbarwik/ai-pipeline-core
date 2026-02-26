@@ -45,6 +45,7 @@ TABLE_PIPELINE_RUNS = "pipeline_runs"
 TABLE_TRACKED_SPANS = "tracked_spans"
 TABLE_DOCUMENT_EVENTS = "document_events"
 TABLE_SPAN_EVENTS = "span_events"
+TABLE_TRACE_SPAN_CONTENT = "trace_span_content"
 
 # --- OTel span attribute names for document lineage ---
 
@@ -123,3 +124,20 @@ class SpanEventRow(BaseModel):
     timestamp: datetime
     attributes: str = "{}"
     level: str | None = None
+
+
+class TraceSpanContentRow(BaseModel):
+    """Row model for trace_span_content table."""
+
+    model_config = ConfigDict(frozen=True)
+
+    span_id: str
+    trace_id: str
+    execution_id: UUID
+    span_order: int
+    input_json: str = ""
+    output_json: str = ""
+    replay_payload: str = ""
+    attributes_json: str = "{}"
+    events_json: str = "[]"
+    stored_at: datetime

@@ -21,7 +21,7 @@ AI Pipeline Core is a production-ready framework that combines document processi
 - **Workflow Orchestration**: Prefect-based flows and tasks with annotation-driven document types and decoration-time input/output validation
 - **Auto-Persistence**: `@pipeline_task` saves returned documents to `DocumentStore` automatically
 - **Image Processing**: Automatic image tiling/splitting for LLM vision models with model-specific presets
-- **Observability**: Built-in distributed tracing via Laminar (LMNR) with cost tracking, local trace debugging, and ClickHouse-based tracking
+- **Observability**: Built-in distributed tracing via Laminar (LMNR) with cost tracking, local trace debugging, ClickHouse-based tracking, and remote trace download/reconstruction
 - **Prompt Compiler**: Type-safe prompt specifications replacing Jinja2 templates — typed Python classes for roles, rules, guides, and output formats with definition-time validation and a CLI tool for inspection
 - **Replay**: Capture and re-execute any LLM conversation, pipeline task, or flow from human-editable YAML files with document resolution via SHA256 references
 - **Deployment**: Unified pipeline execution for local, CLI, and production environments with per-flow resume and dual-store support
@@ -32,10 +32,11 @@ AI Pipeline Core is a production-ready framework that combines document processi
 pip install ai-pipeline-core
 ```
 
-This installs three CLI commands:
+This installs four CLI commands:
 - `ai-prompt-compiler` — discover, inspect, render, and compile prompt specifications
 - `ai-pipeline-deploy` — build and deploy pipelines to Prefect Cloud
 - `ai-replay` — execute or inspect replay YAML files from trace output
+- `ai-trace` — download and inspect pipeline traces from ClickHouse
 
 ### Requirements
 
@@ -961,6 +962,69 @@ The directory structure mirrors the execution flow. Each new run overwrites the 
 ```
 
 Duplicate LLM spans are filtered by default (every `Conversation` call creates both a DEFAULT and an inner LLM span). Use `verbose=True` in `TraceDebugConfig` to include all spans.
+
+### Remote Trace Download
+
+When ClickHouse tracking is enabled, span content (input/output, replay payloads, attributes, events) is stored in the `trace_span_content` table alongside the existing `tracked_spans` metadata. This enables downloading traces from remote/cloud pipeline runs and reconstructing the `.trace/` directory locally for debugging and replay.
+
+```python
+from ai_pipeline_core.observability._debug._reconstruction import download_trace
+
+# Download a single pipeline trace
+path = await download_trace(
+    execution_id=uuid,
+    output_path=Path("./downloaded_trace"),
+    host="clickhouse.example.com",
+)
+
+# Include documents referenced in replay payloads (for ai-replay)
+path = await download_trace(
+    execution_id=uuid,
+    output_path=Path("./downloaded_trace"),
+    host="clickhouse.example.com",
+    include_documents=True,
+)
+
+# Follow child pipelines triggered via RemoteDeployment
+path = await download_trace(
+    execution_id=uuid,
+    output_path=Path("./downloaded_trace"),
+    host="clickhouse.example.com",
+    include_documents=True,
+    follow_children=True,
+)
+```
+
+The reconstructed directory has the same structure as local `.trace/` output — `summary.md`, `llm_calls.yaml`, per-span directories with `span.yaml`, `input.yaml`, `output.yaml`, replay files, and `events.yaml`. Documents are written in `LocalDocumentStore` layout so `ai-replay` can resolve `$doc_ref` references directly.
+
+`TraceDownloader` can also be used directly with an existing `clickhouse_connect` client for more control:
+
+```python
+from ai_pipeline_core.observability._debug._reconstruction import TraceDownloader
+
+downloader = TraceDownloader(client=clickhouse_client)
+downloader.download_trace(execution_id, output_path, follow_children=True, include_documents=True)
+```
+
+### `ai-trace` CLI
+
+The `ai-trace` command-line tool provides access to pipeline traces stored in ClickHouse.
+
+```
+# List recent pipeline runs
+ai-trace list --limit 10 --status completed
+
+# Show trace summary without downloading
+ai-trace show 550e8400-e29b-41d4-a716-446655440000
+
+# Download trace and rebuild .trace/ directory
+ai-trace download 550e8400-e29b-41d4-a716-446655440000 -o ./debug/
+
+# Include documents and follow child pipelines
+ai-trace download 550e8400-... --documents --children
+```
+
+Connection defaults to `CLICKHOUSE_*` environment variables. Override with `--host`, `--port`, `--database`, `--user`, `--password`, `--no-secure`.
 
 ## Configuration
 

@@ -370,6 +370,57 @@ class TestNoRunContextGuards:
         assert rows[0][0] == 0
 
 
+class TestTraceSpanContent:
+    """Test trace_span_content table in a real ClickHouse instance."""
+
+    def test_table_exists(self, client):
+        rows = _query(client, "SHOW TABLES")
+        table_names = {r[0] for r in rows}
+        assert "trace_span_content" in table_names
+
+    def test_span_content_persisted(self, service, client):
+        run_id = uuid4()
+        service.set_run_context(execution_id=run_id, run_id="p", flow_name="f")
+        service.track_span_content(
+            span_id="content01",
+            trace_id="ct1",
+            span_order=1,
+            input_json='{"prompt": "hello"}',
+            output_json='{"response": "world"}',
+            replay_payload='{"payload_type": "conversation"}',
+            attributes_json='{"key": "value"}',
+            events_json='[{"name": "log"}]',
+        )
+        _wait_for_writer(service)
+
+        rows = _query(
+            client,
+            f"SELECT span_id, span_order, input_json, output_json, replay_payload, attributes_json, events_json"
+            f" FROM trace_span_content WHERE execution_id = '{run_id}'",
+        )
+        assert len(rows) == 1
+        assert rows[0][0] == "content01"
+        assert rows[0][1] == 1
+        assert rows[0][2] == '{"prompt": "hello"}'
+        assert rows[0][3] == '{"response": "world"}'
+        assert rows[0][4] == '{"payload_type": "conversation"}'
+
+    def test_span_content_noop_without_context(self, service, client):
+        service.track_span_content(
+            span_id="nocontext01",
+            trace_id="nct1",
+            span_order=1,
+            input_json="",
+            output_json="",
+            replay_payload="",
+            attributes_json="{}",
+            events_json="[]",
+        )
+        _wait_for_writer(service)
+        rows = _query(client, "SELECT count() FROM trace_span_content WHERE span_id = 'nocontext01'")
+        assert rows[0][0] == 0
+
+
 class TestConcurrentSpans:
     """Test concurrent span tracking integrity."""
 

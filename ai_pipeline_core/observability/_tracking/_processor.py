@@ -1,5 +1,6 @@
 """OpenTelemetry SpanProcessor that feeds the tracking system."""
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,6 +14,17 @@ from ._models import ATTR_INPUT_DOCUMENT_SHA256S, ATTR_OUTPUT_DOCUMENT_SHA256S, 
 from ._service import TrackingService
 
 logger = get_pipeline_logger(__name__)
+
+_CONTENT_ATTRS: frozenset[str] = frozenset({"lmnr.span.input", "lmnr.span.output", "replay.payload"})
+
+
+def _attr_to_json(value: Any) -> str:
+    """Convert a span attribute to a JSON string, preserving strings as-is."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, default=str)
 
 
 def _hex_span_id(span_id: int) -> str:
@@ -48,6 +60,7 @@ class TrackingSpanProcessor(SpanProcessor):
     def __init__(self, service: TrackingService) -> None:
         """Initialize with tracking service."""
         self._service = service
+        self._span_orders: dict[str, int] = {}
 
     @staticmethod
     def _parent_span_id(span: Span | ReadableSpan) -> str | None:
@@ -63,9 +76,12 @@ class TrackingSpanProcessor(SpanProcessor):
             ctx = span.get_span_context()
             if ctx is None:
                 return
+            span_id = _hex_span_id(ctx.span_id)
+            span_order = self._service.assign_span_order()
+            self._span_orders[span_id] = span_order
             attrs: dict[str, Any] = dict(span.attributes or {})
             self._service.track_span_start(
-                span_id=_hex_span_id(ctx.span_id),
+                span_id=span_id,
                 trace_id=_hex_trace_id(ctx.trace_id),
                 parent_span_id=self._parent_span_id(span),
                 name=span.name,
@@ -137,6 +153,27 @@ class TrackingSpanProcessor(SpanProcessor):
                     span_id=span_id,
                     events=events,
                 )
+
+            # Content tracking for trace reconstruction
+            span_order = self._span_orders.pop(span_id, 0)
+            remaining_attrs = {k: v for k, v in attrs.items() if k not in _CONTENT_ATTRS}
+            if span.status.description:
+                remaining_attrs["status_description"] = span.status.description
+
+            self._service.track_span_content(
+                span_id=span_id,
+                trace_id=_hex_trace_id(ctx.trace_id),
+                span_order=span_order,
+                input_json=_attr_to_json(attrs.get("lmnr.span.input")),
+                output_json=_attr_to_json(attrs.get("lmnr.span.output")),
+                replay_payload=_attr_to_json(attrs.get("replay.payload")),
+                attributes_json=json.dumps(remaining_attrs, default=str),
+                events_json=json.dumps(
+                    [{"name": e.name, "timestamp": e.timestamp, "attributes": {k: str(v) for k, v in (e.attributes or {}).items()}} for e in span.events],
+                )
+                if span.events
+                else "[]",
+            )
         except Exception as e:
             logger.debug("TrackingSpanProcessor.on_end failed: %s", e)
 

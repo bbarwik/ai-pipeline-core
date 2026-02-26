@@ -17,6 +17,7 @@ from ._models import (
     TABLE_DOCUMENT_EVENTS,
     TABLE_PIPELINE_RUNS,
     TABLE_SPAN_EVENTS,
+    TABLE_TRACE_SPAN_CONTENT,
     TABLE_TRACKED_SPANS,
     DocumentEventRow,
     DocumentEventType,
@@ -24,6 +25,7 @@ from ._models import (
     RunStatus,
     SpanEventRow,
     SpanType,
+    TraceSpanContentRow,
     TrackedSpanRow,
 )
 from ._writer import ClickHouseWriter
@@ -56,6 +58,7 @@ class TrackingService:
 
         # Monotonic version counter
         self._last_version: int = 0
+        self._span_order_counter: int = 0
         self._lock = Lock()
 
     # --- Run context ---
@@ -67,6 +70,7 @@ class TrackingService:
             self._run_id = run_id
             self._flow_name = flow_name
             self._run_scope = run_scope
+            self._span_order_counter = 0
 
     def clear_run_context(self) -> None:
         """Clear run context. Called by flush() and shutdown()."""
@@ -76,6 +80,7 @@ class TrackingService:
             self._flow_name = ""
             self._run_scope = ""
             self._run_start_time = None
+            self._span_order_counter = 0
 
     # --- Version management ---
 
@@ -219,6 +224,43 @@ class TrackingService:
             for name, ts, attrs, level in events
         ]
         self._writer.write(TABLE_SPAN_EVENTS, list(rows))
+
+    # --- Span ordering & content ---
+
+    def assign_span_order(self) -> int:
+        """Assign monotonically increasing order to a span. Thread-safe."""
+        with self._lock:
+            self._span_order_counter += 1
+            return self._span_order_counter
+
+    def track_span_content(
+        self,
+        *,
+        span_id: str,
+        trace_id: str,
+        span_order: int,
+        input_json: str,
+        output_json: str,
+        replay_payload: str,
+        attributes_json: str,
+        events_json: str,
+    ) -> None:
+        """Record span content for remote trace reconstruction."""
+        if self._execution_id is None:
+            return
+        row = TraceSpanContentRow(
+            span_id=span_id,
+            trace_id=trace_id,
+            execution_id=self._execution_id,
+            span_order=span_order,
+            input_json=input_json,
+            output_json=output_json,
+            replay_payload=replay_payload,
+            attributes_json=attributes_json,
+            events_json=events_json,
+            stored_at=datetime.now(UTC),
+        )
+        self._writer.write(TABLE_TRACE_SPAN_CONTENT, [row])
 
     # --- Document tracking ---
 

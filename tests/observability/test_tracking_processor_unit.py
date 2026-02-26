@@ -11,6 +11,7 @@ clickhouse_connect = pytest.importorskip("clickhouse_connect")
 from ai_pipeline_core.observability._tracking._models import SpanType
 from ai_pipeline_core.observability._tracking._processor import (
     TrackingSpanProcessor,
+    _attr_to_json,
     _classify_span,
     _hex_span_id,
     _hex_trace_id,
@@ -118,7 +119,7 @@ def _make_readable_span(
     span.parent = parent
     span.start_time = start_time
     span.end_time = end_time
-    span.status = SimpleNamespace(status_code=status_code or StatusCode.OK)
+    span.status = SimpleNamespace(status_code=status_code or StatusCode.OK, description=None)
     span.events = events or []
     return span
 
@@ -224,6 +225,119 @@ class TestOnEnd:
         service.track_span_end.side_effect = RuntimeError("boom")
         span = _make_readable_span()
         processor.on_end(span)  # should not raise
+
+
+class TestSpanOrdering:
+    def test_on_start_assigns_monotonic_span_order(self):
+        processor, service = _make_processor()
+        service.assign_span_order.side_effect = [1, 2, 3]
+        for i in range(3):
+            span = _make_span(span_id=i + 10, trace_id=100)
+            processor.on_start(span)
+        assert service.assign_span_order.call_count == 3
+
+    def test_interleaved_traces_use_same_service_counter(self):
+        processor, service = _make_processor()
+        service.assign_span_order.side_effect = [1, 2, 3]
+        processor.on_start(_make_span(span_id=10, trace_id=100))
+        processor.on_start(_make_span(span_id=20, trace_id=200))
+        processor.on_start(_make_span(span_id=30, trace_id=100))
+        assert service.assign_span_order.call_count == 3
+
+
+class TestContentTracking:
+    def test_on_end_tracks_span_content(self):
+        processor, service = _make_processor()
+        service.assign_span_order.return_value = 1
+        attrs = {
+            "lmnr.span.input": '{"prompt": "hello"}',
+            "lmnr.span.output": '{"response": "world"}',
+            "replay.payload": '{"payload_type": "conversation"}',
+            "other_attr": "keep_me",
+        }
+        span = _make_span(span_id=10, trace_id=20)
+        processor.on_start(span)
+        readable = _make_readable_span(span_id=10, trace_id=20, attrs=attrs)
+        processor.on_end(readable)
+        service.track_span_content.assert_called_once()
+        kw = service.track_span_content.call_args[1]
+        assert kw["input_json"] == '{"prompt": "hello"}'
+        assert kw["output_json"] == '{"response": "world"}'
+        assert kw["replay_payload"] == '{"payload_type": "conversation"}'
+        assert kw["span_order"] == 1
+
+    def test_on_end_excludes_content_attrs_from_attributes_json(self):
+        import json
+
+        processor, service = _make_processor()
+        service.assign_span_order.return_value = 1
+        attrs = {
+            "lmnr.span.input": '{"prompt": "hello"}',
+            "lmnr.span.output": '{"response": "world"}',
+            "replay.payload": '{"payload_type": "conversation"}',
+            "other_attr": "keep_me",
+        }
+        span = _make_span(span_id=10, trace_id=20)
+        processor.on_start(span)
+        readable = _make_readable_span(span_id=10, trace_id=20, attrs=attrs)
+        processor.on_end(readable)
+        kw = service.track_span_content.call_args[1]
+        attrs_dict = json.loads(kw["attributes_json"])
+        assert "lmnr.span.input" not in attrs_dict
+        assert "lmnr.span.output" not in attrs_dict
+        assert "replay.payload" not in attrs_dict
+        assert attrs_dict["other_attr"] == "keep_me"
+
+    def test_on_end_serializes_events_to_json(self):
+        import json
+
+        processor, service = _make_processor()
+        service.assign_span_order.return_value = 1
+        span = _make_span(span_id=10, trace_id=20)
+        processor.on_start(span)
+        event = SimpleNamespace(
+            name="log_event",
+            timestamp=1_500_000_000,
+            attributes={"log.level": "INFO", "key": "val"},
+        )
+        readable = _make_readable_span(span_id=10, trace_id=20, events=[event])
+        processor.on_end(readable)
+        kw = service.track_span_content.call_args[1]
+        events_parsed = json.loads(kw["events_json"])
+        assert len(events_parsed) == 1
+        assert events_parsed[0]["name"] == "log_event"
+
+    def test_on_end_handles_missing_content_attrs(self):
+        processor, service = _make_processor()
+        service.assign_span_order.return_value = 1
+        span = _make_span(span_id=10, trace_id=20)
+        processor.on_start(span)
+        readable = _make_readable_span(span_id=10, trace_id=20, attrs={"some_attr": "val"})
+        processor.on_end(readable)
+        kw = service.track_span_content.call_args[1]
+        assert kw["input_json"] == ""
+        assert kw["output_json"] == ""
+        assert kw["replay_payload"] == ""
+
+
+class TestAttrToJson:
+    def test_none_returns_empty(self):
+        assert _attr_to_json(None) == ""
+
+    def test_string_preserved_as_is(self):
+        assert _attr_to_json('{"key": "val"}') == '{"key": "val"}'
+
+    def test_dict_serialized_to_json(self):
+        import json
+
+        result = _attr_to_json({"key": "val"})
+        assert json.loads(result) == {"key": "val"}
+
+    def test_list_serialized_to_json(self):
+        import json
+
+        result = _attr_to_json([1, 2, 3])
+        assert json.loads(result) == [1, 2, 3]
 
 
 class TestShutdownAndFlush:

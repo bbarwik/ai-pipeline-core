@@ -96,6 +96,43 @@ class TestInsertRows:
             client._insert_rows("t", [TypeA(val=1), TypeB(val=2)])
 
 
+class TestCreateTablesSql:
+    def test_create_tables_sql_includes_trace_span_content(self):
+        from ai_pipeline_core.observability._tracking._client import _CREATE_TABLES_SQL
+
+        combined = " ".join(_CREATE_TABLES_SQL)
+        assert "trace_span_content" in combined
+
+    def test_trace_span_content_ddl_has_correct_columns(self):
+        from ai_pipeline_core.observability._tracking._client import _CREATE_TABLES_SQL
+
+        combined = " ".join(_CREATE_TABLES_SQL)
+        expected_cols = (
+            "span_id",
+            "trace_id",
+            "execution_id",
+            "span_order",
+            "input_json",
+            "output_json",
+            "replay_payload",
+            "attributes_json",
+            "events_json",
+            "stored_at",
+        )
+        for col in expected_cols:
+            assert col in combined, f"Column {col} not found in DDL"
+
+
+class TestInsertTraceContent:
+    def test_insert_trace_content(self):
+        client = ClickHouseClient(host="h")
+        client._client = MagicMock()
+        with patch.object(client, "_insert_rows") as mock:
+            client.insert_trace_content([MagicMock()])
+            mock.assert_called_once()
+            assert mock.call_args[0][0] == "trace_span_content"
+
+
 class TestConvenienceMethods:
     def test_insert_runs(self):
         client = ClickHouseClient(host="h")

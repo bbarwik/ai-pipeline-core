@@ -673,11 +673,14 @@ def get_pipeline_logger(name: str) -> logging.Logger:
 
 Observability system for AI pipelines.
 
-**Source**: 2,731 lines of code | [Full guide](observability.md)
+**Source**: 3,611 lines of code | [Full guide](observability.md)
 
 ### Types & Constants
 
 ```python
+DEFAULT_LIST_LIMIT = 20
+DEFAULT_PORT = 8443
+EXECUTION_ID_SHORT_LENGTH = 8
 TraceLevel = Literal["always", "debug", "off"]
 ```
 

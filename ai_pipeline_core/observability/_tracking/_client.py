@@ -9,6 +9,7 @@ from ._models import (
     TABLE_DOCUMENT_EVENTS,
     TABLE_PIPELINE_RUNS,
     TABLE_SPAN_EVENTS,
+    TABLE_TRACE_SPAN_CONTENT,
     TABLE_TRACKED_SPANS,
 )
 
@@ -95,6 +96,25 @@ _CREATE_TABLES_SQL = [
     ORDER BY (execution_id, span_id, timestamp)
     SETTINGS index_granularity = 8192
     """,
+    f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_TRACE_SPAN_CONTENT}
+    (
+        span_id          String,
+        trace_id         String,
+        execution_id     UUID,
+        span_order       UInt32,
+        input_json       String CODEC(ZSTD(3)),
+        output_json      String CODEC(ZSTD(3)),
+        replay_payload   String CODEC(ZSTD(3)),
+        attributes_json  String CODEC(ZSTD(3)),
+        events_json      String CODEC(ZSTD(3)),
+        stored_at        DateTime64(3, 'UTC')
+    )
+    ENGINE = MergeTree
+    PARTITION BY toYYYYMM(stored_at)
+    ORDER BY (execution_id, span_id)
+    SETTINGS index_granularity = 8192
+    """,
 ]
 
 
@@ -173,3 +193,7 @@ class ClickHouseClient:
     def insert_span_events(self, rows: list[BaseModel]) -> None:
         """Insert span event rows."""
         self._insert_rows(TABLE_SPAN_EVENTS, rows)
+
+    def insert_trace_content(self, rows: list[BaseModel]) -> None:
+        """Insert trace span content rows."""
+        self._insert_rows(TABLE_TRACE_SPAN_CONTENT, rows)

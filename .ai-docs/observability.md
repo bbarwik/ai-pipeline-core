@@ -14,6 +14,12 @@ from ai_pipeline_core import TraceInfo, TraceLevel, set_trace_cost, trace
 ## Types & Constants
 
 ```python
+DEFAULT_LIST_LIMIT = 20
+
+DEFAULT_PORT = 8443
+
+EXECUTION_ID_SHORT_LENGTH = 8
+
 TraceLevel = Literal["always", "debug", "off"]
 
 ```
