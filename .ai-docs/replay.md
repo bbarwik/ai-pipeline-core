@@ -42,8 +42,7 @@ user_text/assistant_text use text, response uses content, document uses doc_ref.
 class ConversationReplay(BaseModel):
     """Replay payload for a Conversation.send() / send_structured() call.
 
-Auto-captured by the trace writer. Load with from_yaml(),
-optionally override fields with model_copy(), execute with execute()."""
+Auto-captured in each span directory as ``conversation.yaml``."""
     model_config = ConfigDict(frozen=True, populate_by_name=True)
     version: int = 1
     payload_type: Literal['conversation'] = 'conversation'
@@ -83,8 +82,7 @@ optionally override fields with model_copy(), execute with execute()."""
 class TaskReplay(BaseModel):
     """Replay payload for a @pipeline_task call.
 
-Auto-captured by the trace writer. Load with from_yaml(),
-optionally override fields with model_copy(), execute with execute()."""
+Auto-captured in each span directory as ``task.yaml``."""
     model_config = ConfigDict(frozen=True, populate_by_name=True)
     version: int = 1
     payload_type: Literal['pipeline_task'] = 'pipeline_task'
@@ -117,8 +115,7 @@ optionally override fields with model_copy(), execute with execute()."""
 class FlowReplay(BaseModel):
     """Replay payload for a @pipeline_flow call.
 
-Auto-captured by the trace writer. Load with from_yaml(),
-optionally override fields with model_copy(), execute with execute()."""
+Auto-captured in each span directory as ``flow.yaml``."""
     model_config = ConfigDict(frozen=True, populate_by_name=True)
     version: int = 1
     payload_type: Literal['pipeline_flow'] = 'pipeline_flow'
@@ -157,6 +154,9 @@ optionally override fields with model_copy(), execute with execute()."""
 ```python
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point for replay operations.
+
+    ``--import MODULE`` also remaps ``__main__:X`` references to ``MODULE:X`` in replay
+    payloads — required when replaying scripts originally run as ``python script.py``.
 
     Usage:
         ai-replay show conversation.yaml

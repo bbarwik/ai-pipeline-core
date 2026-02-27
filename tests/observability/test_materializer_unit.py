@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+import pytest
+
 from ai_pipeline_core.observability._debug._config import TraceDebugConfig
 from ai_pipeline_core.observability._debug._materializer import TraceMaterializer, _sanitize_name
 from ai_pipeline_core.observability._span_data import SpanData
@@ -212,6 +214,7 @@ class TestRecordFilteredLlmMetrics:
 
 
 class TestFinalize:
+    @pytest.mark.ai_docs
     def test_generates_summary_and_costs(self, tmp_path):
         mat = _make_materializer(tmp_path, generate_summary=True)
         span = _make_span_data(

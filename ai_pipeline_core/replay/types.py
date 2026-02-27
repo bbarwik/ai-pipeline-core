@@ -72,8 +72,7 @@ class HistoryEntry(BaseModel):
 class ConversationReplay(BaseModel):
     """Replay payload for a Conversation.send() / send_structured() call.
 
-    Auto-captured by the trace writer. Load with from_yaml(),
-    optionally override fields with model_copy(), execute with execute().
+    Auto-captured in each span directory as ``conversation.yaml``.
     """
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
@@ -116,8 +115,7 @@ class ConversationReplay(BaseModel):
 class TaskReplay(BaseModel):
     """Replay payload for a @pipeline_task call.
 
-    Auto-captured by the trace writer. Load with from_yaml(),
-    optionally override fields with model_copy(), execute with execute().
+    Auto-captured in each span directory as ``task.yaml``.
     """
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
@@ -153,8 +151,7 @@ class TaskReplay(BaseModel):
 class FlowReplay(BaseModel):
     """Replay payload for a @pipeline_flow call.
 
-    Auto-captured by the trace writer. Load with from_yaml(),
-    optionally override fields with model_copy(), execute with execute().
+    Auto-captured in each span directory as ``flow.yaml``.
     """
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)

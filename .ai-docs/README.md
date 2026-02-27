@@ -22,7 +22,7 @@ Auto-generated API reference. Do not edit manually. Run: `make docs-ai-build`
 
 Pipeline deployment utilities for unified, type-safe deployments.
 
-**Source**: 2,560 lines of code | [Full guide](deployment.md)
+**Source**: 2,559 lines of code | [Full guide](deployment.md)
 
 ### Types & Constants
 
@@ -48,27 +48,27 @@ class DeploymentResult(BaseModel):
 
 
 class PipelineDeployment(Generic[TOptions, TResult]):
-    """Base class for pipeline deployments."""
+    """Base class for pipeline deployments with three execution modes."""
 
     # Fields
     flows: ClassVar[list[Any]]
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
-    pubsub_service_type: ClassVar[str] = ''
+    pubsub_service_type: ClassVar[str] = ''  # Pub/Sub source identifier; requires PUBSUB_PROJECT_ID + PUBSUB_TOPIC_ID. Empty = NoopPublisher.
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
     # Methods
     def __init_subclass__(cls, **kwargs: Any) -> None: ...
     def as_prefect_flow(self) -> Callable[..., Any]:
-        """Generate a Prefect flow for production deployment."""
+        """Generate a Prefect flow for production deployment via ``ai-pipeline-deploy`` CLI."""
     def build_result(run_id: str, documents: list[Document], options: TOptions) -> TResult:
         """Extract typed result from pipeline documents loaded from DocumentStore."""
     def run(self, run_id: str, documents: Sequence[Document], options: TOptions, publisher: ResultPublisher | None=None, start_step: int=1, end_step: int | None=None, task_result_store: TaskResultStore | None=None) -> TResult:
         """Execute flows with resume, per-flow uploads, and step control."""
     def run_cli(self, initializer: Callable[[TOptions], tuple[str, list[Document]]] | None=None, trace_name: str | None=None, cli_mixin: type[BaseSettings] | None=None) -> None:
-        """Execute pipeline from CLI arguments with --start/--end step control."""
+        """Execute pipeline from CLI with positional working_directory and --start/--end/--no-trace flags."""
     def run_local(self, run_id: str, documents: Sequence[Document], options: TOptions, publisher: ResultPublisher | None=None, output_dir: Path | None=None) -> TResult:
         """Run locally with Prefect test harness and in-memory document store."""
 
@@ -159,6 +159,106 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
     def __init_subclass__(cls, **kwargs: Any) -> None: ...
     def run(self, run_id: str, documents: list[TDoc], options: TOptions, on_progress: ProgressCallback | None=None) -> TResult:
         """Execute the remote deployment via Prefect."""
+
+
+class StartedEvent:
+    """Pipeline execution started."""
+
+    # Fields
+    run_id: str
+    flow_run_id: str
+    run_scope: str
+
+
+class ProgressEvent:
+    """Flow-level or intra-flow progress."""
+
+    # Fields
+    run_id: str
+    flow_run_id: str
+    flow_name: str
+    step: int
+    total_steps: int
+    progress: float
+    step_progress: float
+    status: FlowStatus
+    message: str
+
+
+class CompletedEvent:
+    """Pipeline completed successfully."""
+
+    # Fields
+    run_id: str
+    flow_run_id: str
+    result: dict[str, Any]
+    chain_context: dict[str, Any]
+    actual_cost: float
+
+
+class FailedEvent:
+    """Pipeline execution failed."""
+
+    # Fields
+    run_id: str
+    flow_run_id: str
+    error_code: ErrorCode
+    error_message: str
+
+
+class ResultPublisher(Protocol):
+    """Publishes pipeline lifecycle events to external consumers."""
+
+    # Methods
+    def close(self) -> None:
+        """Release resources held by the publisher."""
+    def publish_completed(self, event: CompletedEvent) -> None:
+        """Publish a pipeline completed event."""
+    def publish_failed(self, event: FailedEvent) -> None:
+        """Publish a pipeline failed event."""
+    def publish_heartbeat(self, run_id: str) -> None:
+        """Publish a heartbeat signal."""
+    def publish_progress(self, event: ProgressEvent) -> None:
+        """Publish a flow progress event."""
+    def publish_started(self, event: StartedEvent) -> None:
+        """Publish a pipeline started event."""
+
+
+class NoopPublisher:
+    """Discards all lifecycle events. Default publisher for CLI and run_local."""
+
+    # Methods
+    def close(self) -> None:
+        """No resources to release."""
+    def publish_completed(self, event: CompletedEvent) -> None:
+        """Accept and discard a completed event."""
+    def publish_failed(self, event: FailedEvent) -> None:
+        """Accept and discard a failed event."""
+    def publish_heartbeat(self, run_id: str) -> None:
+        """Accept and discard a heartbeat."""
+    def publish_progress(self, event: ProgressEvent) -> None:
+        """Accept and discard a progress event."""
+    def publish_started(self, event: StartedEvent) -> None:
+        """Accept and discard a started event."""
+
+
+class MemoryPublisher:
+    """Records all lifecycle events in-memory for test assertions."""
+
+    # Methods
+    def __init__(self) -> None: ...
+    def close(self) -> None:
+        """No resources to release."""
+    def publish_completed(self, event: CompletedEvent) -> None:
+        """Record a completed event."""
+    def publish_failed(self, event: FailedEvent) -> None:
+        """Record a failed event."""
+    def publish_heartbeat(self, run_id: str) -> None:
+        """Record a heartbeat."""
+    def publish_progress(self, event: ProgressEvent) -> None:
+        """Record a progress event."""
+    def publish_started(self, event: StartedEvent) -> None:
+        """Record a started event."""
 ```
 
 ### Functions
@@ -176,7 +276,7 @@ async def run_remote_deployment(deployment_name: str, parameters: dict[str, Any]
 
 Document store protocol and backends for AI pipeline flows.
 
-**Source**: 2,166 lines of code | [Full guide](document_store.md)
+**Source**: 2,169 lines of code | [Full guide](document_store.md)
 
 ### Classes
 
@@ -211,11 +311,11 @@ class DocumentReader(Protocol):
     def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Return the subset of sha256s that already exist in the store."""
     def find_by_source(self, source_values: list[str], document_type: type[Document], *, max_age: timedelta | None=None) -> dict[str, Document]:
-        """Find the most recent document per source value."""
+        """Find most recent document per source value, matched against ``derived_from`` entries. max_age filters on ``stored_at`` timestamp."""
     def get_flow_completion(self, run_scope: RunScope, flow_name: str, *, max_age: timedelta | None=None) -> FlowCompletion | None:
-        """Get the completion record for a flow, or None if not found / expired."""
+        """Get the completion record for a flow, or None if not found / expired. max_age filters on ``stored_at`` timestamp."""
     def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None=None) -> bool:
-        """Check if any documents of this type exist in the run scope."""
+        """Check if any documents of this type exist in the run scope. max_age filters on ``stored_at`` timestamp."""
     def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Load all documents of the given types from a run scope."""
     def load_by_sha256s(self, sha256s: list[DocumentSha256], document_type: type[_D], run_scope: RunScope | None=None) -> dict[DocumentSha256, _D]:
@@ -484,15 +584,15 @@ class DocumentSizeError(DocumentValidationError):
 
 
 class DocumentNameError(DocumentValidationError):
-    """Raised when document name contains invalid characters or patterns."""
+    """Raised when document name contains path traversal, reserved suffixes, or invalid format."""
 
 
 class LLMError(PipelineCoreError):
-    """Raised when LLM generation fails after all retries."""
+    """Raised when LLM generation fails after all retries, including timeouts and provider errors."""
 
 
 class OutputDegenerationError(LLMError):
-    """LLM output contains degeneration patterns (e.g., token repetition loops)."""
+    """LLM output contains degeneration patterns (e.g., token repetition loops). Triggers retry with cache disabled."""
 ```
 
 
@@ -500,7 +600,7 @@ class OutputDegenerationError(LLMError):
 
 Large Language Model integration via LiteLLM proxy.
 
-**Source**: 1,300 lines of code | [Full guide](llm.md)
+**Source**: 1,307 lines of code | [Full guide](llm.md)
 
 ### Types & Constants
 
@@ -540,21 +640,33 @@ class Citation:
     end_index: int
 
 
+class TokenUsage(BaseModel):
+    """Token usage statistics from an LLM call."""
+
+    # Fields
+    model_config = ConfigDict(frozen=True)
+    prompt_tokens: int  # Input tokens consumed by prompt and context
+    completion_tokens: int  # Output tokens generated by the model
+    total_tokens: int  # prompt_tokens + completion_tokens
+    cached_tokens: int = 0  # Prompt tokens served from provider cache
+    reasoning_tokens: int = 0  # Tokens used for internal model reasoning
+
+
 class ModelOptions(BaseModel):
     """Configuration options for LLM generation requests."""
 
     # Fields
     model_config = ConfigDict(frozen=True, extra='forbid')
-    temperature: float | None = None
-    system_prompt: str | None = None
+    temperature: float | None = None  # Leave unset (provider decides) unless you have a specific reason
+    system_prompt: str | None = None  # Prepended to messages; substitutor instructions appended when active
     search_context_size: Literal['low', 'medium', 'high'] | None = None
     reasoning_effort: Literal['low', 'medium', 'high'] | None = None
-    retries: int = 3
-    retry_delay_seconds: int = 20
+    retries: int = 3  # Cache auto-disabled on retry; degeneration detection triggers auto-retry
+    retry_delay_seconds: int = 20  # Fixed delay between retries
     timeout: int = 600
     cache_ttl: str | None = '300s'
     service_tier: Literal['auto', 'default', 'flex', 'scale', 'priority'] | None = None
-    max_completion_tokens: int | None = None
+    max_completion_tokens: int | None = None  # Defaults to provider behavior (~30K typical)
     stop: tuple[str, ...] | None = None
     verbosity: Literal['low', 'medium', 'high'] | None = None
     stream: bool = False
@@ -618,7 +730,7 @@ class Conversation(BaseModel, Generic[T]):
     def with_context(self, *docs: Document) -> 'Conversation[T]':
         """Return NEW Conversation with documents added to the cacheable context prefix."""
     def with_document(self, doc: Document) -> 'Conversation[T]':
-        """Return NEW Conversation with document appended to messages (not cached)."""
+        """Return NEW Conversation with document appended to messages (dynamic suffix, not cached)."""
     def with_documents(self, docs: Sequence[Document]) -> 'Conversation[T]':
         """Return NEW Conversation with multiple documents appended to messages (not cached)."""
     def with_model(self, model: str) -> 'Conversation[T]':
@@ -626,7 +738,7 @@ class Conversation(BaseModel, Generic[T]):
     def with_model_options(self, options: ModelOptions) -> 'Conversation[T]':
         """Return NEW Conversation with updated model options."""
     def with_substitutor(self, enabled: bool=True) -> 'Conversation[T]':
-        """Return NEW Conversation with substitutor enabled/disabled."""
+        """Return NEW Conversation with content protection enabled/disabled."""
 ```
 
 
@@ -666,7 +778,7 @@ def get_pipeline_logger(name: str) -> logging.Logger:
 
 Observability system for AI pipelines.
 
-**Source**: 3,073 lines of code | [Full guide](observability.md)
+**Source**: 3,081 lines of code | [Full guide](observability.md)
 
 ### Types & Constants
 
@@ -691,6 +803,19 @@ class TraceInfo(BaseModel):
     # Methods
     def get_observe_kwargs(self) -> dict[str, Any]:
         """Build kwargs for ``lmnr.observe()``, with env-var fallbacks for session/user ID."""
+
+
+class TraceDebugConfig(BaseModel):
+    """Configuration for local ``.trace/`` directory generation."""
+
+    # Fields
+    model_config = ConfigDict(frozen=True)
+    path: Path = Field(description='Directory for debug traces')  # Directory for debug traces
+    max_file_bytes: int = Field(default=500000, description='Max bytes for input.yaml or output.yaml. Truncated to stay under.')  # Max bytes for input.yaml or output.yaml. Truncated to stay under.
+    verbose: bool = Field(default=False, description='When False (default), duplicate LLM spans are filtered from per-span directories but their cost/token metrics still count in totals.')  # When False (default), duplicate LLM spans are filtered from per-span directories but their cost/token metrics still count in totals.
+    merge_wrapper_spans: bool = Field(default=True, description='Merge Prefect wrapper spans with inner traced function spans')  # Merge Prefect wrapper spans with inner traced function spans
+    redact_patterns: tuple[str, ...] = Field(default=('sk-[a-zA-Z0-9]{20,}', 'sk-proj-[a-zA-Z0-9\\-_]{20,}', 'AKIA[0-9A-Z]{16}', 'ghp_[a-zA-Z0-9]{36}', 'gho_[a-zA-Z0-9]{36}', 'xoxb-[a-zA-Z0-9\\-]+', 'xoxp-[a-zA-Z0-9\\-]+', '(?i)password\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]+', '(?i)secret\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]+', '(?i)api[_\\-]?key\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]+', '(?i)bearer\\s+[a-zA-Z0-9\\-_\\.]+'), description='Regex patterns for secrets to redact')  # Regex patterns for secrets to redact
+    generate_summary: bool = Field(default=True, description='Generate summary.md')  # Generate summary.md
 ```
 
 ### Functions
@@ -875,7 +1000,7 @@ def is_multi_line_field(field_info: FieldInfo) -> bool:
 
 First-class replay system for AI pipeline debugging.
 
-**Source**: 836 lines of code | [Full guide](replay.md)
+**Source**: 835 lines of code | [Full guide](replay.md)
 
 ### Classes
 
@@ -1017,7 +1142,7 @@ class Settings(BaseSettings):
     clickhouse_secure: bool = True
     clickhouse_connect_timeout: int = 10
     clickhouse_send_receive_timeout: int = 30
-    tracking_enabled: bool = True
+    tracking_enabled: bool = True  # When False, disables ClickHouse tracking even if ClickHouse is configured
     doc_summary_enabled: bool = True
     doc_summary_model: str = 'gemini-3-flash'
     pubsub_project_id: str = ''

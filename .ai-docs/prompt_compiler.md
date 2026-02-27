@@ -469,6 +469,57 @@ def is_multi_line_field(field_info: FieldInfo) -> bool:
 
 ## Examples
 
+**Main render** (`tests/prompt_compiler/test_cli.py:315`)
+
+```python
+def test_main_render(capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["render", "tests.prompt_compiler.test_api:PlainSpec"])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "# Role" in out
+    assert "# Task" in out
+```
+
+**Main compile finds specs** (`tests/prompt_compiler/test_cli.py:343`)
+
+```python
+def test_main_compile_finds_specs(capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["compile", "--root", str(Path.cwd())])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "spec(s) found:" in out
+    assert "Name" in out  # table header
+```
+
+**Main inspect minimal spec** (`tests/prompt_compiler/test_cli.py:363`)
+
+```python
+def test_main_inspect_minimal_spec(capsys: pytest.CaptureFixture[str]) -> None:
+    """Inspect a spec with no rules, no guides, no output rules, no fields."""
+    ret = main(["inspect", f"{MinimalInspectSpec.__module__}:MinimalInspectSpec"])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "MinimalInspectSpec" in out
+    assert "A minimal spec for inspect testing." in out
+    assert "Module:" in out
+    assert "Role: CliRole" in out
+    assert '"experienced analyst"' in out
+    assert "Input Documents (0):" in out
+    assert "(none)" in out
+    assert "Dynamic Fields (0):" in out
+    assert "Do the task" in out
+    assert "Type: str" in out
+    assert "Rendered preview:" in out
+    assert "tokens" in out
+    # No rules/guides/output_rules sections
+    assert "Rules (" not in out
+    assert "Guides (" not in out
+    assert "Output Rules (" not in out
+    # Phase and XML Wrapped removed
+    assert "Phase:" not in out
+    assert "XML Wrapped" not in out
+```
+
 **Role valid** (`tests/prompt_compiler/test_components.py:109`)
 
 ```python
@@ -573,43 +624,6 @@ def test_guide_allows_h2_and_deeper_headers(tmp_path: Path, temp_modules: list[s
     assert "## H2 header" in guide_cls.render()
 ```
 
-**Guide valid** (`tests/prompt_compiler/test_components.py:246`)
-
-```python
-def test_guide_valid(tmp_path: Path, temp_modules: list[str]) -> None:
-    template_file = tmp_path / "guide.txt"
-    template_file.write_text("## Guide Content\nSome info.", encoding="utf-8")
-
-    module_name = f"guide_mod_{uuid4().hex}"
-    _register_module(temp_modules, module_name, module_file=tmp_path / "module.py")
-
-    guide_cls = _build_guide_class(module_name, "ValidGuide", "guide.txt")
-    assert "## Guide Content" in guide_cls.render()
-    assert guide_cls._resolved_path == template_file.resolve()
-```
-
-**Is multi line field detection** (`tests/prompt_compiler/test_multi_line_field.py:142`)
-
-```python
-def test_is_multi_line_field_detection() -> None:
-    """is_multi_line_field correctly identifies multi-line fields."""
-    from ai_pipeline_core.prompt_compiler import MultiLineField
-    from ai_pipeline_core.prompt_compiler.spec import is_multi_line_field
-
-    class DetectSpec(PromptSpec):
-        """Doc."""
-
-        input_documents = ()
-        role = MlRole
-        task = "Do it"
-
-        regular: str = Field(description="Regular field")
-        review: str = MultiLineField(description="Review text")
-
-    assert is_multi_line_field(DetectSpec.model_fields["review"]) is True
-    assert is_multi_line_field(DetectSpec.model_fields["regular"]) is False
-```
-
 
 ## Error Examples
 
@@ -690,16 +704,4 @@ def test_guide_rejects_absolute_path(tmp_path: Path) -> None:
 def test_guide_requires_non_empty_string_template(template_value: object) -> None:
     with pytest.raises(TypeError, match="must define 'template' as a ClassVar"):
         type("BadTemplateGuide", (Guide,), {"__module__": __name__, "__doc__": "Guide doc.", "template": template_value})
-```
-
-**Role empty docstring** (`tests/prompt_compiler/test_components.py:125`)
-
-```python
-def test_role_empty_docstring() -> None:
-    with pytest.raises(TypeError, match="must define a non-empty docstring"):
-
-        class EmptyDocRole(Role):
-            """ """
-
-            text = "valid"
 ```

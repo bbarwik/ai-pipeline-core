@@ -50,6 +50,7 @@ from .llm import (
     ConversationContent,
     ModelName,
     ModelOptions,
+    TokenUsage,
 )
 from .logging import (
     LoggingConfig,
@@ -98,6 +99,7 @@ __all__ = [
     "RunScope",
     "Settings",
     "TaskDocumentContext",
+    "TokenUsage",
     "TraceInfo",
     "TraceLevel",
     "disable_run_logger",

@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     clickhouse_send_receive_timeout: int = 30
 
     # Tracking behavior
-    tracking_enabled: bool = True
+    tracking_enabled: bool = True  # When False, disables ClickHouse tracking even if ClickHouse is configured
 
     # Document summary generation (store-level)
     doc_summary_enabled: bool = True

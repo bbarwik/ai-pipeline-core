@@ -384,6 +384,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point for replay operations.
 
+    ``--import MODULE`` also remaps ``__main__:X`` references to ``MODULE:X`` in replay
+    payloads — required when replaying scripts originally run as ``python script.py``.
+
     Usage:
         ai-replay show conversation.yaml
         ai-replay run conversation.yaml --store ./output

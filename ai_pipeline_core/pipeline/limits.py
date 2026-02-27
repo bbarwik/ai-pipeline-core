@@ -60,10 +60,7 @@ class LimitKind(StrEnum):
 class PipelineLimit:
     """Concurrency/rate limit configuration.
 
-    limit: Maximum slots. For CONCURRENT: max simultaneous operations.
-           For PER_MINUTE/PER_HOUR: token bucket capacity (burst size).
-    kind: Type of limit enforcement.
-    timeout: Max seconds to wait for slot acquisition.
+    Must use names matching ``[a-zA-Z0-9_-]+`` in PipelineDeployment.concurrency_limits (validated at class definition time).
     """
 
     limit: int

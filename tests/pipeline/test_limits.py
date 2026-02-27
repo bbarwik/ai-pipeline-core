@@ -132,6 +132,7 @@ class TestValidateConcurrencyLimits:
         with pytest.raises(TypeError, match="key must be str"):
             _validate_concurrency_limits("TestDeploy", {123: PipelineLimit(10)})  # type: ignore[dict-item]
 
+    @pytest.mark.ai_docs
     def test_invalid_name_pattern(self):
         with pytest.raises(TypeError, match="invalid name"):
             _validate_concurrency_limits("TestDeploy", {"bad name!": PipelineLimit(10)})
@@ -150,6 +151,7 @@ class TestValidateConcurrencyLimits:
         with pytest.raises(TypeError, match="kind must be LimitKind"):
             _validate_concurrency_limits("TestDeploy", {"test": limit})
 
+    @pytest.mark.ai_docs
     def test_name_with_dashes_and_underscores(self):
         raw = {"my-limit_v2": PipelineLimit(10)}
         result = _validate_concurrency_limits("TestDeploy", raw)

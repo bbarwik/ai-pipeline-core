@@ -13,7 +13,8 @@ from ai_pipeline_core import FlowOptions, LimitKind, PipelineLimit, pipeline_con
 
 ## Rules
 
-1. Never inherit from FlowOptions for task-level options, writer configs, or programmatically-constructed parameter objects — use BaseModel instead. FlowOptions fields are always subject to env var override, which causes silent, hard-to-debug behavior when field names collide with common env vars (MODE, HOST, PORT, etc.).
+1. Must use names matching ``[a-zA-Z0-9_-]+`` in PipelineDeployment.concurrency_limits (validated at class definition time).
+2. Never inherit from FlowOptions for task-level options, writer configs, or programmatically-constructed parameter objects — use BaseModel instead. FlowOptions fields are always subject to env var override, which causes silent, hard-to-debug behavior when field names collide with common env vars (MODE, HOST, PORT, etc.).
 
 ## Types & Constants
 
@@ -87,10 +88,7 @@ PER_HOUR: Token bucket with limit/3600 decay per second. Same burst semantics.""
 class PipelineLimit:
     """Concurrency/rate limit configuration.
 
-limit: Maximum slots. For CONCURRENT: max simultaneous operations.
-       For PER_MINUTE/PER_HOUR: token bucket capacity (burst size).
-kind: Type of limit enforcement.
-timeout: Max seconds to wait for slot acquisition."""
+Must use names matching ``[a-zA-Z0-9_-]+`` in PipelineDeployment.concurrency_limits (validated at class definition time)."""
     limit: int
     kind: LimitKind = LimitKind.CONCURRENT
     timeout: int = 600
@@ -172,6 +170,10 @@ def pipeline_task(  # noqa: UP047
     After the wrapped function returns, if documents are found in the result
     and a DocumentStore + RunContext are available, documents are validated
     for provenance, deduplicated by SHA256, and saved to the store.
+
+    Input parameter types are validated at decoration time: str, int, float,
+    bool, None, UUID, Path, Enum, Document, frozen BaseModel, FlowOptions,
+    and containers (list, tuple, dict[str, ...], Union) of these types.
 
     The return type annotation is validated at decoration time.
     Allowed return types::
@@ -706,6 +708,50 @@ async def pipeline_concurrency(
 
 ## Examples
 
+**Pipeline task allowed input types** (`tests/pipeline/test_input_type_validation_ai_docs.py:22`)
+
+```python
+def test_pipeline_task_allowed_input_types() -> None:
+    """@pipeline_task validates input types at decoration time."""
+
+    class Priority(Enum):
+        HIGH = "high"
+
+    class FrozenConfig(BaseModel):
+        model_config = {"frozen": True}
+        value: str = "x"
+
+    @pipeline_task
+    async def accepted(
+        text: str,
+        count: int,
+        ratio: float,
+        flag: bool,
+        uid: UUID,
+        file_path: Path,
+        priority: Priority,
+        doc: _InputDoc,
+        config: FrozenConfig,
+        options: FlowOptions,
+        items: list[str],
+        pair: tuple[str, int],
+        mapping: dict[str, int],
+        optional: str | None = None,
+    ) -> _OutputDoc:
+        return _OutputDoc(name="out.txt", content=b"ok")
+
+    assert callable(accepted)
+```
+
+**Name with dashes and underscores** (`tests/pipeline/test_limits.py:155`)
+
+```python
+def test_name_with_dashes_and_underscores(self):
+    raw = {"my-limit_v2": PipelineLimit(10)}
+    result = _validate_concurrency_limits("TestDeploy", raw)
+    assert "my-limit_v2" in result
+```
+
 **Pipeline flow deduplicates returned documents** (`tests/pipeline/test_flow_storage.py:125`)
 
 ```python
@@ -785,30 +831,16 @@ async def test_pipeline_flow_saves_returned_documents(prefect_test_fixture, memo
     assert loaded[0].name == "output.txt"
 ```
 
-**Pipeline flow sets run context when missing** (`tests/pipeline/test_flow_storage.py:70`)
-
-```python
-@pytest.mark.asyncio
-async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture, memory_store):
-    """Test that pipeline_flow sets RunContext if none exists."""
-    from ai_pipeline_core.documents import get_run_context
-
-    captured_ctx = None
-
-    @pipeline_flow()
-    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
-        nonlocal captured_ctx
-        captured_ctx = get_run_context()
-        return []
-
-    await test_flow("my-project", [], FlowOptions())
-
-    assert captured_ctx is not None
-    assert captured_ctx.run_scope == "my-project/test_flow"
-```
-
 
 ## Error Examples
+
+**Invalid name pattern** (`tests/pipeline/test_limits.py:136`)
+
+```python
+def test_invalid_name_pattern(self):
+    with pytest.raises(TypeError, match="invalid name"):
+        _validate_concurrency_limits("TestDeploy", {"bad name!": PipelineLimit(10)})
+```
 
 **Pipeline task then trace raises error** (`tests/pipeline/test_decorators.py:832`)
 
@@ -850,32 +882,5 @@ def test_sync_function_with_pipeline_task_raises_error(self):
 
         @cast(Any, pipeline_task)
         def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-            return x * 2
-```
-
-**Sync function with pipeline task with params raises error** (`tests/pipeline/test_decorators.py:787`)
-
-```python
-def test_sync_function_with_pipeline_task_with_params_raises_error(self):
-    from typing import Any, cast
-
-    with pytest.raises(TypeError, match="must be 'async def'"):
-
-        @cast(Any, pipeline_task(retries=3, trace_level="debug"))
-        def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-            return x * 2
-```
-
-**Trace then pipeline task raises error** (`tests/pipeline/test_decorators.py:822`)
-
-```python
-def test_trace_then_pipeline_task_raises_error(self):
-    from ai_pipeline_core import trace
-
-    with pytest.raises(TypeError, match=r"already decorated.*with @trace"):
-
-        @pipeline_task
-        @trace
-        async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
             return x * 2
 ```

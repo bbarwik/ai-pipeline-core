@@ -45,6 +45,10 @@ class DocumentNode:
 class DocumentReader(Protocol):
     """Read-only protocol for application code that consumes documents.
 
+Backend varies by PipelineDeployment execution mode: MemoryDocumentStore
+(run_local), DualDocumentStore or LocalDocumentStore (run_cli),
+auto-configured from settings (as_prefect_flow).
+
 Users should depend on this protocol when they only need to read documents."""
     async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Return the subset of sha256s that already exist in the store."""
@@ -57,7 +61,7 @@ Users should depend on this protocol when they only need to read documents."""
         *,
         max_age: timedelta | None = None,
     ) -> dict[str, Document]:
-        """Find the most recent document per source value."""
+        """Find most recent document per source value, matched against ``derived_from`` entries. max_age filters on ``stored_at`` timestamp."""
         ...
 
     async def get_flow_completion(
@@ -67,11 +71,11 @@ Users should depend on this protocol when they only need to read documents."""
         *,
         max_age: timedelta | None = None,
     ) -> FlowCompletion | None:
-        """Get the completion record for a flow, or None if not found / expired."""
+        """Get the completion record for a flow, or None if not found / expired. max_age filters on ``stored_at`` timestamp."""
         ...
 
     async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
-        """Check if any documents of this type exist in the run scope."""
+        """Check if any documents of this type exist in the run scope. max_age filters on ``stored_at`` timestamp."""
         ...
 
     async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
@@ -217,22 +221,27 @@ async def test_load_nodes_by_sha256s(populated_store: MemoryDocumentStore):
     assert nodes[src_a.sha256].class_name == "SourceDoc"
 ```
 
+**Find by source** (`tests/document_store/test_reader_api.py:141`)
+
+```python
+@pytest.mark.asyncio
+async def test_find_by_source(populated_store: MemoryDocumentStore):
+    """Find the most recent document derived from each source value."""
+    report, src_a, src_b = await _seed(populated_store)
+    reader = get_document_store()
+
+    found = await reader.find_by_source([src_a.sha256, src_b.sha256], ReportDoc)
+    assert len(found) == 2
+    assert found[src_a.sha256].name == "report.md"
+    assert found[src_b.sha256].name == "report.md"
+```
+
 **Get document store returns none by default** (`tests/document_store/test_protocol.py:94`)
 
 ```python
 def test_get_document_store_returns_none_by_default():
     """Before any set call, the store is None."""
     assert get_document_store() is None
-```
-
-**Set and get document store** (`tests/document_store/test_protocol.py:99`)
-
-```python
-def test_set_and_get_document_store():
-    """Setting a store makes it retrievable."""
-    store = _DummyStore()
-    set_document_store(store)
-    assert get_document_store() is store
 ```
 
 

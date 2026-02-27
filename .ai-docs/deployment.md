@@ -1,6 +1,6 @@
 # MODULE: deployment
-# CLASSES: DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment
-# DEPENDS: BaseModel, Generic, StrEnum
+# CLASSES: DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment, StartedEvent, ProgressEvent, CompletedEvent, FailedEvent, ResultPublisher, NoopPublisher, MemoryPublisher
+# DEPENDS: BaseModel, Generic, Protocol, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
 # VERSION: 0.12.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
@@ -9,7 +9,7 @@
 
 ```python
 from ai_pipeline_core import DeploymentResult, PipelineDeployment, RemoteDeployment, run_remote_deployment
-from ai_pipeline_core.deployment import CompletedRun, DeploymentResultData, FailedRun, FlowStatus, PendingRun, ProgressCallback, ProgressRun, RunResponse, RunState, progress_update
+from ai_pipeline_core.deployment import CompletedEvent, CompletedRun, DeploymentResultData, FailedEvent, FailedRun, FlowStatus, MemoryPublisher, NoopPublisher, PendingRun, ProgressCallback, ProgressEvent, ProgressRun, ResultPublisher, RunResponse, RunState, StartedEvent, progress_update
 ```
 
 ## Types & Constants
@@ -54,18 +54,16 @@ class DeploymentResult(BaseModel):
 
 
 class PipelineDeployment(Generic[TOptions, TResult]):
-    """Base class for pipeline deployments.
+    """Base class for pipeline deployments with three execution modes.
 
-Features enabled by default:
-- Per-flow resume: Skip flows when a FlowCompletion record exists in DocumentStore
-- Per-flow uploads: Upload documents after each flow
-- Progress tracking via Prefect labels (pub/sub)
-- Upload on failure: Save partial results if pipeline fails"""
+- ``run_cli()``: DualDocumentStore (ClickHouse + local) or local-only
+- ``run_local()``: MemoryDocumentStore (ephemeral)
+- ``as_prefect_flow()``: auto-configured from settings"""
     flows: ClassVar[list[Any]]
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
-    pubsub_service_type: ClassVar[str] = ''
+    pubsub_service_type: ClassVar[str] = ''  # Pub/Sub source identifier; requires PUBSUB_PROJECT_ID + PUBSUB_TOPIC_ID. Empty = NoopPublisher.
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
@@ -113,11 +111,7 @@ Features enabled by default:
 
     @final
     def as_prefect_flow(self) -> Callable[..., Any]:
-        """Generate a Prefect flow for production deployment.
-
-        Returns:
-            Async Prefect flow callable that initializes DocumentStore from settings.
-        """
+        """Generate a Prefect flow for production deployment via ``ai-pipeline-deploy`` CLI."""
         deployment = self
 
         async def _deployment_flow(
@@ -205,17 +199,7 @@ Features enabled by default:
     ) -> TResult:
         """Execute flows with resume, per-flow uploads, and step control.
 
-        Args:
-            run_id: Unique identifier for this pipeline run (used as run_scope).
-            documents: Initial input documents for the first flow.
-            options: Flow options passed to each flow.
-            publisher: Lifecycle event publisher (defaults to NoopPublisher).
-            start_step: First flow to execute (1-indexed, default 1).
-            end_step: Last flow to execute (inclusive, default all flows).
-            task_result_store: Durable result backup store (writes result for remote caller fallback).
-
-        Returns:
-            Typed deployment result built from all pipeline documents.
+        run_id must match ``[a-zA-Z0-9_-]+``, max 100 chars.
         """
         validate_run_id(run_id)
 
@@ -530,13 +514,7 @@ Features enabled by default:
         trace_name: str | None = None,
         cli_mixin: type[BaseSettings] | None = None,
     ) -> None:
-        """Execute pipeline from CLI arguments with --start/--end step control.
-
-        Args:
-            initializer: Optional callback returning (run_id, documents) from options.
-            trace_name: Optional Laminar trace span name prefix.
-            cli_mixin: Optional BaseSettings subclass with CLI-only fields mixed into options.
-        """
+        """Execute pipeline from CLI with positional working_directory and --start/--end/--no-trace flags."""
         from ._cli import run_cli_for_deployment
 
         run_cli_for_deployment(self, initializer, trace_name, cli_mixin)
@@ -640,6 +618,9 @@ class FailedRun(_RunBase):
 class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
     """Typed client for calling a remote PipelineDeployment via Prefect.
 
+Derives worker run_id as ``{run_id}-{fingerprint[:8]}`` from input documents
+and options for resume and collision prevention.
+
 Name your client class identically to the server's PipelineDeployment
 subclass so the auto-derived deployment name matches.
 
@@ -711,6 +692,127 @@ Mirror type contract:
             options,
             on_progress,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class StartedEvent:
+    """Pipeline execution started."""
+    run_id: str
+    flow_run_id: str
+    run_scope: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressEvent:
+    """Flow-level or intra-flow progress."""
+    run_id: str
+    flow_run_id: str
+    flow_name: str
+    step: int
+    total_steps: int
+    progress: float
+    step_progress: float
+    status: FlowStatus
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedEvent:
+    """Pipeline completed successfully."""
+    run_id: str
+    flow_run_id: str
+    result: dict[str, Any]
+    chain_context: dict[str, Any]
+    actual_cost: float
+
+
+@dataclass(frozen=True, slots=True)
+class FailedEvent:
+    """Pipeline execution failed."""
+    run_id: str
+    flow_run_id: str
+    error_code: ErrorCode
+    error_message: str
+
+
+# Protocol — implement in concrete class
+@runtime_checkable
+class ResultPublisher(Protocol):
+    """Publishes pipeline lifecycle events to external consumers."""
+    async def close(self) -> None:
+        """Release resources held by the publisher."""
+        ...
+
+    async def publish_completed(self, event: CompletedEvent) -> None:
+        """Publish a pipeline completed event."""
+        ...
+
+    async def publish_failed(self, event: FailedEvent) -> None:
+        """Publish a pipeline failed event."""
+        ...
+
+    async def publish_heartbeat(self, run_id: str) -> None:
+        """Publish a heartbeat signal."""
+        ...
+
+    async def publish_progress(self, event: ProgressEvent) -> None:
+        """Publish a flow progress event."""
+        ...
+
+    async def publish_started(self, event: StartedEvent) -> None:
+        """Publish a pipeline started event."""
+        ...
+
+
+class NoopPublisher:
+    """Discards all lifecycle events. Default publisher for CLI and run_local."""
+    async def close(self) -> None:
+        """No resources to release."""
+
+    async def publish_completed(self, event: CompletedEvent) -> None:
+        """Accept and discard a completed event."""
+
+    async def publish_failed(self, event: FailedEvent) -> None:
+        """Accept and discard a failed event."""
+
+    async def publish_heartbeat(self, run_id: str) -> None:
+        """Accept and discard a heartbeat."""
+
+    async def publish_progress(self, event: ProgressEvent) -> None:
+        """Accept and discard a progress event."""
+
+    async def publish_started(self, event: StartedEvent) -> None:
+        """Accept and discard a started event."""
+
+
+class MemoryPublisher:
+    """Records all lifecycle events in-memory for test assertions."""
+    def __init__(self) -> None:
+        self.events: list[StartedEvent | ProgressEvent | CompletedEvent | FailedEvent] = []
+        self.heartbeats: list[str] = []
+
+    async def close(self) -> None:
+        """No resources to release."""
+
+    async def publish_completed(self, event: CompletedEvent) -> None:
+        """Record a completed event."""
+        self.events.append(event)
+
+    async def publish_failed(self, event: FailedEvent) -> None:
+        """Record a failed event."""
+        self.events.append(event)
+
+    async def publish_heartbeat(self, run_id: str) -> None:
+        """Record a heartbeat."""
+        self.heartbeats.append(run_id)
+
+    async def publish_progress(self, event: ProgressEvent) -> None:
+        """Record a progress event."""
+        self.events.append(event)
+
+    async def publish_started(self, event: StartedEvent) -> None:
+        """Record a started event."""
+        self.events.append(event)
 
 
 ```
@@ -814,6 +916,39 @@ async def run_remote_deployment(
 
 ## Examples
 
+**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:697`)
+
+```python
+def test_format_starts_with_base_run_id(self):
+    """Derived run_id starts with the user's base run_id."""
+    doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+    derived = _derive_remote_run_id("my-project", [doc], FlowOptions())
+    assert derived.startswith("my-project-")
+```
+
+**Execute passes derived run id to prefect** (`tests/deployment/test_remote_deployment.py:728`)
+
+```python
+async def test_execute_passes_derived_run_id_to_prefect(self):
+    """_execute() passes derived (not raw) run_id in Prefect parameters."""
+
+    class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        trace_level: ClassVar[TraceLevel] = "off"
+
+    doc = AlphaDoc.create_root(name="test.txt", content="hello world", reason="test input")
+    with patch(_REMOTE_RUN) as mock_run:
+        mock_run.return_value = SimpleResult(success=True)
+        await Foo().run("my-project", [doc], FlowOptions())
+
+    params = mock_run.call_args[0][1]
+    # run_id in parameters should NOT be the raw "my-project" but derived
+    assert params["run_id"] != "my-project"
+    assert params["run_id"].startswith("my-project-")
+    assert len(params["run_id"]) > len("my-project-")
+    # run_id kwarg must also be passed for ClickHouse fallback wiring
+    assert mock_run.call_args.kwargs["run_id"] == params["run_id"]
+```
+
 **Progress update events have correct flow name** (`tests/deployment/test_pubsub_progress.py:261`)
 
 ```python
@@ -904,63 +1039,36 @@ def test_deployment_result_data(self):
     assert "success" in dumped
 ```
 
-**Subclass specific trace names** (`tests/deployment/test_remote_deployment.py:417`)
+**Satisfies protocol** (`tests/deployment/test_publishers.py:58`)
 
 ```python
-def test_subclass_specific_trace_names(self):
-    class PipelineA(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-        pass
-
-    class PipelineB(RemoteDeployment[BetaDoc, FlowOptions, SimpleResult]):
-        pass
-
-    assert PipelineA._execute is not PipelineB._execute
+def test_satisfies_protocol(self):
+    """NoopPublisher must be a valid ResultPublisher."""
+    assert isinstance(NoopPublisher(), ResultPublisher)
 ```
 
-**Three args returned by helper** (`tests/deployment/test_remote_deployment.py:95`)
+**Satisfies protocol** (`tests/deployment/test_publishers.py:86`)
 
 ```python
-def test_three_args_returned_by_helper(self):
-    class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-        trace_level: ClassVar[TraceLevel] = "off"
-
-    args = extract_generic_params(Foo, RemoteDeployment)
-    assert len(args) == 3
-    assert args[0] is AlphaDoc
-    assert args[1] is FlowOptions
-    assert args[2] is SimpleResult
+def test_satisfies_protocol(self):
+    """MemoryPublisher must be a valid ResultPublisher."""
+    assert isinstance(MemoryPublisher(), ResultPublisher)
 ```
 
-**Three params from remote deployment** (`tests/deployment/test_remote_deployment.py:588`)
+**Starts empty** (`tests/deployment/test_publishers.py:90`)
 
 ```python
-def test_three_params_from_remote_deployment(self):
-    class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-        trace_level: ClassVar[TraceLevel] = "off"
-
-    result = extract_generic_params(Foo, RemoteDeployment)
-    assert len(result) == 3
-    assert result[0] is AlphaDoc
-    assert result[1] is FlowOptions
-    assert result[2] is SimpleResult
-```
-
-**Union doc arg is union type** (`tests/deployment/test_remote_deployment.py:105`)
-
-```python
-def test_union_doc_arg_is_union_type(self):
-    class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-        trace_level: ClassVar[TraceLevel] = "off"
-
-    args = extract_generic_params(Foo, RemoteDeployment)
-    assert isinstance(args[0], types.UnionType)
-    assert set(args[0].__args__) == {AlphaDoc, BetaDoc}
+def test_starts_empty(self):
+    """New MemoryPublisher has no events or heartbeats."""
+    pub = MemoryPublisher()
+    assert pub.events == []
+    assert pub.heartbeats == []
 ```
 
 
 ## Error Examples
 
-**Remote deployment rejects empty run id** (`tests/deployment/test_remote_deployment.py:896`)
+**Remote deployment rejects empty run id** (`tests/deployment/test_remote_deployment.py:898`)
 
 ```python
 async def test_remote_deployment_rejects_empty_run_id(self):
@@ -974,7 +1082,7 @@ async def test_remote_deployment_rejects_empty_run_id(self):
         await Wired2().run("", [doc], FlowOptions())
 ```
 
-**Remote deployment rejects invalid base run id** (`tests/deployment/test_remote_deployment.py:886`)
+**Remote deployment rejects invalid base run id** (`tests/deployment/test_remote_deployment.py:888`)
 
 ```python
 async def test_remote_deployment_rejects_invalid_base_run_id(self):
@@ -986,6 +1094,30 @@ async def test_remote_deployment_rejects_invalid_base_run_id(self):
     doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
     with pytest.raises(ValueError, match="contains invalid characters"):
         await Wired().run("invalid run id with spaces", [doc], FlowOptions())
+```
+
+**Publishes failed event on error** (`tests/deployment/test_publisher_wiring.py:224`)
+
+```python
+async def test_publishes_failed_event_on_error(self):
+    """run() must publish FailedEvent when a flow raises."""
+    pub = MemoryPublisher()
+    store = MemoryDocumentStore()
+    set_document_store(store)
+    try:
+        deployment = _FailingDeployment()
+        doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
+        with pytest.raises(RuntimeError, match="deliberate failure"):
+            await deployment.run("run-1", [doc], FlowOptions(), publisher=pub)
+    finally:
+        store.shutdown()
+        set_document_store(None)
+
+    failed_events = [e for e in pub.events if isinstance(e, FailedEvent)]
+    assert len(failed_events) == 1
+    assert failed_events[0].run_id == "run-1"
+    assert failed_events[0].error_code == ErrorCode.UNKNOWN
+    assert "deliberate failure" in failed_events[0].error_message
 ```
 
 **Rejects int** (`tests/deployment/test_remote_deployment.py:151`)
@@ -1028,28 +1160,5 @@ def test_rejects_non_document_in_union(self):
     with pytest.raises(TypeError, match="Document subclass"):
 
         class Bad(RemoteDeployment[AlphaDoc | str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
-            trace_level: ClassVar[TraceLevel] = "off"
-```
-
-**Rejects non document type** (`tests/deployment/test_remote_deployment.py:139`)
-
-```python
-def test_rejects_non_document_type(self):
-    with pytest.raises(TypeError, match="Document subclass"):
-
-        class Bad(RemoteDeployment[str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
-            trace_level: ClassVar[TraceLevel] = "off"
-```
-
-**Rejects non flow options** (`tests/deployment/test_remote_deployment.py:159`)
-
-```python
-def test_rejects_non_flow_options(self):
-    class NotFlowOptions(BaseModel):
-        x: int = 1
-
-    with pytest.raises(TypeError, match="FlowOptions subclass"):
-
-        class Bad(RemoteDeployment[AlphaDoc, NotFlowOptions, SimpleResult]):  # type: ignore[type-var]
             trace_level: ClassVar[TraceLevel] = "off"
 ```

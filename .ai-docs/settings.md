@@ -42,7 +42,7 @@ Inherit to add application-specific fields::
     clickhouse_secure: bool = True
     clickhouse_connect_timeout: int = 10
     clickhouse_send_receive_timeout: int = 30
-    tracking_enabled: bool = True
+    tracking_enabled: bool = True  # When False, disables ClickHouse tracking even if ClickHouse is configured
     doc_summary_enabled: bool = True
     doc_summary_model: str = 'gemini-3-flash'
     pubsub_project_id: str = ''

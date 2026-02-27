@@ -9,10 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class TraceDebugConfig(BaseModel):
-    """Configuration for local debug tracing.
+    """Configuration for local ``.trace/`` directory generation.
 
-    Controls how traces are written to the local filesystem for debugging.
-    Enabled automatically in CLI mode, writing to ``<working_dir>/.trace``.
+    Controls filesystem trace output. Enabled automatically in CLI mode.
+    Each run overwrites previous ``.trace/`` contents.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -26,7 +26,7 @@ class TraceDebugConfig(BaseModel):
     # Span filtering
     verbose: bool = Field(
         default=False,
-        description="Write all spans including LLM-type. When False, filters duplicate LLM spans.",
+        description="When False (default), duplicate LLM spans are filtered from per-span directories but their cost/token metrics still count in totals.",
     )
 
     # Span optimization

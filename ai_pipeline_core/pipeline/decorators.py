@@ -340,6 +340,10 @@ def pipeline_task(  # noqa: UP047
     and a DocumentStore + RunContext are available, documents are validated
     for provenance, deduplicated by SHA256, and saved to the store.
 
+    Input parameter types are validated at decoration time: str, int, float,
+    bool, None, UUID, Path, Enum, Document, frozen BaseModel, FlowOptions,
+    and containers (list, tuple, dict[str, ...], Union) of these types.
+
     The return type annotation is validated at decoration time.
     Allowed return types::
 

@@ -241,6 +241,9 @@ def _validate_document_type(cls_name: str, doc_type: Any) -> None:
 class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
     """Typed client for calling a remote PipelineDeployment via Prefect.
 
+    Derives worker run_id as ``{run_id}-{fingerprint[:8]}`` from input documents
+    and options for resume and collision prevention.
+
     Name your client class identically to the server's PipelineDeployment
     subclass so the auto-derived deployment name matches.
 

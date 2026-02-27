@@ -693,6 +693,7 @@ class TestDeriveRemoteRunId:
         id2 = _derive_remote_run_id("base-run", [doc], opts2)
         assert id1 != id2
 
+    @pytest.mark.ai_docs
     def test_format_starts_with_base_run_id(self):
         """Derived run_id starts with the user's base run_id."""
         doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
@@ -723,6 +724,7 @@ class TestDeriveRemoteRunId:
         id_b = _derive_remote_run_id("project-b", [doc], opts)
         assert id_a != id_b
 
+    @pytest.mark.ai_docs
     async def test_execute_passes_derived_run_id_to_prefect(self):
         """_execute() passes derived (not raw) run_id in Prefect parameters."""
 

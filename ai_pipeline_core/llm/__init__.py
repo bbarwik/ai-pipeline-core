@@ -10,7 +10,7 @@ Primitive types (ModelOptions, ModelName, etc.) are re-exported from _llm_core.
 """
 
 from ai_pipeline_core._llm_core.model_response import Citation
-from ai_pipeline_core._llm_core.types import ModelName, ModelOptions
+from ai_pipeline_core._llm_core.types import ModelName, ModelOptions, TokenUsage
 
 from .conversation import Conversation, ConversationContent
 
@@ -20,4 +20,5 @@ __all__ = [
     "ConversationContent",
     "ModelName",
     "ModelOptions",
+    "TokenUsage",
 ]

@@ -281,20 +281,18 @@ def _validate_flow_chain(deployment_name: str, flows: list[Any]) -> None:
 
 
 class PipelineDeployment(Generic[TOptions, TResult]):
-    """Base class for pipeline deployments.
+    """Base class for pipeline deployments with three execution modes.
 
-    Features enabled by default:
-    - Per-flow resume: Skip flows when a FlowCompletion record exists in DocumentStore
-    - Per-flow uploads: Upload documents after each flow
-    - Progress tracking via Prefect labels (pub/sub)
-    - Upload on failure: Save partial results if pipeline fails
+    - ``run_cli()``: DualDocumentStore (ClickHouse + local) or local-only
+    - ``run_local()``: MemoryDocumentStore (ephemeral)
+    - ``as_prefect_flow()``: auto-configured from settings
     """
 
     flows: ClassVar[list[Any]]
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
-    pubsub_service_type: ClassVar[str] = ""
+    pubsub_service_type: ClassVar[str] = ""  # Pub/Sub source identifier; requires PUBSUB_PROJECT_ID + PUBSUB_TOPIC_ID. Empty = NoopPublisher.
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
@@ -449,17 +447,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     ) -> TResult:
         """Execute flows with resume, per-flow uploads, and step control.
 
-        Args:
-            run_id: Unique identifier for this pipeline run (used as run_scope).
-            documents: Initial input documents for the first flow.
-            options: Flow options passed to each flow.
-            publisher: Lifecycle event publisher (defaults to NoopPublisher).
-            start_step: First flow to execute (1-indexed, default 1).
-            end_step: Last flow to execute (inclusive, default all flows).
-            task_result_store: Durable result backup store (writes result for remote caller fallback).
-
-        Returns:
-            Typed deployment result built from all pipeline documents.
+        run_id must match ``[a-zA-Z0-9_-]+``, max 100 chars.
         """
         validate_run_id(run_id)
 
@@ -812,24 +800,14 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         trace_name: str | None = None,
         cli_mixin: type[BaseSettings] | None = None,
     ) -> None:
-        """Execute pipeline from CLI arguments with --start/--end step control.
-
-        Args:
-            initializer: Optional callback returning (run_id, documents) from options.
-            trace_name: Optional Laminar trace span name prefix.
-            cli_mixin: Optional BaseSettings subclass with CLI-only fields mixed into options.
-        """
+        """Execute pipeline from CLI with positional working_directory and --start/--end/--no-trace flags."""
         from ._cli import run_cli_for_deployment
 
         run_cli_for_deployment(self, initializer, trace_name, cli_mixin)
 
     @final
     def as_prefect_flow(self) -> Callable[..., Any]:
-        """Generate a Prefect flow for production deployment.
-
-        Returns:
-            Async Prefect flow callable that initializes DocumentStore from settings.
-        """
+        """Generate a Prefect flow for production deployment via ``ai-pipeline-deploy`` CLI."""
         deployment = self
 
         async def _deployment_flow(

@@ -134,3 +134,16 @@ async def test_load_nodes_by_sha256s(populated_store: MemoryDocumentStore):
     assert len(nodes) == 2
     assert nodes[report.sha256].name == "report.md"
     assert nodes[src_a.sha256].class_name == "SourceDoc"
+
+
+@pytest.mark.ai_docs
+@pytest.mark.asyncio
+async def test_find_by_source(populated_store: MemoryDocumentStore):
+    """Find the most recent document derived from each source value."""
+    report, src_a, src_b = await _seed(populated_store)
+    reader = get_document_store()
+
+    found = await reader.find_by_source([src_a.sha256, src_b.sha256], ReportDoc)
+    assert len(found) == 2
+    assert found[src_a.sha256].name == "report.md"
+    assert found[src_b.sha256].name == "report.md"

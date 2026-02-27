@@ -311,6 +311,7 @@ def test_main_no_command_returns_1(capsys: pytest.CaptureFixture[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ai_docs
 def test_main_render(capsys: pytest.CaptureFixture[str]) -> None:
     ret = main(["render", "tests.prompt_compiler.test_api:PlainSpec"])
     assert ret == 0
@@ -338,6 +339,7 @@ def test_main_render_not_found(capsys: pytest.CaptureFixture[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ai_docs
 def test_main_compile_finds_specs(capsys: pytest.CaptureFixture[str]) -> None:
     ret = main(["compile", "--root", str(Path.cwd())])
     assert ret == 0
@@ -357,6 +359,7 @@ def test_main_compile_empty_dir(tmp_path: Path, capsys: pytest.CaptureFixture[st
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ai_docs
 def test_main_inspect_minimal_spec(capsys: pytest.CaptureFixture[str]) -> None:
     """Inspect a spec with no rules, no guides, no output rules, no fields."""
     ret = main(["inspect", f"{MinimalInspectSpec.__module__}:MinimalInspectSpec"])

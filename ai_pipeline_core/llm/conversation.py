@@ -210,6 +210,8 @@ class Conversation(BaseModel, Generic[T]):
     Every send()/send_structured() call returns a NEW Conversation instance.
     Never discard the return value — the original Conversation is unchanged.
 
+    Images in Documents are automatically processed per model preset (splitting, downscaling).
+
     Content protection (URLs, addresses, high-entropy strings) is enabled by default,
     auto-disabled for `-search` suffix models. Both `.content` and `.parsed` are
     eagerly restored after each send.
@@ -524,7 +526,10 @@ class Conversation(BaseModel, Generic[T]):
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[None]":
-        """Send message, returns NEW Conversation with response."""
+        """Send message, returns NEW Conversation with response.
+
+        Document content is wrapped in <document> XML tags with id, name, description.
+        """
         new_messages, response = await self._execute_send(content, None, purpose, expected_cost)
         return self.model_copy(update={"messages": new_messages + (response,)})  # type: ignore[return-value]
 
@@ -536,7 +541,12 @@ class Conversation(BaseModel, Generic[T]):
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[U]":
-        """Send message expecting structured response, returns NEW Conversation[U] with .parsed."""
+        """Send message expecting structured response, returns NEW Conversation[U] with .parsed.
+
+        Quality degrades beyond ~2-3K output tokens or nesting >2 levels.
+        Never use dict types in response_format — use lists of typed models.
+        Split complex structures across multiple calls.
+        """
         new_messages, response = await self._execute_send(content, response_format, purpose, expected_cost)
         return self.model_copy(update={"messages": new_messages + (response,)})  # type: ignore[return-value]
 
@@ -644,12 +654,7 @@ class Conversation(BaseModel, Generic[T]):
     # --- Builder methods (return NEW Conversation) ---
 
     def with_document(self, doc: Document) -> "Conversation[T]":
-        """Return NEW Conversation with document appended to messages (not cached).
-
-        All structured data for LLM context must be wrapped in a Document.
-        Use Document.create() to wrap dicts, lists, or BaseModel instances.
-        Never construct XML manually for LLM context.
-        """
+        """Return NEW Conversation with document appended to messages (dynamic suffix, not cached)."""
         return self.model_copy(update={"messages": self.messages + (doc,)})
 
     def with_documents(self, docs: Sequence[Document]) -> "Conversation[T]":
@@ -663,9 +668,8 @@ class Conversation(BaseModel, Generic[T]):
     def with_context(self, *docs: Document) -> "Conversation[T]":
         """Return NEW Conversation with documents added to the cacheable context prefix.
 
-        All structured data for LLM context must be wrapped in a Document.
-        Use Document.create() to wrap dicts, lists, or BaseModel instances.
-        Never construct XML manually for LLM context.
+        Always set context before the first send() — adding context mid-conversation
+        changes the prefix and invalidates existing cache.
         """
         return self.model_copy(update={"context": self.context + docs})
 
@@ -680,7 +684,12 @@ class Conversation(BaseModel, Generic[T]):
         return self.model_copy(update={"model": model})
 
     def with_substitutor(self, enabled: bool = True) -> "Conversation[T]":
-        """Return NEW Conversation with substitutor enabled/disabled."""
+        """Return NEW Conversation with content protection enabled/disabled.
+
+        Shortens URLs, blockchain addresses, and high-entropy strings before sending.
+        Both .content and .parsed are eagerly restored after each send.
+        Auto-disabled for -search suffix models.
+        """
         return self.model_copy(update={"enable_substitutor": enabled})
 
     # --- Utilities ---

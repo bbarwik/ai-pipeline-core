@@ -1,6 +1,6 @@
 # AI Pipeline Core
 
-A high-performance async framework for building type-safe AI pipelines with LLMs, document processing, and workflow orchestration.
+Production framework for building type-safe AI pipelines — designed to be developed and used by AI coding agents. Open-sourced by [research.tech](https://research.tech).
 
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -10,6 +10,8 @@ A high-performance async framework for building type-safe AI pipelines with LLMs
 ## Overview
 
 AI Pipeline Core is a production-ready framework that combines document processing, LLM integration, and workflow orchestration into a unified system. Built with strong typing (Pydantic), automatic retries, cost tracking, and distributed tracing, it enforces best practices while keeping application code minimal and straightforward.
+
+This framework is the foundation of AI projects at [research.tech](https://research.tech). It is an internal-first solution, open-sourced because we believe in sharing production infrastructure publicly. The design prioritizes **strictness over flexibility** — all data structures are immutable, all inputs are validated at definition time, and all prompts are typed Python classes. These constraints exist because the framework is primarily developed and maintained by AI coding agents, which require rigid guardrails rather than flexible guidelines.
 
 ### Key Features
 
@@ -43,6 +45,10 @@ This installs four CLI commands:
 - Python 3.12 or higher
 - Linux/macOS (Windows via WSL2)
 - [uv](https://astral.sh/uv) (recommended)
+
+### Versioning
+
+This is an internal framework under active development. **No backward compatibility is guaranteed between versions** — pin your dependency to an exact version. There is no changelog; the git commit history serves as the changelog.
 
 ### Development Installation
 
@@ -1110,10 +1116,16 @@ make docstrings-cover  # Docstring coverage (100% required)
 
 ### AI Documentation
 
+The `.ai-docs/` directory contains auto-generated API guides designed to be fed directly to AI coding agents as context. Each module produces one self-contained guide — an AI agent should be able to correctly use any module's public API by reading only its guide.
+
+Guides include full source signatures, constraint rules extracted from docstrings, usage examples extracted from tests, and internal types that appear in public API signatures. CI enforces that guides stay fresh with the source code.
+
 ```bash
 make docs-ai-build  # Generate .ai-docs/ from source code
 make docs-ai-check  # Validate .ai-docs/ freshness and completeness
 ```
+
+When building applications on this framework, include the relevant `.ai-docs/*.md` guides in your AI agent's context window.
 
 ## Examples
 
@@ -1153,6 +1165,7 @@ ai-pipeline-core/
 |   |-- replay/            # Trace-based replay system (capture, serialize, resolve, execute)
 |   |-- settings.py        # Configuration management (Pydantic BaseSettings)
 |   +-- exceptions.py      # Framework exceptions (LLMError, DocumentNameError, etc.)
+|-- .ai-docs/             # Auto-generated API guides for AI coding agents
 |-- tests/                 # Comprehensive test suite
 |-- examples/              # Usage examples
 +-- pyproject.toml         # Project configuration
@@ -1161,12 +1174,11 @@ ai-pipeline-core/
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make changes following the project's style guide
-4. Run all checks (`make check`)
-5. Commit your changes
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
+2. Create a feature branch
+3. Make changes — run `make check` (must pass all linting, type checking, semgrep, and tests)
+4. Open a Pull Request
+
+Note: This is an internal-first framework. External contributions are welcome but the architecture and infrastructure choices (Prefect, ClickHouse) are fixed.
 
 ## License
 

@@ -27,6 +27,10 @@ _D = TypeVar("_D", bound=Document)
 class DocumentReader(Protocol):
     """Read-only protocol for application code that consumes documents.
 
+    Backend varies by PipelineDeployment execution mode: MemoryDocumentStore
+    (run_local), DualDocumentStore or LocalDocumentStore (run_cli),
+    auto-configured from settings (as_prefect_flow).
+
     Users should depend on this protocol when they only need to read documents.
     """
 
@@ -35,7 +39,7 @@ class DocumentReader(Protocol):
         ...
 
     async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
-        """Check if any documents of this type exist in the run scope."""
+        """Check if any documents of this type exist in the run scope. max_age filters on ``stored_at`` timestamp."""
         ...
 
     async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
@@ -65,7 +69,7 @@ class DocumentReader(Protocol):
         *,
         max_age: timedelta | None = None,
     ) -> dict[str, Document]:
-        """Find the most recent document per source value."""
+        """Find most recent document per source value, matched against ``derived_from`` entries. max_age filters on ``stored_at`` timestamp."""
         ...
 
     async def get_flow_completion(
@@ -75,7 +79,7 @@ class DocumentReader(Protocol):
         *,
         max_age: timedelta | None = None,
     ) -> FlowCompletion | None:
-        """Get the completion record for a flow, or None if not found / expired."""
+        """Get the completion record for a flow, or None if not found / expired. max_age filters on ``stored_at`` timestamp."""
         ...
 
 

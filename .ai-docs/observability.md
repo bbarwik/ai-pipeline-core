@@ -1,5 +1,5 @@
 # MODULE: observability
-# CLASSES: TraceInfo
+# CLASSES: TraceInfo, TraceDebugConfig
 # DEPENDS: BaseModel
 # PURPOSE: Observability system for AI pipelines.
 # VERSION: 0.12.0
@@ -9,6 +9,7 @@
 
 ```python
 from ai_pipeline_core import TraceInfo, TraceLevel, set_trace_cost, trace
+from ai_pipeline_core.observability import TraceDebugConfig
 ```
 
 ## Types & Constants
@@ -90,6 +91,20 @@ consistent tracing context."""
         if self.tags:
             kwargs["tags"] = self.tags
         return kwargs
+
+
+class TraceDebugConfig(BaseModel):
+    """Configuration for local ``.trace/`` directory generation.
+
+Controls filesystem trace output. Enabled automatically in CLI mode.
+Each run overwrites previous ``.trace/`` contents."""
+    model_config = ConfigDict(frozen=True)
+    path: Path = Field(description='Directory for debug traces')  # Directory for debug traces
+    max_file_bytes: int = Field(default=500000, description='Max bytes for input.yaml or output.yaml. Truncated to stay under.')  # Max bytes for input.yaml or output.yaml. Truncated to stay under.
+    verbose: bool = Field(default=False, description='When False (default), duplicate LLM spans are filtered from per-span directories but their cost/token metrics still count in totals.')  # When False (default), duplicate LLM spans are filtered from per-span directories but their cost/token metrics still count in totals.
+    merge_wrapper_spans: bool = Field(default=True, description='Merge Prefect wrapper spans with inner traced function spans')  # Merge Prefect wrapper spans with inner traced function spans
+    redact_patterns: tuple[str, ...] = Field(default=('sk-[a-zA-Z0-9]{20,}', 'sk-proj-[a-zA-Z0-9\\-_]{20,}', 'AKIA[0-9A-Z]{16}', 'ghp_[a-zA-Z0-9]{36}', 'gho_[a-zA-Z0-9]{36}', 'xoxb-[a-zA-Z0-9\\-]+', 'xoxp-[a-zA-Z0-9\\-]+', '(?i)password\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]+', '(?i)secret\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]+', '(?i)api[_\\-]?key\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]+', '(?i)bearer\\s+[a-zA-Z0-9\\-_\\.]+'), description='Regex patterns for secrets to redact')  # Regex patterns for secrets to redact
+    generate_summary: bool = Field(default=True, description='Generate summary.md')  # Generate summary.md
 
 
 ```
@@ -244,6 +259,22 @@ def set_trace_cost(cost: float | str) -> None:
 
 ## Examples
 
+**Generates summary and costs** (`tests/observability/test_materializer_unit.py:218`)
+
+```python
+def test_generates_summary_and_costs(self, tmp_path):
+    mat = _make_materializer(tmp_path, generate_summary=True)
+    span = _make_span_data(
+        span_id="root",
+        trace_id="t1",
+        attributes={"gen_ai.usage.input_tokens": 100, "gen_ai.usage.output_tokens": 50, "gen_ai.usage.cost": 0.01},
+    )
+    mat.on_span_start(span)
+    mat.add_span(span)
+    # After add_span, trace should be auto-finalized
+    assert (tmp_path / "summary.md").exists()
+```
+
 **Set trace cost negative** (`tests/observability/test_trace_decorator.py:309`)
 
 ```python
@@ -312,13 +343,4 @@ def test_set_trace_cost_invalid_string_not_number(self) -> None:
     """Test set_trace_cost with invalid string (not a number)."""
     with pytest.raises(ValueError, match=r"Invalid USD format.*Must be a valid number"):
         set_trace_cost("$abc")
-```
-
-**Config is frozen** (`tests/observability/test_initialization.py:26`)
-
-```python
-def test_config_is_frozen(self):
-    config = ObservabilityConfig()
-    with pytest.raises(ValidationError):
-        config.clickhouse_host = "changed"  # type: ignore[misc]
 ```

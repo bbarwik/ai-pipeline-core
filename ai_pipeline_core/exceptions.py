@@ -27,12 +27,12 @@ class DocumentSizeError(DocumentValidationError):
 
 
 class DocumentNameError(DocumentValidationError):
-    """Raised when document name contains invalid characters or patterns."""
+    """Raised when document name contains path traversal, reserved suffixes, or invalid format."""
 
 
 class LLMError(PipelineCoreError):
-    """Raised when LLM generation fails after all retries."""
+    """Raised when LLM generation fails after all retries, including timeouts and provider errors."""
 
 
 class OutputDegenerationError(LLMError):
-    """LLM output contains degeneration patterns (e.g., token repetition loops)."""
+    """LLM output contains degeneration patterns (e.g., token repetition loops). Triggers retry with cache disabled."""
