@@ -19,11 +19,10 @@ import clickhouse_connect
 
 from ai_pipeline_core.document_store._models import DocumentNode, FlowCompletion
 from ai_pipeline_core.document_store._summary_worker import SummaryGenerator, SummaryWorker
-from ai_pipeline_core.documents._context_vars import _suppress_document_registration
+from ai_pipeline_core.documents._context import DocumentSha256, RunScope, _suppress_document_registration
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
 from ai_pipeline_core.documents.attachment import Attachment
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
@@ -35,9 +34,12 @@ __all__ = [
 _D = TypeVar("_D", bound=Document)
 
 _MAX_BUFFER_SIZE = 10_000
+_BUFFER_WARNING_THRESHOLD = int(_MAX_BUFFER_SIZE * 0.9)
+_BUFFER_RETRY_INTERVAL = 10  # seconds between buffer flush attempts when not recovering from circuit open
 _RECONNECT_INTERVAL_SEC = 60
 _FAILURE_THRESHOLD = 3
 _MAX_BUFFER_RETRIES = 3
+_SHUTDOWN_FLUSH_TIMEOUT = 30
 
 # --- DDL: table names and CREATE TABLE statements ---
 
@@ -74,7 +76,9 @@ CREATE TABLE IF NOT EXISTS {TABLE_DOCUMENT_INDEX}
     attachment_sha256s      Array(String),
     summary                String DEFAULT '' CODEC(ZSTD(3)),
     stored_at              DateTime64(3, 'UTC'),
-    version                UInt64 DEFAULT 1
+    version                UInt64 DEFAULT 1,
+
+    INDEX idx_derived_from derived_from TYPE bloom_filter GRANULARITY 1
 )
 ENGINE = ReplacingMergeTree(version)
 ORDER BY (document_sha256)
@@ -84,7 +88,7 @@ SETTINGS index_granularity = 8192
 DDL_RUN_DOCUMENTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_RUN_DOCUMENTS}
 (
-    run_scope          String,
+    run_scope          LowCardinality(String),
     document_sha256    String,
     class_name         LowCardinality(String),
     stored_at          DateTime64(3, 'UTC')
@@ -97,7 +101,7 @@ SETTINGS index_granularity = 8192
 DDL_FLOW_COMPLETIONS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_FLOW_COMPLETIONS}
 (
-    run_scope          String,
+    run_scope          LowCardinality(String),
     flow_name          String,
     input_sha256s      Array(String),
     output_sha256s     Array(String),
@@ -220,6 +224,8 @@ class ClickHouseDocumentStore:
         username: str = "default",
         password: str = "",
         secure: bool = True,
+        connect_timeout: int = 10,
+        send_receive_timeout: int = 30,
         summary_generator: SummaryGenerator | None = None,
     ) -> None:
         self._params = {
@@ -229,6 +235,8 @@ class ClickHouseDocumentStore:
             "username": username,
             "password": password,
             "secure": secure,
+            "connect_timeout": connect_timeout,
+            "send_receive_timeout": send_receive_timeout,
         }
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ch-docstore")
         self._client: Any = None
@@ -238,6 +246,7 @@ class ClickHouseDocumentStore:
         self._consecutive_failures = 0
         self._circuit_open = False
         self._last_reconnect_attempt = 0.0
+        self._last_flush_attempt = 0.0
         self._buffer: deque[_BufferedWrite] = deque(maxlen=_MAX_BUFFER_SIZE)
 
         # Summary worker
@@ -395,18 +404,51 @@ class ClickHouseDocumentStore:
             self._summary_worker.flush()
 
     def shutdown(self) -> None:
-        """Flush pending summaries, stop the summary worker, and release the executor."""
+        """Flush pending buffer and summaries, stop workers, and release the executor."""
         if self._summary_worker:
             self._summary_worker.shutdown()
-        self._executor.shutdown(wait=True)
+        if self._buffer:
+            try:
+                future = self._executor.submit(self._flush_buffer)
+                future.result(timeout=_SHUTDOWN_FLUSH_TIMEOUT)
+            except RuntimeError:
+                logger.warning("Could not flush document buffer on shutdown — executor already shut down")
+            except TimeoutError:
+                logger.warning("Document buffer flush timed out on shutdown, %d documents undelivered", len(self._buffer))
+            except Exception as e:
+                logger.warning("Document buffer flush failed on shutdown (%d documents undelivered): %s", len(self._buffer), e)
+        self._executor.shutdown(wait=False)
 
     # --- Sync implementations (executor thread only) ---
+
+    def _buffer_append(self, document: Document, run_scope: RunScope) -> None:
+        """Append a document to the retry buffer with overflow warning."""
+        buf_len = len(self._buffer)
+        if buf_len >= _MAX_BUFFER_SIZE:
+            logger.warning(
+                "Document buffer full (%d items), dropping oldest document to make room for '%s'",
+                buf_len,
+                document.name,
+            )
+        elif buf_len >= _BUFFER_WARNING_THRESHOLD:
+            logger.warning("Document buffer at %d/%d capacity", buf_len, _MAX_BUFFER_SIZE)
+        self._buffer.append(_BufferedWrite(document=document, run_scope=run_scope))
+
+    def _buffer_flush_due(self) -> bool:
+        """Check if enough time has passed since the last buffer flush attempt."""
+        now = time.monotonic()
+        if now - self._last_flush_attempt < _BUFFER_RETRY_INTERVAL:
+            return False
+        self._last_flush_attempt = now
+        return True
 
     def _save_sync(self, document: Document, run_scope: RunScope) -> None:
         if self._circuit_open:
             if not self._try_reconnect():
-                self._buffer.append(_BufferedWrite(document=document, run_scope=run_scope))
+                self._buffer_append(document, run_scope)
                 return
+            self._flush_buffer()
+        elif self._buffer and self._buffer_flush_due():
             self._flush_buffer()
 
         try:
@@ -416,122 +458,161 @@ class ClickHouseDocumentStore:
         except Exception as e:
             logger.warning("Failed to save document '%s': %s", document.name, e)
             self._record_failure()
-            self._buffer.append(_BufferedWrite(document=document, run_scope=run_scope))
+            self._buffer_append(document, run_scope)
 
     def _save_batch_sync(self, documents: list[Document], run_scope: RunScope) -> None:
         if self._circuit_open:
             if not self._try_reconnect():
                 for doc in documents:
-                    self._buffer.append(_BufferedWrite(document=doc, run_scope=run_scope))
+                    self._buffer_append(doc, run_scope)
                 return
+            self._flush_buffer()
+        elif self._buffer and self._buffer_flush_due():
             self._flush_buffer()
 
         try:
             self._ensure_tables()
+            self._insert_documents_batch(documents, run_scope)
+            self._record_success()
         except Exception as e:
-            logger.warning("Failed to ensure tables for batch: %s", e)
+            logger.warning("Failed to save batch of %d documents: %s", len(documents), e)
             self._record_failure()
             for doc in documents:
-                self._buffer.append(_BufferedWrite(document=doc, run_scope=run_scope))
-            return
+                self._buffer_append(doc, run_scope)
 
-        for i, doc in enumerate(documents):
-            try:
-                self._insert_document(doc, run_scope)
-            except Exception as e:
-                logger.warning("Failed to save document '%s' in batch: %s", doc.name, e)
-                self._record_failure()
-                for remaining in documents[i:]:
-                    self._buffer.append(_BufferedWrite(document=remaining, run_scope=run_scope))
-                return
-        self._record_success()
+    def _rebuffer_failed_items(self, items: list[_BufferedWrite], error: Exception) -> None:
+        """Increment retry_count per item, re-buffer or drop individually."""
+        for it in items:
+            it.retry_count += 1
+            if it.retry_count >= _MAX_BUFFER_RETRIES:
+                logger.warning("Dropping document '%s' after %d failed flush attempts: %s", it.document.name, it.retry_count, error)
+            else:
+                logger.warning("Failed to flush buffered document '%s' (attempt %d): %s", it.document.name, it.retry_count, error)
+                self._buffer.append(it)
 
     def _flush_buffer(self) -> None:
+        """Drain buffer in chunks, grouped by run_scope. Per-item retry tracking."""
+        FLUSH_CHUNK_SIZE = 100
         while self._buffer:
-            item = self._buffer.popleft()
-            try:
-                self._insert_document(item.document, item.run_scope)
-                if self._summary_worker:
-                    self._summary_worker.schedule(item.document)
-            except Exception as e:
-                item.retry_count += 1
-                if item.retry_count >= _MAX_BUFFER_RETRIES:
-                    logger.warning("Dropping document '%s' after %d failed flush attempts: %s", item.document.name, item.retry_count, e)
-                else:
-                    logger.warning("Failed to flush buffered document '%s' (attempt %d): %s", item.document.name, item.retry_count, e)
-                    self._buffer.append(item)
-                break
+            chunk: list[_BufferedWrite] = []
+            while self._buffer and len(chunk) < FLUSH_CHUNK_SIZE:
+                chunk.append(self._buffer.popleft())
+
+            groups: dict[RunScope, list[_BufferedWrite]] = {}
+            for item in chunk:
+                groups.setdefault(item.run_scope, []).append(item)
+
+            failed = False
+            for run_scope, items in groups.items():
+                if failed:
+                    # Re-buffer unprocessed groups from this chunk (preserving retry_count)
+                    for it in items:
+                        self._buffer.append(it)
+                    continue
+                try:
+                    self._insert_documents_batch([it.document for it in items], run_scope)
+                    if self._summary_worker:
+                        for it in items:
+                            self._summary_worker.schedule(it.document)
+                except Exception as e:
+                    failed = True
+                    self._rebuffer_failed_items(items, e)
+
+            if failed:
+                break  # Stop flushing — retry on next throttled drain or shutdown
 
     def _insert_document(self, document: Document, run_scope: RunScope) -> None:
-        doc_sha256 = compute_document_sha256(document)
-        content_sha256 = compute_content_sha256(document.content)
+        """Insert a single document. Thin wrapper around batch insert."""
+        self._insert_documents_batch([document], run_scope)
 
-        # Insert content using insert() for binary-safe handling (idempotent via ReplacingMergeTree)
+    def _insert_documents_batch(self, documents: list[Document], run_scope: RunScope) -> None:
+        """Insert multiple documents in exactly 3 client.insert() calls (one per table).
+
+        Content rows are deduplicated by content_sha256 within the batch.
+        """
         now = datetime.now(UTC)
-        content_rows: list[list[Any]] = [
-            [content_sha256, document.content, now],
-        ]
+        content_rows: list[list[Any]] = []
+        index_rows: list[list[Any]] = []
+        run_doc_rows: list[list[Any]] = []
+        seen_content: set[str] = set()
 
-        # Collect attachment content
-        att_names: list[str] = []
-        att_descriptions: list[str] = []
-        att_sha256s: list[str] = []
-        for att in sorted(document.attachments, key=lambda a: a.name):
-            att_sha = compute_content_sha256(att.content)
-            att_names.append(att.name)
-            att_descriptions.append(att.description or "")
-            att_sha256s.append(att_sha)
-            content_rows.append([att_sha, att.content, now])
+        for document in documents:
+            doc_sha256 = compute_document_sha256(document)
+            content_sha256 = compute_content_sha256(document.content)
 
-        assert len(att_names) == len(att_descriptions) == len(att_sha256s), (
-            f"Attachment array length mismatch: names={len(att_names)}, descriptions={len(att_descriptions)}, sha256s={len(att_sha256s)}"
-        )
+            # Content blob (deduplicated)
+            if content_sha256 not in seen_content:
+                content_rows.append([content_sha256, document.content, now])
+                seen_content.add(content_sha256)
 
-        self._client.insert(
-            TABLE_DOCUMENT_CONTENT,
-            content_rows,
-            column_names=["content_sha256", "content", "stored_at"],
-        )
+            # Attachment content
+            att_names: list[str] = []
+            att_descriptions: list[str] = []
+            att_sha256s: list[str] = []
+            for att in sorted(document.attachments, key=lambda a: a.name):
+                att_sha = compute_content_sha256(att.content)
+                att_names.append(att.name)
+                att_descriptions.append(att.description or "")
+                att_sha256s.append(att_sha)
+                if att_sha not in seen_content:
+                    content_rows.append([att_sha, att.content, now])
+                    seen_content.add(att_sha)
 
-        # Insert into document_index (global, keyed by document_sha256)
-        self._client.command(
-            f"INSERT INTO {TABLE_DOCUMENT_INDEX} "
-            "(document_sha256, content_sha256, class_name, name, description, "
-            "mime_type, derived_from, triggered_by, "
-            "attachment_names, attachment_descriptions, attachment_sha256s, stored_at, version) "
-            "VALUES ("
-            "{doc_sha256:String}, {content_sha256:String}, "
-            "{class_name:String}, {name:String}, {description:String}, "
-            "{mime_type:String}, "
-            "{derived_from:Array(String)}, {triggered_by:Array(String)}, "
-            "{att_names:Array(String)}, {att_descs:Array(String)}, {att_sha256s:Array(String)}, "
-            "now64(3), 1)",
-            parameters={
-                "doc_sha256": doc_sha256,
-                "content_sha256": content_sha256,
-                "class_name": document.__class__.__name__,
-                "name": document.name,
-                "description": document.description or "",
-                "mime_type": document.mime_type,
-                "derived_from": list(document.derived_from),
-                "triggered_by": list(document.triggered_by),
-                "att_names": att_names,
-                "att_descs": att_descriptions,
-                "att_sha256s": att_sha256s,
-            },
-        )
+            # document_index row
+            index_rows.append([
+                doc_sha256,
+                content_sha256,
+                document.__class__.__name__,
+                document.name,
+                document.description or "",
+                document.mime_type,
+                list(document.derived_from),
+                list(document.triggered_by),
+                att_names,
+                att_descriptions,
+                att_sha256s,
+                "",
+                now,
+                1,
+            ])
 
-        # Insert into run_documents (run membership mapping)
-        self._client.command(
-            f"INSERT INTO {TABLE_RUN_DOCUMENTS} "
-            "(run_scope, document_sha256, class_name, stored_at) "
-            "VALUES ({run_scope:String}, {doc_sha256:String}, {class_name:String}, now64(3))",
-            parameters={
-                "run_scope": run_scope,
-                "doc_sha256": doc_sha256,
-                "class_name": document.__class__.__name__,
-            },
-        )
+            # run_documents row
+            run_doc_rows.append([run_scope, doc_sha256, document.__class__.__name__, now])
+
+        # 3 inserts regardless of batch size
+        if content_rows:
+            self._client.insert(
+                TABLE_DOCUMENT_CONTENT,
+                content_rows,
+                column_names=["content_sha256", "content", "stored_at"],
+            )
+        if index_rows:
+            self._client.insert(
+                TABLE_DOCUMENT_INDEX,
+                index_rows,
+                column_names=[
+                    "document_sha256",
+                    "content_sha256",
+                    "class_name",
+                    "name",
+                    "description",
+                    "mime_type",
+                    "derived_from",
+                    "triggered_by",
+                    "attachment_names",
+                    "attachment_descriptions",
+                    "attachment_sha256s",
+                    "summary",
+                    "stored_at",
+                    "version",
+                ],
+            )
+        if run_doc_rows:
+            self._client.insert(
+                TABLE_RUN_DOCUMENTS,
+                run_doc_rows,
+                column_names=["run_scope", "document_sha256", "class_name", "stored_at"],
+            )
 
     def _load_sync(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Three-table load: run_documents → document_index → document_content."""
@@ -547,7 +628,7 @@ class ClickHouseDocumentStore:
             f"dc.content, length(dc.content) "
             f"FROM {TABLE_RUN_DOCUMENTS} AS rd FINAL "
             f"JOIN {TABLE_DOCUMENT_INDEX} AS di FINAL ON rd.document_sha256 = di.document_sha256 "
-            f"JOIN {TABLE_DOCUMENT_CONTENT} AS dc FINAL ON di.content_sha256 = dc.content_sha256 "
+            f"JOIN {TABLE_DOCUMENT_CONTENT} AS dc ON di.content_sha256 = dc.content_sha256 "
             f"WHERE rd.run_scope = {{run_scope:String}} "
             f"AND rd.class_name IN {{class_names:Array(String)}}",
             parameters={"run_scope": run_scope, "class_names": class_names},
@@ -676,7 +757,7 @@ class ClickHouseDocumentStore:
                 f"dc.content, length(dc.content) "
                 f"FROM {TABLE_RUN_DOCUMENTS} AS rd FINAL "
                 f"JOIN {TABLE_DOCUMENT_INDEX} AS di FINAL ON rd.document_sha256 = di.document_sha256 "
-                f"JOIN {TABLE_DOCUMENT_CONTENT} AS dc FINAL ON di.content_sha256 = dc.content_sha256 "
+                f"JOIN {TABLE_DOCUMENT_CONTENT} AS dc ON di.content_sha256 = dc.content_sha256 "
                 f"WHERE rd.run_scope = {{run_scope:String}} AND rd.document_sha256 IN {{sha256s:Array(String)}}",
                 parameters={"run_scope": run_scope, "sha256s": sha256s},
             )
@@ -687,7 +768,7 @@ class ClickHouseDocumentStore:
                 f"di.attachment_names, di.attachment_descriptions, di.attachment_sha256s, "
                 f"dc.content, length(dc.content) "
                 f"FROM {TABLE_DOCUMENT_INDEX} AS di FINAL "
-                f"JOIN {TABLE_DOCUMENT_CONTENT} AS dc FINAL ON di.content_sha256 = dc.content_sha256 "
+                f"JOIN {TABLE_DOCUMENT_CONTENT} AS dc ON di.content_sha256 = dc.content_sha256 "
                 f"WHERE di.document_sha256 IN {{sha256s:Array(String)}}",
                 parameters={"sha256s": sha256s},
             )
@@ -789,7 +870,7 @@ class ClickHouseDocumentStore:
             f"   m.attachment_names, m.attachment_descriptions, m.attachment_sha256s,"
             f"   dc.content, length(dc.content)"
             f" FROM matched AS m"
-            f" JOIN {TABLE_DOCUMENT_CONTENT} AS dc FINAL ON m.content_sha256 = dc.content_sha256"
+            f" JOIN {TABLE_DOCUMENT_CONTENT} AS dc ON m.content_sha256 = dc.content_sha256"
             f" WHERE m.rn = 1 AND m.matched_source IN {{source_values:Array(String)}}",
             parameters=params,
         )
@@ -835,7 +916,7 @@ class ClickHouseDocumentStore:
         if not att_sha256s:
             return {}
         att_rows = self._client.query(
-            f"SELECT content_sha256, content, length(content) FROM {TABLE_DOCUMENT_CONTENT} FINAL WHERE content_sha256 IN {{sha256s:Array(String)}}",
+            f"SELECT content_sha256, content, length(content) FROM {TABLE_DOCUMENT_CONTENT} WHERE content_sha256 IN {{sha256s:Array(String)}}",
             parameters={"sha256s": list(att_sha256s)},
         )
         return {_decode(row[0]): _decode_content(row[1], row[2]) for row in att_rows.result_rows}

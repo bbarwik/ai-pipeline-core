@@ -48,6 +48,8 @@ class ClickHouseTaskResultStore:
         username: str = "default",
         password: str = "",
         secure: bool = True,
+        connect_timeout: int = 10,
+        send_receive_timeout: int = 30,
     ) -> None:
         self._params = {
             "host": host,
@@ -56,6 +58,8 @@ class ClickHouseTaskResultStore:
             "username": username,
             "password": password,
             "secure": secure,
+            "connect_timeout": connect_timeout,
+            "send_receive_timeout": send_receive_timeout,
         }
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ch-taskresults")
         self._client: Any = None
@@ -96,7 +100,9 @@ class ClickHouseTaskResultStore:
     def _sync_read(self, run_id: str) -> TaskResultRecord | None:
         """Read a result row by run_id (sync, executor thread)."""
         self._ensure_tables()
-        query = f"SELECT run_id, result, chain_context, stored_at FROM {TABLE_TASK_RESULTS} WHERE run_id = {{run_id:String}} ORDER BY stored_at DESC LIMIT 1"
+        query = (
+            f"SELECT run_id, result, chain_context, stored_at FROM {TABLE_TASK_RESULTS} FINAL WHERE run_id = {{run_id:String}} ORDER BY stored_at DESC LIMIT 1"
+        )
         result = self._client.query(query, parameters={"run_id": run_id})
         rows = result.result_rows
         if not rows:

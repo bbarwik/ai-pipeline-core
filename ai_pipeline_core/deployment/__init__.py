@@ -1,6 +1,6 @@
 """Pipeline deployment utilities for unified, type-safe deployments."""
 
-from .base import DeploymentContext, DeploymentResult, PipelineDeployment
+from .base import DeploymentResult, PipelineDeployment
 from .contract import (
     CompletedRun,
     DeploymentResultData,
@@ -16,7 +16,6 @@ from .remote import ProgressCallback, RemoteDeployment
 
 __all__ = [
     "CompletedRun",
-    "DeploymentContext",
     "DeploymentResult",
     "DeploymentResultData",
     "FailedRun",

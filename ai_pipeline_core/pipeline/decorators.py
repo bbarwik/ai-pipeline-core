@@ -31,25 +31,20 @@ from prefect.utilities.annotations import NotSet
 from pydantic import BaseModel
 
 from ai_pipeline_core.document_store._protocol import get_document_store
-from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._context_vars import (
-    TaskContext,
-    reset_task_context,
-    set_task_context,
-)
-from ai_pipeline_core.documents.context import (
+from ai_pipeline_core.documents import Document, DocumentSha256, RunScope
+from ai_pipeline_core.documents._context import (
     RunContext,
+    TaskContext,
     TaskDocumentContext,
     get_run_context,
     reset_run_context,
+    reset_task_context,
     set_run_context,
+    set_task_context,
 )
-from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 from ai_pipeline_core.documents.utils import is_document_sha256
 from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.observability._document_tracking import get_current_span_id, track_flow_io, track_task_io
-from ai_pipeline_core.observability._initialization import get_tracking_service
-from ai_pipeline_core.observability._tracking._models import DocumentEventType
+from ai_pipeline_core.observability._document_tracking import track_flow_io, track_task_io
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
 from ai_pipeline_core.pipeline._type_validation import (
     callable_name,
@@ -147,26 +142,6 @@ def _set_span_attrs(description: str | None, expected_cost: float | None) -> Non
 
 
 # --------------------------------------------------------------------------- #
-# Store event emission helper
-# --------------------------------------------------------------------------- #
-def _emit_store_events(documents: list[Document], event_type: DocumentEventType) -> None:
-    """Emit store lifecycle events for documents. No-op if tracking is not available."""
-    try:
-        service = get_tracking_service()
-        if service is None:
-            return
-        span_id = get_current_span_id()
-        for doc in documents:
-            service.track_document_event(
-                document_sha256=doc.sha256,
-                span_id=span_id,
-                event_type=event_type,
-            )
-    except Exception:
-        logger.debug("Failed to emit store events", exc_info=True)
-
-
-# --------------------------------------------------------------------------- #
 # Document persistence helper (used by @pipeline_task and @pipeline_flow)
 # --------------------------------------------------------------------------- #
 async def _persist_documents(
@@ -214,10 +189,7 @@ async def _persist_documents(
         # Deduplicate and save
         deduped = TaskDocumentContext.deduplicate(documents)
         await store.save_batch(deduped, run_ctx.run_scope)
-
-        _emit_store_events(deduped, DocumentEventType.STORE_SAVED)
     except Exception:
-        _emit_store_events(deduped or documents, DocumentEventType.STORE_SAVE_FAILED)
         logger.warning("Failed to persist documents from '%s'", label, exc_info=True)
 
 
@@ -255,9 +227,9 @@ def _attach_flow_replay_payload(
 
         options_dict: dict[str, Any] = {}
         if isinstance(flow_options, BaseModel):
-            options_dict = flow_options.model_dump(mode="json")
+            options_dict = dict(flow_options.model_dump(mode="json"))
         elif isinstance(flow_options, dict):
-            options_dict = flow_options
+            options_dict = dict(flow_options)
 
         replay_payload = {
             "version": 1,

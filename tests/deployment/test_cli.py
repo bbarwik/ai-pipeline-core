@@ -10,8 +10,7 @@ import pytest
 
 from ai_pipeline_core.deployment._cli import _init_debug_tracing
 from ai_pipeline_core.deployment.base import _classify_error, _create_publisher, _build_summary_generator
-from ai_pipeline_core.deployment._publishers import NoopPublisher
-from ai_pipeline_core.deployment._types import ErrorCode
+from ai_pipeline_core.deployment._types import ErrorCode, NoopPublisher
 from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
 from ai_pipeline_core.settings import Settings
 

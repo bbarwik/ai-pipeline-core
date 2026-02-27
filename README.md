@@ -36,7 +36,7 @@ This installs four CLI commands:
 - `ai-prompt-compiler` — discover, inspect, render, and compile prompt specifications
 - `ai-pipeline-deploy` — build and deploy pipelines to Prefect Cloud
 - `ai-replay` — execute or inspect replay YAML files from trace output
-- `ai-trace` — download and inspect pipeline traces from ClickHouse
+- `ai-trace` — list, show, and download pipeline traces from ClickHouse
 
 ### Requirements
 
@@ -373,7 +373,7 @@ Documents are automatically persisted by `@pipeline_task` to a document store. T
 - `run_local()`: Always uses in-memory store (no persistence)
 - `as_prefect_flow()`: Auto-selects based on settings
 
-**Public API — `DocumentReader`** (read-only, available via `get_document_store()`):
+**Public API — `DocumentReader`** (read-only protocol; `get_document_store()` returns the full `DocumentStore | None` for framework-internal use):
 - `load(run_scope, document_types)` -- Load documents by type from a run scope
 - `has_documents(run_scope, document_type, *, max_age=None)` -- Check if documents of a type exist
 - `check_existing(sha256s)` -- Check which SHA256 hashes exist globally
@@ -478,9 +478,9 @@ for part in result:
     print(part.label, len(part.data))
 ```
 
-Available presets: `GEMINI` (3000px, 9M pixels), `CLAUDE` (1568px, 1.15M pixels), `GPT4V` (2048px, 4M pixels).
+Available presets: `GEMINI` (3000px, 9M pixels), `CLAUDE` (1568px, 1.15M pixels), `GPT4V` (2048px, 4M pixels), `DEFAULT` (1000px, 1M pixels).
 
-**Token cost:** A single image consumes **1080 tokens** regardless of pixel dimensions.
+**Token cost:** A single image is estimated at **1080 tokens** for token counting purposes (actual usage depends on provider).
 
 The `Conversation` class automatically splits oversized images when documents are added to context — you typically don't need to call `process_image` directly.
 
@@ -550,14 +550,14 @@ from ai_pipeline_core import pipeline_flow, FlowOptions
 
 @pipeline_flow(estimated_minutes=10, retries=2, timeout_seconds=1200)
 async def my_flow(
-    run_id: str,                     # Must be named 'run_id'
+    run_id: str,                     # Must be named 'run_id' or '_run_id'
     documents: list[InputDoc],       # Input types extracted from annotation
     flow_options: MyFlowOptions,     # Must be FlowOptions or subclass
 ) -> list[OutputDoc]:                # Output types extracted from annotation
     ...
 ```
 
-The flow's `documents` parameter annotation determines input types, and the return annotation determines output types. The function must have exactly 3 parameters. The first must be named `run_id: str`, followed by `documents: list[...]` and `flow_options: FlowOptions`. No separate config class needed -- the type contract is in the function signature.
+The flow's `documents` parameter annotation determines input types, and the return annotation determines output types. The function must have exactly 3 parameters. The first must be named `run_id: str` (or `_run_id: str` when unused), followed by `documents: list[...]` and `flow_options: FlowOptions`. No separate config class needed -- the type contract is in the function signature.
 
 **FlowOptions** is a base `BaseSettings` class for pipeline configuration. Subclass it to add flow-specific parameters:
 
@@ -686,7 +686,7 @@ python -m ai_pipeline_core.deployment.deploy
 ```
 
 **Requirements:**
-- `uv` (dependency resolution and wheel download) on the deploy machine
+- `uv` (dependency resolution) and `pip` (wheel download) on the deploy machine
 - `PREFECT_API_URL`, `PREFECT_GCS_BUCKET` configured
 - `uv` on the worker (for offline install)
 
@@ -718,7 +718,7 @@ result = await client.run(
 
 The client defines local Document subclasses ("mirror types") whose `class_name` must match the remote pipeline's document types exactly. `run_remote_deployment()` is also available as a lower-level function.
 
-**Deterministic run_id**: `RemoteDeployment` derives a deterministic `run_id` from the caller's run_id + document SHA256s + options fingerprint (format: `{run_id}-{sha256[:8]}`). Same inputs always produce the same derived run_id, enabling worker-side flow resume while preventing `task_results` key collisions.
+**Deterministic run_id**: `RemoteDeployment` derives a deterministic `run_id` from the caller's run_id + a combined fingerprint hash of all document SHA256s and serialized options (format: `{run_id}-{fingerprint[:8]}`). Same inputs always produce the same derived run_id, enabling worker-side flow resume while preventing `task_results` key collisions.
 
 **ClickHouse fallback**: When the remote worker completes but `state.result()` fails (e.g., caller lacks GCS credentials for Prefect's result storage), the framework falls back to reading from the ClickHouse `task_results` table. This requires both the worker and caller to have `CLICKHOUSE_HOST` configured. The worker writes results to `task_results` automatically whenever ClickHouse is available, independent of Pub/Sub configuration.
 
@@ -773,7 +773,7 @@ class AnalysisSpec(PromptSpec):
     project_name: str = Field(description="Project name")
 ```
 
-**Multi-line fields** — use `MultiLineField` for long or multiline content (e.g., review feedback, website content). All multi-line fields are combined into a single XML-tagged user message sent before the main prompt, not inlined in the Context section. Regular `Field()` values must be short, single-line strings (up to 500 chars) — exceeding this raises `ValueError` at render time:
+**Multi-line fields** — use `MultiLineField` for long or multiline content (e.g., review feedback, website content). All multi-line fields are combined into a single XML-tagged user message sent before the main prompt, not inlined in the Context section. Regular `Field()` values must be short, single-line strings (up to 500 chars) — longer or multiline values are auto-promoted to multi-line treatment with a warning:
 
 ```python
 from ai_pipeline_core import PromptSpec, MultiLineField
@@ -965,52 +965,15 @@ Duplicate LLM spans are filtered by default (every `Conversation` call creates b
 
 ### Remote Trace Download
 
-When ClickHouse tracking is enabled, span content (input/output, replay payloads, attributes, events) is stored in the `trace_span_content` table alongside the existing `tracked_spans` metadata. This enables downloading traces from remote/cloud pipeline runs and reconstructing the `.trace/` directory locally for debugging and replay.
+When ClickHouse tracking is enabled, all span data (input/output, replay payloads, attributes, events, timing, LLM metrics) is stored in the `pipeline_spans` table with ZSTD-compressed content columns. This enables downloading traces from remote/cloud pipeline runs and rebuilding the `.trace/` directory locally for debugging and replay via `ai-trace download`.
 
-```python
-from ai_pipeline_core.observability._debug._reconstruction import download_trace
-
-# Download a single pipeline trace
-path = await download_trace(
-    execution_id=uuid,
-    output_path=Path("./downloaded_trace"),
-    host="clickhouse.example.com",
-)
-
-# Include documents referenced in replay payloads (for ai-replay)
-path = await download_trace(
-    execution_id=uuid,
-    output_path=Path("./downloaded_trace"),
-    host="clickhouse.example.com",
-    include_documents=True,
-)
-
-# Follow child pipelines triggered via RemoteDeployment
-path = await download_trace(
-    execution_id=uuid,
-    output_path=Path("./downloaded_trace"),
-    host="clickhouse.example.com",
-    include_documents=True,
-    follow_children=True,
-)
-```
-
-The reconstructed directory has the same structure as local `.trace/` output — `summary.md`, `llm_calls.yaml`, per-span directories with `span.yaml`, `input.yaml`, `output.yaml`, replay files, and `events.yaml`. Documents are written in `LocalDocumentStore` layout so `ai-replay` can resolve `$doc_ref` references directly.
-
-`TraceDownloader` can also be used directly with an existing `clickhouse_connect` client for more control:
-
-```python
-from ai_pipeline_core.observability._debug._reconstruction import TraceDownloader
-
-downloader = TraceDownloader(client=clickhouse_client)
-downloader.download_trace(execution_id, output_path, follow_children=True, include_documents=True)
-```
+The reconstructed directory has the same structure as local `.trace/` output — `summary.md`, `llm_calls.yaml`, per-span directories with `span.yaml`, `input.yaml`, `output.yaml`, replay files, and `events.yaml`.
 
 ### `ai-trace` CLI
 
 The `ai-trace` command-line tool provides access to pipeline traces stored in ClickHouse.
 
-```
+```bash
 # List recent pipeline runs
 ai-trace list --limit 10 --status completed
 
@@ -1019,9 +982,6 @@ ai-trace show 550e8400-e29b-41d4-a716-446655440000
 
 # Download trace and rebuild .trace/ directory
 ai-trace download 550e8400-e29b-41d4-a716-446655440000 -o ./debug/
-
-# Include documents and follow child pipelines
-ai-trace download 550e8400-... --documents --children
 ```
 
 Connection defaults to `CLICKHOUSE_*` environment variables. Override with `--host`, `--port`, `--database`, `--user`, `--password`, `--no-secure`.
@@ -1057,6 +1017,8 @@ CLICKHOUSE_DATABASE=default
 CLICKHOUSE_USER=default
 CLICKHOUSE_PASSWORD=your-password
 CLICKHOUSE_SECURE=true
+CLICKHOUSE_CONNECT_TIMEOUT=10
+CLICKHOUSE_SEND_RECEIVE_TIMEOUT=30
 TRACKING_ENABLED=true
 
 # Optional: Document Summaries (store-level, LLM-generated)
@@ -1130,7 +1092,7 @@ make test-pubsub-live  # Pub/Sub tests against real GCP (requires PUBSUB_PROJECT
 ### Code Quality
 
 ```bash
-make check             # Run ALL checks (lint, typecheck, deadcode, semgrep, docstrings, tests)
+make check             # Run ALL checks (lint, typecheck, deadcode, semgrep, docstrings-cover, filesize, check-claude-md, docs-ai-check, tests)
 make lint              # Ruff linting (28 rule sets)
 make format            # Auto-format and auto-fix code with ruff
 make typecheck         # Type checking with basedpyright (strict mode)
@@ -1185,7 +1147,7 @@ ai-pipeline-core/
 |   |-- documents/         # Document system (Document base class, attachments, context)
 |   |-- llm/               # Conversation class, URLSubstitutor, image processing, validation
 |   |-- logging/           # Logging infrastructure
-|   |-- observability/     # Tracing, tracking, and debug trace writer
+|   |-- observability/     # Tracing, ClickHouse tracking, local debug traces, and ai-trace CLI
 |   |-- pipeline/          # Pipeline decorators, FlowOptions, and concurrency limits
 |   |-- prompt_compiler/   # Type-safe prompt specs, rendering, and CLI tool
 |   |-- replay/            # Trace-based replay system (capture, serialize, resolve, execute)

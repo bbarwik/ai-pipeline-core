@@ -24,7 +24,6 @@ from ai_pipeline_core import (
     PipelineDeployment,
     pipeline_flow,
 )
-from ai_pipeline_core.deployment import DeploymentContext
 
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.document_store._protocol import set_document_store
@@ -230,7 +229,6 @@ async def _run_live_pipeline(
             run_id,
             [doc],
             FlowOptions(),
-            DeploymentContext(),
             publisher=publisher,
         )
     finally:

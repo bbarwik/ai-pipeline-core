@@ -2,9 +2,8 @@
 
 import pytest
 
-from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents.types import RunScope
-from ai_pipeline_core.documents.context import (
+from ai_pipeline_core.documents import Document, RunScope
+from ai_pipeline_core.documents._context import (
     RunContext,
     TaskDocumentContext,
     get_run_context,
@@ -52,7 +51,7 @@ class TestRunContext:
         try:
             assert get_run_context() is ctx
         finally:
-            from ai_pipeline_core.documents._context_vars import _run_context
+            from ai_pipeline_core.documents._context import _run_context
 
             _run_context.reset(token)
 
@@ -63,7 +62,7 @@ class TestRunContext:
         token2 = set_run_context(ctx2)
         assert get_run_context() is ctx2
 
-        from ai_pipeline_core.documents._context_vars import _run_context
+        from ai_pipeline_core.documents._context import _run_context
 
         _run_context.reset(token2)
         assert get_run_context() is ctx1

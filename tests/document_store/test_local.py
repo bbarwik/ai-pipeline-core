@@ -8,13 +8,12 @@ from typing import Any
 
 import pytest
 
-from ai_pipeline_core.document_store._factory import create_document_store
-from ai_pipeline_core.document_store._protocol import DocumentStore, set_document_store
+from ai_pipeline_core.document_store._protocol import DocumentStore, create_document_store, set_document_store
 from ai_pipeline_core.document_store._models import DocumentNode, walk_provenance
 from ai_pipeline_core.document_store._local import LocalDocumentStore, _safe_filename, _atomic_write_text
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._hashing import compute_document_sha256
-from ai_pipeline_core.documents.types import DocumentSha256, RunScope
+from ai_pipeline_core.documents import DocumentSha256, RunScope
 
 
 class ReportDoc(Document):
@@ -424,7 +423,7 @@ class TestFactory:
         settings = Settings(clickhouse_host="ch.example.com", clickhouse_password="secret")
         mock_ch_cls = MagicMock()
         with (
-            patch("ai_pipeline_core.document_store._factory.ClickHouseDocumentStore", mock_ch_cls, create=True),
+            patch("ai_pipeline_core.document_store._protocol.ClickHouseDocumentStore", mock_ch_cls, create=True),
             patch.dict("sys.modules", {"ai_pipeline_core.document_store._clickhouse": MagicMock(ClickHouseDocumentStore=mock_ch_cls)}),
         ):
             store = create_document_store(settings)

@@ -6,11 +6,13 @@ retry logic, LMNR tracing, and structured output generation using Pydantic model
 Primary API:
     Conversation class - Immutable, Document-based, warmup+fork friendly
 
-Primitive types (ModelOptions, ModelName, etc.) are re-exported from llm.types.
+Primitive types (ModelOptions, ModelName, etc.) are re-exported from _llm_core.
 """
 
+from ai_pipeline_core._llm_core.model_response import Citation
+from ai_pipeline_core._llm_core.types import ModelName, ModelOptions
+
 from .conversation import Conversation, ConversationContent
-from .types import Citation, ModelName, ModelOptions
 
 __all__ = [
     "Citation",

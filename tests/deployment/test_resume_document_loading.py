@@ -15,11 +15,10 @@ Bug 4: load_by_sha256s forces single-type construction, losing subclass identity
 import pytest
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, pipeline_flow, pipeline_task
-from ai_pipeline_core.deployment import DeploymentContext
 from ai_pipeline_core.deployment.base import _compute_run_scope
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.document_store._protocol import set_document_store
-from ai_pipeline_core.documents.types import DocumentSha256
+from ai_pipeline_core.documents import DocumentSha256
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +133,7 @@ class TestBug1ResumeZombieDocuments:
         """
         input_doc = InputDoc.create_root(name="input.txt", content="test", reason="test")
         deployment = ZombieBugDeployment()
-        ctx = DeploymentContext()
+
         opts = FlowOptions()
         store = MemoryDocumentStore()
         set_document_store(store)
@@ -143,7 +142,7 @@ class TestBug1ResumeZombieDocuments:
         _zombie_flow2_crash_flag[0] = True
         _zombie_flow2_received.clear()
         with pytest.raises(RuntimeError, match="Simulated crash after saving progress"):
-            await deployment.run("proj", [input_doc], opts, ctx)
+            await deployment.run("proj", [input_doc], opts)
 
         run_scope = _compute_run_scope("proj", [input_doc], opts)
 
@@ -158,7 +157,7 @@ class TestBug1ResumeZombieDocuments:
         # Run 2: resume — flow 1 skipped, flow 2 re-executes
         _zombie_flow2_crash_flag[0] = False
         _zombie_flow2_received.clear()
-        await deployment.run("proj", [input_doc], opts, ctx)
+        await deployment.run("proj", [input_doc], opts)
 
         # CORRECT: flow 2 receives only plan.json (flow 1's output)
         received_names = sorted(d.name for d in _zombie_flow2_received)
@@ -173,7 +172,7 @@ class TestBug1ResumeZombieDocuments:
         """
         input_doc = InputDoc.create_root(name="input.txt", content="test", reason="test")
         deployment = ZombieBugDeployment()
-        ctx = DeploymentContext()
+
         opts = FlowOptions()
         store = MemoryDocumentStore()
         set_document_store(store)
@@ -181,7 +180,7 @@ class TestBug1ResumeZombieDocuments:
         # Run 1: flow 1 completes, flow 2 crashes
         _zombie_flow2_crash_flag[0] = True
         with pytest.raises(RuntimeError, match="Simulated crash"):
-            await deployment.run("proj", [input_doc], opts, ctx)
+            await deployment.run("proj", [input_doc], opts)
 
         run_scope = _compute_run_scope("proj", [input_doc], opts)
         completion1 = await store.get_flow_completion(run_scope, "zombie_flow1")
@@ -253,12 +252,12 @@ class TestBug2OutputSha256sContamination:
         """Flow 2 produced 1 ReportDoc → output_sha256s should have exactly 1 SHA256."""
         input_doc = InputDoc.create_root(name="input.txt", content="test", reason="test")
         deployment = Bug2Deployment()
-        ctx = DeploymentContext()
+
         opts = FlowOptions()
         store = MemoryDocumentStore()
         set_document_store(store)
 
-        await deployment.run("proj", [input_doc], opts, ctx)
+        await deployment.run("proj", [input_doc], opts)
 
         run_scope = _compute_run_scope("proj", [input_doc], opts)
         completion2 = await store.get_flow_completion(run_scope, "bug2_flow2")
@@ -273,12 +272,12 @@ class TestBug2OutputSha256sContamination:
         """Flow 2's output_sha256s should not contain any of flow 1's SHA256s."""
         input_doc = InputDoc.create_root(name="input.txt", content="test", reason="test")
         deployment = Bug2Deployment()
-        ctx = DeploymentContext()
+
         opts = FlowOptions()
         store = MemoryDocumentStore()
         set_document_store(store)
 
-        await deployment.run("proj", [input_doc], opts, ctx)
+        await deployment.run("proj", [input_doc], opts)
 
         run_scope = _compute_run_scope("proj", [input_doc], opts)
         completion1 = await store.get_flow_completion(run_scope, "bug2_flow1")
@@ -353,11 +352,11 @@ class TestBug3ChainContextContamination:
         """chain_context.output_document_refs should contain only the last flow's outputs."""
         input_doc = InputDoc.create_root(name="input.txt", content="test", reason="test")
         deployment = Bug3Deployment()
-        ctx = DeploymentContext()
+
         opts = FlowOptions()
         publisher = _CapturingPublisher()
 
-        await deployment.run("proj", [input_doc], opts, ctx, publisher=publisher)
+        await deployment.run("proj", [input_doc], opts, publisher=publisher)
 
         assert len(_bug3_published_events) == 1
         event = _bug3_published_events[0]

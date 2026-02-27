@@ -2,7 +2,7 @@ import dataclasses
 
 import pytest
 
-from ai_pipeline_core.docs_generator.validator import (
+from ai_pipeline_core.docs_generator.cli import (
     ValidationResult,
     validate_all,
     validate_completeness,
@@ -170,7 +170,7 @@ def test_validate_completeness_finds_uppercase_constant(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-from ai_pipeline_core.docs_generator.validator import (
+from ai_pipeline_core.docs_generator.cli import (
     _find_public_symbols,
     _parse_init_all,
     _read_all_guides,

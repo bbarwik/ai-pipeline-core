@@ -8,7 +8,6 @@ import pytest
 
 from ai_pipeline_core import pipeline_flow, pipeline_task
 from ai_pipeline_core.deployment.base import (
-    DeploymentContext,
     DeploymentResult,
     PipelineDeployment,
     _compute_run_scope,
@@ -150,13 +149,12 @@ class TestResumeAfterCrash:
         global _should_crash
         input_doc = ResumeInputDoc.create_root(name="input.txt", content="test input", reason="test")
         deployment = CrashingDeployment()
-        ctx = DeploymentContext()
         options = ResumeTestOptions()
 
         # First run: task 1 succeeds (docs saved), task 2 crashes
         _should_crash = True
         with pytest.raises(RuntimeError, match="Simulated crash"):
-            await deployment.run("test-project", [input_doc], options, ctx)
+            await deployment.run("test-project", [input_doc], options)
 
         assert _flow_call_count == 1
 
@@ -167,7 +165,7 @@ class TestResumeAfterCrash:
 
         # Second run: no crash this time
         _should_crash = False
-        await deployment.run("test-project", [input_doc], options, ctx)
+        await deployment.run("test-project", [input_doc], options)
 
         # The flow MUST have re-executed (not skipped by false resume)
         assert _flow_call_count == 2, (
@@ -184,13 +182,12 @@ class TestResumeAfterSuccess:
         """A flow that completed successfully should be skipped on second run."""
         input_doc = ResumeInputDoc.create_root(name="input.txt", content="test input", reason="test")
         deployment = NormalDeployment()
-        ctx = DeploymentContext()
         options = ResumeTestOptions()
 
         # First run — flow executes fully
-        await deployment.run("test-project", [input_doc], options, ctx)
+        await deployment.run("test-project", [input_doc], options)
         assert _flow_call_count == 1
 
         # Second run — flow should be skipped (resume from cache)
-        await deployment.run("test-project", [input_doc], options, ctx)
+        await deployment.run("test-project", [input_doc], options)
         assert _flow_call_count == 1, f"Flow executed {_flow_call_count} times — expected 1. Completed flow should be skipped on resume."

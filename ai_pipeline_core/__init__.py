@@ -17,7 +17,7 @@ if "prefect" in sys.modules and get_current_settings().cloud.enable_orchestratio
     refresh_global_settings_context()
 
 from . import llm
-from .deployment import DeploymentContext, DeploymentResult, PipelineDeployment, progress
+from .deployment import DeploymentResult, PipelineDeployment, progress
 from .deployment.remote import RemoteDeployment, run_remote_deployment
 from .document_store import DocumentReader, get_document_store
 from .documents import (
@@ -69,7 +69,6 @@ __all__ = [
     "Citation",
     "Conversation",
     "ConversationContent",
-    "DeploymentContext",
     "DeploymentResult",
     "Document",
     "DocumentNameError",

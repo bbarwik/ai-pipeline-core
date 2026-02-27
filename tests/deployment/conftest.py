@@ -28,7 +28,6 @@ from ai_pipeline_core import (
     pipeline_flow,
 )
 
-from ai_pipeline_core.deployment import DeploymentContext
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.document_store._protocol import set_document_store
 
@@ -258,7 +257,7 @@ async def run_pipeline(
         kwargs["end_step"] = end_step
     if task_result_store is not None:
         kwargs["task_result_store"] = task_result_store
-    return await deployment.run(run_id, docs, FlowOptions(), DeploymentContext(), publisher=publisher, **kwargs)
+    return await deployment.run(run_id, docs, FlowOptions(), publisher=publisher, **kwargs)
 
 
 # ---------------------------------------------------------------------------

@@ -27,13 +27,13 @@ from ai_pipeline_core.settings import settings
 from ._degeneration import detect_output_degeneration
 from ._validation import validate_image_content as _validate_image
 from .model_config import get_cache_min_tokens, get_openrouter_provider, supports_stop_sequences
-from .model_options import ModelOptions
 from .model_response import Citation, ModelResponse
 from .types import (
     TOKENS_PER_IMAGE,
     ContentPart,
     CoreMessage,
     ImageContent,
+    ModelOptions,
     PDFContent,
     Role,
     TextContent,

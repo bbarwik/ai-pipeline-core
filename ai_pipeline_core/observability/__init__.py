@@ -1,7 +1,7 @@
 """Observability system for AI pipelines.
 
-Contains debug tracing, ClickHouse-based tracking, initialization utilities,
-and the ``ai-trace`` CLI for remote trace download and inspection.
+Contains local debug tracing, ClickHouse-based tracking, initialization utilities,
+and the ``ai-trace`` CLI for trace listing, inspection, and download.
 """
 
 __all__: list[str] = []

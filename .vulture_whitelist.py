@@ -16,5 +16,10 @@ Attachment.serialize_content
 # __init_subclass__ — called by Python
 Document.__init_subclass__
 
+# OTel SpanProcessor overrides — parameter signature required by base class
+from ai_pipeline_core.observability._tracking._processor import PipelineSpanProcessor
+
+PipelineSpanProcessor.force_flush
+
 # Prefect/deployment hooks
 # Add more as vulture reports false positives

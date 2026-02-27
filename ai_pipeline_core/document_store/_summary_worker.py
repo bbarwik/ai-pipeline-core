@@ -13,8 +13,8 @@ from lmnr.opentelemetry_lib.tracing import context as laminar_context
 from opentelemetry import context as otel_context
 from opentelemetry.context import Context
 
+from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.documents.types import DocumentSha256
 from ai_pipeline_core.logging import get_pipeline_logger
 
 type SummaryGenerator = Callable[[str, str], Coroutine[None, None, str]]

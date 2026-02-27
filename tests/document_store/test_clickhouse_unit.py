@@ -20,7 +20,7 @@ from ai_pipeline_core.document_store._clickhouse import (
 )
 from ai_pipeline_core.document_store._models import DocumentNode
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents.types import RunScope
+from ai_pipeline_core.documents import RunScope
 
 
 class _TestDoc(Document):

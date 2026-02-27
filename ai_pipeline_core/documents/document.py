@@ -37,9 +37,8 @@ from ruamel.yaml import YAML
 from typing_extensions import TypeVar as TypeVarWithDefault
 
 from ai_pipeline_core._llm_core.types import TOKENS_PER_IMAGE
-from ai_pipeline_core.documents._context_vars import _suppress_document_registration, get_task_context, is_registration_suppressed
+from ai_pipeline_core.documents._context import DocumentSha256, _suppress_document_registration, get_task_context, is_registration_suppressed
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
-from ai_pipeline_core.documents.types import DocumentSha256
 from ai_pipeline_core.documents.utils import DATA_URI_PATTERN, is_document_sha256
 from ai_pipeline_core.exceptions import DocumentNameError, DocumentSizeError
 

@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.11.1"
+version = "0.12.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -156,7 +156,7 @@ convention = "google"
 "tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "RUF069", "TID251"]
 "examples/**/*.py" = ["D", "DOC", "PLC0415", "S", "ARG", "T20", "RUF029", "C901", "PLR0914", "PLR0915"]
 "dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
-".vulture_whitelist.py" = ["B018", "E402", "F401", "D"]
+".vulture_whitelist.py" = ["B018", "E402", "F401", "D", "PLC2701"]
 "ai_pipeline_core/__init__.py" = ["RUF067", "TID251"]
 "ai_pipeline_core/testing.py" = ["TID251"]
 "ai_pipeline_core/deployment/_cli.py" = ["TID251", "PLR0912", "PLR0914", "PLR0915", "UP047"]
@@ -171,6 +171,7 @@ convention = "google"
 "ai_pipeline_core/deployment/progress.py" = ["RUF029", "BLE001", "TID251"]
 "ai_pipeline_core/documents/document.py" = ["PLR0904"]
 "ai_pipeline_core/document_store/_factory.py" = ["F821", "PLC0415"]
+"ai_pipeline_core/document_store/_protocol.py" = ["PLC0415", "PLW0603"]
 "ai_pipeline_core/document_store/_clickhouse.py" = ["S608", "BLE001", "PLR0914"]
 "ai_pipeline_core/_llm_core/client.py" = ["PLR0911", "C901", "PLR0912", "PLR0915", "PLR0914", "PLR1702", "RUF005", "PLC2801", "UP047", "BLE001"]
 "ai_pipeline_core/_llm_core/model_response.py" = ["UP046", "PLR6301", "PERF403", "BLE001"]
@@ -192,7 +193,7 @@ convention = "google"
 "ai_pipeline_core/document_store/_summary_worker.py" = ["BLE001"]
 "ai_pipeline_core/document_store/_memory.py" = ["RUF029"]
 "ai_pipeline_core/pipeline/_type_validation.py" = ["BLE001"]
-"ai_pipeline_core/deployment/_publishers.py" = ["RUF029"]
+"ai_pipeline_core/deployment/_types.py" = ["RUF029"]
 "ai_pipeline_core/deployment/_task_results.py" = ["S608", "BLE001"]
 "ai_pipeline_core/replay/types.py" = ["PLC0415"]
 "ai_pipeline_core/replay/cli.py" = ["T201", "BLE001"]
@@ -279,7 +280,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.11.1"
+current_version = "0.12.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"

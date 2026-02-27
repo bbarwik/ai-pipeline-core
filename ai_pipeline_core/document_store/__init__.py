@@ -1,6 +1,7 @@
 """Document store protocol and backends for AI pipeline flows."""
 
-from .protocol import DocumentNode, DocumentReader, FlowCompletion, get_document_store
+from ._models import DocumentNode, FlowCompletion
+from ._protocol import DocumentReader, get_document_store
 
 __all__ = [
     "DocumentNode",

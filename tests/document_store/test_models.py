@@ -11,7 +11,7 @@ from ai_pipeline_core.document_store._models import (
     build_provenance_graph,
     walk_provenance,
 )
-from ai_pipeline_core.documents.types import DocumentSha256
+from ai_pipeline_core.documents import DocumentSha256
 
 # Valid base32-encoded SHA256 hashes (A-Z, 2-7 only, 52 chars, high entropy)
 SHA_A = DocumentSha256("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST")

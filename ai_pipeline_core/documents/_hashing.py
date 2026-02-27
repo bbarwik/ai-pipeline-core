@@ -8,7 +8,7 @@ import hashlib
 from base64 import b32encode
 from typing import Any, Protocol
 
-from ai_pipeline_core.documents.types import DocumentSha256
+from ai_pipeline_core.documents._context import DocumentSha256
 
 
 class _Hashable(Protocol):

@@ -15,7 +15,6 @@ from ai_pipeline_core import (
     PipelineDeployment,
     pipeline_flow,
 )
-from ai_pipeline_core.deployment import DeploymentContext
 from ai_pipeline_core.deployment.contract import (
     CompletedRun,
     DeploymentResultData,
@@ -61,25 +60,6 @@ class ValidResult(DeploymentResult):
     """Result for testing."""
 
     count: int = 0
-
-
-# --- DeploymentContext tests ---
-
-
-class TestDeploymentContext:
-    """Test DeploymentContext model."""
-
-    def test_default_creation(self):
-        """Test default context creates successfully."""
-        ctx = DeploymentContext()
-        assert ctx is not None
-
-    def test_rejects_extra_fields(self):
-        """Test context rejects unknown fields (extra='forbid')."""
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError):
-            DeploymentContext(unknown_field="value")  # type: ignore[call-arg]
 
 
 # --- DeploymentResult tests ---
@@ -518,7 +498,7 @@ class TestStepValidation:
         set_document_store(MemoryDocumentStore())
         try:
             with pytest.raises(ValueError, match="start_step must be 1"):
-                await deployment.run("proj", [], FlowOptions(), DeploymentContext(), start_step=0)
+                await deployment.run("proj", [], FlowOptions(), start_step=0)
         finally:
             set_document_store(None)
 
@@ -529,7 +509,7 @@ class TestStepValidation:
         set_document_store(MemoryDocumentStore())
         try:
             with pytest.raises(ValueError, match="start_step must be 1"):
-                await deployment.run("proj", [], FlowOptions(), DeploymentContext(), start_step=99)
+                await deployment.run("proj", [], FlowOptions(), start_step=99)
         finally:
             set_document_store(None)
 
@@ -540,7 +520,7 @@ class TestStepValidation:
         set_document_store(MemoryDocumentStore())
         try:
             with pytest.raises(ValueError, match="end_step must be"):
-                await deployment.run("proj", [], FlowOptions(), DeploymentContext(), start_step=1, end_step=0)
+                await deployment.run("proj", [], FlowOptions(), start_step=1, end_step=0)
         finally:
             set_document_store(None)
 
@@ -571,7 +551,7 @@ class TestRunPassesOptionsObject:
         try:
             deployment = CapturingDeployment()
             opts = FlowOptions()
-            await deployment.run("proj", [InputDoc(name="in.txt", content=b"input")], opts, DeploymentContext())
+            await deployment.run("proj", [InputDoc(name="in.txt", content=b"input")], opts)
             assert len(received_options) == 1
             assert isinstance(received_options[0], FlowOptions), f"Expected FlowOptions, got {type(received_options[0])}"
             assert not isinstance(received_options[0], dict)

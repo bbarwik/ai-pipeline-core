@@ -17,10 +17,12 @@ __all__ = [
     "SymbolTable",
     "ValueInfo",
     "build_symbol_table",
+    "format_class_field",
     "get_source",
     "is_public_name",
     "parse_module",
     "resolve_dependencies",
+    "unpack_class_field",
 ]
 
 
@@ -571,3 +573,32 @@ def _extract_function(
         line_count=_body_line_count(node),
         module_path=module_path,
     )
+
+
+# ---------------------------------------------------------------------------
+# Class field formatting helpers
+# ---------------------------------------------------------------------------
+
+
+def unpack_class_field(field: tuple[str, ...]) -> tuple[str, str, str, str]:
+    """Unpack class field tuple and support legacy 3-item tuples."""
+    var_name = field[0] if len(field) > 0 else ""
+    type_ann = field[1] if len(field) > 1 else ""
+    default = field[2] if len(field) > 2 else ""
+    description = field[3] if len(field) > 3 else ""
+    return var_name, type_ann, default, description
+
+
+def format_class_field(var_name: str, type_ann: str, default: str, description: str) -> str:
+    """Render one class field declaration with optional inline description."""
+    if type_ann and default:
+        line = f"    {var_name}: {type_ann} = {default}"
+    elif type_ann:
+        line = f"    {var_name}: {type_ann}"
+    elif default:
+        line = f"    {var_name} = {default}"
+    else:
+        line = f"    {var_name}"
+    if description:
+        return f"{line}  # {description}"
+    return line

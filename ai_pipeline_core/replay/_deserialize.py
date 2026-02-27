@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ai_pipeline_core.documents._context_vars import _suppress_document_registration
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents.document import Document
 
 from ._resolve import _find_document_class, resolve_document_ref
@@ -57,14 +57,15 @@ def resolve_doc_refs(data: Any, store_base: Path) -> Any:
     but no $doc_ref create ephemeral Documents without store access.
     """
     if isinstance(data, dict):
-        if "$doc_ref" in data:
-            ref = DocumentRef.model_validate(data)
+        d: dict[str, Any] = data
+        if "$doc_ref" in d:
+            ref = DocumentRef.model_validate(d)
             return resolve_document_ref(ref, store_base)
-        if "class_name" in data and "content" in data and "$doc_ref" not in data:
-            return _create_inline_document(data)
-        return {k: resolve_doc_refs(v, store_base) for k, v in data.items()}
+        if "class_name" in d and "content" in d and "$doc_ref" not in d:
+            return _create_inline_document(d)
+        return {k: resolve_doc_refs(v, store_base) for k, v in d.items()}
     if isinstance(data, list):
-        return [resolve_doc_refs(item, store_base) for item in data]
+        return [resolve_doc_refs(item, store_base) for item in list(data)]
     return data
 
 

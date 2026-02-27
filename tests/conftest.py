@@ -7,7 +7,7 @@ import pytest
 
 from ai_pipeline_core.document_store._protocol import set_document_store
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-from ai_pipeline_core.documents.context import RunContext, reset_run_context, set_run_context
+from ai_pipeline_core.documents import RunContext, reset_run_context, set_run_context
 from prefect.logging import disable_run_logger
 from prefect.testing.utilities import prefect_test_harness
 

@@ -2,8 +2,9 @@
 
 # pyright: reportPrivateUsage=false
 
-from ai_pipeline_core.deployment._publishers import MemoryPublisher, NoopPublisher
 from ai_pipeline_core.deployment._types import (
+    MemoryPublisher,
+    NoopPublisher,
     CompletedEvent,
     ErrorCode,
     FailedEvent,

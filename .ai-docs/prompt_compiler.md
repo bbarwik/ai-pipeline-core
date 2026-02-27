@@ -2,7 +2,7 @@
 # CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.11.1
+# VERSION: 0.12.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

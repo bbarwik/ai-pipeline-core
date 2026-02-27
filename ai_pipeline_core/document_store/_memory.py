@@ -9,8 +9,8 @@ from typing import TypeVar
 
 from ai_pipeline_core.document_store._models import DocumentNode, FlowCompletion
 from ai_pipeline_core.document_store._summary_worker import SummaryGenerator, SummaryWorker
+from ai_pipeline_core.documents._context import DocumentSha256, RunScope
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 
 __all__ = [
     "MemoryDocumentStore",

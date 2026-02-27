@@ -8,7 +8,7 @@ from ai_pipeline_core.document_store._dual_store import DualDocumentStore
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_document_sha256
-from ai_pipeline_core.documents.types import RunScope
+from ai_pipeline_core.documents import RunScope
 
 
 class DualReportDoc(Document):

@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ai_pipeline_core._llm_core.model_options import ModelOptions
+from ai_pipeline_core._llm_core.types import ModelOptions
 from ai_pipeline_core.documents.document import Document
 from ai_pipeline_core.llm.conversation import Conversation, _UserMessage
 from ai_pipeline_core.logging import get_pipeline_logger

@@ -10,8 +10,7 @@ import pytest
 from google.api_core.exceptions import GoogleAPICallError
 
 from ai_pipeline_core import FlowOptions
-from ai_pipeline_core.deployment._publishers import NoopPublisher
-from ai_pipeline_core.deployment._types import EventType
+from ai_pipeline_core.deployment._types import EventType, NoopPublisher
 from ai_pipeline_core.deployment.contract import FlowStatus
 
 from .conftest import (

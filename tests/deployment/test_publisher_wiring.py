@@ -13,12 +13,12 @@ from ai_pipeline_core import (
     PipelineDeployment,
     pipeline_flow,
 )
-from ai_pipeline_core.deployment import DeploymentContext
-from ai_pipeline_core.deployment._publishers import MemoryPublisher, NoopPublisher
 from ai_pipeline_core.deployment._types import (
     CompletedEvent,
     ErrorCode,
     FailedEvent,
+    MemoryPublisher,
+    NoopPublisher,
     ProgressEvent,
     ResultPublisher,
     StartedEvent,
@@ -142,6 +142,8 @@ class TestCreateTaskResultStore:
         mock_settings.clickhouse_user = "default"
         mock_settings.clickhouse_password = ""
         mock_settings.clickhouse_secure = True
+        mock_settings.clickhouse_connect_timeout = 10
+        mock_settings.clickhouse_send_receive_timeout = 30
 
         with patch("ai_pipeline_core.deployment._task_results.ClickHouseTaskResultStore") as mock_cls:
             result = _create_task_result_store(mock_settings)
@@ -152,6 +154,8 @@ class TestCreateTaskResultStore:
                 username="default",
                 password="",
                 secure=True,
+                connect_timeout=10,
+                send_receive_timeout=30,
             )
             assert result is mock_cls.return_value
 
@@ -170,7 +174,7 @@ class TestRunPublisherIntegration:
         try:
             deployment = _WiringDeployment()
             doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
-            await deployment.run("run-1", [doc], FlowOptions(), DeploymentContext(), publisher=pub)
+            await deployment.run("run-1", [doc], FlowOptions(), publisher=pub)
         finally:
             store.shutdown()
             set_document_store(None)
@@ -187,7 +191,7 @@ class TestRunPublisherIntegration:
         try:
             deployment = _WiringDeployment()
             doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
-            await deployment.run("run-1", [doc], FlowOptions(), DeploymentContext(), publisher=pub)
+            await deployment.run("run-1", [doc], FlowOptions(), publisher=pub)
         finally:
             store.shutdown()
             set_document_store(None)
@@ -206,7 +210,7 @@ class TestRunPublisherIntegration:
         try:
             deployment = _WiringDeployment()
             doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
-            await deployment.run("run-1", [doc], FlowOptions(), DeploymentContext(), publisher=pub)
+            await deployment.run("run-1", [doc], FlowOptions(), publisher=pub)
         finally:
             store.shutdown()
             set_document_store(None)
@@ -226,7 +230,7 @@ class TestRunPublisherIntegration:
             deployment = _FailingDeployment()
             doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
             with pytest.raises(RuntimeError, match="deliberate failure"):
-                await deployment.run("run-1", [doc], FlowOptions(), DeploymentContext(), publisher=pub)
+                await deployment.run("run-1", [doc], FlowOptions(), publisher=pub)
         finally:
             store.shutdown()
             set_document_store(None)
@@ -245,7 +249,7 @@ class TestRunPublisherIntegration:
         try:
             deployment = _WiringDeployment()
             doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
-            await deployment.run("run-1", [doc], FlowOptions(), DeploymentContext(), publisher=pub)
+            await deployment.run("run-1", [doc], FlowOptions(), publisher=pub)
         finally:
             store.shutdown()
             set_document_store(None)
@@ -265,7 +269,7 @@ class TestRunPublisherIntegration:
             try:
                 deployment = _WiringDeployment()
                 doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
-                await deployment.run("run-1", [doc], FlowOptions(), DeploymentContext(), publisher=pub)
+                await deployment.run("run-1", [doc], FlowOptions(), publisher=pub)
             finally:
                 store.shutdown()
                 set_document_store(None)
@@ -281,7 +285,7 @@ class TestRunPublisherIntegration:
         try:
             deployment = _WiringDeployment()
             doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
-            await deployment.run("run-1", [doc], FlowOptions(), DeploymentContext(), publisher=pub)
+            await deployment.run("run-1", [doc], FlowOptions(), publisher=pub)
         finally:
             store.shutdown()
             set_document_store(None)
@@ -301,7 +305,7 @@ class TestRunPublisherIntegration:
             deployment = _WiringDeployment()
             doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
             # No publisher argument → defaults to NoopPublisher
-            result = await deployment.run("run-1", [doc], FlowOptions(), DeploymentContext())
+            result = await deployment.run("run-1", [doc], FlowOptions())
             assert result.success
         finally:
             store.shutdown()
@@ -329,7 +333,7 @@ class TestRunPublisherIntegration:
             deployment = _CancelDeployment()
             doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
             with pytest.raises(asyncio.CancelledError):
-                await deployment.run("run-1", [doc], FlowOptions(), DeploymentContext(), publisher=pub)
+                await deployment.run("run-1", [doc], FlowOptions(), publisher=pub)
         finally:
             store.shutdown()
             set_document_store(None)

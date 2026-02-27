@@ -19,35 +19,52 @@ from prefect.testing.utilities import prefect_test_harness
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
 from ai_pipeline_core.document_store._dual_store import DualDocumentStore
-from ai_pipeline_core.document_store._factory import create_document_store
 from ai_pipeline_core.document_store._local import LocalDocumentStore
-from ai_pipeline_core.document_store._protocol import get_document_store, set_document_store
+from ai_pipeline_core.document_store._protocol import create_document_store, get_document_store, set_document_store
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger, setup_logging
-from ai_pipeline_core.observability._debug import LocalDebugSpanProcessor, LocalTraceWriter, TraceDebugConfig
-from ai_pipeline_core.observability._initialization import get_tracking_service
+from ai_pipeline_core.observability._debug import FilesystemBackend, TraceDebugConfig
+from ai_pipeline_core.observability._initialization import get_clickhouse_backend, register_pipeline_processor
+from ai_pipeline_core.observability._tracking._processor import PipelineSpanProcessor
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
 from ._helpers import init_observability_best_effort, validate_run_id
-from .base import DeploymentContext, DeploymentResult, PipelineDeployment, _build_summary_generator, _create_publisher, _create_task_result_store
+from .base import DeploymentResult, PipelineDeployment, _build_summary_generator, _create_publisher, _create_task_result_store
 
 logger = get_pipeline_logger(__name__)
 
 
-def _init_debug_tracing(wd: Path) -> LocalDebugSpanProcessor | None:
-    """Set up local debug tracing at <working_dir>/.trace. Returns processor or None on failure."""
+def _init_debug_tracing(wd: Path) -> FilesystemBackend | None:
+    """Set up local debug tracing at <working_dir>/.trace. Returns backend or None on failure.
+
+    Creates a single PipelineSpanProcessor with all backends (filesystem + ClickHouse
+    if available). This is the only processor registration in CLI mode — ClickHouse
+    backend is NOT registered separately in initialize_observability().
+    """
     try:
         trace_path = wd / ".trace"
         trace_path.mkdir(parents=True, exist_ok=True)
         debug_config = TraceDebugConfig(path=trace_path)
-        debug_writer = LocalTraceWriter(debug_config)
-        processor = LocalDebugSpanProcessor(debug_writer, verbose=debug_config.verbose)
+        fs_backend = FilesystemBackend(debug_config)
+
+        # Build backends list: filesystem always, plus ClickHouse if available
+        backends: list[Any] = [fs_backend]
+        ch_backend = get_clickhouse_backend()
+        if ch_backend is not None:
+            backends.append(ch_backend)
+
+        processor = PipelineSpanProcessor(
+            backends=tuple(backends),
+            verbose=debug_config.verbose,
+        )
+
         provider: Any = otel_trace.get_tracer_provider()
         if hasattr(provider, "add_span_processor"):
             provider.add_span_processor(processor)
+            register_pipeline_processor(processor)
             logger.info("Local debug tracing enabled at %s", trace_path)
-        return processor
+        return fs_backend
     except (OSError, RuntimeError, ValueError, TypeError, AttributeError) as e:
         logger.warning("Failed to set up local debug tracing: %s", e)
         return None
@@ -108,7 +125,7 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
     start_step = getattr(opts, "start", 1)
     end_step = getattr(opts, "end", None)
 
-    debug_processor = _init_debug_tracing(wd) if not getattr(opts, "no_trace", False) else None
+    debug_backend = _init_debug_tracing(wd) if not getattr(opts, "no_trace", False) else None
 
     store = _create_cli_document_store(wd)
     set_document_store(store)
@@ -122,7 +139,6 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
 
     validate_run_id(run_id)
 
-    context = DeploymentContext()
     publisher = _create_publisher(settings, deployment.pubsub_service_type)
     task_result_store = _create_task_result_store(settings)
 
@@ -146,7 +162,6 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
                     run_id=run_id,
                     documents=initial_documents,
                     options=opts,
-                    context=context,
                     publisher=publisher,
                     start_step=start_step,
                     end_step=end_step,
@@ -161,21 +176,20 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
                 asyncio.run(publisher.close())
             if task_result_store:
                 task_result_store.shutdown()
-            # Shut down document store and tracking (but NOT debug processor —
-            # it must shut down after ExitStack exits so the Laminar root span
-            # gets its on_end before the writer finalizes)
+            # Shut down document store and publisher (but NOT span backends —
+            # they must shut down after ExitStack exits so the Laminar root span
+            # gets its on_end before backends finalize)
             active_store = get_document_store()
             if active_store:
                 active_store.shutdown()
                 set_document_store(None)
-            tracking_svc = get_tracking_service()
-            if tracking_svc:
-                tracking_svc.shutdown()
 
-    # Shut down debug processor after ExitStack exits — the Laminar root span
-    # context manager has now closed, so on_end was called for all spans.
-    if debug_processor is not None:
-        debug_processor.shutdown()
+    # Shut down span backends after ExitStack exits (root span on_end has fired)
+    ch_backend = get_clickhouse_backend()
+    if ch_backend:
+        ch_backend.shutdown()
+    if debug_backend is not None:
+        debug_backend.shutdown()
 
     result_file = wd / "result.json"
     result_file.write_text(result.model_dump_json(indent=2))

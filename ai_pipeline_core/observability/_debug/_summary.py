@@ -10,17 +10,11 @@ import yaml
 
 from ai_pipeline_core.logging import get_pipeline_logger
 
-from ._config import SpanInfo, TraceState
+from ._config import REPLAY_FILENAME_TO_LABEL, SpanInfo, TraceState
 
 logger = get_pipeline_logger(__name__)
 
 _FOUR_SPACES = "    "
-
-_REPLAY_FILENAMES: dict[str, str] = {
-    "conversation.yaml": "conversation",
-    "task.yaml": "task",
-    "flow.yaml": "flow",
-}
 
 
 def generate_summary(trace: TraceState) -> str:
@@ -107,7 +101,7 @@ def _build_replay_section(trace: TraceState) -> list[str]:
     found: dict[str, list[tuple[str, dict[str, Any]]]] = {}  # label -> [(relative_path, yaml_data)]
 
     for span in sorted(trace.spans.values(), key=lambda s: s.order):
-        for filename, label in _REPLAY_FILENAMES.items():
+        for filename, label in REPLAY_FILENAME_TO_LABEL.items():
             replay_path = span.path / filename
             if not replay_path.exists():
                 continue

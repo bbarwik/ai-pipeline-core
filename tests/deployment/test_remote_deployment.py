@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-from ai_pipeline_core import DeploymentContext, DeploymentResult, Document, FlowOptions
+from ai_pipeline_core import DeploymentResult, Document, FlowOptions
 from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
 from ai_pipeline_core.deployment.remote import RemoteDeployment, _get_completed_result, _read_from_task_results
 from ai_pipeline_core.observability.tracing import TraceLevel
@@ -311,31 +311,6 @@ class TestRunDocumentSerialization:
 
         params = mock_run.call_args[0][1]
         assert params["documents"] == []
-
-
-class TestRunContext:
-    async def test_context_none_replaced_with_default(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", [], FlowOptions())
-
-        params = mock_run.call_args[0][1]
-        assert isinstance(params["context"], DeploymentContext)
-
-    async def test_explicit_context_preserved(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        ctx = DeploymentContext()
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", [], FlowOptions(), context=ctx)
-
-        params = mock_run.call_args[0][1]
-        assert params["context"] is ctx
 
 
 class TestRunResultDeserialization:

@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ai_pipeline_core.document_store._local import LocalDocumentStore
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents.types import RunScope
+from ai_pipeline_core.documents import RunScope
 from ai_pipeline_core.replay._deserialize import resolve_doc_refs, resolve_task_kwargs
 
 from .conftest import ReplayTextDocument, doc_ref_dict

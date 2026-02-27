@@ -582,23 +582,23 @@ class TestMainCheckSubcommand:
 
 class TestParseAllNames:
     def test_empty_file(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _parse_all_names
+        from ai_pipeline_core.docs_generator.cli import _parse_init_all
 
         f = tmp_path / "empty.py"
         f.write_text("")
-        result = _parse_all_names(f)
+        result = _parse_init_all(f)
         assert result == set()
 
     def test_nonexistent_file(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _parse_all_names
+        from ai_pipeline_core.docs_generator.cli import _parse_init_all
 
-        result = _parse_all_names(tmp_path / "nope.py")
+        result = _parse_init_all(tmp_path / "nope.py")
         assert result == set()
 
     def test_syntax_error(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _parse_all_names
+        from ai_pipeline_core.docs_generator.cli import _parse_init_all
 
         f = tmp_path / "bad.py"
         f.write_text("def broken(:\n")
-        result = _parse_all_names(f)
+        result = _parse_init_all(f)
         assert result == set()

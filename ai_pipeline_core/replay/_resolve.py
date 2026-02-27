@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from ai_pipeline_core.document_store._local import DOC_ID_LENGTH, LocalDocumentStore
-from ai_pipeline_core.documents._context_vars import _suppress_document_registration
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents.document import Document, _class_name_registry
 
 from .types import DocumentRef

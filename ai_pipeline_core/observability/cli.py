@@ -1,9 +1,10 @@
-"""CLI tool for downloading and inspecting pipeline traces from ClickHouse.
+"""CLI tool for listing, inspecting, and downloading pipeline traces from ClickHouse.
 
 Usage:
-    ai-trace download 550e8400-e29b-41d4-a716-446655440000 -o ./debug/
     ai-trace list --limit 10 --status completed
     ai-trace show 550e8400-e29b-41d4-a716-446655440000
+    ai-trace download 550e8400-e29b-41d4-a716-446655440000 -o ./debug/
+    ai-trace download my-run-id --children -o ./debug/
 """
 
 import argparse
@@ -36,7 +37,7 @@ SELECT span_type, count() AS cnt,
        sum(cost) AS total_cost,
        sum(tokens_input) AS total_input,
        sum(tokens_output) AS total_output
-FROM tracked_spans FINAL
+FROM pipeline_spans FINAL
 WHERE execution_id = {execution_id:UUID}
 GROUP BY span_type
 ORDER BY total_duration_ms DESC
@@ -44,13 +45,44 @@ ORDER BY total_duration_ms DESC
 
 _RUN_METADATA_QUERY = """
 SELECT run_id, flow_name, run_scope, status, start_time, end_time,
-       total_cost, total_tokens, metadata
+       total_cost, total_tokens, metadata_json
 FROM pipeline_runs FINAL
 WHERE execution_id = {execution_id:UUID}
 """
 
+_DOWNLOAD_SPANS_QUERY = """
+SELECT span_id, trace_id, parent_span_id, name, span_type, status,
+       start_time, end_time, duration_ms, span_order,
+       cost, tokens_input, tokens_output, tokens_cached, llm_model,
+       error_message, input_json, output_json, replay_payload,
+       attributes_json, events_json, execution_id,
+       run_id, flow_name, run_scope,
+       input_doc_sha256s, output_doc_sha256s
+FROM pipeline_spans FINAL
+WHERE execution_id = {execution_id:UUID}
+ORDER BY span_order
+"""
+
+_DOWNLOAD_SPANS_BY_RUN_PREFIX_QUERY = """
+SELECT span_id, trace_id, parent_span_id, name, span_type, status,
+       start_time, end_time, duration_ms, span_order,
+       cost, tokens_input, tokens_output, tokens_cached, llm_model,
+       error_message, input_json, output_json, replay_payload,
+       attributes_json, events_json, execution_id,
+       run_id, flow_name, run_scope,
+       input_doc_sha256s, output_doc_sha256s
+FROM pipeline_spans FINAL
+WHERE run_id LIKE {run_id_prefix:String}
+ORDER BY run_id, span_order
+"""
+
+_RESOLVE_RUN_ID_QUERY = """
+SELECT execution_id, run_id
+FROM pipeline_runs FINAL
+WHERE run_id = {run_id:String}
+"""
+
 DEFAULT_LIST_LIMIT = 20
-DEFAULT_PORT = 8443
 EXECUTION_ID_SHORT_LENGTH = 8
 
 # Table column widths for list output
@@ -101,6 +133,8 @@ def _resolve_connection(args: argparse.Namespace) -> dict[str, Any]:
         "username": args.user or settings.clickhouse_user,
         "password": args.password or settings.clickhouse_password,
         "secure": not args.no_secure and settings.clickhouse_secure,
+        "connect_timeout": settings.clickhouse_connect_timeout,
+        "send_receive_timeout": settings.clickhouse_send_receive_timeout,
     }
 
 
@@ -117,7 +151,7 @@ def _create_client(args: argparse.Namespace) -> Any:
 
     params = _resolve_connection(args)
     try:
-        return clickhouse_connect.get_client(**params)
+        return clickhouse_connect.get_client(**params)  # pyright: ignore[reportUnknownMemberType]
     except Exception as e:
         print(
             f"Error: Could not connect to ClickHouse at {params['host']}:{params['port']}: {e}",
@@ -136,6 +170,35 @@ def _parse_execution_id(value: str) -> UUID:
             file=sys.stderr,
         )
         raise SystemExit(1) from None
+
+
+def _resolve_identifier(identifier: str, client: Any) -> tuple[UUID, str]:
+    """Resolve a CLI identifier to (execution_id, run_id).
+
+    Accepts either a UUID string (used as execution_id directly) or a
+    run_id string (looked up via pipeline_runs). Always returns the run_id
+    so --children can use it for prefix matching.
+    """
+    try:
+        execution_id = UUID(identifier)
+    except ValueError:
+        # Not a UUID — treat as run_id, look up in pipeline_runs
+        result = client.query(_RESOLVE_RUN_ID_QUERY, parameters={"run_id": identifier})
+        if not result.result_rows:
+            print(
+                f"Error: No run found for run_id '{identifier}'. Use 'ai-trace list' to find available runs.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from None
+        execution_id, run_id = result.result_rows[0]
+        return execution_id, run_id
+
+    # Got UUID — resolve run_id from pipeline_runs (needed for --children)
+    result = client.query(_RUN_METADATA_QUERY, parameters={"execution_id": str(execution_id)})
+    if result.result_rows:
+        run_id = result.result_rows[0][0]  # first column is run_id
+        return execution_id, run_id
+    return execution_id, ""
 
 
 # ---------------------------------------------------------------------------
@@ -186,57 +249,100 @@ def _format_timestamp(ts: datetime | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _cmd_download(args: argparse.Namespace) -> int:
-    """Download trace and rebuild .trace/ directory from ClickHouse."""
-    from ai_pipeline_core.observability._debug._reconstruction import TraceDownloader
+def _fetch_and_materialize(client: Any, *, execution_id: UUID, run_id: str, use_children: bool, output_path: Path) -> list[str]:
+    """Fetch spans from ClickHouse and materialize into .trace/ directories.
 
-    execution_id = _parse_execution_id(args.execution_id)
+    Returns list of child run_ids (empty if no children found).
+    """
+    from collections import defaultdict
+
+    from ai_pipeline_core.observability._debug import TraceDebugConfig, TraceMaterializer
+    from ai_pipeline_core.observability._span_data import SpanData
+
+    if use_children:
+        result = client.query(_DOWNLOAD_SPANS_BY_RUN_PREFIX_QUERY, parameters={"run_id_prefix": f"{run_id}%"})
+    else:
+        result = client.query(_DOWNLOAD_SPANS_QUERY, parameters={"execution_id": str(execution_id)})
+
+    rows = result.result_rows
+    if not rows:
+        identifier_desc = f"run_id prefix {run_id!r}" if use_children else f"execution_id {execution_id}"
+        print(f"No spans found for {identifier_desc}.", file=sys.stderr)
+        raise SystemExit(1)
+
+    column_names = result.column_names
+    all_spans = [SpanData.from_clickhouse_row(dict(zip(column_names, row, strict=True))) for row in rows]
+
+    # Group spans by run_id for multi-directory materialization
+    spans_by_run: dict[str, list[SpanData]] = defaultdict(list)
+    for span_data in all_spans:
+        spans_by_run[span_data.run_id or ""].append(span_data)
+
+    child_run_ids: list[str] = []
+    for span_run_id, spans in spans_by_run.items():
+        if span_run_id == run_id or not use_children:
+            run_path = output_path
+        else:
+            child_run_ids.append(span_run_id)
+            run_path = output_path / f"child_{span_run_id}"
+
+        materializer = TraceMaterializer(TraceDebugConfig(path=run_path))
+        for span in spans:
+            materializer.add_span(span)
+        materializer.finalize_all()
+
+    return child_run_ids
+
+
+def _cmd_download(args: argparse.Namespace) -> int:
+    """Fetch trace data and reconstruct .trace/ directory from ClickHouse."""
     client = _create_client(args)
-    downloader = TraceDownloader(client=client)
+    execution_id, run_id = _resolve_identifier(args.identifier, client)
 
     short_id = str(execution_id)[:EXECUTION_ID_SHORT_LENGTH]
-    if args.output:
-        output_path = Path(args.output).resolve()
-    else:
-        output_path = Path(f"./{short_id}_trace").resolve()
+    output_path = Path(args.output).resolve() if args.output else Path(f"./{short_id}_trace").resolve()
 
-    print(f"Downloading trace {execution_id}")
+    use_children = args.children and bool(run_id)
+    print(f"Downloading trace {execution_id}" + (f" (run_id: {run_id})" if run_id else ""))
+    if use_children:
+        print(f"  including children of: {run_id}")
     print(f"  output: {output_path}")
 
     try:
-        result_path = downloader.download_trace(
-            execution_id,
-            output_path,
-            include_documents=args.documents,
-            follow_children=args.children,
+        child_run_ids = _fetch_and_materialize(
+            client,
+            execution_id=execution_id,
+            run_id=run_id,
+            use_children=use_children,
+            output_path=output_path,
         )
+    except SystemExit:
+        raise
     except Exception as e:
         print(f"Error: Download failed: {e}", file=sys.stderr)
         logger.debug("Trace download failed", exc_info=True)
         return 1
 
-    # Count span directories (directories with numeric prefix)
-    span_dirs = [d for d in result_path.iterdir() if d.is_dir() and d.name[:1].isdigit()]
-    span_count = len(span_dirs)
+    # Print summary
+    span_dirs = [d for d in output_path.iterdir() if d.is_dir() and d.name[:1].isdigit()]
+    flow_name = _extract_flow_name(output_path)
+    print(f"\nDownloaded: {flow_name}")
+    print(f"  spans: {len(span_dirs)}")
+    if child_run_ids:
+        print(f"  children: {len(child_run_ids)}")
+    print(f"  path: {output_path}")
 
-    # Try to extract flow name from summary
-    summary_path = result_path / "summary.md"
-    flow_name = "unknown"
+    return 0
+
+
+def _extract_flow_name(output_path: Path) -> str:
+    """Extract flow name from summary.md in the output directory."""
+    summary_path = output_path / "summary.md"
     if summary_path.exists():
         first_line = summary_path.read_text(encoding="utf-8").split("\n", maxsplit=1)[0]
         if first_line.startswith("# "):
-            flow_name = first_line[2:].strip()
-
-    print(f"\nDownloaded: {flow_name}")
-    print(f"  spans: {span_count}")
-    print(f"  path: {result_path}")
-
-    if args.children:
-        child_dirs = [d for d in result_path.iterdir() if d.is_dir() and d.name.startswith("child_")]
-        if child_dirs:
-            print(f"  children: {len(child_dirs)}")
-
-    return 0
+            return first_line[2:].strip()
+    return "unknown"
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
@@ -361,11 +467,11 @@ def main(argv: list[str] | None = None) -> int:
         ai-trace list --limit 10 --status completed
         ai-trace show 550e8400-e29b-41d4-a716-446655440000
         ai-trace download 550e8400-e29b-41d4-a716-446655440000 -o ./debug/
-        ai-trace download 550e8400-... --documents --children
+        ai-trace download my-run-id --children -o ./debug/
     """
     parser = argparse.ArgumentParser(
         prog="ai-trace",
-        description="Download and inspect pipeline traces from ClickHouse",
+        description="List, inspect, and download pipeline traces from ClickHouse",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -373,12 +479,11 @@ def main(argv: list[str] | None = None) -> int:
     dl = subparsers.add_parser(
         "download",
         parents=[_connection_parser],
-        help="Download trace and rebuild .trace/ directory",
+        help="Fetch trace data and reconstruct .trace/ directory",
     )
-    dl.add_argument("execution_id", help="Execution UUID")
+    dl.add_argument("identifier", help="Execution UUID or run_id")
     dl.add_argument("-o", "--output", type=str, default=None, help="Output directory (default: ./{id[:8]}_trace/)")
-    dl.add_argument("--documents", action="store_true", default=False, help="Include document content for replay")
-    dl.add_argument("--children", action="store_true", default=False, help="Follow child pipelines")
+    dl.add_argument("--children", action="store_true", help="Include child pipeline runs (matched by run_id prefix)")
 
     # list
     ls = subparsers.add_parser(

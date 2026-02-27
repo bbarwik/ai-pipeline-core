@@ -1,4 +1,4 @@
-"""Configuration and shared data types for local trace debugging."""
+"""Configuration and shared data types for local debug tracing."""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class TraceDebugConfig(BaseModel):
-    """Configuration for local trace debugging.
+    """Configuration for local debug tracing.
 
     Controls how traces are written to the local filesystem for debugging.
     Enabled automatically in CLI mode, writing to ``<working_dir>/.trace``.
@@ -57,23 +57,18 @@ class TraceDebugConfig(BaseModel):
     generate_summary: bool = Field(default=True, description="Generate summary.md")
 
 
-@dataclass(frozen=True, slots=True)
-class WriteJob:
-    """Job for background writer thread."""
+# Maps replay payload_type (from replay.payload JSON) to the YAML filename on disk.
+REPLAY_PAYLOAD_TO_FILENAME: dict[str, str] = {
+    "conversation": "conversation.yaml",
+    "pipeline_task": "task.yaml",
+    "pipeline_flow": "flow.yaml",
+}
 
-    trace_id: str
-    span_id: str
-    name: str
-    parent_id: str | None
-    attributes: dict[str, Any]
-    events: list[Any]
-    status_code: str  # "OK" | "ERROR" | "UNSET"
-    status_description: str | None
-    start_time_ns: int
-    end_time_ns: int
+# Inverse: filename -> display label (used by summary generation).
+REPLAY_FILENAME_TO_LABEL: dict[str, str] = {v: k.removeprefix("pipeline_") for k, v in REPLAY_PAYLOAD_TO_FILENAME.items()}
 
 
-@dataclass
+@dataclass(slots=True)
 class SpanInfo:
     """Information about a span for index building.
 
@@ -99,7 +94,7 @@ class SpanInfo:
     expected_cost: float | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class TraceState:
     """State for an active trace.
 

@@ -8,7 +8,7 @@ from ai_pipeline_core.document_store._protocol import DocumentStore
 from ai_pipeline_core.document_store._models import DocumentNode, walk_provenance
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents.types import DocumentSha256, RunScope
+from ai_pipeline_core.documents import DocumentSha256, RunScope
 
 
 class DocA(Document):

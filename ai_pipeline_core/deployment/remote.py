@@ -15,7 +15,7 @@ from prefect.context import AsyncClientContext
 from prefect.deployments.flow_runs import run_deployment
 from prefect.exceptions import ObjectNotFound
 
-from ai_pipeline_core.deployment import DeploymentContext, DeploymentResult
+from ai_pipeline_core.deployment import DeploymentResult
 from ai_pipeline_core.deployment._helpers import _CLI_FIELDS, class_name_to_deployment_name, extract_generic_params, validate_run_id
 from ai_pipeline_core.deployment._resolve import AttachmentInput, DocumentInput
 from ai_pipeline_core.deployment._task_results import ClickHouseTaskResultStore
@@ -154,6 +154,8 @@ async def _read_from_task_results(run_id: str) -> dict[str, Any] | None:
             username=settings.clickhouse_user,
             password=settings.clickhouse_password,
             secure=settings.clickhouse_secure,
+            connect_timeout=settings.clickhouse_connect_timeout,
+            send_receive_timeout=settings.clickhouse_send_receive_timeout,
         )
         try:
             record = await store.read_result(run_id)
@@ -303,7 +305,6 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         run_id: str,
         documents: list[TDoc],
         options: TOptions,
-        context: DeploymentContext,
         on_progress: ProgressCallback | None,
     ) -> TResult:
         """Serialize, call Prefect, deserialize. Wrapped with @trace in __init_subclass__."""
@@ -315,7 +316,6 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
             "run_id": derived_run_id,
             "documents": [_strip_for_prefect(doc.serialize_model()) for doc in documents],
             "options": options,
-            "context": context,
         }
 
         result = await run_remote_deployment(
@@ -340,7 +340,6 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         run_id: str,
         documents: list[TDoc],
         options: TOptions,
-        context: DeploymentContext | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> TResult:
         """Execute the remote deployment via Prefect."""
@@ -348,6 +347,5 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
             run_id,
             documents,
             options,
-            context if context is not None else DeploymentContext(),
             on_progress,
         )

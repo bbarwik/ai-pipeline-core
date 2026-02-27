@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from ai_pipeline_core._llm_core.model_options import ModelOptions
+from ai_pipeline_core._llm_core.types import ModelOptions
 from ai_pipeline_core._llm_core.model_response import Citation, ModelResponse
 from ai_pipeline_core._llm_core.types import TextContent, TokenUsage
 from ai_pipeline_core.documents import Attachment

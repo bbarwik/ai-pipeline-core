@@ -14,9 +14,8 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents import Document, DocumentSha256
 from ai_pipeline_core.documents.attachment import Attachment
-from ai_pipeline_core.documents.types import DocumentSha256
 from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)

@@ -385,14 +385,14 @@ class TestBuildModelResponse:
 class TestGenerateImpl:
     async def test_empty_messages_raises(self):
         from ai_pipeline_core._llm_core.client import _generate_impl
-        from ai_pipeline_core._llm_core.model_options import ModelOptions
+        from ai_pipeline_core._llm_core.types import ModelOptions
 
         with pytest.raises(ValueError, match="messages must not be empty"):
             await _generate_impl([], model="m", model_options=ModelOptions())
 
     async def test_empty_model_raises(self):
         from ai_pipeline_core._llm_core.client import _generate_impl
-        from ai_pipeline_core._llm_core.model_options import ModelOptions
+        from ai_pipeline_core._llm_core.types import ModelOptions
 
         msg = CoreMessage(role=Role.USER, content="hi")
         with pytest.raises(ValueError, match="model must be provided"):
@@ -404,7 +404,7 @@ class TestGenerateImpl:
     @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value=None)
     async def test_generate_successful_non_streaming(self, mock_degen, mock_aoai, mock_settings, mock_laminar):
         from ai_pipeline_core._llm_core.client import _generate_impl
-        from ai_pipeline_core._llm_core.model_options import ModelOptions
+        from ai_pipeline_core._llm_core.types import ModelOptions
 
         mock_settings.openai_api_key = "key"
         mock_settings.openai_base_url = "http://localhost:4000"
@@ -434,7 +434,7 @@ class TestGenerateImpl:
     @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
     async def test_generate_retry_on_timeout(self, mock_aoai, mock_settings, mock_laminar):
         from ai_pipeline_core._llm_core.client import _generate_impl
-        from ai_pipeline_core._llm_core.model_options import ModelOptions
+        from ai_pipeline_core._llm_core.types import ModelOptions
 
         mock_settings.openai_api_key = "key"
         mock_settings.openai_base_url = "http://localhost:4000"
@@ -459,7 +459,7 @@ class TestGenerateImpl:
     @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
     async def test_generate_retry_on_generic_exception(self, mock_aoai, mock_settings, mock_laminar):
         from ai_pipeline_core._llm_core.client import _generate_impl
-        from ai_pipeline_core._llm_core.model_options import ModelOptions
+        from ai_pipeline_core._llm_core.types import ModelOptions
 
         mock_settings.openai_api_key = "key"
         mock_settings.openai_base_url = "http://localhost:4000"
@@ -487,7 +487,7 @@ class TestGenerateImpl:
     @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value=None)
     async def test_generate_with_system_prompt(self, mock_degen, mock_aoai, mock_settings, mock_laminar):
         from ai_pipeline_core._llm_core.client import _generate_impl
-        from ai_pipeline_core._llm_core.model_options import ModelOptions
+        from ai_pipeline_core._llm_core.types import ModelOptions
 
         mock_settings.openai_api_key = "key"
         mock_settings.openai_base_url = "http://localhost:4000"
@@ -526,7 +526,7 @@ class TestGenerateImpl:
     @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value=None)
     async def test_generate_openrouter_model_conversion(self, mock_degen, mock_aoai, mock_settings, mock_laminar):
         from ai_pipeline_core._llm_core.client import _generate_impl
-        from ai_pipeline_core._llm_core.model_options import ModelOptions
+        from ai_pipeline_core._llm_core.types import ModelOptions
 
         mock_settings.openai_api_key = "key"
         mock_settings.openai_base_url = "https://openrouter.ai/api/v1"
@@ -557,7 +557,7 @@ class TestGenerateImpl:
     @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value="repetition detected")
     async def test_generate_degeneration_detected(self, mock_degen, mock_aoai, mock_settings, mock_laminar):
         from ai_pipeline_core._llm_core.client import _generate_impl
-        from ai_pipeline_core._llm_core.model_options import ModelOptions
+        from ai_pipeline_core._llm_core.types import ModelOptions
 
         mock_settings.openai_api_key = "key"
         mock_settings.openai_base_url = "http://localhost:4000"
@@ -588,7 +588,7 @@ class TestGenerateImpl:
     @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value=None)
     async def test_generate_with_cache_ttl_and_context(self, mock_degen, mock_aoai, mock_settings, mock_laminar):
         from ai_pipeline_core._llm_core.client import _generate_impl
-        from ai_pipeline_core._llm_core.model_options import ModelOptions
+        from ai_pipeline_core._llm_core.types import ModelOptions
 
         mock_settings.openai_api_key = "key"
         mock_settings.openai_base_url = "http://localhost:4000"

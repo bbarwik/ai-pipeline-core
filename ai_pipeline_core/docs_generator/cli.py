@@ -5,6 +5,7 @@ import ast
 import re
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from ai_pipeline_core.docs_generator.extractor import (
@@ -12,23 +13,31 @@ from ai_pipeline_core.docs_generator.extractor import (
     FunctionInfo,
     MethodInfo,
     build_symbol_table,
+    format_class_field,
     is_public_name,
+    unpack_class_field,
 )
-from ai_pipeline_core.docs_generator.guide_builder import GuideData, build_guide, render_guide
-from ai_pipeline_core.docs_generator.trimmer import README_ERROR_SIZE, manage_guide_size
-from ai_pipeline_core.docs_generator.validator import validate_all
+from ai_pipeline_core.docs_generator.guide_builder import MAX_GUIDE_SIZE, README_ERROR_SIZE, GuideData, build_guide, manage_guide_size, render_guide
 
 __all__ = [
     "EXCLUDED_MODULES",
     "PACKAGE_NAME",
     "README_FILENAME",
     "TEST_DIR_OVERRIDES",
+    "ValidationResult",
     "main",
+    "validate_all",
+    "validate_completeness",
+    "validate_private_reexports",
+    "validate_size",
 ]
 
 EXCLUDED_MODULES: frozenset[str] = frozenset({"docs_generator"})
 PACKAGE_NAME = "ai_pipeline_core"
 README_FILENAME = "README.md"
+
+# Generic entry-point names that are not part of the public API
+_EXCLUDED_SYMBOLS: frozenset[str] = frozenset({"main"})
 
 
 _CONSECUTIVE_BLOCKS_RE = re.compile(r"```\n(\s*\n)+```python\n")
@@ -149,7 +158,7 @@ def _build_module_import_map(source_dir: Path, excluded_modules: frozenset[str] 
     Returns {module_name: [symbol1, symbol2, ...]} for symbols in sub-package __all__
     that are NOT already in the top-level __all__.
     """
-    top_level_all = _parse_all_names(source_dir / "__init__.py")
+    top_level_all = _parse_init_all(source_dir / "__init__.py")
     result: dict[str, list[str]] = {}
 
     for init_file in sorted(source_dir.glob("*/__init__.py")):
@@ -157,29 +166,13 @@ def _build_module_import_map(source_dir: Path, excluded_modules: frozenset[str] 
         if module_name.startswith("_") or module_name in excluded_modules:
             continue
 
-        sub_all = _parse_all_names(init_file)
+        sub_all = _parse_init_all(init_file)
         # Only include symbols NOT already at top level
         module_only = sorted(sub_all - top_level_all)
         if module_only:
             result[module_name] = module_only
 
     return result
-
-
-def _parse_all_names(init_file: Path) -> set[str]:
-    """Extract __all__ symbol names from a Python file."""
-    if not init_file.exists():
-        return set()
-    try:
-        tree = ast.parse(init_file.read_text(encoding="utf-8"))
-    except SyntaxError:
-        return set()
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "__all__" and isinstance(node.value, (ast.List, ast.Tuple)):
-                    return {elt.value for elt in node.value.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)}
-    return set()
 
 
 def _count_module_lines(source_dir: Path, module_name: str) -> int:
@@ -419,28 +412,6 @@ def _render_module_section(
         lines.append("")
 
 
-def _format_class_field(var_name: str, type_ann: str, default: str, description: str = "") -> str:
-    """Format a single class field as a Python declaration line."""
-    if type_ann and default:
-        line = f"    {var_name}: {type_ann} = {default}"
-    elif type_ann:
-        line = f"    {var_name}: {type_ann}"
-    else:
-        line = f"    {var_name} = {default}"
-    if description:
-        return f"{line}  # {description}"
-    return line
-
-
-def _unpack_class_field(field: tuple[str, ...]) -> tuple[str, str, str, str]:
-    """Unpack class field tuple and support legacy 3-item tuples."""
-    var_name = field[0] if len(field) > 0 else ""
-    type_ann = field[1] if len(field) > 1 else ""
-    default = field[2] if len(field) > 2 else ""
-    description = field[3] if len(field) > 3 else ""
-    return var_name, type_ann, default, description
-
-
 def _render_inherited_methods(cls: ClassInfo, lines: list[str]) -> None:
     """Render inherited methods as comment lines inside a class code block."""
     inherited = [m for m in cls.methods if m.is_inherited and is_public_name(m.name)]
@@ -477,7 +448,7 @@ def _render_class_summary(cls: ClassInfo, lines: list[str]) -> None:
     if cls.class_vars:
         lines.append("")
         lines.append("    # Fields")
-        lines.extend(_format_class_field(name, ann, default, description) for name, ann, default, description in map(_unpack_class_field, cls.class_vars))
+        lines.extend(format_class_field(name, ann, default, description) for name, ann, default, description in map(unpack_class_field, cls.class_vars))
 
     own_methods = [m for m in cls.methods if not m.is_inherited and is_public_name(m.name)]
     if own_methods:
@@ -502,6 +473,218 @@ def _render_function_summary(func: FunctionInfo, lines: list[str]) -> None:
         lines.append(f'    """{doc}"""')
     else:
         lines.append("    ...")
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationResult:
+    """Aggregated validation result across all checks."""
+
+    missing_symbols: tuple[str, ...]
+    size_violations: tuple[tuple[str, int], ...]
+    private_reexports: tuple[str, ...] = ()
+
+    @property
+    def is_valid(self) -> bool:
+        """Completeness and private reexport checks must pass. Size is warning-only."""
+        return not self.missing_symbols and not self.private_reexports
+
+
+def validate_completeness(ai_docs_dir: Path, source_dir: Path, excluded_modules: frozenset[str] = frozenset()) -> list[str]:
+    """Return public symbols (by naming convention) not found in any guide file."""
+    public_symbols = _find_public_symbols(source_dir, excluded_modules)
+    guide_content = _read_all_guides(ai_docs_dir)
+    return [
+        symbol
+        for symbol in sorted(public_symbols)
+        if not re.search(rf"\bclass {re.escape(symbol)}\b", guide_content)
+        and not re.search(rf"\bdef {re.escape(symbol)}\b", guide_content)
+        and not re.search(rf"\b{re.escape(symbol)} =", guide_content)
+    ]
+
+
+def validate_size(ai_docs_dir: Path, max_size: int = MAX_GUIDE_SIZE) -> list[tuple[str, int]]:
+    """Return guide files exceeding max_size bytes. Skips README.md (separate thresholds)."""
+    violations: list[tuple[str, int]] = []
+    if not ai_docs_dir.is_dir():
+        return violations
+    for guide in sorted(ai_docs_dir.glob("*.md")):
+        if guide.name == "README.md":
+            continue
+        size = len(guide.read_bytes())
+        if size > max_size:
+            violations.append((guide.name, size))
+    return violations
+
+
+def validate_all(
+    ai_docs_dir: Path,
+    source_dir: Path,
+    excluded_modules: frozenset[str] = frozenset(),
+) -> ValidationResult:
+    """Run all validation checks and return aggregated result."""
+    return ValidationResult(
+        missing_symbols=tuple(validate_completeness(ai_docs_dir, source_dir, excluded_modules)),
+        size_violations=tuple(validate_size(ai_docs_dir)),
+        private_reexports=tuple(validate_private_reexports(source_dir, excluded_modules)),
+    )
+
+
+def validate_private_reexports(source_dir: Path, excluded_modules: frozenset[str] = frozenset()) -> list[str]:
+    """Detect symbols in __all__ that are imported from private modules.
+
+    Scans every public .py file with __all__ in the package (not just __init__.py).
+    For each symbol in __all__, traces the import back to its source module. If the
+    source is a _-prefixed module or package, the symbol will appear in IMPORTS but
+    have no definition in the guide — a phantom import.
+
+    For non-__init__.py files, symbols that are also exported from the parent
+    __init__.py are considered legitimate re-exports (the file is a designated
+    public re-export surface like llm/types.py) and are not flagged.
+    """
+    violations: list[str] = []
+
+    for py_file in sorted(source_dir.rglob("*.py")):
+        # Skip _-prefixed files (except __init__.py)
+        if py_file.name.startswith("_") and py_file.name != "__init__.py":
+            continue
+        relative = py_file.relative_to(source_dir)
+        # Skip _-prefixed packages (they're entirely private)
+        if any(part.startswith("_") for part in relative.parent.parts):
+            continue
+        # Skip excluded modules
+        top_module = relative.parts[0] if len(relative.parts) > 1 else None
+        if top_module and top_module in excluded_modules:
+            continue
+
+        relative_path = str(relative)
+
+        all_names = _parse_init_all(py_file)
+        if not all_names:
+            continue
+
+        private_sources = _find_private_import_sources(py_file)
+
+        # For non-__init__.py files, exclude symbols that are also in the parent
+        # __init__.py __all__ (they're legitimate re-export surfaces)
+        if py_file.name != "__init__.py":
+            parent_init = py_file.parent / "__init__.py"
+            parent_all = _parse_init_all(parent_init)
+            private_only = {k: v for k, v in private_sources.items() if k not in parent_all}
+        else:
+            private_only = private_sources
+
+        for name in sorted(all_names & private_only.keys()):
+            source_module = private_only[name]
+            violations.append(
+                f"{relative_path}: '{name}' in __all__ is imported from private module '{source_module}'. "
+                f"Remove it from __all__ — symbols from _-prefixed modules are internal and won't appear in generated docs."
+            )
+
+    return violations
+
+
+def _parse_init_all(init_file: Path) -> set[str]:
+    """Extract __all__ symbol names from a Python file."""
+    if not init_file.exists():
+        return set()
+    try:
+        tree = ast.parse(init_file.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return set()
+    for node in tree.body:
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "__all__":
+            value = node.value
+        if isinstance(value, (ast.List, ast.Tuple)):
+            return {elt.value for elt in value.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)}
+    return set()
+
+
+def _find_private_import_sources(init_file: Path) -> dict[str, str]:
+    """Map symbol names to their private source module for imports from _-prefixed modules.
+
+    Returns {symbol_name: source_module_name} only for symbols imported from private modules.
+    """
+    try:
+        tree = ast.parse(init_file.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return {}
+
+    result: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        # Check if the import source is a private module
+        # Relative: from ._images import ... -> module="_images"
+        # Relative nested: from ._llm_core import ... -> module="_llm_core"
+        # Absolute: from ai_pipeline_core._llm_core import ... -> contains "_llm_core"
+        parts = node.module.split(".")
+        is_private = any(part.startswith("_") and part != "__init__" for part in parts)
+        if not is_private:
+            continue
+        # Find the private part for the message
+        private_part = next(part for part in parts if part.startswith("_") and part != "__init__")
+        for alias in node.names:
+            name = alias.asname if alias.asname else alias.name
+            result[name] = private_part
+    return result
+
+
+def _find_public_symbols(source_dir: Path, excluded_modules: frozenset[str] = frozenset()) -> set[str]:
+    """Find all public symbols via naming convention in non-private modules."""
+    symbols: set[str] = set()
+    for py_file in sorted(source_dir.rglob("*.py")):
+        if py_file.name.startswith("_") and py_file.name != "__init__.py":
+            continue
+        relative = py_file.relative_to(source_dir)
+        top_module = relative.parts[0] if len(relative.parts) > 1 else relative.stem
+        if top_module in excluded_modules or (len(relative.parts) > 1 and top_module.startswith("_")):
+            continue
+        try:
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in tree.body:
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                if is_public_name(node.name) and node.name not in _EXCLUDED_SYMBOLS:
+                    symbols.add(node.name)
+            # NewType / type alias / constant
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+                if is_public_name(name) and name not in _EXCLUDED_SYMBOLS and ((name.isupper() and len(name) > 1) or _is_newtype_assign(node)):
+                    symbols.add(name)
+            elif isinstance(node, ast.TypeAlias):
+                name = node.name.id
+                if is_public_name(name) and name not in _EXCLUDED_SYMBOLS:
+                    symbols.add(name)
+    return symbols
+
+
+def _is_newtype_assign(node: ast.Assign) -> bool:
+    """Check if an Assign node is a NewType(...) call."""
+    if isinstance(node.value, ast.Call):
+        func = node.value.func
+        if isinstance(func, ast.Name) and func.id == "NewType":
+            return True
+        if isinstance(func, ast.Attribute) and func.attr == "NewType":
+            return True
+    return False
+
+
+def _read_all_guides(ai_docs_dir: Path) -> str:
+    """Concatenate all .md guide files into a single string for searching."""
+    if not ai_docs_dir.is_dir():
+        return ""
+    return "\n".join([guide.read_text() for guide in sorted(ai_docs_dir.glob("*.md"))])
 
 
 if __name__ == "__main__":

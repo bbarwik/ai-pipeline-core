@@ -1,7 +1,7 @@
 # MODULE: settings
 # CLASSES: Settings
 # DEPENDS: BaseSettings
-# VERSION: 0.11.1
+# VERSION: 0.12.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -14,58 +14,14 @@ from ai_pipeline_core import Settings
 
 ```python
 class Settings(BaseSettings):
-    """Base configuration class for AI Pipeline applications.
+    """Base configuration for AI Pipeline applications.
 
-Settings is designed to be inherited by your application's configuration
-class. It provides core AI Pipeline settings and type-safe configuration
-management with automatic loading from environment variables and .env files.
-All settings are immutable after initialization.
+Inherit to add application-specific fields::
 
-Inherit from Settings to add your application-specific configuration:
+    class ProjectSettings(Settings):
+        app_name: str = "my-app"
 
-    >>> from ai_pipeline_core import Settings
-    >>>
-    >>> class ProjectSettings(Settings):
-    ...     # Your custom settings
-    ...     app_name: str = "my-app"
-    ...     max_retries: int = 3
-    ...     enable_cache: bool = True
-    >>>
-    >>> # Create singleton instance for your app
-    >>> settings = ProjectSettings()
-
-Core Attributes:
-    openai_base_url: LiteLLM proxy URL for OpenAI-compatible API.
-                    Required for all LLM operations. Usually
-                    http://localhost:4000 for local development.
-
-    openai_api_key: Authentication key for LiteLLM proxy. Required
-                   for LLM operations. Format depends on proxy config.
-
-    prefect_api_url: Prefect server API endpoint. Required for flow
-                    deployment and remote execution. Leave empty for
-                    local-only execution.
-
-    prefect_api_key: Prefect API authentication key. Required only
-                    when connecting to Prefect Cloud or secured server.
-
-    lmnr_project_api_key: Laminar (LMNR) project API key for observability.
-                          Optional but recommended for production monitoring.
-
-    lmnr_debug: Debug mode flag for Laminar. Set to "true" to
-               enable debug-level logging. Empty string by default.
-
-    gcs_service_account_file: Path to GCS service account JSON file.
-                              Used for Prefect deployment bundles to GCS.
-                              Optional - if not set, default credentials will be used.
-
-Configuration sources:
-    - Environment variables (highest priority)
-    - .env file in current directory
-    - Default values in class definition
-
-Empty strings are used as defaults to allow optional services.
-Check for empty values before using service-specific settings."""
+    settings = ProjectSettings()"""
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore', frozen=True)  # Settings are immutable after initialization
     openai_base_url: str = ''
     openai_api_key: str = ''
@@ -84,6 +40,8 @@ Check for empty values before using service-specific settings."""
     clickhouse_user: str = 'default'
     clickhouse_password: str = ''
     clickhouse_secure: bool = True
+    clickhouse_connect_timeout: int = 10
+    clickhouse_send_receive_timeout: int = 30
     tracking_enabled: bool = True
     doc_summary_enabled: bool = True
     doc_summary_model: str = 'gemini-3-flash'

@@ -55,7 +55,7 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - Clear module boundaries with defined inputs/outputs
 - All inputs and outputs must be JSON serializable
 - **Context as typed schema** — Context documents have defined types with role, citation policy, and usage description
-- Missing required context documents caught at assembly time, not runtime
+- Missing required context documents warned at runtime (via `send_spec()`)
 
 ### 1.4 Configuration
 
@@ -68,8 +68,6 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 
 ## 2. What the Framework Provides
 
-This section documents capabilities the framework must provide to applications.
-
 ### 2.1 LLM Interaction (`llm/`, `_llm_core/`)
 
 **Conversation Class (public API for all LLM interactions):**
@@ -79,13 +77,8 @@ This section documents capabilities the framework must provide to applications.
 - **Methods**: `send(content)`, `send_structured(content, response_format)`, `send_spec(spec, documents=...)`, `with_document(doc)`, `with_documents(docs)`, `with_context(*docs)`, `with_model(model)`, `with_model_options(options)`, `with_substitutor(enabled)`, `with_assistant_message(content)`
 - **Properties**: `.content`, `.reasoning_content`, `.usage`, `.cost`, `.parsed`, `.citations`, `.approximate_tokens_count`
 
-**Internal functions** (`_llm_core/`, not exported publicly):
-- `generate()` — Low-level async LLM generation with retries, tracing, cost tracking
-- `generate_structured()` — Low-level structured output with Pydantic BaseModel response format
-
 **Prompt Caching:**
 - Automatic prefix-based caching via `cache_ttl` parameter (default: 5 minutes)
-- `context_count` is computed internally from the `context` tuple length (not user-facing)
 - Warmup + fork pattern supported (see §3.2 for implementation details)
 - **WARNING: Gemini requires ≥10k tokens in context for caching to be effective**
 
@@ -94,15 +87,14 @@ This section documents capabilities the framework must provide to applications.
 - `ImagePreset` enum for per-model optimization (framework handles downscaling internally)
 - Tall images: split vertically into tiles with 20% overlap
 - Wide images: trimmed (left-aligned crop)
-- Supported formats: JPEG, PNG, GIF, WebP. Output encoded as WebP.
-- A single image consumes **1080 tokens** regardless of pixel dimensions
+- Supported formats: JPEG, PNG, GIF, WebP. Re-encoded as WebP only when processing is needed; images within model limits are sent in original format.
 
 **Model Options:**
 - `ModelOptions` with: `reasoning_effort`, `cache_ttl`, `retries`, `retry_delay_seconds`, `timeout`, `service_tier`, `search_context_size`
 - `system_prompt` — System-level instructions for the model
 - `temperature` — Optional, default to None (provider decides). Only set if you have a specific reason.
 - `max_completion_tokens` — Controls output length. Default: provider decides (~30K typical).
-- `stop` — Stop sequences (tuple of strings). Used internally by `send_spec()` for `</result>` tags.
+- `stop` — Stop sequences (tuple of strings). Used internally by `send_spec()` for `</result>` tags. Only effective on models that support stop sequences (currently Gemini only); silently dropped for other providers.
 - `verbosity`, `stream`, `usage_tracking`, `user`, `metadata`, `extra_body` — Additional provider options.
 
 **Output Degeneration Detection:**
@@ -111,8 +103,7 @@ This section documents capabilities the framework must provide to applications.
 - Integrated with retry loop — degenerate responses trigger retries with cache disabled
 
 **Resilience:**
-- Configurable retries with exponential backoff
-- Rate limit handling with graceful backoff
+- Configurable retries with fixed delay (`retry_delay_seconds`, default 20s). Cache disabled on retry to avoid repeating cached failures.
 - Model fallbacks (primary → secondary → tertiary) — configured via LiteLLM
 - Provider fallbacks (OpenAI → Gemini → Grok) — configured via LiteLLM
 
@@ -161,31 +152,36 @@ This section documents capabilities the framework must provide to applications.
 - Validates: exactly 3 parameters, correct types, no input/output type overlap
 - Sets RunContext for document storage scoping
 
-**Decoration-Time Validation:**
+**`@pipeline_task` Return Type Validation:**
 - Return type must be `Document | None | list[Document] | tuple[Document, ...]`
 - Rejects mixed types (e.g., `str | Document`)
 - Rejects invalid containers (e.g., `dict[str, Document]`)
 
+**`@pipeline_flow` Return Type Validation:**
+- Return type must be `list[Document]` (e.g., `list[MyDoc]` or `list[DocA | DocB]`)
+- First parameter must be named `run_id` or `_run_id` (type `str`)
+- Enforced at both decoration time and runtime
+
 **Graceful Degradation:**
-- Some modules/tasks can be marked as optional (allowed to fail)
-- Failed optional modules logged as warning, not error
-- Workflow continues with reduced functionality when appropriate
+- `safe_gather(*coros)` / `safe_gather_indexed(*coros)` execute coroutines in parallel, logging individual failures while returning successes
+- By default raises `RuntimeError` if all tasks fail (`raise_if_all_fail=True`)
+- Document persistence failures in `@pipeline_task` are logged as warnings, not errors
 
 ### 2.4 Document Storage (`document_store/`)
 
 **Public API — `DocumentReader` protocol** (read-only, exported at top level):
 - `load(run_scope, document_types)` — Load documents by type from a run scope
-- `has_documents(run_scope, document_type)` — Check if documents of a type exist
+- `has_documents(run_scope, document_type, *, max_age=None)` — Check if documents of a type exist
 - `check_existing(sha256s)` — Check which SHA256s exist globally
-- `find_by_source(source_values, document_type)` — Find most recent document per source value
-- `load_by_sha256s(sha256s, document_type, run_scope)` — Batch-load full documents by SHA256
+- `find_by_source(source_values, document_type, *, max_age=None)` — Find most recent document per source value
+- `load_by_sha256s(sha256s, document_type, run_scope=None)` — Batch-load full documents by SHA256
 - `load_nodes_by_sha256s(sha256s)` — Batch-load lightweight `DocumentNode` metadata (cross-scope)
 - `load_scope_metadata(run_scope)` — Load `DocumentNode` metadata for all documents in a scope
-- `get_flow_completion(run_scope, flow_name)` — Check flow completion record
+- `get_flow_completion(run_scope, flow_name, *, max_age=None)` — Check flow completion record
 - `load_summaries(document_sha256s)` — Load summaries by SHA256
 
 **Internal — `DocumentStore` protocol** (`_protocol.py`, full read/write):
-- Extends `DocumentReader` with `save()`, `save_batch()`, `save_flow_completion()`, `flush()`, `shutdown()`
+- Extends `DocumentReader` with `save()`, `save_batch()`, `update_summary()`, `save_flow_completion()`, `flush()`, `shutdown()`
 - Write operations are framework-internal — `@pipeline_task` handles persistence automatically
 
 **Backend implementations** (all internal, prefixed with `_`):
@@ -200,7 +196,7 @@ This section documents capabilities the framework must provide to applications.
 - Generic typing: `PipelineDeployment[TOptions, TResult]`
 - Per-flow resume via DocumentStore (explicit `FlowCompletion` records, configurable `cache_ttl`)
 - Per-flow uploads (not just at pipeline end)
-- Pub/Sub event publishing (per-flow start/completion via `pubsub_project_id`, `pubsub_topic_id`)
+- Pub/Sub event publishing (per-flow start/completion via `PUBSUB_PROJECT_ID`, `PUBSUB_TOPIC_ID` environment variables on `Settings`)
 - CLI interface with `--start`/`--end` step control
 - Prefect deployment generation via `as_prefect_flow()`
 
@@ -221,10 +217,6 @@ This section documents capabilities the framework must provide to applications.
 - `LimitKind.PER_MINUTE` / `PER_HOUR` — Token bucket rate limits
 - Auto-created in Prefect at pipeline start; unthrottled when Prefect unavailable
 
-**Parallel Execution:**
-- `safe_gather(*coros)` — Returns successes only, filters out failures
-- `safe_gather_indexed(*coros)` — Preserves positional correspondence (None for failures)
-
 **DualDocumentStore:**
 - When ClickHouse is configured, CLI mode uses DualDocumentStore — saves to ClickHouse (primary) and local filesystem (secondary)
 - All reads delegate to primary; secondary failures are best-effort (logged as warnings)
@@ -236,7 +228,7 @@ This section documents capabilities the framework must provide to applications.
 - Typed Python classes for roles, rules, guides, and output formats
 - Definition-time validation at import time (not runtime)
 - ClassVars: `role`, `task`, `input_documents`, `rules`, `guides`, `output_rules`, `output_structure`
-- Dynamic fields via Pydantic `Field()` — short, single-line values inlined in Context section (max 500 chars, raises `ValueError` if exceeded)
+- Dynamic fields via Pydantic `Field()` — short, single-line values inlined in Context section (max 500 chars; longer/multiline values are auto-promoted to multi-line treatment with a warning)
 - Multi-line fields via `MultiLineField(description=...)` — combined into a single XML-tagged user message (`<field_name>value</field_name>`) sent before the main prompt, referenced in Context as "(provided in <tag> tags in previous message)"
 
 **Components** (define once, reuse across specs):
@@ -270,22 +262,33 @@ This section documents capabilities the framework must provide to applications.
 
 **Tracing:**
 - `@trace` decorator with Laminar integration
-- Automatic input/output capture
-- Document content trimming for traces (text: first/last 100 chars, binary: removed)
+- Automatic input/output capture with document content trimming (text: first/last 100 chars, binary: removed)
 - TraceInfo propagation across function calls
 - **Prompt traceability** — Every LLM call logs the context used
-- Local debug trace system with structured execution summaries (`.trace` directory)
 
-**Document Tracking:**
-- Lifecycle events: TASK_INPUT, TASK_OUTPUT, FLOW_INPUT, FLOW_OUTPUT, LLM_CONTEXT, LLM_MESSAGE, STORE_SAVED, STORE_SAVE_FAILED
-- ClickHouse storage for spans, documents, costs (optional dependency — no-op when not configured)
-- Optional LLM-generated summaries for spans and documents (cheap model, background thread)
+**Unified Write Path:**
+- `PipelineSpanProcessor` — Single OTel SpanProcessor that extracts `SpanData` once and dispatches to all backends
+- `SpanData` — Frozen dataclass shared by all backends, constructed from OTel ReadableSpan (live) or ClickHouse row (download)
+- `FilesystemBackend` — Writes `.trace/` directory via `TraceMaterializer` (queue + background thread)
+- `ClickHouseBackend` — Writes to `pipeline_runs` and `pipeline_spans` tables via `ClickHouseWriter` (batched columnar inserts)
+
+**Document Lineage:**
+- Tracked via SHA256 arrays on OTel span attributes (`pipeline.input_document_sha256s`, `pipeline.output_document_sha256s`)
+- Persisted as `Array(String)` columns on `pipeline_spans` (`input_doc_sha256s`, `output_doc_sha256s`)
+
+**ClickHouse Tracking Tables:**
+- `pipeline_runs` — Run metadata (execution_id, status, timing, cost totals). `ReplacingMergeTree` with version column.
+- `pipeline_spans` — All span data including ZSTD-compressed content (input/output, replay, attributes, events), LLM metrics, and document lineage. `ReplacingMergeTree`.
+- Optional dependency — no-op when not configured for CLI, required for production deployment.
+
+**Local Debug Traces:**
+- `.trace/` directory produced by `TraceMaterializer` — hierarchical span directories with `span.yaml`, `input.yaml`, `output.yaml`, `events.yaml`, replay files, indexes (`llm_calls.yaml`, `errors.yaml`), `summary.md`, `costs.md`
+- Same code path for live CLI execution and download-from-ClickHouse reconstruction
+- `ai-trace` CLI tool for listing, inspecting, and downloading task/flow runs from ClickHouse
 
 **Logging:**
 - `get_pipeline_logger()` — Configured logger with context
-- Logging bridge forwards to OTel span events
-- **Correlation IDs** for distributed tracing
-- **Automatic context capture** — worker, module, function captured automatically
+- Logging bridge forwards to OTel span events (INFO+ level; attributes: `log.level`, `log.message`, `log.logger`)
 
 ### 2.8 Replay (`replay/`)
 
@@ -329,17 +332,9 @@ analysis:
 
 **Replay Output:**
 - Results saved to `output_dir/output.yaml` (content, usage, cost, timestamp)
-- Full OTel tracing via `LocalDebugSpanProcessor` writes to `output_dir/.trace/`
+- Full OTel tracing via `PipelineSpanProcessor` with `FilesystemBackend` writes to `output_dir/.trace/`
 - Trace output includes `summary.md`, `llm_calls.yaml`, `costs.md`, and per-span directories with nested replay YAMLs (enabling recursive replay debugging)
 - Tracing initialized via `_init_replay_tracing()` which registers a processor with the OTel TracerProvider
-
-**Module Structure:**
-- `types.py` — Payload Pydantic models, DocumentRef, HistoryEntry, `infer_store_base()`
-- `_capture.py` — `serialize_kwargs()`, `serialize_prior_messages()` (Document/BaseModel/Enum/container serialization)
-- `_resolve.py` — `resolve_document_ref()` (SHA256 glob resolution), `_find_document_class()` (registry + `__subclasses__()` fallback)
-- `_deserialize.py` — `resolve_doc_refs()` (recursive `$doc_ref` walker), `resolve_task_kwargs()` (type-hint validation), `_import_by_path()`
-- `_execute.py` — `execute_conversation/task/flow()`
-- `cli.py` — argparse CLI with `run` and `show` subcommands, `_init_replay_tracing()`, `_serialize_result()`, `_write_output()`
 
 ---
 
@@ -387,18 +382,7 @@ Do not batch multiple items into a single LLM call to "save tokens." With cachin
 - Separate calls are easier to implement, retry, and debug
 - Separate calls return structured output per item without complex parsing
 
-### 3.5 Context vs Messages Split
-
-LLM calls have two parts:
-- **Context** — Static, cacheable prefix (documents, system instructions)
-- **Messages** — Dynamic suffix (conversation history, task instructions)
-
-The framework must:
-- Maintain clear separation in `Conversation` class
-- Compute `context_count` internally from the `context` tuple length
-- Apply cache control directives to context messages
-
-### 3.6 Image Handling
+### 3.5 Image Handling
 
 Maximum image resolution is 3000x3000 pixels. The framework handles per-model downscaling internally via `ImagePreset`.
 
@@ -415,21 +399,7 @@ The framework must:
 - Supported image formats: JPEG, PNG, GIF, WebP (all accepted by current providers)
 - Prefer larger tiles to minimize token cost
 
-### 3.7 Model Options
-
-The framework exposes `ModelOptions` with:
-- `reasoning_effort` — For thinking models ("low", "medium", "high")
-- `cache_ttl` — Prompt caching duration (default: "300s")
-- `retries`, `retry_delay_seconds`, `timeout`
-- `service_tier` — OpenAI tier selection (other providers ignore this)
-- `search_context_size` — For search-enabled models
-- `system_prompt` — System-level instructions for the model
-- `temperature` — Optional, default to None (provider decides)
-- `max_completion_tokens` — Output length limit (default: provider decides, ~30K typical)
-- `stop` — Stop sequences (tuple of strings). Used by `send_spec()` for `</result>` tags
-- `verbosity`, `stream`, `usage_tracking`, `user`, `metadata`, `extra_body` — Additional provider options
-
-### 3.8 Model Cost Tiers
+### 3.6 Model Cost Tiers
 
 The framework should guide apps toward cost-effective model selection:
 
@@ -437,11 +407,11 @@ The framework should guide apps toward cost-effective model selection:
 - **Cheap** (flash/fast): gemini-3-flash, grok-4.1-fast. Use for high-volume tasks, formatting, conversion, structured output extraction.
 - **Too small** (nano/lite): Insufficient for production pipeline tasks. Do not use.
 
-### 3.9 Model Reference Preservation
+### 3.7 Model Reference Preservation
 
 **Do not remove model references that appear unfamiliar.** Models are released frequently and the codebase may reference models that are newer than the AI coding agent's training data. If a model name exists in code, assume it is valid unless there is concrete evidence otherwise (e.g., provider returns "model not found" error).
 
-### 3.10 Structured Output
+### 3.8 Structured Output
 
 `Conversation.send_structured()` must:
 - Accept Pydantic BaseModel as `response_format`
@@ -478,7 +448,7 @@ class VerificationResult(BaseModel):
     is_valid: bool                # Decision follows from decomposition
 ```
 
-### 3.11 Document XML Wrapping
+### 3.9 Document XML Wrapping
 
 When documents are added to LLM context, the framework wraps them:
 
@@ -497,7 +467,7 @@ This XML boundary separates data from instructions — the **prompt injection de
 
 **All structured data for LLM context must be wrapped in a Document** — use `Document.create()` to wrap dicts, lists, or BaseModel instances. Never construct XML manually (e.g., f-string `<document>` tags). The framework handles escaping, ID generation, and consistent formatting.
 
-### 3.12 Thinking Models
+### 3.10 Thinking Models
 
 All LLMs (2026) perform internal reasoning. The framework must NOT add:
 - Chain-of-thought prompting
@@ -506,7 +476,7 @@ All LLMs (2026) perform internal reasoning. The framework must NOT add:
 
 These are redundant and can interfere with the model's native reasoning. Reasoning effort is controlled via `ModelOptions.reasoning_effort` where supported.
 
-### 3.13 Long Response Handling
+### 3.11 Long Response Handling
 
 LLMs produce quality degradation in responses longer than 3-5K tokens. The framework must support:
 - Conversational follow-up patterns for building long outputs incrementally
@@ -514,7 +484,7 @@ LLMs produce quality degradation in responses longer than 3-5K tokens. The frame
 
 Tasks requiring long outputs should not use a single call requesting a large response.
 
-### 3.14 LLM Anti-Patterns
+### 3.12 LLM Anti-Patterns
 
 The framework must **not** implement or encourage these patterns:
 
@@ -586,7 +556,7 @@ The framework auto-generates documentation for AI coding agents via `docs_genera
 
 **Guide Structure Rules:**
 - Every guide includes `## Imports` with two-tier import paths: `from ai_pipeline_core import ...` (top-level) and `from ai_pipeline_core.<module> import ...` (sub-package symbols not at top level)
-- Module-level `NewType`, `type` aliases, and public `UPPER_CASE` constants must be extracted into `# === TYPES & CONSTANTS ===` section
+- Module-level `NewType`, `type` aliases, and public `UPPER_CASE` constants must be extracted into `## Types & Constants` section
 - `.ai-docs/README.md` (generated) includes comprehensive per-module API summaries with all public symbols
 - When `__init_subclass__` calls private helpers, the class docstring must enumerate all constraints as rule lines
 - Prefer `class MyType(str)` over `NewType` for types that should appear in documentation with their own docstring
@@ -715,7 +685,7 @@ logger.warning(
 | Orchestrator | Prefect | Flow/task orchestration, state management |
 | LLM Proxy | LiteLLM (primary), OpenRouter (compatible) | Unified multi-provider access |
 | Document Storage | ClickHouse + local | Content-addressed with SHA256 deduplication |
-| Tracking Storage | ClickHouse | Time-series for spans, documents, costs |
+| Tracking Storage | ClickHouse | `pipeline_runs` + `pipeline_spans` (unified span data with document lineage) |
 | Tracing | Laminar (LMNR) + OpenTelemetry | Span-based with automatic instrumentation |
 
 ---
@@ -727,7 +697,6 @@ These features are planned but not implemented:
 | Feature | Description |
 |---------|-------------|
 | Anomaly Detection | Detect model hangs, malformed responses, incorrect outputs. (Output degeneration / response loops ARE implemented via `_degeneration.py`.) |
-| MCP Server-Side Execution | Server-side multi-turn to avoid prompt re-sends. Highly cost-optimized by avoiding prompt re-sends (even cached tokens cost money). |
 | Checkpoint Granularity | Module-level, task-level, or call-level recovery |
 | Three-Tier Parameter System | Context Documents (schema at def, content at runtime), Static Parameters (compile time), Dynamic Parameters (runtime) |
 

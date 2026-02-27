@@ -2,7 +2,7 @@
 # CLASSES: TraceInfo
 # DEPENDS: BaseModel
 # PURPOSE: Observability system for AI pipelines.
-# VERSION: 0.11.1
+# VERSION: 0.12.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -15,8 +15,6 @@ from ai_pipeline_core import TraceInfo, TraceLevel, set_trace_cost, trace
 
 ```python
 DEFAULT_LIST_LIMIT = 20
-
-DEFAULT_PORT = 8443
 
 EXECUTION_ID_SHORT_LENGTH = 8
 

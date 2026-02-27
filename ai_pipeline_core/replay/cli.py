@@ -23,7 +23,9 @@ from pydantic import BaseModel
 from ai_pipeline_core.deployment._helpers import init_observability_best_effort
 from ai_pipeline_core.documents.document import Document
 from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.observability._debug import LocalDebugSpanProcessor, LocalTraceWriter, TraceDebugConfig
+from ai_pipeline_core.observability._debug import FilesystemBackend, TraceDebugConfig
+from ai_pipeline_core.observability._initialization import register_pipeline_processor
+from ai_pipeline_core.observability._tracking._processor import PipelineSpanProcessor
 
 from .types import ConversationReplay, FlowReplay, TaskReplay, infer_store_base
 
@@ -40,12 +42,13 @@ _CONTENT_PREVIEW_LENGTH = 200
 _MAIN_MODULE_PATTERN = re.compile(r"__main__:")
 
 
-def _init_replay_tracing(output_dir: Path) -> LocalDebugSpanProcessor | None:
+def _init_replay_tracing(output_dir: Path) -> tuple[PipelineSpanProcessor, FilesystemBackend] | None:
     """Initialize debug tracing for replay execution, writing to output_dir/.trace/.
 
     Sets up the OTel TracerProvider (via Laminar), then registers a
-    LocalDebugSpanProcessor so all spans produced during replay are captured.
-    Returns the processor for shutdown, or None if setup fails.
+    PipelineSpanProcessor with FilesystemBackend so all spans produced
+    during replay are captured.
+    Returns the processor and backend for shutdown, or None if setup fails.
     """
     # Ensure OTel TracerProvider is initialized
     try:
@@ -59,16 +62,17 @@ def _init_replay_tracing(output_dir: Path) -> LocalDebugSpanProcessor | None:
     trace_path.mkdir(parents=True, exist_ok=True)
 
     config = TraceDebugConfig(path=trace_path)
-    writer = LocalTraceWriter(config)
-    processor = LocalDebugSpanProcessor(writer, verbose=config.verbose)
+    fs_backend = FilesystemBackend(config)
+    processor = PipelineSpanProcessor(backends=(fs_backend,), verbose=config.verbose)
 
     provider: Any = otel_trace.get_tracer_provider()
     if hasattr(provider, "add_span_processor"):
         provider.add_span_processor(processor)
-        return processor
+        register_pipeline_processor(processor)
+        return processor, fs_backend
 
     logger.debug("TracerProvider has no add_span_processor — tracing disabled")
-    writer.shutdown()
+    fs_backend.shutdown()
     return None
 
 
@@ -124,10 +128,11 @@ def _find_symbol_in_modules(qualname: str, modules: list[str]) -> str | None:
 def _load_payload(path: Path) -> ConversationReplay | TaskReplay | FlowReplay:
     """Load a replay YAML file and return the typed payload."""
     text = path.read_text(encoding="utf-8")
-    data = yaml.safe_load(text)
-    if not isinstance(data, dict):
-        raise TypeError(f"Expected a YAML mapping in {path}, got {type(data).__name__}")
+    raw = yaml.safe_load(text)
+    if not isinstance(raw, dict):
+        raise TypeError(f"Expected a YAML mapping in {path}, got {type(raw).__name__}")
 
+    data: dict[str, Any] = raw
     payload_type = data.get("payload_type")
     if payload_type not in _PAYLOAD_CLASSES:
         valid = ", ".join(sorted(_PAYLOAD_CLASSES))
@@ -174,11 +179,13 @@ def _format_result(result: Any) -> str:
         return "\n".join(lines)
 
     if isinstance(result, Document):
-        return f"[Document: {type(result).__name__}] {result.name} ({len(result.content)} bytes)"
+        doc: Document[Any] = result
+        return f"[Document: {type(doc).__name__}] {doc.name} ({len(doc.content)} bytes)"
 
     if isinstance(result, list):
-        items = [f"  {type(d).__name__}: {d.name}" if isinstance(d, Document) else f"  {d!r}" for d in result]
-        return f"[{len(result)} result(s)]\n" + "\n".join(items)
+        results: list[Any] = result
+        items = [f"  {type(d).__name__}: {d.name}" if isinstance(d, Document) else f"  {d!r}" for d in results]
+        return f"[{len(results)} result(s)]\n" + "\n".join(items)
 
     return repr(result)
 
@@ -200,21 +207,23 @@ def _serialize_result(result: Any) -> dict[str, Any]:
         return output
 
     if isinstance(result, Document):
+        doc: Document[Any] = result
         output["type"] = "document"
-        output["class_name"] = type(result).__name__
-        output["name"] = result.name
-        output["content_bytes"] = len(result.content)
-        output["sha256"] = result.sha256
+        output["class_name"] = type(doc).__name__
+        output["name"] = doc.name
+        output["content_bytes"] = len(doc.content)
+        output["sha256"] = doc.sha256
         return output
 
     if isinstance(result, list):
+        results: list[Any] = result
         output["type"] = "document_list"
-        output["count"] = len(result)
+        output["count"] = len(results)
         output["documents"] = [
             {"class_name": type(d).__name__, "name": d.name, "content_bytes": len(d.content), "sha256": d.sha256}
             if isinstance(d, Document)
             else {"value": repr(d)}
-            for d in result
+            for d in results
         ]
         return output
 
@@ -245,7 +254,7 @@ def _print_run_header(
     print(f"Replaying {type(payload).__name__} from {replay_file.name}")
     if isinstance(payload, ConversationReplay):
         print(f"  model: {payload.model}")
-    elif isinstance(payload, (TaskReplay, FlowReplay)):
+    else:
         print(f"  function: {payload.function_path}")
     print(f"  store: {store_base}")
     if output_dir is not None:
@@ -293,9 +302,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         output_dir = replay_file.parent / f"{replay_file.stem}_replay"
 
     # Initialize tracing
-    processor: LocalDebugSpanProcessor | None = None
+    tracing_pair: tuple[PipelineSpanProcessor, FilesystemBackend] | None = None
     if not args.no_trace:
-        processor = _init_replay_tracing(output_dir)
+        tracing_pair = _init_replay_tracing(output_dir)
 
     _print_run_header(payload, replay_file, store_base, output_dir if not args.no_trace else None)
 
@@ -306,8 +315,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         logger.debug("Replay execution failed", exc_info=True)
         return 1
     finally:
-        if processor is not None:
-            processor.shutdown()
+        if tracing_pair is not None:
+            _processor, fs_backend = tracing_pair
+            fs_backend.shutdown()
 
     print(_format_result(result))
 
@@ -347,15 +357,16 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     elif isinstance(payload, TaskReplay):
         print(f"Function: {payload.function_path}")
-        print(f"Arguments: {len(payload.arguments)}")
-        for key, value in payload.arguments.items():
+        task_args: dict[str, Any] = payload.arguments
+        print(f"Arguments: {len(task_args)}")
+        for key, value in task_args.items():
             if isinstance(value, dict) and "$doc_ref" in value:
                 print(f"  {key}: [doc_ref {value['$doc_ref'][:12]}...]")
             else:
                 preview = str(value)[:80]
                 print(f"  {key}: {preview}")
 
-    elif isinstance(payload, FlowReplay):
+    else:
         print(f"Function: {payload.function_path}")
         print(f"Run ID: {payload.run_id}")
         print(f"Documents: {len(payload.documents)}")

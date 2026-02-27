@@ -1,8 +1,8 @@
 # MODULE: llm
-# CLASSES: ModelOptions, Citation, Conversation
+# CLASSES: Citation, ModelOptions, Conversation
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.11.1
+# VERSION: 0.12.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -47,6 +47,18 @@ ConversationContent = str | Document | list[Document]
 ## Public API
 
 ```python
+@dataclass(frozen=True, slots=True)
+class Citation:
+    """A URL citation returned by search-enabled models.
+
+The start_index and end_index fields indicate character positions in the response content
+where the citation applies. Note that index behavior varies by model."""
+    title: str
+    url: str
+    start_index: int
+    end_index: int
+
+
 class ModelOptions(BaseModel):
     """Configuration options for LLM generation requests.
 
@@ -105,18 +117,6 @@ Non-obvious behaviors:
             kwargs["stream_options"] = {"include_usage": True}
 
         return kwargs
-
-
-@dataclass(frozen=True, slots=True)
-class Citation:
-    """A URL citation returned by search-enabled models.
-
-The start_index and end_index fields indicate character positions in the response content
-where the citation applies. Note that index behavior varies by model."""
-    title: str
-    url: str
-    start_index: int
-    end_index: int
 
 
 class Conversation(BaseModel, Generic[T]):

@@ -1,14 +1,14 @@
 # MODULE: deployment
-# CLASSES: DeploymentContext, DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment
+# CLASSES: DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.11.1
+# VERSION: 0.12.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import DeploymentContext, DeploymentResult, PipelineDeployment, RemoteDeployment, run_remote_deployment
+from ai_pipeline_core import DeploymentResult, PipelineDeployment, RemoteDeployment, run_remote_deployment
 from ai_pipeline_core.deployment import CompletedRun, DeploymentResultData, FailedRun, FlowStatus, PendingRun, ProgressCallback, ProgressRun, RunResponse, RunState, progress_update
 ```
 
@@ -45,11 +45,6 @@ class _OutputDocument(BaseModel):
 ## Public API
 
 ```python
-class DeploymentContext(BaseModel):
-    """Infrastructure configuration for deployments. Progress is tracked via Prefect labels (pub/sub)."""
-    model_config = ConfigDict(frozen=True, extra='forbid')
-
-
 class DeploymentResult(BaseModel):
     """Base class for deployment results."""
     success: bool
@@ -62,7 +57,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     """Base class for pipeline deployments.
 
 Features enabled by default:
-- Per-flow resume: Skip flows if outputs exist in DocumentStore
+- Per-flow resume: Skip flows when a FlowCompletion record exists in DocumentStore
 - Per-flow uploads: Upload documents after each flow
 - Progress tracking via Prefect labels (pub/sub)
 - Upload on failure: Save partial results if pipeline fails"""
@@ -129,10 +124,10 @@ Features enabled by default:
             run_id: str,
             documents: list[DocumentInput],
             options: FlowOptions,
-            context: DeploymentContext,
         ) -> DeploymentResult:
             # Initialize observability for remote workers
             init_observability_best_effort()
+            ensure_tracking_processor()
 
             # Set session ID from Prefect flow run for trace grouping
             flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else str(uuid4())  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
@@ -163,7 +158,6 @@ Features enabled by default:
                         run_id,
                         typed_docs,
                         cast(Any, options),
-                        context,
                         publisher=publisher,
                         task_result_store=task_result_store,
                     )
@@ -204,7 +198,6 @@ Features enabled by default:
         run_id: str,
         documents: Sequence[Document],
         options: TOptions,
-        context: DeploymentContext,
         publisher: ResultPublisher | None = None,
         start_step: int = 1,
         end_step: int | None = None,
@@ -216,7 +209,6 @@ Features enabled by default:
             run_id: Unique identifier for this pipeline run (used as run_scope).
             documents: Initial input documents for the first flow.
             options: Flow options passed to each flow.
-            context: Deployment context.
             publisher: Lifecycle event publisher (defaults to NoopPublisher).
             start_step: First flow to execute (1-indexed, default 1).
             end_step: Last flow to execute (inclusive, default all flows).
@@ -260,18 +252,25 @@ Features enabled by default:
             logger.warning("No DocumentStore configured for multi-step pipeline — intermediate outputs will not accumulate between flows")
 
         # Tracking lifecycle
-        tracking_svc = None
+        ch_backend = None
         run_uuid: UUID | None = None
+        run_start_time = None
         run_failed = False
         try:
-            tracking_svc = get_tracking_service()
-            if tracking_svc:
+            ch_backend = get_clickhouse_backend()
+            if ch_backend:
                 run_uuid = (_safe_uuid(flow_run_id) if flow_run_id else None) or uuid4()
-                tracking_svc.set_run_context(execution_id=run_uuid, run_id=run_id, flow_name=self.name, run_scope=run_scope)
-                tracking_svc.track_run_start(execution_id=run_uuid, run_id=run_id, flow_name=self.name, run_scope=run_scope)
+                run_start_time = ch_backend.track_run_start(
+                    execution_id=run_uuid,
+                    run_id=run_id,
+                    flow_name=self.name,
+                    run_scope=str(run_scope),
+                )
+            # Set run context on processors so child spans inherit execution_id
+            _set_run_context_on_processors(run_uuid or uuid4(), run_id, self.name, str(run_scope))
         except Exception as e:
-            logger.warning("Tracking service initialization failed: %s", e)
-            tracking_svc = None
+            logger.warning("Tracking initialization failed: %s", e)
+            ch_backend = None
 
         # Set concurrency limits and RunContext for the entire pipeline run
         failed_published = False
@@ -509,10 +508,18 @@ Features enabled by default:
                     store.flush()
                 except Exception as e:
                     logger.warning("Store flush failed: %s", e)
-            if (svc := tracking_svc) is not None and run_uuid is not None:
+            _clear_run_context_on_processors()
+            if ch_backend is not None and run_uuid is not None and run_start_time is not None:
                 try:
-                    svc.track_run_end(execution_id=run_uuid, status=RunStatus.FAILED if run_failed else RunStatus.COMPLETED)
-                    svc.flush()
+                    ch_backend.track_run_end(
+                        execution_id=run_uuid,
+                        run_id=run_id,
+                        flow_name=self.name,
+                        run_scope=str(run_scope),
+                        status=RunStatus.FAILED if run_failed else RunStatus.COMPLETED,
+                        start_time=run_start_time,
+                    )
+                    ch_backend.flush()
                 except Exception as e:
                     logger.warning("Tracking shutdown failed: %s", e)
 
@@ -540,7 +547,6 @@ Features enabled by default:
         run_id: str,
         documents: Sequence[Document],
         options: TOptions,
-        context: DeploymentContext | None = None,
         publisher: ResultPublisher | None = None,
         output_dir: Path | None = None,
     ) -> TResult:
@@ -550,16 +556,12 @@ Features enabled by default:
             run_id: Pipeline run identifier.
             documents: Initial input documents.
             options: Flow options.
-            context: Optional deployment context (defaults to empty).
             publisher: Optional lifecycle event publisher (defaults to NoopPublisher).
             output_dir: Optional directory for writing result.json.
 
         Returns:
             Typed deployment result.
         """
-        if context is None:
-            context = DeploymentContext()
-
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -567,7 +569,7 @@ Features enabled by default:
         set_document_store(store)
         try:
             with prefect_test_harness(), disable_run_logger():
-                result = asyncio.run(self.run(run_id, documents, options, context, publisher=publisher))
+                result = asyncio.run(self.run(run_id, documents, options, publisher=publisher))
         finally:
             store.shutdown()
             set_document_store(None)
@@ -700,7 +702,6 @@ Mirror type contract:
         run_id: str,
         documents: list[TDoc],
         options: TOptions,
-        context: DeploymentContext | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> TResult:
         """Execute the remote deployment via Prefect."""
@@ -708,7 +709,6 @@ Mirror type contract:
             run_id,
             documents,
             options,
-            context if context is not None else DeploymentContext(),
             on_progress,
         )
 
@@ -893,16 +893,7 @@ async def test_progress_update_step_progress_values(
         assert evt.data["total_steps"] == 1
 ```
 
-**Default creation** (`tests/deployment/test_deployment_base.py:72`)
-
-```python
-def test_default_creation(self):
-    """Test default context creates successfully."""
-    ctx = DeploymentContext()
-    assert ctx is not None
-```
-
-**Deployment result data** (`tests/deployment/test_deployment_base.py:179`)
+**Deployment result data** (`tests/deployment/test_deployment_base.py:159`)
 
 ```python
 def test_deployment_result_data(self):
@@ -913,7 +904,7 @@ def test_deployment_result_data(self):
     assert "success" in dumped
 ```
 
-**Subclass specific trace names** (`tests/deployment/test_remote_deployment.py:442`)
+**Subclass specific trace names** (`tests/deployment/test_remote_deployment.py:417`)
 
 ```python
 def test_subclass_specific_trace_names(self):
@@ -940,7 +931,7 @@ def test_three_args_returned_by_helper(self):
     assert args[2] is SimpleResult
 ```
 
-**Three params from remote deployment** (`tests/deployment/test_remote_deployment.py:613`)
+**Three params from remote deployment** (`tests/deployment/test_remote_deployment.py:588`)
 
 ```python
 def test_three_params_from_remote_deployment(self):
@@ -954,10 +945,22 @@ def test_three_params_from_remote_deployment(self):
     assert result[2] is SimpleResult
 ```
 
+**Union doc arg is union type** (`tests/deployment/test_remote_deployment.py:105`)
+
+```python
+def test_union_doc_arg_is_union_type(self):
+    class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
+        trace_level: ClassVar[TraceLevel] = "off"
+
+    args = extract_generic_params(Foo, RemoteDeployment)
+    assert isinstance(args[0], types.UnionType)
+    assert set(args[0].__args__) == {AlphaDoc, BetaDoc}
+```
+
 
 ## Error Examples
 
-**Remote deployment rejects empty run id** (`tests/deployment/test_remote_deployment.py:921`)
+**Remote deployment rejects empty run id** (`tests/deployment/test_remote_deployment.py:896`)
 
 ```python
 async def test_remote_deployment_rejects_empty_run_id(self):
@@ -971,7 +974,7 @@ async def test_remote_deployment_rejects_empty_run_id(self):
         await Wired2().run("", [doc], FlowOptions())
 ```
 
-**Remote deployment rejects invalid base run id** (`tests/deployment/test_remote_deployment.py:911`)
+**Remote deployment rejects invalid base run id** (`tests/deployment/test_remote_deployment.py:886`)
 
 ```python
 async def test_remote_deployment_rejects_invalid_base_run_id(self):
@@ -983,17 +986,6 @@ async def test_remote_deployment_rejects_invalid_base_run_id(self):
     doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
     with pytest.raises(ValueError, match="contains invalid characters"):
         await Wired().run("invalid run id with spaces", [doc], FlowOptions())
-```
-
-**Rejects extra fields** (`tests/deployment/test_deployment_base.py:77`)
-
-```python
-def test_rejects_extra_fields(self):
-    """Test context rejects unknown fields (extra='forbid')."""
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError):
-        DeploymentContext(unknown_field="value")  # type: ignore[call-arg]
 ```
 
 **Rejects int** (`tests/deployment/test_remote_deployment.py:151`)
@@ -1046,5 +1038,18 @@ def test_rejects_non_document_type(self):
     with pytest.raises(TypeError, match="Document subclass"):
 
         class Bad(RemoteDeployment[str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
+            trace_level: ClassVar[TraceLevel] = "off"
+```
+
+**Rejects non flow options** (`tests/deployment/test_remote_deployment.py:159`)
+
+```python
+def test_rejects_non_flow_options(self):
+    class NotFlowOptions(BaseModel):
+        x: int = 1
+
+    with pytest.raises(TypeError, match="FlowOptions subclass"):
+
+        class Bad(RemoteDeployment[AlphaDoc, NotFlowOptions, SimpleResult]):  # type: ignore[type-var]
             trace_level: ClassVar[TraceLevel] = "off"
 ```

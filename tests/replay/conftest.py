@@ -165,7 +165,7 @@ async def populated_store(
 ) -> Path:
     """Write all sample documents into a LocalDocumentStore and return store_base."""
     from ai_pipeline_core.document_store._local import LocalDocumentStore
-    from ai_pipeline_core.documents.types import RunScope
+    from ai_pipeline_core.documents import RunScope
 
     store = LocalDocumentStore(base_path=store_base)
     for doc in sample_documents.values():

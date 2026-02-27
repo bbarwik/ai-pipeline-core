@@ -1,29 +1,122 @@
-"""Run context and task document context for document lifecycle management.
+"""Domain types, context variables, and document lifecycle tracking.
 
-RunContext tracks the current run scope via ContextVar.
-TaskDocumentContext tracks document creation within a pipeline task/flow,
-providing provenance validation, orphan detection, and deduplication.
+Provides DocumentSha256/RunScope types, run/task context via ContextVars,
+and TaskDocumentContext for provenance validation and orphan detection.
+
+The ordering of definitions in this module is load-order sensitive:
+DocumentSha256, RunScope, and ContextVar helpers are defined first (no Document
+dependency) so that document.py can import them without circular import issues.
+TaskDocumentContext follows, importing Document after document.py has finished loading.
 """
 
+from collections.abc import Generator
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-
-from ai_pipeline_core.documents._context_vars import (
-    RunContext,
-    get_run_context,
-    reset_run_context,
-    set_run_context,
-)
-from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.documents.types import DocumentSha256
-from ai_pipeline_core.documents.utils import is_document_sha256
+from typing import NewType
 
 __all__ = [
+    "DocumentSha256",
     "RunContext",
+    "RunScope",
+    "TaskContext",
     "TaskDocumentContext",
+    "_suppress_document_registration",
     "get_run_context",
+    "get_task_context",
+    "is_registration_suppressed",
     "reset_run_context",
+    "reset_task_context",
     "set_run_context",
+    "set_task_context",
 ]
+
+DocumentSha256 = NewType("DocumentSha256", str)
+"""BASE32-encoded SHA256 identity hash of a Document (name + content + derived_from + triggered_by + attachments)."""
+
+RunScope = NewType("RunScope", str)
+"""Scoping identifier for a pipeline run, used to partition documents in the store."""
+
+
+# --- Run-level context ---
+
+
+@dataclass(frozen=True, slots=True)
+class RunContext:
+    """Immutable context for a pipeline run, carried via ContextVar."""
+
+    run_scope: RunScope
+
+
+_run_context: ContextVar[RunContext | None] = ContextVar("_run_context", default=None)
+
+
+def get_run_context() -> RunContext | None:
+    """Get the current run context, or None if not set."""
+    return _run_context.get()
+
+
+def set_run_context(ctx: RunContext) -> Token[RunContext | None]:
+    """Set the run context. Returns a token for restoring the previous value."""
+    return _run_context.set(ctx)
+
+
+def reset_run_context(token: Token[RunContext | None]) -> None:
+    """Reset the run context to its previous value using a token from set_run_context."""
+    _run_context.reset(token)
+
+
+# --- Task-level document lifecycle tracking ---
+
+
+@dataclass
+class TaskContext:
+    """Mutable set of document SHA256s created within the current task/flow."""
+
+    created: set[DocumentSha256] = field(default_factory=set)
+
+
+_task_context: ContextVar[TaskContext | None] = ContextVar("_task_context", default=None)
+_suppress_registration: ContextVar[bool] = ContextVar("_suppress_registration", default=False)
+
+
+def get_task_context() -> TaskContext | None:
+    """Get the current task context, or None if not inside a pipeline task/flow."""
+    return _task_context.get()
+
+
+def set_task_context(ctx: TaskContext) -> Token[TaskContext | None]:
+    """Set the task context. Returns a token for restoring the previous value."""
+    return _task_context.set(ctx)
+
+
+def reset_task_context(token: Token[TaskContext | None]) -> None:
+    """Reset the task context to its previous value."""
+    _task_context.reset(token)
+
+
+@contextmanager
+def _suppress_document_registration() -> Generator[None, None, None]:
+    """Suppress document registration during deserialization (store loads, from_dict, etc.)."""
+    token = _suppress_registration.set(True)
+    try:
+        yield
+    finally:
+        _suppress_registration.reset(token)
+
+
+def is_registration_suppressed() -> bool:
+    """Check if document registration is currently suppressed."""
+    return _suppress_registration.get()
+
+
+# ---------------------------------------------------------------------------
+# TaskDocumentContext — depends on Document, so it must be defined AFTER all
+# symbols that document.py imports from this module (above).
+# ---------------------------------------------------------------------------
+
+from ai_pipeline_core.documents.document import Document  # noqa: E402
+from ai_pipeline_core.documents.utils import is_document_sha256  # noqa: E402
 
 
 @dataclass
@@ -90,7 +183,7 @@ class TaskDocumentContext:
         return warnings
 
     def finalize(self, returned_docs: list[Document]) -> list[DocumentSha256]:
-        """Detect orphaned documents — created but not returned.
+        """Detect orphaned documents -- created but not returned.
 
         Returns list of orphaned document SHA256 hashes.
         """

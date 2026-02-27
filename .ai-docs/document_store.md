@@ -1,8 +1,8 @@
 # MODULE: document_store
-# CLASSES: DocumentReader, FlowCompletion, DocumentNode
+# CLASSES: FlowCompletion, DocumentNode, DocumentReader
 # DEPENDS: Protocol
 # PURPOSE: Document store protocol and backends for AI pipeline flows.
-# VERSION: 0.11.1
+# VERSION: 0.12.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -15,6 +15,31 @@ from ai_pipeline_core.document_store import DocumentNode, FlowCompletion
 ## Public API
 
 ```python
+@dataclass(frozen=True, slots=True)
+class FlowCompletion:
+    """Record of a successful flow execution for resume cache.
+
+Written after a flow returns successfully. Resume checks this record
+instead of inferring completion from document presence (which gives
+false positives when a flow crashes after partial output)."""
+    flow_name: str
+    input_sha256s: tuple[str, ...]
+    output_sha256s: tuple[str, ...]
+    stored_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentNode:
+    """Lightweight document metadata without content or attachments."""
+    sha256: DocumentSha256
+    class_name: str
+    name: str
+    description: str = ''
+    derived_from: tuple[str, ...] = ()
+    triggered_by: tuple[str, ...] = ()
+    summary: str = ''
+
+
 # Protocol — implement in concrete class
 @runtime_checkable
 class DocumentReader(Protocol):
@@ -70,38 +95,13 @@ Users should depend on this protocol when they only need to read documents."""
         ...
 
 
-@dataclass(frozen=True, slots=True)
-class FlowCompletion:
-    """Record of a successful flow execution for resume cache.
-
-Written after a flow returns successfully. Resume checks this record
-instead of inferring completion from document presence (which gives
-false positives when a flow crashes after partial output)."""
-    flow_name: str
-    input_sha256s: tuple[str, ...]
-    output_sha256s: tuple[str, ...]
-    stored_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class DocumentNode:
-    """Lightweight document metadata without content or attachments."""
-    sha256: DocumentSha256
-    class_name: str
-    name: str
-    description: str = ''
-    derived_from: tuple[str, ...] = ()
-    triggered_by: tuple[str, ...] = ()
-    summary: str = ''
-
-
 ```
 
 ## Functions
 
 ```python
-def get_document_store() -> DocumentReader | None:
-    """Get the process-global document store for read-only access."""
+def get_document_store() -> DocumentStore | None:
+    """Get the process-global document store singleton (framework-internal, returns full DocumentStore)."""
     return get_store()
 
 ```
@@ -238,7 +238,7 @@ def test_set_and_get_document_store():
 
 ## Error Examples
 
-**Attachment path traversal rejected** (`tests/document_store/test_local.py:1034`)
+**Attachment path traversal rejected** (`tests/document_store/test_local.py:1033`)
 
 ```python
 @pytest.mark.asyncio

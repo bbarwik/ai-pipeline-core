@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from ai_pipeline_core.documents.types import DocumentSha256
+from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents.utils import is_document_sha256
 
 __all__ = [

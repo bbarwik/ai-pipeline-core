@@ -16,9 +16,11 @@ from ai_pipeline_core.docs_generator.extractor import (
     MethodInfo,
     SymbolTable,
     ValueInfo,
+    format_class_field,
     get_source,
     is_public_name,
     resolve_dependencies,
+    unpack_class_field,
 )
 from ai_pipeline_core.logging import get_pipeline_logger
 
@@ -26,20 +28,50 @@ logger = get_pipeline_logger(__name__)
 
 __all__ = [
     "MAX_EXAMPLES",
+    "MAX_GUIDE_SIZE",
+    "README_ERROR_SIZE",
+    "README_WARN_SIZE",
     "GuideData",
     "ScoredExample",
     "build_guide",
     "discover_tests",
     "extract_rules",
     "flatten_methods",
+    "manage_guide_size",
     "render_guide",
     "score_test",
     "select_examples",
 ]
 
 MAX_EXAMPLES = 8
+MAX_GUIDE_SIZE = 51_200  # 50KB in bytes
+README_WARN_SIZE = 51_200  # 50KB — warn threshold for README.md
+README_ERROR_SIZE = 102_400  # 100KB — error threshold for README.md
 
 _RULE_PREFIXES = ("cannot", "must", "never", "always", "critical")
+
+
+def manage_guide_size(
+    data: "GuideData",
+    rendered_content: str,
+    max_size: int = MAX_GUIDE_SIZE,
+) -> str:
+    """Warn if rendered guide exceeds size limit. Returns content unchanged."""
+    size = _measure(rendered_content)
+    if size <= max_size:
+        return rendered_content
+    logger.warning(
+        "%s guide is %s bytes (%dKB). Consider: move private helpers to _ prefixed functions, split large classes into separate modules",
+        data.module_name,
+        f"{size:,}",
+        size // 1024,
+    )
+    return rendered_content
+
+
+def _measure(content: str) -> int:
+    """Measure guide size in UTF-8 bytes."""
+    return len(content.encode("utf-8"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -640,8 +672,8 @@ def _render_class(cls: ClassInfo) -> list[str]:
         lines.append(f'    """{cls.docstring.strip()}"""')
 
     for class_field in cls.class_vars:
-        var_name, type_ann, default, description = _unpack_class_field(class_field)
-        lines.append(_format_class_field(var_name, type_ann, default, description))
+        var_name, type_ann, default, description = unpack_class_field(class_field)
+        lines.append(format_class_field(var_name, type_ann, default, description))
 
     if cls.class_vars:
         lines.append("")
@@ -702,27 +734,3 @@ def _dedented_source(source: str) -> list[str]:
 def _example_title(ex: ScoredExample) -> str:
     """Convert test function name to readable title."""
     return ex.name.removeprefix("test_").replace("_", " ").capitalize()
-
-
-def _format_class_field(var_name: str, type_ann: str, default: str, description: str) -> str:
-    """Render one class field declaration with optional inline description."""
-    if type_ann and default:
-        line = f"    {var_name}: {type_ann} = {default}"
-    elif type_ann:
-        line = f"    {var_name}: {type_ann}"
-    elif default:
-        line = f"    {var_name} = {default}"
-    else:
-        line = f"    {var_name}"
-    if description:
-        return f"{line}  # {description}"
-    return line
-
-
-def _unpack_class_field(field: tuple[str, ...]) -> tuple[str, str, str, str]:
-    """Unpack class field tuple and support legacy 3-item tuples."""
-    var_name = field[0] if len(field) > 0 else ""
-    type_ann = field[1] if len(field) > 1 else ""
-    default = field[2] if len(field) > 2 else ""
-    description = field[3] if len(field) > 3 else ""
-    return var_name, type_ann, default, description

@@ -2,7 +2,7 @@
 
 Provides the PipelineDeployment base class and related types for
 creating unified, type-safe pipeline deployments with:
-- Per-flow resume (skip if outputs exist in DocumentStore)
+- Per-flow resume (skip when a FlowCompletion record exists in DocumentStore)
 - Per-flow uploads (immediate, not just at end)
 - Prefect flow-run label updates for progress tracking
 - Upload on failure (partial results saved)
@@ -28,16 +28,13 @@ from prefect.testing.utilities import prefect_test_harness
 from pydantic import BaseModel, ConfigDict
 from pydantic_settings import BaseSettings
 
-from ai_pipeline_core.document_store._factory import create_document_store
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-from ai_pipeline_core.document_store._protocol import get_document_store, set_document_store
+from ai_pipeline_core.document_store._protocol import create_document_store, get_document_store, set_document_store
 from ai_pipeline_core.document_store._summary_worker import SummaryGenerator
-from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents.context import RunContext, reset_run_context, set_run_context
-from ai_pipeline_core.documents.types import DocumentSha256, RunScope
+from ai_pipeline_core.documents import Document, DocumentSha256, RunContext, RunScope, reset_run_context, set_run_context
 from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
 from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.observability._initialization import get_tracking_service
+from ai_pipeline_core.observability._initialization import ensure_tracking_processor, get_clickhouse_backend, get_pipeline_processors
 from ai_pipeline_core.observability._tracking._models import RunStatus
 from ai_pipeline_core.pipeline.limits import (
     PipelineLimit,
@@ -58,12 +55,12 @@ from ._helpers import (
     init_observability_best_effort,
     validate_run_id,
 )
-from ._publishers import NoopPublisher
 from ._resolve import DocumentInput, _OutputDocument, build_output_document, resolve_document_inputs
 from ._types import (
     CompletedEvent,
     ErrorCode,
     FailedEvent,
+    NoopPublisher,
     ProgressEvent,
     ResultPublisher,
     StartedEvent,
@@ -126,6 +123,8 @@ def _create_task_result_store(settings_obj: Settings) -> TaskResultStore | None:
         username=settings_obj.clickhouse_user,
         password=settings_obj.clickhouse_password,
         secure=settings_obj.clickhouse_secure,
+        connect_timeout=settings_obj.clickhouse_connect_timeout,
+        send_receive_timeout=settings_obj.clickhouse_send_receive_timeout,
     )
 
 
@@ -145,6 +144,27 @@ def _build_summary_generator() -> SummaryGenerator | None:
         return await generate_document_summary(name, excerpt, model=model)
 
     return _generator
+
+
+def _set_run_context_on_processors(execution_id: UUID, run_id: str, flow_name: str, run_scope: str) -> None:
+    """Propagate pipeline run context to all registered PipelineSpanProcessors.
+
+    Each processor injects these values into SpanData for child spans that
+    don't have them set as span/resource attributes.
+    """
+    for processor in get_pipeline_processors():
+        processor.set_run_context(
+            execution_id=execution_id,
+            run_id=run_id,
+            flow_name=flow_name,
+            run_scope=run_scope,
+        )
+
+
+def _clear_run_context_on_processors() -> None:
+    """Clear pipeline run context from all registered PipelineSpanProcessors."""
+    for processor in get_pipeline_processors():
+        processor.clear_run_context()
 
 
 def _compute_run_scope(run_id: str, documents: list[Document], options: FlowOptions) -> RunScope:
@@ -211,12 +231,6 @@ async def _heartbeat_loop(publisher: ResultPublisher, run_id: str) -> None:
             logger.warning("Heartbeat publish failed: %s", e)
 
 
-class DeploymentContext(BaseModel):
-    """Infrastructure configuration for deployments. Progress is tracked via Prefect labels (pub/sub)."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-
 class DeploymentResult(BaseModel):
     """Base class for deployment results."""
 
@@ -270,7 +284,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     """Base class for pipeline deployments.
 
     Features enabled by default:
-    - Per-flow resume: Skip flows if outputs exist in DocumentStore
+    - Per-flow resume: Skip flows when a FlowCompletion record exists in DocumentStore
     - Per-flow uploads: Upload documents after each flow
     - Progress tracking via Prefect labels (pub/sub)
     - Upload on failure: Save partial results if pipeline fails
@@ -428,7 +442,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         run_id: str,
         documents: Sequence[Document],
         options: TOptions,
-        context: DeploymentContext,
         publisher: ResultPublisher | None = None,
         start_step: int = 1,
         end_step: int | None = None,
@@ -440,7 +453,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             run_id: Unique identifier for this pipeline run (used as run_scope).
             documents: Initial input documents for the first flow.
             options: Flow options passed to each flow.
-            context: Deployment context.
             publisher: Lifecycle event publisher (defaults to NoopPublisher).
             start_step: First flow to execute (1-indexed, default 1).
             end_step: Last flow to execute (inclusive, default all flows).
@@ -484,18 +496,25 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             logger.warning("No DocumentStore configured for multi-step pipeline — intermediate outputs will not accumulate between flows")
 
         # Tracking lifecycle
-        tracking_svc = None
+        ch_backend = None
         run_uuid: UUID | None = None
+        run_start_time = None
         run_failed = False
         try:
-            tracking_svc = get_tracking_service()
-            if tracking_svc:
+            ch_backend = get_clickhouse_backend()
+            if ch_backend:
                 run_uuid = (_safe_uuid(flow_run_id) if flow_run_id else None) or uuid4()
-                tracking_svc.set_run_context(execution_id=run_uuid, run_id=run_id, flow_name=self.name, run_scope=run_scope)
-                tracking_svc.track_run_start(execution_id=run_uuid, run_id=run_id, flow_name=self.name, run_scope=run_scope)
+                run_start_time = ch_backend.track_run_start(
+                    execution_id=run_uuid,
+                    run_id=run_id,
+                    flow_name=self.name,
+                    run_scope=str(run_scope),
+                )
+            # Set run context on processors so child spans inherit execution_id
+            _set_run_context_on_processors(run_uuid or uuid4(), run_id, self.name, str(run_scope))
         except Exception as e:
-            logger.warning("Tracking service initialization failed: %s", e)
-            tracking_svc = None
+            logger.warning("Tracking initialization failed: %s", e)
+            ch_backend = None
 
         # Set concurrency limits and RunContext for the entire pipeline run
         failed_published = False
@@ -733,10 +752,18 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     store.flush()
                 except Exception as e:
                     logger.warning("Store flush failed: %s", e)
-            if (svc := tracking_svc) is not None and run_uuid is not None:
+            _clear_run_context_on_processors()
+            if ch_backend is not None and run_uuid is not None and run_start_time is not None:
                 try:
-                    svc.track_run_end(execution_id=run_uuid, status=RunStatus.FAILED if run_failed else RunStatus.COMPLETED)
-                    svc.flush()
+                    ch_backend.track_run_end(
+                        execution_id=run_uuid,
+                        run_id=run_id,
+                        flow_name=self.name,
+                        run_scope=str(run_scope),
+                        status=RunStatus.FAILED if run_failed else RunStatus.COMPLETED,
+                        start_time=run_start_time,
+                    )
+                    ch_backend.flush()
                 except Exception as e:
                     logger.warning("Tracking shutdown failed: %s", e)
 
@@ -746,7 +773,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         run_id: str,
         documents: Sequence[Document],
         options: TOptions,
-        context: DeploymentContext | None = None,
         publisher: ResultPublisher | None = None,
         output_dir: Path | None = None,
     ) -> TResult:
@@ -756,16 +782,12 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             run_id: Pipeline run identifier.
             documents: Initial input documents.
             options: Flow options.
-            context: Optional deployment context (defaults to empty).
             publisher: Optional lifecycle event publisher (defaults to NoopPublisher).
             output_dir: Optional directory for writing result.json.
 
         Returns:
             Typed deployment result.
         """
-        if context is None:
-            context = DeploymentContext()
-
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -773,7 +795,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         set_document_store(store)
         try:
             with prefect_test_harness(), disable_run_logger():
-                result = asyncio.run(self.run(run_id, documents, options, context, publisher=publisher))
+                result = asyncio.run(self.run(run_id, documents, options, publisher=publisher))
         finally:
             store.shutdown()
             set_document_store(None)
@@ -814,10 +836,10 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             run_id: str,
             documents: list[DocumentInput],
             options: FlowOptions,
-            context: DeploymentContext,
         ) -> DeploymentResult:
             # Initialize observability for remote workers
             init_observability_best_effort()
+            ensure_tracking_processor()
 
             # Set session ID from Prefect flow run for trace grouping
             flow_run_id = str(runtime.flow_run.get_id()) if runtime.flow_run else str(uuid4())  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
@@ -848,7 +870,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                         run_id,
                         typed_docs,
                         cast(Any, options),
-                        context,
                         publisher=publisher,
                         task_result_store=task_result_store,
                     )
@@ -874,7 +895,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
 
 __all__ = [
-    "DeploymentContext",
     "DeploymentResult",
     "PipelineDeployment",
 ]

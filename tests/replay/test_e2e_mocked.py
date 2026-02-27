@@ -170,7 +170,7 @@ class TestEndToEndMockedReplay:
         # Persist document for later replay resolution
         store_base = tmp_path / "output"
         from ai_pipeline_core.document_store._local import LocalDocumentStore
-        from ai_pipeline_core.documents.types import RunScope
+        from ai_pipeline_core.documents import RunScope
 
         store = LocalDocumentStore(base_path=store_base)
         await store.save(input_doc, RunScope("e2e/test"))

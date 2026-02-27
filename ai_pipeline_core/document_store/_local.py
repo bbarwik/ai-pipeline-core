@@ -11,18 +11,17 @@ import contextlib
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
 
 from ai_pipeline_core.document_store._models import DocumentNode, FlowCompletion
 from ai_pipeline_core.document_store._summary_worker import SummaryGenerator, SummaryWorker
-from ai_pipeline_core.documents._context_vars import _suppress_document_registration
+from ai_pipeline_core.documents._context import DocumentSha256, RunScope, _suppress_document_registration
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
 from ai_pipeline_core.documents.attachment import Attachment
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.documents.types import DocumentSha256, RunScope
 from ai_pipeline_core.logging import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
@@ -32,6 +31,7 @@ __all__ = [
 ]
 
 _D = TypeVar("_D", bound=Document)
+_T = TypeVar("_T")
 
 DOC_ID_LENGTH = 6
 
@@ -357,20 +357,27 @@ class LocalDocumentStore:
                 found_names.add(name)
         return all(f in found_names for f in expected_files)
 
+    def _scan_meta_by_sha256(self, target_sha256s: set[str], builder_fn: Callable[[DocumentSha256, dict[str, Any]], _T]) -> dict[DocumentSha256, _T]:
+        """Scan all meta files, match document_sha256 against target set, build results via builder_fn.
+
+        Short-circuits once all targets are found. Skips duplicates.
+        """
+        if not target_sha256s or not self._base_path.exists():
+            return {}
+        result: dict[DocumentSha256, _T] = {}
+        for _path, meta in self._iter_all_meta(self._base_path):
+            sha256_raw = meta.get("document_sha256")
+            if not isinstance(sha256_raw, str) or sha256_raw not in target_sha256s or sha256_raw in result:
+                continue
+            doc_sha = DocumentSha256(sha256_raw)
+            result[doc_sha] = builder_fn(doc_sha, meta)
+            if len(result) == len(target_sha256s):
+                break
+        return result
+
     def _check_existing_sync(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Scan all meta files to find matching document_sha256 values."""
-        target = set(sha256s)
-        found: set[DocumentSha256] = set()
-        if not self._base_path.exists():
-            return found
-
-        for _path, meta in self._iter_all_meta(self._base_path):
-            doc_sha = meta.get("document_sha256")
-            if isinstance(doc_sha, str) and doc_sha in target:
-                found.add(DocumentSha256(doc_sha))
-                if found == target:
-                    break
-        return found
+        return set(self._scan_meta_by_sha256(set(sha256s), lambda sha, _meta: sha))
 
     def _update_summary_sync(self, document_sha256: DocumentSha256, summary: str) -> None:
         """Update summary in all .meta.json files matching this document SHA256."""
@@ -464,19 +471,7 @@ class LocalDocumentStore:
 
     def _load_nodes_by_sha256s_sync(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentNode]:
         """Scan all meta files for matching document_sha256 values."""
-        if not sha256s or not self._base_path.exists():
-            return {}
-        target = set(sha256s)
-        result: dict[DocumentSha256, DocumentNode] = {}
-        for _path, meta in self._iter_all_meta(self._base_path):
-            if result.keys() >= target:
-                break
-            sha256_raw = meta.get("document_sha256")
-            if not isinstance(sha256_raw, str) or sha256_raw not in target or sha256_raw in result:
-                continue
-            doc_sha = DocumentSha256(sha256_raw)
-            result[doc_sha] = _node_from_meta(doc_sha, meta)
-        return result
+        return self._scan_meta_by_sha256(set(sha256s), _node_from_meta)
 
     def _load_scope_metadata_sync(self, run_scope: RunScope) -> list[DocumentNode]:
         """Scan all meta files and return lightweight metadata."""

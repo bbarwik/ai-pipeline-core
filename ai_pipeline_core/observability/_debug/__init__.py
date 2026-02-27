@@ -1,6 +1,6 @@
-"""Local trace debugging system for AI pipelines.
+"""Local debug tracing system for AI pipelines.
 
-This module provides filesystem-based trace debugging that saves all spans
+This module provides filesystem-based debug tracing that saves all spans
 with their inputs/outputs for LLM-assisted debugging. Includes static
 summary generation.
 
@@ -8,20 +8,14 @@ Enabled automatically in CLI mode (``run_cli``), writing to ``<working_dir>/.tra
 Disable with ``--no-trace``.
 """
 
-from ._config import SpanInfo, TraceDebugConfig, TraceState, WriteJob
+from ._backend import FilesystemBackend
+from ._config import TraceDebugConfig
 from ._content import ContentWriter
-from ._processor import LocalDebugSpanProcessor
-from ._summary import generate_costs, generate_summary
-from ._writer import LocalTraceWriter
+from ._materializer import TraceMaterializer
 
 __all__ = [
     "ContentWriter",
-    "LocalDebugSpanProcessor",
-    "LocalTraceWriter",
-    "SpanInfo",
+    "FilesystemBackend",
     "TraceDebugConfig",
-    "TraceState",
-    "WriteJob",
-    "generate_costs",
-    "generate_summary",
+    "TraceMaterializer",
 ]

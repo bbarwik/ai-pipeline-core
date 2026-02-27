@@ -1,187 +1,212 @@
-"""OpenTelemetry SpanProcessor that feeds the tracking system."""
+"""Unified OTel SpanProcessor with pluggable backends."""
 
-import json
+import dataclasses
+import threading
 from datetime import UTC, datetime
-from typing import Any
+from typing import override
+from uuid import UUID
 
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
-from opentelemetry.trace import StatusCode
 
 from ai_pipeline_core.logging import get_pipeline_logger
-
-from ._models import ATTR_INPUT_DOCUMENT_SHA256S, ATTR_OUTPUT_DOCUMENT_SHA256S, SpanType
-from ._service import TrackingService
+from ai_pipeline_core.observability._span_data import SpanData
+from ai_pipeline_core.observability._tracking._types import SpanBackend
 
 logger = get_pipeline_logger(__name__)
 
-_CONTENT_ATTRS: frozenset[str] = frozenset({"lmnr.span.input", "lmnr.span.output", "replay.payload"})
+_PROCESSOR_ERRORS = (OSError, ValueError, TypeError, RuntimeError, AttributeError)
 
 
-def _attr_to_json(value: Any) -> str:
-    """Convert a span attribute to a JSON string, preserving strings as-is."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, default=str)
+class PipelineSpanProcessor(SpanProcessor):
+    """Single OTel SpanProcessor that dispatches to multiple backends.
 
+    Extracts SpanData once on span end, sends to all registered backends.
+    Manages the span_order counter, LLM span filtering, and run context
+    propagation (execution_id, run_id, flow_name, run_scope).
 
-def _hex_span_id(span_id: int) -> str:
-    """Convert integer span ID to hex string."""
-    return format(span_id, "016x")
+    When verbose=False (default), LLM-type spans skip directory creation
+    but are still sent to backends for metrics accumulation.
+    """
 
+    def __init__(
+        self,
+        backends: tuple[SpanBackend, ...],
+        *,
+        verbose: bool = False,
+    ) -> None:
+        self._backends = backends
+        self._verbose = verbose
+        self._lock = threading.Lock()
+        self._span_order: int = 0
+        self._span_order_map: dict[str, int] = {}
+        self._filtered_span_ids: set[str] = set()
 
-def _hex_trace_id(trace_id: int) -> str:
-    """Convert integer trace ID to hex string."""
-    return format(trace_id, "032x")
+        # Run context — set by PipelineDeployment.run(), injected into SpanData.
+        # WARNING: instance-level mutable state — assumes single flow per process.
+        # If concurrent flows run in one process, spans get tagged with the wrong
+        # execution_id. Fix (when needed): switch to contextvars.ContextVar.
+        self._execution_id: UUID | None = None
+        self._run_id: str = ""
+        self._flow_name: str = ""
+        self._run_scope: str = ""
 
+    def set_run_context(self, *, execution_id: UUID, run_id: str, flow_name: str, run_scope: str) -> None:
+        """Store pipeline run context for injection into child spans."""
+        with self._lock:
+            self._execution_id = execution_id
+            self._run_id = run_id
+            self._flow_name = flow_name
+            self._run_scope = run_scope
 
-def _ns_to_datetime(ns: int) -> datetime:
-    """Convert nanosecond timestamp to datetime."""
-    return datetime.fromtimestamp(ns / 1e9, tz=UTC)
-
-
-def _classify_span(attrs: dict[str, Any]) -> SpanType:
-    """Determine span type from attributes."""
-    span_type_str = str(attrs.get("lmnr.span.type", ""))
-    if span_type_str == "LLM":
-        return SpanType.LLM
-    if attrs.get("prefect.flow.name"):
-        return SpanType.FLOW
-    if attrs.get("prefect.task.name"):
-        return SpanType.TASK
-    return SpanType.TRACE
-
-
-class TrackingSpanProcessor(SpanProcessor):
-    """Forwards completed spans to TrackingService."""
-
-    def __init__(self, service: TrackingService) -> None:
-        """Initialize with tracking service."""
-        self._service = service
-        self._span_orders: dict[str, int] = {}
-
-    @staticmethod
-    def _parent_span_id(span: Span | ReadableSpan) -> str | None:
-        """Extract parent span ID as hex string, or None."""
-        parent = span.parent
-        if parent is None:
-            return None
-        return _hex_span_id(parent.span_id)
+    def clear_run_context(self) -> None:
+        """Clear pipeline run context after run completes."""
+        with self._lock:
+            self._execution_id = None
+            self._run_id = ""
+            self._flow_name = ""
+            self._run_scope = ""
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
-        """Record span start."""
+        """Handle span start -- assign order and notify backends that need early directory creation."""
+        try:
+            if span.context is None:
+                return
+            span_id = format(span.context.span_id, "016x")
+
+            with self._lock:
+                # Filter LLM spans unless verbose
+                if not self._verbose:
+                    attrs = span.attributes
+                    if attrs and attrs.get("lmnr.span.type") == "LLM":
+                        self._filtered_span_ids.add(span_id)
+                        return
+
+                self._span_order += 1
+                order = self._span_order
+                self._span_order_map[span_id] = order
+
+            # Build minimal SpanData for on_start (FilesystemBackend creates dirs)
+            trace_id = format(span.context.trace_id, "032x")
+            parent = getattr(span, "parent", None)
+            parent_span_id = format(parent.span_id, "016x") if parent and hasattr(parent, "span_id") and parent.span_id else None
+
+            start_data = _build_start_span_data(
+                span_id=span_id,
+                trace_id=trace_id,
+                parent_span_id=parent_span_id,
+                name=span.name,
+                span_order=order,
+            )
+
+            for backend in self._backends:
+                try:
+                    backend.on_span_start(start_data)
+                except _PROCESSOR_ERRORS as e:
+                    logger.debug("Backend %s.on_span_start failed: %s", type(backend).__name__, e)
+        except _PROCESSOR_ERRORS as e:
+            logger.debug("PipelineSpanProcessor.on_start failed: %s", e)
+
+    def on_end(self, span: ReadableSpan) -> None:
+        """Handle span end -- extract SpanData and dispatch to all backends."""
         try:
             ctx = span.get_span_context()
-            if ctx is None:
+            if ctx is None or span.start_time is None or span.end_time is None:
                 return
-            span_id = _hex_span_id(ctx.span_id)
-            span_order = self._service.assign_span_order()
-            self._span_orders[span_id] = span_order
-            attrs: dict[str, Any] = dict(span.attributes or {})
-            self._service.track_span_start(
-                span_id=span_id,
-                trace_id=_hex_trace_id(ctx.trace_id),
-                parent_span_id=self._parent_span_id(span),
-                name=span.name,
-                span_type=_classify_span(attrs),
-            )
-        except Exception as e:
-            logger.debug("TrackingSpanProcessor.on_start failed: %s", e)
 
-    def on_end(self, span: ReadableSpan) -> None:  # noqa: PLR0914
-        """Record span completion with full details."""
-        try:
-            ctx = span.get_span_context()
-            if ctx is None:
-                return
-            attrs: dict[str, Any] = dict(span.attributes or {})
+            span_id = format(ctx.span_id, "016x")
 
-            start_ns = span.start_time or 0
-            end_ns = span.end_time or 0
-            start_time = _ns_to_datetime(start_ns)
-            end_time = _ns_to_datetime(end_ns)
-            duration_ms = max(0, (end_ns - start_ns) // 1_000_000)
+            with self._lock:
+                is_filtered = span_id in self._filtered_span_ids
+                if is_filtered:
+                    self._filtered_span_ids.discard(span_id)
+                    order = 0
+                else:
+                    order = self._span_order_map.pop(span_id, 0)
 
-            status = "failed" if span.status.status_code == StatusCode.ERROR else "completed"
+                # Capture run context under lock
+                run_ctx_execution_id = self._execution_id
+                run_ctx_run_id = self._run_id
+                run_ctx_flow_name = self._flow_name
+                run_ctx_run_scope = self._run_scope
 
-            # Extract LLM-specific attributes
-            cost = float(attrs.get("gen_ai.usage.cost", 0.0))
-            tokens_input = int(attrs.get("gen_ai.usage.input_tokens", 0))
-            tokens_output = int(attrs.get("gen_ai.usage.output_tokens", 0))
-            llm_model = str(attrs.get("gen_ai.request.model") or attrs.get("gen_ai.request_model") or "") or None
+            span_data = SpanData.from_otel_span(span, span_order=order)
 
-            # Extract document SHA256 arrays set by track_task_io
-            raw_input_sha256s = attrs.get(ATTR_INPUT_DOCUMENT_SHA256S)
-            input_doc_sha256s = list(raw_input_sha256s) if raw_input_sha256s else None
-            raw_output_sha256s = attrs.get(ATTR_OUTPUT_DOCUMENT_SHA256S)
-            output_doc_sha256s = list(raw_output_sha256s) if raw_output_sha256s else None
-
-            span_id = _hex_span_id(ctx.span_id)
-            self._service.track_span_end(
-                span_id=span_id,
-                trace_id=_hex_trace_id(ctx.trace_id),
-                parent_span_id=self._parent_span_id(span),
-                name=span.name,
-                span_type=_classify_span(attrs),
-                status=status,
-                start_time=start_time,
-                end_time=end_time,
-                duration_ms=duration_ms,
-                cost=cost,
-                tokens_input=tokens_input,
-                tokens_output=tokens_output,
-                llm_model=llm_model,
-                input_document_sha256s=input_doc_sha256s,
-                output_document_sha256s=output_doc_sha256s,
-            )
-
-            # Forward span events
-            if span.events:
-                events: list[tuple[str, datetime, dict[str, str], str | None]] = []
-                for event in span.events:
-                    event_attrs = dict(event.attributes) if event.attributes else {}
-                    level = str(event_attrs.pop("log.level", "")) or None
-                    events.append((
-                        event.name,
-                        _ns_to_datetime(event.timestamp),
-                        {k: str(v) for k, v in event_attrs.items()},
-                        level,
-                    ))
-                self._service.track_span_events(
-                    span_id=span_id,
-                    events=events,
+            # Inject run context if SpanData didn't get it from span/resource attributes
+            if span_data.execution_id is None and run_ctx_execution_id is not None:
+                span_data = dataclasses.replace(
+                    span_data,
+                    execution_id=run_ctx_execution_id,
+                    run_id=span_data.run_id or run_ctx_run_id,
+                    flow_name=span_data.flow_name or run_ctx_flow_name,
+                    run_scope=span_data.run_scope or run_ctx_run_scope,
                 )
 
-            # Content tracking for trace reconstruction
-            span_order = self._span_orders.pop(span_id, 0)
-            remaining_attrs = {k: v for k, v in attrs.items() if k not in _CONTENT_ATTRS}
-            if span.status.description:
-                remaining_attrs["status_description"] = span.status.description
-
-            self._service.track_span_content(
-                span_id=span_id,
-                trace_id=_hex_trace_id(ctx.trace_id),
-                span_order=span_order,
-                input_json=_attr_to_json(attrs.get("lmnr.span.input")),
-                output_json=_attr_to_json(attrs.get("lmnr.span.output")),
-                replay_payload=_attr_to_json(attrs.get("replay.payload")),
-                attributes_json=json.dumps(remaining_attrs, default=str),
-                events_json=json.dumps(
-                    [{"name": e.name, "timestamp": e.timestamp, "attributes": {k: str(v) for k, v in (e.attributes or {}).items()}} for e in span.events],
-                )
-                if span.events
-                else "[]",
-            )
-        except Exception as e:
-            logger.debug("TrackingSpanProcessor.on_end failed: %s", e)
+            for backend in self._backends:
+                try:
+                    backend.on_span_end(span_data)
+                except _PROCESSOR_ERRORS as e:
+                    logger.debug("Backend %s.on_span_end failed: %s", type(backend).__name__, e)
+        except _PROCESSOR_ERRORS as e:
+            logger.debug("PipelineSpanProcessor.on_end failed: %s", e)
 
     def shutdown(self) -> None:
-        """Shutdown the tracking service."""
-        self._service.shutdown()
+        """Shutdown all backends."""
+        for backend in self._backends:
+            try:
+                backend.shutdown()
+            except _PROCESSOR_ERRORS as e:
+                logger.debug("Backend %s.shutdown failed: %s", type(backend).__name__, e)
 
-    def force_flush(self, timeout_millis: int = 30000) -> bool:  # noqa: PLR6301
-        """Force flush is a no-op — the writer flushes on its own schedule."""
-        _ = timeout_millis
+    @override
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        """No-op — backends flush independently via their own threads."""
+        del timeout_millis
         return True
+
+
+_EPOCH = datetime.fromtimestamp(0, tz=UTC)
+
+
+def _build_start_span_data(
+    *,
+    span_id: str,
+    trace_id: str,
+    parent_span_id: str | None,
+    name: str,
+    span_order: int,
+) -> SpanData:
+    """Build a minimal SpanData for on_span_start notifications.
+
+    Only identity and ordering fields are populated; the full data
+    comes in on_end via SpanData.from_otel_span().
+    """
+    return SpanData(
+        execution_id=None,
+        span_id=span_id,
+        trace_id=trace_id,
+        parent_span_id=parent_span_id,
+        name=name,
+        run_id="",
+        flow_name="",
+        run_scope="",
+        span_type="trace",
+        status="running",
+        start_time=_EPOCH,
+        end_time=_EPOCH,
+        duration_ms=0,
+        span_order=span_order,
+        cost=0.0,
+        tokens_input=0,
+        tokens_output=0,
+        tokens_cached=0,
+        llm_model=None,
+        error_message="",
+        input_json="",
+        output_json="",
+        replay_payload="",
+        attributes={},
+        events=(),
+        input_doc_sha256s=(),
+        output_doc_sha256s=(),
+    )

@@ -10,7 +10,7 @@ from ai_pipeline_core.document_store._protocol import (
     set_document_store,
 )
 from ai_pipeline_core.document_store._models import DocumentNode, FlowCompletion
-from ai_pipeline_core.documents.types import DocumentSha256, RunScope
+from ai_pipeline_core.documents import DocumentSha256, RunScope
 from ai_pipeline_core.documents.document import Document
 
 

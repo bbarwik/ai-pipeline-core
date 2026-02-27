@@ -8,7 +8,7 @@ import pytest
 from pydantic import BaseModel, Field, RootModel
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._context_vars import _suppress_document_registration
+from ai_pipeline_core.documents._context import _suppress_document_registration
 
 
 class SampleModel(BaseModel, frozen=True):

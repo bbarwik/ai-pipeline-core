@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from ai_pipeline_core.document_store._protocol import set_document_store
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents.context import RunContext, get_run_context, reset_run_context, set_run_context
+from ai_pipeline_core.documents import RunContext, get_run_context, reset_run_context, set_run_context
 from ai_pipeline_core.pipeline import (
     pipeline_flow,
     pipeline_task,

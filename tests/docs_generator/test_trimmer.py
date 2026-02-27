@@ -1,6 +1,6 @@
 from ai_pipeline_core.docs_generator.extractor import ClassInfo
 from ai_pipeline_core.docs_generator.guide_builder import GuideData, render_guide
-from ai_pipeline_core.docs_generator.trimmer import (
+from ai_pipeline_core.docs_generator.guide_builder import (
     MAX_GUIDE_SIZE,
     _measure,
     manage_guide_size,

@@ -1,4 +1,4 @@
-"""Content writing for trace debugging.
+"""Content writing for local debug tracing.
 
 Writes span input/output as YAML files with inline content trimming.
 Large text is trimmed (first/last chars preserved), images are replaced with metadata placeholders,
@@ -17,12 +17,9 @@ from uuid import UUID
 import yaml
 from pydantic import BaseModel, SecretStr
 
-from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._trimming import _CONTENT_TRIM_THRESHOLD, _is_binary_content, _trim_content_string, _trim_document_xml_content
 
 from ._config import TraceDebugConfig
-
-logger = get_pipeline_logger(__name__)
 
 
 class _BlockStringDumper(yaml.SafeDumper):
@@ -34,8 +31,8 @@ def _block_string_representer(dumper: yaml.SafeDumper, data: str) -> yaml.Scalar
         # Strip trailing whitespace from each line — YAML block scalars cannot represent
         # trailing spaces, causing PyYAML to fall back to double-quoted style with \n escapes.
         cleaned = "\n".join(line.rstrip() for line in data.split("\n"))
-        return dumper.represent_scalar("tag:yaml.org,2002:str", cleaned, style="|")
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+        return dumper.represent_scalar("tag:yaml.org,2002:str", cleaned, style="|")  # pyright: ignore[reportUnknownMemberType]
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)  # pyright: ignore[reportUnknownMemberType]
 
 
 _BlockStringDumper.add_representer(str, _block_string_representer)

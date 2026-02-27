@@ -37,7 +37,7 @@ rules:
         - "**/*_protocol.py"
         - "**/base.py"
         - "**/memory.py"
-        - "**/_publishers.py"
+        - "**/_types.py"
 
   # Rule: Protocol separation - Protocols must be in dedicated files
   # Excludes internal protocols (underscore-prefixed) and files that are already dedicated

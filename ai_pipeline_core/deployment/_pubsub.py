@@ -6,13 +6,14 @@ Non-critical events (progress, heartbeat) use single-attempt fire-and-forget.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from google.cloud.pubsub_v1 import PublisherClient
+from google.cloud.pubsub_v1 import PublisherClient  # pyright: ignore[reportMissingTypeStubs]
 
 from ai_pipeline_core.exceptions import PipelineCoreError
 from ai_pipeline_core.logging import get_pipeline_logger
@@ -108,9 +109,9 @@ class PubSubPublisher:
         last_error: Exception | None = None
         for attempt in range(CRITICAL_MAX_RETRIES):
             try:
-                future = self._client.publish(self._topic_path, data, **attributes)
+                future: concurrent.futures.Future[str] = self._client.publish(self._topic_path, data, **attributes)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
                 await asyncio.wait_for(
-                    asyncio.wrap_future(future),
+                    asyncio.wrap_future(future),  # pyright: ignore[reportUnknownArgumentType]
                     timeout=CRITICAL_TIMEOUT_SECONDS,
                 )
                 return
@@ -125,9 +126,9 @@ class PubSubPublisher:
     async def _publish_noncritical(self, data: bytes, attributes: dict[str, str]) -> None:
         """Single-attempt publish for non-critical events."""
         try:
-            future = self._client.publish(self._topic_path, data, **attributes)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            future: concurrent.futures.Future[str] = self._client.publish(self._topic_path, data, **attributes)
             await asyncio.wait_for(
-                asyncio.wrap_future(future),  # pyright: ignore[reportUnknownArgumentType]
+                asyncio.wrap_future(future),
                 timeout=NONCRITICAL_TIMEOUT_SECONDS,
             )
         except Exception as e:

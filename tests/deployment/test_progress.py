@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 
-from ai_pipeline_core.deployment._publishers import MemoryPublisher
+from ai_pipeline_core.deployment._types import MemoryPublisher
 from ai_pipeline_core.deployment._types import ProgressEvent
 from ai_pipeline_core.deployment.contract import FlowStatus
 from ai_pipeline_core.deployment.progress import _ProgressContext, _flow_context, progress_update

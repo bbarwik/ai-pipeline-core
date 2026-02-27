@@ -27,7 +27,7 @@ from ai_pipeline_core.document_store._clickhouse import (
 )
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
-from ai_pipeline_core.documents.types import DocumentSha256, RunScope
+from ai_pipeline_core.documents import DocumentSha256, RunScope
 from ai_pipeline_core.settings import settings
 
 pytestmark = pytest.mark.clickhouse
@@ -95,7 +95,7 @@ class TestDDL:
         assert "stored_at" in DDL_CONTENT
         assert "stored_at" in DDL_INDEX
         assert "bloom_filter" not in DDL_CONTENT
-        assert "bloom_filter" not in DDL_INDEX
+        assert "bloom_filter" in DDL_INDEX  # idx_derived_from for provenance lookups
         assert "bloom_filter" not in DDL_RUN_DOCUMENTS
         assert "ZSTD" in DDL_INDEX
 

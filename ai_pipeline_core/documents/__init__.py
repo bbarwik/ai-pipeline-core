@@ -5,10 +5,17 @@ binary sub-documents, and RunContext/TaskDocumentContext for document lifecycle
 management within pipeline tasks.
 """
 
+from ._context import (
+    DocumentSha256,
+    RunContext,
+    RunScope,
+    TaskDocumentContext,
+    get_run_context,
+    reset_run_context,
+    set_run_context,
+)
 from .attachment import Attachment
-from .context import RunContext, TaskDocumentContext, get_run_context, reset_run_context, set_run_context
 from .document import Document
-from .types import DocumentSha256, RunScope
 from .utils import ensure_extension, find_document, is_document_sha256, replace_extension, sanitize_url
 
 __all__ = [

@@ -7,13 +7,9 @@ import pytest
 from pydantic import ValidationError
 
 from ai_pipeline_core.observability._tracking._models import (
-    DocumentEventRow,
-    DocumentEventType,
     PipelineRunRow,
+    PipelineSpanRow,
     RunStatus,
-    SpanEventRow,
-    SpanType,
-    TrackedSpanRow,
 )
 
 
@@ -24,20 +20,6 @@ class TestEnums:
         assert RunStatus.RUNNING == "running"
         assert RunStatus.COMPLETED == "completed"
         assert RunStatus.FAILED == "failed"
-
-    def test_span_type_values(self):
-        assert SpanType.TASK == "task"
-        assert SpanType.FLOW == "flow"
-        assert SpanType.LLM == "llm"
-        assert SpanType.TRACE == "trace"
-
-    def test_document_event_type_has_llm_message(self):
-        assert DocumentEventType.LLM_MESSAGE == "llm_message"
-        assert DocumentEventType.TASK_INPUT == "task_input"
-        assert DocumentEventType.TASK_OUTPUT == "task_output"
-        assert DocumentEventType.LLM_CONTEXT == "llm_context"
-        assert DocumentEventType.STORE_SAVED == "store_saved"
-        assert DocumentEventType.STORE_SAVE_FAILED == "store_save_failed"
 
 
 class TestRowModels:
@@ -53,65 +35,48 @@ class TestRowModels:
         )
         assert row.total_cost == pytest.approx(0.0)
         assert row.total_tokens == 0
-        assert row.metadata == "{}"
+        assert row.metadata_json == "{}"
         assert row.version == 1
 
-    def test_tracked_span_row_defaults(self):
-        row = TrackedSpanRow(
+    def test_pipeline_span_row_defaults(self):
+        row = PipelineSpanRow(
+            execution_id=uuid4(),
             span_id="abcdef1234567890",
             trace_id="0" * 32,
-            execution_id=uuid4(),
             name="my_task",
-            span_type=SpanType.TASK,
-            status="running",
+            span_type="task",
+            status="completed",
             start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC),
         )
-        assert row.input_document_sha256s == ()
-        assert row.output_document_sha256s == ()
+        assert row.input_doc_sha256s == ()
+        assert row.output_doc_sha256s == ()
+        assert row.cost == 0.0
+        assert row.tokens_cached == 0
 
-    def test_tracked_span_row_mutable_defaults_safe(self):
-        """Verify that list defaults don't share state between instances."""
-        row1 = TrackedSpanRow(
+    def test_pipeline_span_row_tuple_defaults_safe(self):
+        """Verify that tuple defaults don't share state between instances."""
+        row1 = PipelineSpanRow(
+            execution_id=uuid4(),
             span_id="a" * 16,
             trace_id="0" * 32,
-            execution_id=uuid4(),
             name="t1",
-            span_type=SpanType.TASK,
-            status="running",
+            span_type="task",
+            status="completed",
             start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC),
         )
-        row2 = TrackedSpanRow(
+        row2 = PipelineSpanRow(
+            execution_id=uuid4(),
             span_id="b" * 16,
             trace_id="0" * 32,
-            execution_id=uuid4(),
             name="t2",
-            span_type=SpanType.TASK,
-            status="running",
+            span_type="task",
+            status="completed",
             start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC),
         )
-        assert row1.input_document_sha256s == row2.input_document_sha256s == ()
-
-    def test_document_event_row(self):
-        row = DocumentEventRow(
-            event_id=uuid4(),
-            execution_id=uuid4(),
-            document_sha256="a" * 64,
-            span_id="b" * 16,
-            event_type=DocumentEventType.TASK_INPUT,
-            timestamp=datetime.now(UTC),
-        )
-        assert row.metadata == "{}"
-
-    def test_span_event_row(self):
-        row = SpanEventRow(
-            event_id=uuid4(),
-            execution_id=uuid4(),
-            span_id="c" * 16,
-            name="log",
-            timestamp=datetime.now(UTC),
-        )
-        assert row.level is None
-        assert row.attributes == "{}"
+        assert row1.input_doc_sha256s == row2.input_doc_sha256s == ()
 
     def test_row_models_are_frozen(self):
         row = PipelineRunRow(
@@ -123,20 +88,3 @@ class TestRowModels:
         )
         with pytest.raises(ValidationError):
             row.run_id = "changed"  # type: ignore[misc]
-
-    def test_model_copy_with_update(self):
-        """Test ReplacingMergeTree update pattern via model_copy."""
-        row = TrackedSpanRow(
-            span_id="a" * 16,
-            trace_id="0" * 32,
-            execution_id=uuid4(),
-            name="task",
-            span_type=SpanType.TASK,
-            status="completed",
-            start_time=datetime.now(UTC),
-            version=1,
-        )
-        updated = row.model_copy(update={"status": "failed", "version": 2})
-        assert updated.status == "failed"
-        assert updated.version == 2
-        assert row.status == "completed"  # original unchanged

@@ -155,23 +155,27 @@ class TestInitReplayTracing:
     def test_creates_trace_dir(self, tmp_path: Path) -> None:
         """_init_replay_tracing creates a .trace/ directory inside the output dir."""
         output_dir = tmp_path / "replay_out"
-        processor = _init_replay_tracing(output_dir)
+        result = _init_replay_tracing(output_dir)
 
         assert (output_dir / ".trace").is_dir()
-        if processor is not None:
+        if result is not None:
+            processor, fs_backend = result
             processor.shutdown()
+            fs_backend.shutdown()
 
-    def test_returns_processor(self, tmp_path: Path) -> None:
-        """Returns a LocalDebugSpanProcessor (or None if no TracerProvider)."""
-        from ai_pipeline_core.observability._debug import LocalDebugSpanProcessor
+    def test_returns_processor_and_backend(self, tmp_path: Path) -> None:
+        """Returns a (PipelineSpanProcessor, FilesystemBackend) tuple or None."""
+        from ai_pipeline_core.observability._tracking._processor import PipelineSpanProcessor
 
         output_dir = tmp_path / "replay_out"
-        processor = _init_replay_tracing(output_dir)
+        result = _init_replay_tracing(output_dir)
 
         # In test environment we may or may not have a real TracerProvider
-        assert processor is None or isinstance(processor, LocalDebugSpanProcessor)
-        if processor is not None:
+        if result is not None:
+            processor, fs_backend = result
+            assert isinstance(processor, PipelineSpanProcessor)
             processor.shutdown()
+            fs_backend.shutdown()
 
     def test_clears_existing_trace_dir(self, tmp_path: Path) -> None:
         """Existing .trace/ contents are cleared on re-init."""
@@ -180,12 +184,14 @@ class TestInitReplayTracing:
         trace_dir.mkdir(parents=True)
         (trace_dir / "old_file.txt").write_text("stale")
 
-        processor = _init_replay_tracing(output_dir)
+        result = _init_replay_tracing(output_dir)
 
         assert not (trace_dir / "old_file.txt").exists()
         assert trace_dir.is_dir()
-        if processor is not None:
+        if result is not None:
+            processor, fs_backend = result
             processor.shutdown()
+            fs_backend.shutdown()
 
 
 class TestCmdRunWithTracing:

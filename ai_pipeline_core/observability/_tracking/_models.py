@@ -4,9 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from ai_pipeline_core.documents.types import DocumentSha256
+from pydantic import BaseModel, ConfigDict
 
 
 class RunStatus(StrEnum):
@@ -17,40 +15,10 @@ class RunStatus(StrEnum):
     FAILED = "failed"
 
 
-class SpanType(StrEnum):
-    """Span type classification."""
-
-    TASK = "task"
-    FLOW = "flow"
-    LLM = "llm"
-    TRACE = "trace"
-
-
-class DocumentEventType(StrEnum):
-    """Document lifecycle event types."""
-
-    TASK_INPUT = "task_input"
-    TASK_OUTPUT = "task_output"
-    FLOW_INPUT = "flow_input"
-    FLOW_OUTPUT = "flow_output"
-    LLM_CONTEXT = "llm_context"
-    LLM_MESSAGE = "llm_message"
-    STORE_SAVED = "store_saved"
-    STORE_SAVE_FAILED = "store_save_failed"
-
-
 # --- Table names ---
 
 TABLE_PIPELINE_RUNS = "pipeline_runs"
-TABLE_TRACKED_SPANS = "tracked_spans"
-TABLE_DOCUMENT_EVENTS = "document_events"
-TABLE_SPAN_EVENTS = "span_events"
-TABLE_TRACE_SPAN_CONTENT = "trace_span_content"
-
-# --- OTel span attribute names for document lineage ---
-
-ATTR_INPUT_DOCUMENT_SHA256S = "pipeline.input_document_sha256s"
-ATTR_OUTPUT_DOCUMENT_SHA256S = "pipeline.output_document_sha256s"
+TABLE_PIPELINE_SPANS = "pipeline_spans"
 
 
 # --- Row models ---
@@ -70,74 +38,54 @@ class PipelineRunRow(BaseModel):
     end_time: datetime | None = None
     total_cost: float = 0.0
     total_tokens: int = 0
-    metadata: str = "{}"
+    metadata_json: str = "{}"
     version: int = 1
 
 
-class TrackedSpanRow(BaseModel):
-    """Row model for tracked_spans table."""
+class PipelineSpanRow(BaseModel):
+    """Row model for pipeline_spans table. Written once on span end."""
 
     model_config = ConfigDict(frozen=True)
 
+    # Identity
+    execution_id: UUID
     span_id: str
     trace_id: str
-    execution_id: UUID
     parent_span_id: str | None = None
+
+    # Denormalized run context
+    run_id: str = ""
+    flow_name: str = ""
+    run_scope: str = ""
+
+    # Classification
     name: str
-    span_type: SpanType
-    status: str
+    span_type: str  # task | flow | llm | trace
+    status: str  # completed | failed
+
+    # Timing
     start_time: datetime
-    end_time: datetime | None = None
+    end_time: datetime
     duration_ms: int = 0
+    span_order: int = 0
+
+    # LLM metrics
     cost: float = 0.0
     tokens_input: int = 0
     tokens_output: int = 0
+    tokens_cached: int = 0
     llm_model: str | None = None
-    input_document_sha256s: tuple[DocumentSha256, ...] = Field(default_factory=tuple)
-    output_document_sha256s: tuple[DocumentSha256, ...] = Field(default_factory=tuple)
-    version: int = 1
 
+    # Error
+    error_message: str = ""
 
-class DocumentEventRow(BaseModel):
-    """Row model for document_events table."""
-
-    model_config = ConfigDict(frozen=True)
-
-    event_id: UUID
-    execution_id: UUID
-    document_sha256: DocumentSha256
-    span_id: str
-    event_type: DocumentEventType
-    timestamp: datetime
-    metadata: str = "{}"
-
-
-class SpanEventRow(BaseModel):
-    """Row model for span_events table."""
-
-    model_config = ConfigDict(frozen=True)
-
-    event_id: UUID
-    execution_id: UUID
-    span_id: str
-    name: str
-    timestamp: datetime
-    attributes: str = "{}"
-    level: str | None = None
-
-
-class TraceSpanContentRow(BaseModel):
-    """Row model for trace_span_content table."""
-
-    model_config = ConfigDict(frozen=True)
-
-    span_id: str
-    trace_id: str
-    execution_id: UUID
-    span_order: int
+    # Content (ZSTD-compressed in ClickHouse)
     input_json: str = ""
     output_json: str = ""
     replay_payload: str = ""
     attributes_json: str = "{}"
     events_json: str = "[]"
-    stored_at: datetime
+
+    # Document lineage
+    input_doc_sha256s: tuple[str, ...] = ()
+    output_doc_sha256s: tuple[str, ...] = ()

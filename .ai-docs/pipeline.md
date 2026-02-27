@@ -2,7 +2,7 @@
 # CLASSES: LimitKind, PipelineLimit, FlowOptions
 # DEPENDS: BaseSettings, StrEnum
 # PURPOSE: Pipeline framework primitives — decorators, flow options, and concurrency limits.
-# VERSION: 0.11.1
+# VERSION: 0.12.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -730,7 +730,7 @@ async def test_pipeline_flow_deduplicates_returned_documents(prefect_test_fixtur
 @pytest.mark.asyncio
 async def test_pipeline_flow_preserves_existing_run_context(prefect_test_fixture, memory_store, run_context):
     """Test that pipeline_flow does not override RunContext set by deployment."""
-    from ai_pipeline_core.documents.context import get_run_context
+    from ai_pipeline_core.documents import get_run_context
 
     captured_ctx = None
 
@@ -791,7 +791,7 @@ async def test_pipeline_flow_saves_returned_documents(prefect_test_fixture, memo
 @pytest.mark.asyncio
 async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture, memory_store):
     """Test that pipeline_flow sets RunContext if none exists."""
-    from ai_pipeline_core.documents.context import get_run_context
+    from ai_pipeline_core.documents import get_run_context
 
     captured_ctx = None
 

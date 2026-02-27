@@ -12,13 +12,13 @@ Exports:
 """
 
 from .client import generate, generate_structured
-from .model_options import ModelOptions
 from .model_response import Citation, ModelResponse
 from .types import (
     ContentPart,
     CoreMessage,
     ImageContent,
     ModelName,
+    ModelOptions,
     PDFContent,
     Role,
     TextContent,
