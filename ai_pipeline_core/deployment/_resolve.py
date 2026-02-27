@@ -12,7 +12,7 @@ from typing import Any, ClassVar, Self, cast
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ai_pipeline_core.documents import Document, DocumentSha256
 from ai_pipeline_core.documents.attachment import Attachment
@@ -36,8 +36,8 @@ class _InputBase(BaseModel):
     Subclasses must define STRIP_KEYS and have `url` and `content` fields.
     """
 
-    content: str | None = None
-    url: str = ""
+    content: str | None = Field(default=None, description="Inline content string. Mutually exclusive with 'url'.")
+    url: str = Field(default="", description="URL to fetch content from. Supported schemes: https://, gs://. Mutually exclusive with 'content'.")
 
     STRIP_KEYS: ClassVar[frozenset[str]] = frozenset()
 
@@ -64,8 +64,8 @@ class _InputBase(BaseModel):
 class AttachmentInput(_InputBase):
     """Attachment provided to a deployment — inline content or a URL reference."""
 
-    name: str = ""
-    description: str | None = None
+    name: str = Field(default="", description="Attachment filename. Required for inline content.")
+    description: str | None = Field(default=None, description="Human-readable description of the attachment.")
 
     STRIP_KEYS: ClassVar[frozenset[str]] = frozenset({"mime_type", "size"})
 
@@ -73,13 +73,13 @@ class AttachmentInput(_InputBase):
 class DocumentInput(_InputBase):
     """Document provided to a deployment — inline content or a URL reference."""
 
-    name: str = ""
-    description: str = ""
-    class_name: str = ""
+    name: str = Field(default="", description="Document filename (e.g. 'task.md'). Auto-derived from URL path if omitted.")
+    description: str = Field(default="", description="Human-readable description of this document.")
+    class_name: str = Field(default="", description="Document type class name. Required when the pipeline accepts multiple input types.")
 
-    derived_from: tuple[str, ...] = ()
-    triggered_by: tuple[str, ...] = ()
-    attachments: tuple[AttachmentInput, ...] = ()
+    derived_from: tuple[str, ...] = Field(default=(), description="Content provenance: SHA256 hashes of source documents or URIs.")
+    triggered_by: tuple[str, ...] = Field(default=(), description="Causal provenance: SHA256 hashes of triggering documents.")
+    attachments: tuple[AttachmentInput, ...] = Field(default=(), description="Secondary content attached to this document.")
 
     STRIP_KEYS: ClassVar[frozenset[str]] = frozenset({
         "id",

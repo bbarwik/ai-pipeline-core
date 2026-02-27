@@ -1,7 +1,7 @@
 # MODULE: exceptions
 # CLASSES: PipelineCoreError, DocumentValidationError, DocumentSizeError, DocumentNameError, LLMError, OutputDegenerationError
 # DEPENDS: Exception
-# VERSION: 0.12.0
+# VERSION: 0.12.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

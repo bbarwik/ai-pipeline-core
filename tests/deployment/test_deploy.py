@@ -265,6 +265,58 @@ class TestDeployParameterSchemaPopulation:
         assert "error" in result_props
         assert "report" in result_props
 
+    async def test_input_document_types_injected(self):
+        """_InputDocumentTypes must list the first flow's accepted document types."""
+        deployment = await _capture_deployed_runner()
+        schema = deployment._parameter_openapi_schema
+        assert "_InputDocumentTypes" in schema.definitions, f"_InputDocumentTypes missing: {list(schema.definitions.keys())}"
+        items = schema.definitions["_InputDocumentTypes"]
+        class_names = [item["class_name"] for item in items]
+        assert "_DeployInputDoc" in class_names
+
+    async def test_input_document_types_have_descriptions(self):
+        """Input document type entries must include docstring descriptions."""
+        deployment = await _capture_deployed_runner()
+        items = deployment._parameter_openapi_schema.definitions["_InputDocumentTypes"]
+        for item in items:
+            assert "description" in item, f"Missing description for {item.get('class_name')}"
+            assert item["description"], f"Empty description for {item['class_name']}"
+
+    async def test_deployment_meta_injected(self):
+        """_DeploymentMeta must contain flow_chain and all_document_types."""
+        deployment = await _capture_deployed_runner()
+        schema = deployment._parameter_openapi_schema
+        assert "_DeploymentMeta" in schema.definitions, f"_DeploymentMeta missing: {list(schema.definitions.keys())}"
+        meta = schema.definitions["_DeploymentMeta"]
+        assert "all_document_types" in meta
+        assert "flow_chain" in meta
+        chain = meta["flow_chain"]
+        assert len(chain) == 1
+        assert chain[0]["input_types"] == ["_DeployInputDoc"]
+        assert chain[0]["output_types"] == ["_DeployOutputDoc"]
+
+
+class TestDocumentInputFieldDescriptions:
+    """DocumentInput and AttachmentInput fields must have descriptions in JSON schema."""
+
+    def test_document_input_fields_have_descriptions(self):
+        """All DocumentInput fields must have a description in JSON schema output."""
+        from ai_pipeline_core.deployment._resolve import DocumentInput
+
+        schema = DocumentInput.model_json_schema()
+        props = schema["properties"]
+        for field_name in ("content", "url", "name", "description", "class_name", "derived_from", "triggered_by", "attachments"):
+            assert "description" in props[field_name], f"DocumentInput.{field_name} missing description"
+
+    def test_attachment_input_fields_have_descriptions(self):
+        """All AttachmentInput fields must have a description in JSON schema output."""
+        from ai_pipeline_core.deployment._resolve import AttachmentInput
+
+        schema = AttachmentInput.model_json_schema()
+        props = schema["properties"]
+        for field_name in ("content", "url", "name", "description"):
+            assert "description" in props[field_name], f"AttachmentInput.{field_name} missing description"
+
 
 def _make_deployer(**config_overrides: Any) -> Deployer:
     """Create a Deployer with mocked config (no filesystem/settings dependency)."""

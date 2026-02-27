@@ -805,6 +805,35 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
         run_cli_for_deployment(self, initializer, trace_name, cli_mixin)
 
+    def _build_integration_meta(self) -> dict[str, Any]:
+        """Build integration metadata for schema enrichment at deploy time.
+
+        Collected once in as_prefect_flow() and injected into Prefect's
+        parameter_openapi_schema.definitions by the deploy script.
+        """
+        first_flow = self.flows[0]
+        input_types: list[type[Document]] = getattr(first_flow, "input_document_types", [])
+
+        input_document_types = [{"class_name": t.__name__, "description": (t.__doc__ or "").strip()} for t in input_types]
+
+        all_document_types = [{"class_name": t.__name__, "description": (t.__doc__ or "").strip()} for t in self._all_document_types()]
+
+        flow_chain = [
+            {
+                "name": getattr(flow_fn, "name", getattr(flow_fn, "__name__", "unknown")),
+                "input_types": [t.__name__ for t in getattr(flow_fn, "input_document_types", [])],
+                "output_types": [t.__name__ for t in getattr(flow_fn, "output_document_types", [])],
+                "estimated_minutes": getattr(flow_fn, "estimated_minutes", 1),
+            }
+            for flow_fn in self.flows
+        ]
+
+        return {
+            "input_document_types": input_document_types,
+            "all_document_types": all_document_types,
+            "flow_chain": flow_chain,
+        }
+
     @final
     def as_prefect_flow(self) -> Callable[..., Any]:
         """Generate a Prefect flow for production deployment via ``ai-pipeline-deploy`` CLI."""
@@ -863,6 +892,9 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         # Override generic annotations with concrete types for Prefect parameter schema generation
         _deployment_flow.__annotations__["options"] = self.options_type
         _deployment_flow.__annotations__["return"] = self.result_type
+
+        # Attach integration metadata for deploy-time schema enrichment
+        _deployment_flow._integration_meta = self._build_integration_meta()  # type: ignore[attr-defined]
 
         return flow(
             name=self.name,

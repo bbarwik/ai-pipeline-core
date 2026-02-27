@@ -339,6 +339,15 @@ class _Deployer:
         if return_type is not None and hasattr(return_type, "model_json_schema"):
             deployment._parameter_openapi_schema.definitions["_ResultSchema"] = return_type.model_json_schema()
 
+        # Inject integration metadata for the integration-schema middleware endpoint
+        integration_meta: dict[str, Any] | None = getattr(flow.fn, "_integration_meta", None)  # pyright: ignore[reportPossiblyUnboundVariable]
+        if integration_meta is not None:
+            deployment._parameter_openapi_schema.definitions["_InputDocumentTypes"] = integration_meta["input_document_types"]
+            deployment._parameter_openapi_schema.definitions["_DeploymentMeta"] = {
+                "all_document_types": integration_meta["all_document_types"],
+                "flow_chain": integration_meta["flow_chain"],
+            }
+
         async with get_client() as client:
             try:
                 work_pool = await client.read_work_pool(self.config["work_pool"])

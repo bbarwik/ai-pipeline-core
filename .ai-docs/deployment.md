@@ -2,7 +2,7 @@
 # CLASSES: DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment, StartedEvent, ProgressEvent, CompletedEvent, FailedEvent, ResultPublisher, NoopPublisher, MemoryPublisher
 # DEPENDS: BaseModel, Generic, Protocol, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.12.0
+# VERSION: 0.12.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -167,6 +167,9 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         # Override generic annotations with concrete types for Prefect parameter schema generation
         _deployment_flow.__annotations__["options"] = self.options_type
         _deployment_flow.__annotations__["return"] = self.result_type
+
+        # Attach integration metadata for deploy-time schema enrichment
+        _deployment_flow._integration_meta = self._build_integration_meta()  # type: ignore[attr-defined]
 
         return flow(
             name=self.name,
