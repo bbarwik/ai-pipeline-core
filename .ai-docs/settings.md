@@ -1,7 +1,7 @@
 # MODULE: settings
 # CLASSES: Settings
 # DEPENDS: BaseSettings
-# VERSION: 0.12.3
+# VERSION: 0.12.4
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -15,6 +15,9 @@ from ai_pipeline_core import Settings
 ```python
 class Settings(BaseSettings):
     """Base configuration for AI Pipeline applications.
+
+Fields map to environment variables via Pydantic BaseSettings
+(e.g. ``clickhouse_host`` → ``CLICKHOUSE_HOST``). Uses ``.env`` file when present.
 
 Inherit to add application-specific fields::
 
@@ -91,30 +94,6 @@ def test_partial_configuration(self):
         assert s.openai_base_url == ""  # Default
 ```
 
-**Env file loading** (`tests/test_settings.py:62`)
-
-```python
-def test_env_file_loading(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test loading from .env file."""
-    # Create a temporary .env file
-    env_file = tmp_path / ".env"
-    env_file.write_text("""
-OPENAI_API_KEY=from-env-file
-PREFECT_API_URL=http://localhost:4200
-LMNR_PROJECT_API_KEY=lmnr-from-file
-""")
-
-    # Change to temp directory
-    monkeypatch.chdir(tmp_path)
-
-    # Create new Settings instance (will look for .env in current dir)
-    s = Settings()
-
-    assert s.openai_api_key == "from-env-file"
-    assert s.prefect_api_url == "http://localhost:4200"
-    assert s.lmnr_project_api_key == "lmnr-from-file"
-```
-
 **Env variable loading** (`tests/test_settings.py:26`)
 
 ```python
@@ -157,6 +136,30 @@ def test_extra_env_ignored(self):
     # Unknown vars are not added as attributes
     assert not hasattr(s, "unknown_setting")
     assert not hasattr(s, "random_var")
+```
+
+**Env file loading** (`tests/test_settings.py:62`)
+
+```python
+def test_env_file_loading(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test loading from .env file."""
+    # Create a temporary .env file
+    env_file = tmp_path / ".env"
+    env_file.write_text("""
+OPENAI_API_KEY=from-env-file
+PREFECT_API_URL=http://localhost:4200
+LMNR_PROJECT_API_KEY=lmnr-from-file
+""")
+
+    # Change to temp directory
+    monkeypatch.chdir(tmp_path)
+
+    # Create new Settings instance (will look for .env in current dir)
+    s = Settings()
+
+    assert s.openai_api_key == "from-env-file"
+    assert s.prefect_api_url == "http://localhost:4200"
+    assert s.lmnr_project_api_key == "lmnr-from-file"
 ```
 
 **Env var overrides env file** (`tests/test_settings.py:83`)

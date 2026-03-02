@@ -49,9 +49,9 @@ _SUBSTITUTOR_INSTRUCTION = (
 logger = get_pipeline_logger(__name__)
 
 # Document name sentinel for system prompt documents — treated as role=SYSTEM in messages
-SYSTEM_PROMPT_DOCUMENT_NAME = "system_prompt"
+_SYSTEM_PROMPT_DOCUMENT_NAME = "system_prompt"
 
-CHARS_PER_TOKEN = 4
+_CHARS_PER_TOKEN = 4
 
 T = TypeVar("T", default=None)
 U = TypeVar("U", bound=BaseModel)
@@ -344,7 +344,7 @@ class Conversation(BaseModel, Generic[T]):
             elif isinstance(item, _UserMessage):
                 core_messages.append(CoreMessage(role=Role.USER, content=item.text))
             elif isinstance(item, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
-                if item.name == SYSTEM_PROMPT_DOCUMENT_NAME:
+                if item.name == _SYSTEM_PROMPT_DOCUMENT_NAME:
                     core_messages.append(CoreMessage(role=Role.SYSTEM, content=item.text))
                 else:
                     parts = _document_to_content_parts(item, self.model)
@@ -706,7 +706,7 @@ class Conversation(BaseModel, Generic[T]):
         """Return NEW Conversation with documents added to the cacheable context prefix.
 
         Always set context before the first send() — adding context mid-conversation
-        changes the prefix and invalidates existing cache.
+        changes the prefix, so subsequent send() calls will not hit the cache from prior configurations.
         """
         return self.model_copy(update={"context": self.context + docs})
 
@@ -737,19 +737,19 @@ class Conversation(BaseModel, Generic[T]):
         total = 0
         for item in chain(self.context, self.messages):
             if isinstance(item, ModelResponse):
-                total += len(item.content) // CHARS_PER_TOKEN
+                total += len(item.content) // _CHARS_PER_TOKEN
                 if reasoning := item.reasoning_content:
-                    total += len(reasoning) // CHARS_PER_TOKEN
+                    total += len(reasoning) // _CHARS_PER_TOKEN
             elif isinstance(item, (_UserMessage, _AssistantMessage)):
-                total += len(item.text) // CHARS_PER_TOKEN
+                total += len(item.text) // _CHARS_PER_TOKEN
             elif isinstance(item, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
                 if item.is_text:
-                    total += len(item.content) // CHARS_PER_TOKEN
+                    total += len(item.content) // _CHARS_PER_TOKEN
                 elif item.is_image or item.is_pdf:
                     total += TOKENS_PER_IMAGE
                 for att in item.attachments:
                     if att.is_text:
-                        total += len(att.content) // CHARS_PER_TOKEN
+                        total += len(att.content) // _CHARS_PER_TOKEN
                     elif att.is_image or att.is_pdf:
                         total += TOKENS_PER_IMAGE
         return total

@@ -1,15 +1,15 @@
 # MODULE: deployment
-# CLASSES: DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment, StartedEvent, ProgressEvent, CompletedEvent, FailedEvent, ResultPublisher, NoopPublisher, MemoryPublisher
+# CLASSES: DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment, OutputDocument, StartedEvent, ProgressEvent, CompletedEvent, FailedEvent, ResultPublisher, NoopPublisher, MemoryPublisher
 # DEPENDS: BaseModel, Generic, Protocol, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.12.3
+# VERSION: 0.12.4
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
 from ai_pipeline_core import DeploymentResult, PipelineDeployment, RemoteDeployment, run_remote_deployment
-from ai_pipeline_core.deployment import CompletedEvent, CompletedRun, DeploymentResultData, FailedEvent, FailedRun, FlowStatus, MemoryPublisher, NoopPublisher, PendingRun, ProgressCallback, ProgressEvent, ProgressRun, ResultPublisher, RunResponse, RunState, StartedEvent, progress_update
+from ai_pipeline_core.deployment import CompletedEvent, CompletedRun, DeploymentResultData, FailedEvent, FailedRun, FlowStatus, MemoryPublisher, NoopPublisher, OutputDocument, PendingRun, ProgressCallback, ProgressEvent, ProgressRun, ResultPublisher, RunResponse, RunState, StartedEvent, progress_update
 ```
 
 ## Types & Constants
@@ -24,24 +24,6 @@ ProgressCallback = Callable[[float, str], Awaitable[None]]
 
 ```
 
-## Internal Types
-
-```python
-class _OutputDocument(BaseModel):
-    """Document metadata in deployment results. Binary content is None."""
-    sha256: DocumentSha256
-    name: str
-    class_name: str
-    mime_type: str
-    size: int
-    description: str = ''
-    content: str | None = None
-    attachments: tuple[OutputAttachment, ...] = ()
-    model_config = ConfigDict(frozen=True)
-
-
-```
-
 ## Public API
 
 ```python
@@ -49,7 +31,7 @@ class DeploymentResult(BaseModel):
     """Base class for deployment results."""
     success: bool
     error: str | None = None
-    documents: tuple[_OutputDocument, ...] = ()
+    documents: tuple[OutputDocument, ...] = ()
     model_config = ConfigDict(frozen=True)
 
 
@@ -63,7 +45,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
-    pubsub_service_type: ClassVar[str] = ''  # Pub/Sub source identifier; requires PUBSUB_PROJECT_ID + PUBSUB_TOPIC_ID. Empty = NoopPublisher.
+    pubsub_service_type: ClassVar[str] = ''
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
@@ -183,14 +165,25 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             result_serializer="json",
         )(_deployment_flow)
 
+    def build_partial_result(self, run_id: str, documents: list[Document], options: TOptions) -> TResult:
+        """Build a result for partial pipeline runs (--start/--end that don't reach the last step).
+
+        Override this method to customize partial run results. Default delegates to build_result.
+        """
+        return self.build_result(run_id, documents, options)
+
     @staticmethod
     @abstractmethod
     def build_result(run_id: str, documents: list[Document], options: TOptions) -> TResult:
         """Extract typed result from pipeline documents loaded from DocumentStore.
 
         Called for both full runs and partial runs (--start/--end). For partial runs,
-        _build_partial_result() delegates here by default — override _build_partial_result()
+        build_partial_result() delegates here by default — override build_partial_result()
         to customize partial run results.
+
+        The base ``documents`` field on ``DeploymentResult`` is populated automatically
+        by the framework after this method returns — only set fields defined on your
+        custom result subclass.
         """
         ...
 
@@ -438,7 +431,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             is_partial_run = end_step < total_steps
             if is_partial_run:
                 logger.info("Partial run (steps %d-%d of %d) — skipping build_result", start_step, end_step, total_steps)
-                result = self._build_partial_result(run_id, all_docs, options)
+                result = self.build_partial_result(run_id, all_docs, options)
             else:
                 result = self.build_result(run_id, all_docs, options)
 
@@ -645,7 +638,7 @@ Mirror type contract:
     The client defines local Document subclasses ('mirror types') whose class_name must
     match the remote pipeline's document types exactly. When the remote returns documents,
     they are deserialized using the local mirror types. If class names don't match,
-    documents fail to deserialize.
+    documents are silently skipped with a warning log.
 
     Tasks that return mirror-typed remote results should use persist_result=False
     to avoid polluting the DocumentStore with unknown class_name entries."""
@@ -733,6 +726,19 @@ Mirror type contract:
                 ch_backend.shutdown()
             if debug_backend:
                 debug_backend.shutdown()
+
+
+class OutputDocument(BaseModel):
+    """Document metadata in deployment results. Binary content is None."""
+    sha256: DocumentSha256
+    name: str
+    class_name: str
+    mime_type: str
+    size: int
+    description: str = ''
+    content: str | None = None
+    attachments: tuple[OutputAttachment, ...] = ()
+    model_config = ConfigDict(frozen=True)
 
 
 @dataclass(frozen=True, slots=True)

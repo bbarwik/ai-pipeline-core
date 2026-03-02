@@ -133,6 +133,7 @@ async def pipeline_concurrency(
 
     Proceeds unthrottled when Prefect is unavailable.
     Timeout always raises AcquireConcurrencySlotTimeoutError.
+    Logs a warning if slot acquisition takes longer than 120 seconds.
     """
     state = _limits_state.get()
     cfg = state.limits.get(name)

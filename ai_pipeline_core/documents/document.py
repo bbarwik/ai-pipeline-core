@@ -39,8 +39,9 @@ from typing_extensions import TypeVar as TypeVarWithDefault
 from ai_pipeline_core._llm_core.types import TOKENS_PER_IMAGE
 from ai_pipeline_core.documents._context import DocumentSha256, _suppress_document_registration, get_task_context, is_registration_suppressed
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
-from ai_pipeline_core.documents.utils import DATA_URI_PATTERN, is_document_sha256
+from ai_pipeline_core.documents.utils import _DATA_URI_PATTERN, is_document_sha256
 from ai_pipeline_core.exceptions import DocumentNameError, DocumentSizeError
+from ai_pipeline_core.logging import get_pipeline_logger
 
 from ._mime_type import (
     detect_mime_type,
@@ -55,9 +56,13 @@ __all__ = [
     "Document",
 ]
 
+logger = get_pipeline_logger(__name__)
+
 TModel = TypeVar("TModel", bound=BaseModel)
 TDocument = TypeVar("TDocument", bound="Document")
 TContent = TypeVarWithDefault("TContent", bound=BaseModel, default=Any)
+
+_STRUCTURED_EXTENSIONS: frozenset[str] = frozenset({".json", ".yaml", ".yml"})
 
 # Registry of class __name__ -> Document subclass for collision detection.
 # Only non-test classes are registered. Test modules (tests.*, conftest, etc.) are skipped.
@@ -79,6 +84,42 @@ def _is_test_module(cls: type) -> bool:
     module = getattr(cls, "__module__", "") or ""
     parts = module.split(".")
     return any(p == "tests" or p.startswith("test_") or p == "conftest" for p in parts)
+
+
+def _warn_content_type_issues(cls: type["Document"]) -> None:
+    """Warn about content type misconfigurations on a Document subclass (non-test only)."""
+    if _is_test_module(cls):
+        return
+
+    # Colocation: content model should live in same module as the Document subclass
+    ct = cls._content_type
+    if ct is not None and ct.__module__ != cls.__module__:
+        logger.warning(
+            "Document subclass '%s' and its content model '%s' should be defined in the same module. "
+            "'%s' is in '%s' but '%s' is in '%s'. "
+            "Move '%s' to '%s' or move '%s' to '%s'.",
+            cls.__name__,
+            ct.__name__,
+            cls.__name__,
+            cls.__module__,
+            ct.__name__,
+            ct.__module__,
+            ct.__name__,
+            cls.__module__,
+            cls.__name__,
+            ct.__module__,
+        )
+
+    # Structured-only FILES without Document[T]: likely missing generic parameter
+    if ct is None:
+        expected = cls.get_expected_files()
+        if expected and all(any(f.endswith(ext) for ext in _STRUCTURED_EXTENSIONS) for f in expected):
+            logger.warning(
+                "Document subclass '%s' has structured-only FILES (%s) but no Document[T] generic parameter. "
+                "Declare Document[ModelClass] for creation-time schema validation and typed .parsed access.",
+                cls.__name__,
+                ", ".join(expected),
+            )
 
 
 @functools.cache
@@ -202,6 +243,8 @@ class Document(BaseModel, Generic[TContent]):
             files_attr = cls.__dict__["FILES"]
             if not isinstance(files_attr, type) or not issubclass(files_attr, StrEnum):
                 raise TypeError(f"Document subclass '{cls.__name__}'.FILES must be an Enum of string values")
+
+        _warn_content_type_issues(cls)
 
         # Check that the Document's model_fields only contain the allowed fields
         # It prevents AI models from adding additional fields to documents
@@ -343,6 +386,13 @@ class Document(BaseModel, Generic[TContent]):
             ctx = get_task_context()
             if ctx is not None:
                 ctx.created.add(self.sha256)
+                if ctx.scope_kind == "flow":
+                    logger.warning(
+                        "%s created directly in @pipeline_flow body. "
+                        "Wrap document creation in a @pipeline_task for proper "
+                        "lifecycle management (tracing, persistence, retries).",
+                        type(self).__name__,
+                    )
 
     name: str
     description: str | None = None
@@ -454,7 +504,7 @@ class Document(BaseModel, Generic[TContent]):
             # Data URIs are produced by serialize_content() for binary content only (failed UTF-8 decode).
             # Text content starting with "data:<mime>;base64," would be misinterpreted here, but this is
             # accepted by design — real documents never start with a bare data URI on the first byte.
-            if DATA_URI_PATTERN.match(v):
+            if _DATA_URI_PATTERN.match(v):
                 _, payload = v.split(",", 1)
                 v = base64.b64decode(payload, validate=True)
             else:

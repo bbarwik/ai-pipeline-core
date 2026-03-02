@@ -27,7 +27,7 @@ from ai_pipeline_core.observability._debug import FilesystemBackend, TraceDebugC
 from ai_pipeline_core.observability._initialization import register_pipeline_processor
 from ai_pipeline_core.observability._tracking._processor import PipelineSpanProcessor
 
-from .types import ConversationReplay, FlowReplay, TaskReplay, infer_store_base
+from .types import ConversationReplay, FlowReplay, TaskReplay, _infer_store_base
 
 logger = get_pipeline_logger(__name__)
 
@@ -290,7 +290,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         store_base = Path(args.store).resolve()
     else:
         try:
-            store_base = infer_store_base(replay_file)
+            store_base = _infer_store_base(replay_file)
         except FileNotFoundError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1

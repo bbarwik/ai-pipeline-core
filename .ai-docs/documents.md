@@ -2,20 +2,19 @@
 # CLASSES: Attachment, Document, RunContext, TaskDocumentContext
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.12.3
+# VERSION: 0.12.4
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import Attachment, Document, DocumentSha256, RunContext, RunScope, TaskDocumentContext, ensure_extension, find_document, get_run_context, is_document_sha256, replace_extension, reset_run_context, sanitize_url, set_run_context
+from ai_pipeline_core import Attachment, Document, DocumentSha256, RunContext, RunScope, ensure_extension, find_document, get_run_context, is_document_sha256, replace_extension, reset_run_context, sanitize_url, set_run_context
+from ai_pipeline_core.documents import TaskDocumentContext
 ```
 
 ## Types & Constants
 
 ```python
-DATA_URI_PATTERN = re.compile(r"^data:[a-zA-Z0-9.+/-]+;base64,")
-
 DocumentSha256 = NewType("DocumentSha256", str)
 
 RunScope = NewType("RunScope", str)
@@ -78,7 +77,7 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
         if isinstance(v, str):
             # Data URIs are produced by serialize_content() for binary content only (failed UTF-8 decode).
             # Text starting with "data:<mime>;base64," would be misinterpreted, accepted by design.
-            if DATA_URI_PATTERN.match(v):
+            if _DATA_URI_PATTERN.match(v):
                 _, payload = v.split(",", 1)
                 return base64.b64decode(payload, validate=True)
             return v.encode("utf-8")
@@ -168,6 +167,13 @@ Attachments:
             ctx = get_task_context()
             if ctx is not None:
                 ctx.created.add(self.sha256)
+                if ctx.scope_kind == "flow":
+                    logger.warning(
+                        "%s created directly in @pipeline_flow body. "
+                        "Wrap document creation in a @pipeline_task for proper "
+                        "lifecycle management (tracing, persistence, retries).",
+                        type(self).__name__,
+                    )
 
     @property
     def content_documents(self) -> tuple[str, ...]:
@@ -364,7 +370,7 @@ Attachments:
             # Data URIs are produced by serialize_content() for binary content only (failed UTF-8 decode).
             # Text content starting with "data:<mime>;base64," would be misinterpreted here, but this is
             # accepted by design — real documents never start with a bare data URI on the first byte.
-            if DATA_URI_PATTERN.match(v):
+            if _DATA_URI_PATTERN.match(v):
                 _, payload = v.split(",", 1)
                 v = base64.b64decode(payload, validate=True)
             else:
@@ -478,6 +484,8 @@ Attachments:
             files_attr = cls.__dict__["FILES"]
             if not isinstance(files_attr, type) or not issubclass(files_attr, StrEnum):
                 raise TypeError(f"Document subclass '{cls.__name__}'.FILES must be an Enum of string values")
+
+        _warn_content_type_issues(cls)
 
         # Check that the Document's model_fields only contain the allowed fields
         # It prevents AI models from adding additional fields to documents

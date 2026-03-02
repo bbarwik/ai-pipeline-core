@@ -14,7 +14,7 @@ from ._mime_type import (
     is_pdf_mime_type,
     is_text_mime_type,
 )
-from .utils import DATA_URI_PATTERN
+from .utils import _DATA_URI_PATTERN
 
 __all__ = [
     "Attachment",
@@ -77,7 +77,7 @@ class Attachment(BaseModel):
         if isinstance(v, str):
             # Data URIs are produced by serialize_content() for binary content only (failed UTF-8 decode).
             # Text starting with "data:<mime>;base64," would be misinterpreted, accepted by design.
-            if DATA_URI_PATTERN.match(v):
+            if _DATA_URI_PATTERN.match(v):
                 _, payload = v.split(",", 1)
                 return base64.b64decode(payload, validate=True)
             return v.encode("utf-8")

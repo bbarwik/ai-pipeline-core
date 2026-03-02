@@ -21,21 +21,21 @@ class TestTraceInfo:
         assert info.metadata == {}
         assert info.tags == []
 
-    def test_get_observe_kwargs_empty(self):
-        """Test get_observe_kwargs with empty TraceInfo."""
+    def test__get_observe_kwargs_empty(self):
+        """Test _get_observe_kwargs with empty TraceInfo."""
         info = TraceInfo()
-        kwargs = info.get_observe_kwargs()
+        kwargs = info._get_observe_kwargs()
         assert kwargs == {}
 
-    def test_get_observe_kwargs_with_values(self):
-        """Test get_observe_kwargs with populated values."""
+    def test__get_observe_kwargs_with_values(self):
+        """Test _get_observe_kwargs with populated values."""
         info = TraceInfo(
             session_id="session-123",
             user_id="user-456",
             metadata={"key": "value"},
             tags=["test", "production"],
         )
-        kwargs = info.get_observe_kwargs()
+        kwargs = info._get_observe_kwargs()
 
         assert kwargs["session_id"] == "session-123"
         assert kwargs["user_id"] == "user-456"
@@ -43,19 +43,19 @@ class TestTraceInfo:
         assert kwargs["tags"] == ["test", "production"]
 
     @patch.dict(os.environ, {"LMNR_SESSION_ID": "env-session", "LMNR_USER_ID": "env-user"})
-    def test_get_observe_kwargs_env_fallback(self):
+    def test__get_observe_kwargs_env_fallback(self):
         """Test environment variable fallback."""
         info = TraceInfo()
-        kwargs = info.get_observe_kwargs()
+        kwargs = info._get_observe_kwargs()
 
         assert kwargs["session_id"] == "env-session"
         assert kwargs["user_id"] == "env-user"
 
     @patch.dict(os.environ, {"LMNR_SESSION_ID": "env-session"})
-    def test_get_observe_kwargs_explicit_overrides_env(self):
+    def test__get_observe_kwargs_explicit_overrides_env(self):
         """Test that explicit values override environment variables."""
         info = TraceInfo(session_id="explicit-session")
-        kwargs = info.get_observe_kwargs()
+        kwargs = info._get_observe_kwargs()
 
         assert kwargs["session_id"] == "explicit-session"  # Not env-session
 

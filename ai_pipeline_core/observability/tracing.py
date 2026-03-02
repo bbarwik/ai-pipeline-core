@@ -138,7 +138,7 @@ def _prepare_observe_params(cfg: _TraceConfig, runtime_kwargs: dict[str, Any]) -
         if "trace_info" in cfg.sig.parameters:
             runtime_kwargs["trace_info"] = trace_info
 
-    observe_params = trace_info.get_observe_kwargs()
+    observe_params = trace_info._get_observe_kwargs()
     observe_params["name"] = cfg.observe_name
 
     if cfg.session_id:
@@ -209,7 +209,7 @@ class TraceInfo(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
 
-    def get_observe_kwargs(self) -> dict[str, Any]:
+    def _get_observe_kwargs(self) -> dict[str, Any]:
         """Build kwargs for ``lmnr.observe()``, with env-var fallbacks for session/user ID."""
         kwargs: dict[str, Any] = {}
         if sid := (self.session_id or os.getenv("LMNR_SESSION_ID")):
@@ -408,7 +408,9 @@ def set_trace_cost(cost: float | str) -> None:
 
     Only positive values are set; zero or negative values are ignored.
     Only works within a traced context (@trace, @pipeline_task, @pipeline_flow).
-    Use for non-LLM costs; LLM costs are tracked automatically via ModelResponse.
+    WARNING: Do not use for LLM conversation costs — those are tracked automatically
+    via ModelResponse. Using this for LLM costs causes double-counting.
+    Use only for non-LLM costs (e.g. external API calls, search services).
     """
     # Parse string format if provided
     if isinstance(cost, str):

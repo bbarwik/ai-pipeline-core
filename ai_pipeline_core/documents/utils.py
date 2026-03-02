@@ -12,7 +12,6 @@ from urllib.parse import urlparse
 from ai_pipeline_core.exceptions import DocumentValidationError
 
 __all__ = [
-    "DATA_URI_PATTERN",
     "ensure_extension",
     "find_document",
     "is_document_sha256",
@@ -21,7 +20,7 @@ __all__ = [
 ]
 
 # Regex for detecting data URIs (RFC 2397): data:<mime>;base64,<payload>
-DATA_URI_PATTERN = re.compile(r"^data:[a-zA-Z0-9.+/-]+;base64,")
+_DATA_URI_PATTERN = re.compile(r"^data:[a-zA-Z0-9.+/-]+;base64,")
 
 
 def sanitize_url(url: str) -> str:

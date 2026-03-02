@@ -187,9 +187,14 @@ def score_test(test: ScoredExample, symbol_names: list[str]) -> int:
     mock_patterns = ("Mock(", "MagicMock(", "patch(", "monkeypatch.")
     mock_count = sum(test.code.count(p) for p in mock_patterns)
     if mock_count >= 3:
-        best_score -= 3
+        best_score -= 5
     elif mock_count >= 1:
-        best_score -= 1
+        best_score -= 2
+
+    # Private API penalty — tests calling ._methods are internal implementation tests
+    private_call_count = len(_PRIVATE_CALL_RE.findall(test.code))
+    if private_call_count >= 1:
+        best_score -= 3
 
     return max(best_score, 0)
 
@@ -494,6 +499,7 @@ def _compute_example_budget(num_classes: int) -> int:
 
 
 _PRIVATE_TYPE_RE = re.compile(r"\b_[A-Z]\w*")
+_PRIVATE_CALL_RE = re.compile(r"\._(?!_)\w+\(")
 
 
 def _collect_internal_types(
@@ -503,8 +509,9 @@ def _collect_internal_types(
     module_name: str,
 ) -> list[ClassInfo]:
     """Find private classes from the same module that are referenced in public signatures."""
-    # Build text blob from all public signatures, sources, and class field annotations
-    parts: list[str] = [f.source for f in public_functions]
+    # Scan only signatures and type annotations, NOT full function bodies.
+    # Body-internal types (e.g. _TraceConfig inside trace()) are implementation details.
+    parts: list[str] = [f.signature for f in public_functions]
     for c in public_classes:
         parts.extend(m.signature for m in c.methods if is_public_name(m.name))
         parts.extend(type_ann for _, type_ann, _, _ in c.class_vars if type_ann)

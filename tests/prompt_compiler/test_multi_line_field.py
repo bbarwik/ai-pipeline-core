@@ -18,7 +18,7 @@ from ai_pipeline_core._llm_core.types import TokenUsage
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm import Conversation
 from ai_pipeline_core.prompt_compiler.components import Role
-from ai_pipeline_core.prompt_compiler.render import MAX_FIELD_VALUE_LENGTH, render_preview, render_text
+from ai_pipeline_core.prompt_compiler.render import _MAX_FIELD_VALUE_LENGTH, render_preview, render_text
 from ai_pipeline_core.prompt_compiler.spec import PromptSpec
 
 
@@ -365,7 +365,7 @@ def test_regular_field_multiline_value_auto_promoted() -> None:
 
 
 def test_regular_field_long_value_auto_promoted() -> None:
-    """Regular Field with value exceeding MAX_FIELD_VALUE_LENGTH is auto-promoted (no ValueError)."""
+    """Regular Field with value exceeding _MAX_FIELD_VALUE_LENGTH is auto-promoted (no ValueError)."""
 
     class AutoSpec(PromptSpec):
         """Doc."""
@@ -376,7 +376,7 @@ def test_regular_field_long_value_auto_promoted() -> None:
 
         feedback: str = Field(description="Feedback")
 
-    long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
+    long_value = "x" * (_MAX_FIELD_VALUE_LENGTH + 1)
     rendered = render_text(AutoSpec(feedback=long_value))
     assert long_value not in rendered
     assert "(provided in <feedback> tags in previous message)" in rendered
@@ -396,7 +396,7 @@ def test_regular_field_auto_promoted_included_in_multi_line_messages() -> None:
         feedback: str = Field(description="Feedback")
         item: str = Field(description="Item")
 
-    long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
+    long_value = "x" * (_MAX_FIELD_VALUE_LENGTH + 1)
     spec = AutoSpec(feedback=long_value, item="short")
     messages = render_multi_line_messages(spec)
     field_names = [name for name, _ in messages]
@@ -443,7 +443,7 @@ def test_regular_field_short_value_no_error() -> None:
 
 
 def test_regular_field_at_limit_no_error() -> None:
-    """Regular Field with value exactly at MAX_FIELD_VALUE_LENGTH is fine."""
+    """Regular Field with value exactly at _MAX_FIELD_VALUE_LENGTH is fine."""
 
     class ExactSpec(PromptSpec):
         """Doc."""
@@ -454,7 +454,7 @@ def test_regular_field_at_limit_no_error() -> None:
 
         text: str = Field(description="Some text")
 
-    exact_value = "x" * MAX_FIELD_VALUE_LENGTH
+    exact_value = "x" * _MAX_FIELD_VALUE_LENGTH
     rendered = render_text(ExactSpec(text=exact_value))
     assert f"**Some text:**\n{exact_value}" in rendered
 

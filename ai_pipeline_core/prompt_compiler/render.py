@@ -12,7 +12,7 @@ logger = get_pipeline_logger(__name__)
 
 _VOWELS = frozenset("aeiouAEIOU")
 
-MAX_FIELD_VALUE_LENGTH = 500
+_MAX_FIELD_VALUE_LENGTH = 500
 
 RESULT_TAG = "result"
 RESULT_OPEN = f"<{RESULT_TAG}>"
@@ -66,7 +66,7 @@ def _render_documents_actual(documents: Sequence[Document]) -> str:
 
 def _is_long_or_multiline(value: str) -> bool:
     """Check whether a field value exceeds the inline limit or contains newlines."""
-    return len(value) > MAX_FIELD_VALUE_LENGTH or "\n" in value
+    return len(value) > _MAX_FIELD_VALUE_LENGTH or "\n" in value
 
 
 def _warn_auto_promoted(spec_cls: type[PromptSpec], field_name: str, value: str) -> None:
@@ -79,7 +79,7 @@ def _warn_auto_promoted(spec_cls: type[PromptSpec], field_name: str, value: str)
         spec_cls.__name__,
         field_name,
         len(value),
-        MAX_FIELD_VALUE_LENGTH,
+        _MAX_FIELD_VALUE_LENGTH,
     )
 
 

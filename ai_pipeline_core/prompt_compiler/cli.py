@@ -15,7 +15,7 @@ from .spec import PromptSpec
 
 _SKIP_DIRS: frozenset[str] = frozenset({".git", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", "node_modules", ".tmp"})
 
-APPROX_CHARS_PER_TOKEN = 4
+_APPROX_CHARS_PER_TOKEN = 4
 
 
 def _iter_python_files(root: Path) -> list[Path]:
@@ -245,7 +245,7 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     # Size estimate
     preview = render_preview(spec_cls)
     chars = len(preview)
-    tokens = chars // APPROX_CHARS_PER_TOKEN
+    tokens = chars // _APPROX_CHARS_PER_TOKEN
     print(f"\n  Rendered preview: {chars:,} chars (~{tokens:,} tokens)")
 
     return 0

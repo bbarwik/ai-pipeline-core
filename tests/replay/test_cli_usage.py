@@ -10,7 +10,8 @@ from typing import Any
 import pytest
 import yaml
 
-from ai_pipeline_core.replay import ConversationReplay, infer_store_base
+from ai_pipeline_core.replay import ConversationReplay
+from ai_pipeline_core.replay.types import _infer_store_base
 from ai_pipeline_core.replay.cli import main
 
 
@@ -68,7 +69,7 @@ def test_main_show_conversation(tmp_path: Path, capsys: pytest.CaptureFixture[st
 def test_main_run_with_no_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Execute a replay file, saving output.yaml but skipping .trace/ generation."""
     replay_file = _conversation_yaml(tmp_path)
-    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: _MockResult())
+    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), _MockResult())[1])
 
     exit_code = main(["run", str(replay_file), "--store", str(tmp_path), "--no-trace"])
 
@@ -82,7 +83,7 @@ def test_main_run_with_no_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 def test_main_run_with_set_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Override model before execution using --set flag."""
     replay_file = _conversation_yaml(tmp_path, model="gemini-3-flash")
-    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: _MockResult())
+    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), _MockResult())[1])
     monkeypatch.setattr("ai_pipeline_core.replay.cli._init_replay_tracing", lambda _d: None)
 
     exit_code = main(["run", str(replay_file), "--store", str(tmp_path), "--set", "model=grok-4.1-fast"])
@@ -95,7 +96,7 @@ def test_main_run_with_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     """Place replay output in a custom directory using --output-dir."""
     replay_file = _conversation_yaml(tmp_path)
     custom_dir = tmp_path / "my_output"
-    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: _MockResult())
+    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), _MockResult())[1])
     monkeypatch.setattr("ai_pipeline_core.replay.cli._init_replay_tracing", lambda _d: None)
 
     exit_code = main(["run", str(replay_file), "--store", str(tmp_path), "--output-dir", str(custom_dir)])
@@ -130,7 +131,7 @@ def test_ConversationReplay_from_yaml_and_override() -> None:
 
 
 @pytest.mark.ai_docs
-def test_infer_store_base_from_trace_tree(tmp_path: Path) -> None:
+def test__infer_store_base_from_trace_tree(tmp_path: Path) -> None:
     """Find the store base directory by walking up to the .trace/ parent."""
     store_dir = tmp_path / "pipeline_output"
     trace_dir = store_dir / ".trace" / "001_flow" / "002_task"
@@ -138,5 +139,5 @@ def test_infer_store_base_from_trace_tree(tmp_path: Path) -> None:
     replay_file = trace_dir / "conversation.yaml"
     replay_file.write_text("dummy")
 
-    result = infer_store_base(replay_file)
+    result = _infer_store_base(replay_file)
     assert result == store_dir

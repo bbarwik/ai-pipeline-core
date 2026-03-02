@@ -5,7 +5,7 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any, ClassVar
 
-MAX_RULE_LINES = 5
+_MAX_RULE_LINES = 5
 
 
 def _require_docstring(cls: type, *, kind: str) -> None:
@@ -71,7 +71,7 @@ class Rule:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        _init_text_component(cls, "Rule", max_lines=MAX_RULE_LINES)
+        _init_text_component(cls, "Rule", max_lines=_MAX_RULE_LINES)
 
 
 class OutputRule:
@@ -84,7 +84,7 @@ class OutputRule:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        _init_text_component(cls, "OutputRule", max_lines=MAX_RULE_LINES)
+        _init_text_component(cls, "OutputRule", max_lines=_MAX_RULE_LINES)
 
 
 def _validate_guide(cls: type) -> None:
@@ -125,7 +125,8 @@ class Guide:
     """Base class for reference material / methodology guides.
 
     Must define a non-empty docstring and a ``template`` ClassVar on every Guide subclass.
-    Must use a relative path for Guide template — content is loaded and cached at import time.
+    Must use a relative path for Guide template — resolved relative to the Python file
+    that defines the Guide subclass. Content is loaded and cached at import time.
     Never use ``#`` (H1) headers in Guide templates — reserved for prompt section boundaries. Use ``##`` or deeper.
     """
 

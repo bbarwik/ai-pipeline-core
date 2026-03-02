@@ -86,8 +86,8 @@ FROM pipeline_runs FINAL
 WHERE run_id = {run_id:String}
 """
 
-DEFAULT_LIST_LIMIT = 20
-EXECUTION_ID_SHORT_LENGTH = 8
+_DEFAULT_LIST_LIMIT = 20
+_EXECUTION_ID_SHORT_LENGTH = 8
 
 # Table column widths for list output
 _COL_ID = 36
@@ -312,7 +312,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
     client = _create_client(args)
     execution_id, run_id = _resolve_identifier(args.identifier, client)
 
-    short_id = str(execution_id)[:EXECUTION_ID_SHORT_LENGTH]
+    short_id = str(execution_id)[:_EXECUTION_ID_SHORT_LENGTH]
     output_path = Path(args.output).resolve() if args.output else Path(f"./{short_id}_trace").resolve()
 
     use_children = args.children
@@ -525,7 +525,7 @@ def main(argv: list[str] | None = None) -> int:
         parents=[_connection_parser],
         help="List recent pipeline runs",
     )
-    ls.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT, help="Number of runs (default: 20)")
+    ls.add_argument("--limit", type=int, default=_DEFAULT_LIST_LIMIT, help="Number of runs (default: 20)")
     ls.add_argument("--status", choices=["running", "completed", "failed"], help="Filter by status")
     ls.add_argument("--flow", type=str, help="Filter by flow name")
 

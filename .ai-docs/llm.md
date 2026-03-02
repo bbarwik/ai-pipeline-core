@@ -2,7 +2,7 @@
 # CLASSES: Citation, TokenUsage, ModelOptions, Conversation
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.12.3
+# VERSION: 0.12.4
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -31,10 +31,6 @@ type ModelName = (
     ]
     | str
 )
-
-SYSTEM_PROMPT_DOCUMENT_NAME = "system_prompt"
-
-CHARS_PER_TOKEN = 4
 
 ConversationContent = str | Document | list[Document]
 
@@ -161,19 +157,19 @@ Attachment rendering in LLM context:
         total = 0
         for item in chain(self.context, self.messages):
             if isinstance(item, ModelResponse):
-                total += len(item.content) // CHARS_PER_TOKEN
+                total += len(item.content) // _CHARS_PER_TOKEN
                 if reasoning := item.reasoning_content:
-                    total += len(reasoning) // CHARS_PER_TOKEN
+                    total += len(reasoning) // _CHARS_PER_TOKEN
             elif isinstance(item, (_UserMessage, _AssistantMessage)):
-                total += len(item.text) // CHARS_PER_TOKEN
+                total += len(item.text) // _CHARS_PER_TOKEN
             elif isinstance(item, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
                 if item.is_text:
-                    total += len(item.content) // CHARS_PER_TOKEN
+                    total += len(item.content) // _CHARS_PER_TOKEN
                 elif item.is_image or item.is_pdf:
                     total += TOKENS_PER_IMAGE
                 for att in item.attachments:
                     if att.is_text:
-                        total += len(att.content) // CHARS_PER_TOKEN
+                        total += len(att.content) // _CHARS_PER_TOKEN
                     elif att.is_image or att.is_pdf:
                         total += TOKENS_PER_IMAGE
         return total
@@ -368,7 +364,7 @@ Attachment rendering in LLM context:
         """Return NEW Conversation with documents added to the cacheable context prefix.
 
         Always set context before the first send() — adding context mid-conversation
-        changes the prefix and invalidates existing cache.
+        changes the prefix, so subsequent send() calls will not hit the cache from prior configurations.
         """
         return self.model_copy(update={"context": self.context + docs})
 
@@ -567,34 +563,15 @@ def test_citations_serialization(self):
         assert citation.url == "https://test.com"
 ```
 
-**Cross conversation transfer** (`tests/llm/test_conversation_with_assistant_message.py:127`)
+**Model copy update** (`tests/llm/test_model_options.py:102`)
 
 ```python
-@pytest.mark.asyncio
-async def test_cross_conversation_transfer(self, monkeypatch):
-    """Transfer content from conv_a to conv_b via with_assistant_message."""
-    call_count = 0
-
-    async def fake_generate(messages, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return create_test_model_response(content="Analysis: the document discusses topic Z")
-        return create_test_model_response(content="Based on the analysis, Z is important")
-
-    monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
-
-    with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-        # Conv A does analysis
-        conv_a = Conversation(model="test-model", enable_substitutor=False)
-        conv_a = await conv_a.send("Analyze this")
-
-        # Conv B receives the analysis
-        conv_b = Conversation(model="test-model", enable_substitutor=False)
-        conv_b = conv_b.with_assistant_message(conv_a.content)
-        conv_b = await conv_b.send("What did you find?")
-
-    assert conv_b.content == "Based on the analysis, Z is important"
+def test_model_copy_update(self):
+    """Test that frozen ModelOptions can be updated via model_copy."""
+    options = ModelOptions(timeout=300)
+    updated = options.model_copy(update={"timeout": 500})
+    assert updated.timeout == 500
+    assert options.timeout == 300  # original unchanged
 ```
 
 

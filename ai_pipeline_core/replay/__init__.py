@@ -5,7 +5,7 @@ pipeline task, or pipeline flow. Documents are referenced by SHA256 hash
 and resolved from the LocalDocumentStore at replay time.
 """
 
-from .types import ConversationReplay, DocumentRef, FlowReplay, HistoryEntry, TaskReplay, infer_store_base
+from .types import ConversationReplay, DocumentRef, FlowReplay, HistoryEntry, TaskReplay
 
 __all__ = [
     "ConversationReplay",
@@ -13,5 +13,4 @@ __all__ = [
     "FlowReplay",
     "HistoryEntry",
     "TaskReplay",
-    "infer_store_base",
 ]

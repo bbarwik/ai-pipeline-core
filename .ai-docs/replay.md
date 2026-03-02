@@ -2,13 +2,13 @@
 # CLASSES: DocumentRef, HistoryEntry, ConversationReplay, TaskReplay, FlowReplay
 # DEPENDS: BaseModel
 # PURPOSE: First-class replay system for AI pipeline debugging.
-# VERSION: 0.12.3
+# VERSION: 0.12.4
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core.replay import ConversationReplay, DocumentRef, FlowReplay, HistoryEntry, TaskReplay, infer_store_base
+from ai_pipeline_core.replay import ConversationReplay, DocumentRef, FlowReplay, HistoryEntry, TaskReplay
 ```
 
 ## Public API
@@ -206,27 +206,11 @@ def main(argv: list[str] | None = None) -> int:
 
     return handler(args)
 
-def infer_store_base(replay_file: Path) -> Path:
-    """Walk up from replay_file to find .trace/ directory, return its parent.
-
-    Used automatically by the CLI. Only needed programmatically when bypassing the CLI.
-    Convention: .trace/ is always a direct child of the store base directory.
-    """
-    current = replay_file.resolve().parent
-    while current != current.parent:
-        if current.name == ".trace":
-            return current.parent
-        current = current.parent
-    raise FileNotFoundError(
-        f"Could not find .trace/ directory in any ancestor of {replay_file}. "
-        f"The replay file must be inside a .trace/ directory tree, or use --store to specify the store base."
-    )
-
 ```
 
 ## Examples
 
-**Main show conversation** (`tests/replay/test_cli_usage.py:55`)
+**Main show conversation** (`tests/replay/test_cli_usage.py:56`)
 
 ```python
 def test_main_show_conversation(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -241,13 +225,13 @@ def test_main_show_conversation(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert "gemini-3-pro" in output
 ```
 
-**Main run with no trace** (`tests/replay/test_cli_usage.py:68`)
+**Main run with no trace** (`tests/replay/test_cli_usage.py:69`)
 
 ```python
 def test_main_run_with_no_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Execute a replay file, saving output.yaml but skipping .trace/ generation."""
     replay_file = _conversation_yaml(tmp_path)
-    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: _MockResult())
+    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), _MockResult())[1])
 
     exit_code = main(["run", str(replay_file), "--store", str(tmp_path), "--no-trace"])
 
@@ -257,13 +241,13 @@ def test_main_run_with_no_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert not (output_dir / ".trace").exists()
 ```
 
-**Main run with set override** (`tests/replay/test_cli_usage.py:82`)
+**Main run with set override** (`tests/replay/test_cli_usage.py:83`)
 
 ```python
 def test_main_run_with_set_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Override model before execution using --set flag."""
     replay_file = _conversation_yaml(tmp_path, model="gemini-3-flash")
-    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: _MockResult())
+    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), _MockResult())[1])
     monkeypatch.setattr("ai_pipeline_core.replay.cli._init_replay_tracing", lambda _d: None)
 
     exit_code = main(["run", str(replay_file), "--store", str(tmp_path), "--set", "model=grok-4.1-fast"])
@@ -271,14 +255,14 @@ def test_main_run_with_set_override(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert exit_code == 0
 ```
 
-**Main run with output dir** (`tests/replay/test_cli_usage.py:94`)
+**Main run with output dir** (`tests/replay/test_cli_usage.py:95`)
 
 ```python
 def test_main_run_with_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Place replay output in a custom directory using --output-dir."""
     replay_file = _conversation_yaml(tmp_path)
     custom_dir = tmp_path / "my_output"
-    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: _MockResult())
+    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), _MockResult())[1])
     monkeypatch.setattr("ai_pipeline_core.replay.cli._init_replay_tracing", lambda _d: None)
 
     exit_code = main(["run", str(replay_file), "--store", str(tmp_path), "--output-dir", str(custom_dir)])
@@ -287,7 +271,7 @@ def test_main_run_with_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert (custom_dir / "output.yaml").exists()
 ```
 
-**Conversationreplay from yaml and override** (`tests/replay/test_cli_usage.py:108`)
+**Conversationreplay from yaml and override** (`tests/replay/test_cli_usage.py:109`)
 
 ```python
 def test_ConversationReplay_from_yaml_and_override() -> None:
@@ -314,10 +298,10 @@ def test_ConversationReplay_from_yaml_and_override() -> None:
     assert "grok-4.1-fast" in output
 ```
 
-**Infer store base from trace tree** (`tests/replay/test_cli_usage.py:133`)
+** infer store base from trace tree** (`tests/replay/test_cli_usage.py:134`)
 
 ```python
-def test_infer_store_base_from_trace_tree(tmp_path: Path) -> None:
+def test__infer_store_base_from_trace_tree(tmp_path: Path) -> None:
     """Find the store base directory by walking up to the .trace/ parent."""
     store_dir = tmp_path / "pipeline_output"
     trace_dir = store_dir / ".trace" / "001_flow" / "002_task"
@@ -325,7 +309,7 @@ def test_infer_store_base_from_trace_tree(tmp_path: Path) -> None:
     replay_file = trace_dir / "conversation.yaml"
     replay_file.write_text("dummy")
 
-    result = infer_store_base(replay_file)
+    result = _infer_store_base(replay_file)
     assert result == store_dir
 ```
 
@@ -365,25 +349,6 @@ def test_empty_history(self) -> None:
     assert restored.history == ()
 ```
 
-**From nested span dir** (`tests/replay/test_resolution.py:148`)
-
-```python
-def test_from_nested_span_dir(self, tmp_path: Path) -> None:
-    """Create a deeply nested path under .trace/ and verify infer_store_base
-    finds the correct store base (parent of .trace/)."""
-    # Layout: tmp_path/output/.trace/spans/task_abc/span_123/
-    output_dir = tmp_path / "output"
-    trace_dir = output_dir / ".trace"
-    nested = trace_dir / "spans" / "task_abc" / "span_123"
-    nested.mkdir(parents=True)
-
-    replay_file = nested / "conversation.replay.yaml"
-    replay_file.write_text("dummy")
-
-    result = infer_store_base(replay_file)
-    assert result == output_dir
-```
-
 **Primitives only** (`tests/replay/test_payload_roundtrip.py:123`)
 
 ```python
@@ -406,6 +371,39 @@ def test_primitives_only(self) -> None:
     assert restored.arguments["enabled"] is True
 ```
 
+**All options** (`tests/replay/test_payload_roundtrip.py:69`)
+
+```python
+def test_all_options(self, sample_text_doc: ReplayTextDocument) -> None:
+    payload = ConversationReplay(
+        model="gemini-3-pro",
+        prompt="Deep analysis.",
+        context=[],
+        history=[],
+        model_options={
+            "reasoning_effort": "high",
+            "cache_ttl": "300s",
+            "retries": 3,
+            "retry_delay_seconds": 2.0,
+            "timeout": 120,
+            "service_tier": "default",
+            "search_context_size": "medium",
+            "temperature": 0.7,
+            "max_completion_tokens": 4096,
+        },
+        enable_substitutor=False,
+        extract_result_tags=True,
+        purpose="verification",
+    )
+    yaml_text = payload.to_yaml()
+    restored = ConversationReplay.from_yaml(yaml_text)
+    assert restored == payload
+    assert restored.enable_substitutor is False
+    assert restored.extract_result_tags is True
+    assert restored.model_options["reasoning_effort"] == "high"
+    assert restored.model_options["temperature"] == 0.7
+```
+
 
 ## Error Examples
 
@@ -420,7 +418,7 @@ def test_missing_trace_raises(self, tmp_path: Path) -> None:
     replay_file.write_text("dummy")
 
     with pytest.raises(FileNotFoundError):
-        infer_store_base(replay_file)
+        _infer_store_base(replay_file)
 ```
 
 **Resolve missing document raises** (`tests/replay/test_resolution.py:66`)
