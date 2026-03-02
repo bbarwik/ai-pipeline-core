@@ -59,31 +59,38 @@ def _make_span_row(
     *,
     span_id: str = "span1",
     trace_id: str = "trace1",
+    parent_span_id: str | None = None,
     name: str = "test_span",
+    span_order: int = 1,
+    span_type: str = "trace",
     run_id: str = "run-001",
     execution_id: UUID | None = None,
+    cost: float = 0.0,
+    tokens_input: int = 0,
+    tokens_output: int = 0,
+    replay_payload: str = "",
 ) -> tuple[Any, ...]:
     """Build a tuple matching _SPAN_COLUMNS for mock query results."""
     return (
         span_id,
         trace_id,
-        None,
+        parent_span_id,
         name,
-        "trace",
+        span_type,
         "completed",
         _NOW,
         _LATER,
         1000,
-        1,
-        0.0,
-        0,
-        0,
+        span_order,
+        cost,
+        tokens_input,
+        tokens_output,
         0,
         None,
         "",
         "",
         "",
-        "",
+        replay_payload,
         "{}",
         "[]",
         execution_id or SAMPLE_UUID_OBJ,
@@ -470,3 +477,101 @@ class TestCmdDownloadChildren:
         # No children since run_id was empty, so --children had no effect
         spans_query_call = mock_client.query.call_args_list[1]
         assert "execution_id" in spans_query_call[1]["parameters"]
+
+
+# ---------------------------------------------------------------------------
+# Bug 2: Download must produce hierarchical directory structure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("_patch_create_client")
+class TestDownloadFilteredSpans:
+    """Filtered LLM spans (span_order=0) must NOT create directories.
+
+    ClickHouseBackend writes ALL spans including filtered ones. On download,
+    these must be routed to record_filtered_llm_metrics() (metrics only),
+    matching the live FilesystemBackend.on_span_end() behavior.
+    """
+
+    def test_filtered_spans_do_not_create_directories(self, mock_client: MagicMock, tmp_path: Path) -> None:
+        real_span = _make_span_row(span_id="s1", name="my_task", span_order=1)
+        filtered_llm = _make_span_row(span_id="s2", name="llm_call", span_order=0, cost=0.05, tokens_input=1000, tokens_output=200)
+        mock_client.query.side_effect = [
+            MagicMock(result_rows=[("run-001", "my_flow", "", "completed", _NOW, _LATER, 0, 0, "{}")]),
+            MagicMock(result_rows=[filtered_llm, real_span], column_names=_SPAN_COLUMNS),
+        ]
+        out = tmp_path / "out"
+        main(["download", SAMPLE_UUID, "-o", str(out)])
+        span_dirs = [d for d in out.iterdir() if d.is_dir()]
+        # Only the real span should have a directory, not the filtered LLM span
+        assert len(span_dirs) == 1
+        assert "my_task" in span_dirs[0].name
+
+
+@pytest.mark.usefixtures("_patch_create_client")
+class TestDownloadHierarchy:
+    """Downloaded traces must preserve parent-child directory nesting.
+
+    Bug 2b: TraceMaterializer.add_span() auto-finalizes each trace when no
+    spans are "running". On download all spans arrive pre-completed, causing
+    premature finalization after every add_span — each span becomes its own
+    trace root with no hierarchy.
+    """
+
+    def test_child_directory_nested_under_parent(self, mock_client: MagicMock, tmp_path: Path) -> None:
+        parent = _make_span_row(span_id="p1", name="research_flow", span_order=1, span_type="flow")
+        child = _make_span_row(span_id="c1", parent_span_id="p1", name="extract_task", span_order=2, span_type="task")
+        mock_client.query.side_effect = [
+            MagicMock(result_rows=[("run-001", "my_flow", "", "completed", _NOW, _LATER, 0, 0, "{}")]),
+            MagicMock(result_rows=[parent, child], column_names=_SPAN_COLUMNS),
+        ]
+        out = tmp_path / "out"
+        main(["download", SAMPLE_UUID, "-o", str(out)])
+        # Parent should be a top-level directory
+        top_dirs = [d for d in out.iterdir() if d.is_dir()]
+        assert len(top_dirs) == 1, f"Expected 1 top-level dir, got {[d.name for d in top_dirs]}"
+        parent_dir = top_dirs[0]
+        assert "research_flow" in parent_dir.name
+        # Child should be nested inside parent
+        child_dirs = [d for d in parent_dir.iterdir() if d.is_dir()]
+        assert len(child_dirs) == 1
+        assert "extract_task" in child_dirs[0].name
+
+    def test_summary_tree_has_indentation(self, mock_client: MagicMock, tmp_path: Path) -> None:
+        parent = _make_span_row(span_id="p1", name="root_flow", span_order=1, span_type="flow")
+        child = _make_span_row(span_id="c1", parent_span_id="p1", name="child_task", span_order=2, span_type="task")
+        mock_client.query.side_effect = [
+            MagicMock(result_rows=[("run-001", "my_flow", "", "completed", _NOW, _LATER, 0, 0, "{}")]),
+            MagicMock(result_rows=[parent, child], column_names=_SPAN_COLUMNS),
+        ]
+        out = tmp_path / "out"
+        main(["download", SAMPLE_UUID, "-o", str(out)])
+        summary = (out / "summary.md").read_text()
+        tree_section = summary.split("## Execution Tree")[1] if "## Execution Tree" in summary else ""
+        # Child should be indented (4 spaces) under parent
+        assert "    " in tree_section, "Child span should be indented in execution tree"
+        lines = [line for line in tree_section.strip().splitlines() if line.strip()]
+        indented_lines = [line for line in lines if line.startswith("    ")]
+        assert len(indented_lines) >= 1, f"Expected indented child lines, got: {lines}"
+
+
+# ---------------------------------------------------------------------------
+# --no-docs flag
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("_patch_create_client")
+class TestNoDocsFlag:
+    def test_no_docs_skips_document_download(self, mock_client: MagicMock, tmp_path: Path) -> None:
+        """--no-docs should skip document download entirely."""
+        span = _make_span_row(span_id="s1", name="task", replay_payload='{"context": [{"$doc_ref": "SHA1", "class_name": "D", "name": "d.md"}]}')
+        mock_client.query.side_effect = [
+            MagicMock(result_rows=[("run-001", "my_flow", "", "completed", _NOW, _LATER, 0, 0, "{}")]),
+            MagicMock(result_rows=[span], column_names=_SPAN_COLUMNS),
+        ]
+        out = tmp_path / "out"
+        result = main(["download", SAMPLE_UUID, "--no-docs", "-o", str(out)])
+        assert result == 0
+        # No document directories should exist (only .trace/ span dirs)
+        doc_dirs = [d for d in out.iterdir() if d.is_dir() and not d.name[:1].isdigit() and d.name != ".trace"]
+        assert doc_dirs == [], f"Expected no doc dirs with --no-docs, got {[d.name for d in doc_dirs]}"

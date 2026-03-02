@@ -237,6 +237,36 @@ class TestFromClickhouseRowRoundtrip:
         assert data.input_doc_sha256s == ("sha1",)
 
 
+class TestFromClickhouseRowTimezoneAwareness:
+    """ClickHouse returns naive datetimes but SpanData must always be timezone-aware.
+
+    clickhouse_connect strips tzinfo from DateTime64('UTC') columns, returning
+    naive Python datetimes. The live OTel path creates aware datetimes via
+    datetime.fromtimestamp(ns, tz=UTC). Mixing aware and naive datetimes in
+    summary generation causes: TypeError: can't subtract offset-naive and offset-aware datetimes
+    """
+
+    def test_naive_datetimes_become_utc_aware(self):
+        """Naive datetimes from ClickHouse must be converted to UTC-aware."""
+        naive_start = datetime(2025, 1, 15, 10, 30, 0)
+        naive_end = datetime(2025, 1, 15, 10, 30, 5)
+        assert naive_start.tzinfo is None, "Test precondition: datetime must be naive"
+
+        row = {
+            "span_id": "s1",
+            "trace_id": "t1",
+            "name": "span",
+            "start_time": naive_start,
+            "end_time": naive_end,
+        }
+        data = SpanData.from_clickhouse_row(row)
+
+        assert data.start_time.tzinfo is not None, "start_time must be timezone-aware"
+        assert data.end_time.tzinfo is not None, "end_time must be timezone-aware"
+        assert data.start_time.tzinfo == UTC
+        assert data.end_time.tzinfo == UTC
+
+
 class TestFromClickhouseRowDefaults:
     def test_minimal_row(self):
         now = datetime.now(UTC)

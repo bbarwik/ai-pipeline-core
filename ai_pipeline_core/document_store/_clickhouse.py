@@ -958,7 +958,8 @@ class ClickHouseDocumentStore:
         row = result.result_rows[0]
         input_shas = tuple(_decode(s) for s in row[0])
         output_shas = tuple(_decode(s) for s in row[1])
-        stored_at = row[2] if isinstance(row[2], datetime) else datetime.fromisoformat(str(row[2]))
+        raw_dt = row[2] if isinstance(row[2], datetime) else datetime.fromisoformat(str(row[2]))
+        stored_at = raw_dt if raw_dt.tzinfo is not None else raw_dt.replace(tzinfo=UTC)
         return FlowCompletion(
             flow_name=flow_name,
             input_sha256s=input_shas,

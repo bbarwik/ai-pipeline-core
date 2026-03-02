@@ -175,6 +175,32 @@ class TestVersionMonotonic:
             assert versions[i] > versions[i - 1]
 
 
+class TestOnSpanEndFallbackExecutionId:
+    """Root Prefect flow span ends after _clear_run_context_on_processors().
+
+    Timeline:
+    1. track_run_start(execution_id=X) → stores execution_id
+    2. Child spans end → execution_id injected by processor ✓
+    3. _clear_run_context_on_processors() → execution_id=None on processor
+    4. Root span ends → span_data.execution_id=None → on_span_end drops it
+
+    The backend must use the execution_id from track_run_start as fallback.
+    """
+
+    def test_root_span_uses_fallback_execution_id(self):
+        backend, writer = _make_backend()
+        uid = uuid4()
+        backend.track_run_start(execution_id=uid, run_id="run-1", flow_name="my_flow")
+        # Root span has execution_id=None (cleared before it ended)
+        root_span = _make_span_data(execution_id=None, span_order=1)
+        backend.on_span_end(root_span)
+        # Should have 2 writes: track_run_start + root span
+        assert writer.write.call_count == 2
+        span_row = writer.write.call_args_list[1][0][1][0]
+        assert isinstance(span_row, PipelineSpanRow)
+        assert span_row.execution_id == uid
+
+
 class TestFlushAndShutdown:
     def test_flush_delegates(self):
         backend, writer = _make_backend()

@@ -2,7 +2,7 @@
 # CLASSES: DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment, StartedEvent, ProgressEvent, CompletedEvent, FailedEvent, ResultPublisher, NoopPublisher, MemoryPublisher
 # DEPENDS: BaseModel, Generic, Protocol, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.12.2
+# VERSION: 0.12.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -696,6 +696,35 @@ Mirror type contract:
             on_progress,
         )
 
+    @final
+    async def run_traced(
+        self,
+        run_id: str,
+        documents: list[TDoc],
+        options: TOptions,
+        output_dir: Path,
+        on_progress: ProgressCallback | None = None,
+    ) -> TResult:
+        """Execute with local .trace/ debug tracing at output_dir/.trace.
+
+        Sets up FilesystemBackend + PipelineSpanProcessor for local debug
+        output, matching the CLI pipeline tracing pattern. Use when running
+        RemoteDeployment standalone (not inside a caller pipeline with tracing).
+        """
+        from ai_pipeline_core.deployment._cli import _init_debug_tracing
+        from ai_pipeline_core.observability._initialization import get_clickhouse_backend
+
+        init_observability_best_effort()
+        debug_backend = _init_debug_tracing(output_dir)
+        try:
+            return await self._execute(run_id, documents, options, on_progress)
+        finally:
+            ch_backend = get_clickhouse_backend()
+            if ch_backend:
+                ch_backend.shutdown()
+            if debug_backend:
+                debug_backend.shutdown()
+
 
 @dataclass(frozen=True, slots=True)
 class StartedEvent:
@@ -919,7 +948,7 @@ async def run_remote_deployment(
 
 ## Examples
 
-**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:697`)
+**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:699`)
 
 ```python
 def test_format_starts_with_base_run_id(self):
@@ -929,7 +958,7 @@ def test_format_starts_with_base_run_id(self):
     assert derived.startswith("my-project-")
 ```
 
-**Execute passes derived run id to prefect** (`tests/deployment/test_remote_deployment.py:728`)
+**Execute passes derived run id to prefect** (`tests/deployment/test_remote_deployment.py:730`)
 
 ```python
 async def test_execute_passes_derived_run_id_to_prefect(self):
@@ -1071,7 +1100,7 @@ def test_starts_empty(self):
 
 ## Error Examples
 
-**Remote deployment rejects empty run id** (`tests/deployment/test_remote_deployment.py:898`)
+**Remote deployment rejects empty run id** (`tests/deployment/test_remote_deployment.py:900`)
 
 ```python
 async def test_remote_deployment_rejects_empty_run_id(self):
@@ -1085,7 +1114,7 @@ async def test_remote_deployment_rejects_empty_run_id(self):
         await Wired2().run("", [doc], FlowOptions())
 ```
 
-**Remote deployment rejects invalid base run id** (`tests/deployment/test_remote_deployment.py:888`)
+**Remote deployment rejects invalid base run id** (`tests/deployment/test_remote_deployment.py:890`)
 
 ```python
 async def test_remote_deployment_rejects_invalid_base_run_id(self):
@@ -1123,7 +1152,7 @@ async def test_publishes_failed_event_on_error(self):
     assert "deliberate failure" in failed_events[0].error_message
 ```
 
-**Rejects int** (`tests/deployment/test_remote_deployment.py:151`)
+**Rejects int** (`tests/deployment/test_remote_deployment.py:153`)
 
 ```python
 def test_rejects_int(self):
@@ -1133,7 +1162,7 @@ def test_rejects_int(self):
             trace_level: ClassVar[TraceLevel] = "off"
 ```
 
-**Rejects no generic params** (`tests/deployment/test_remote_deployment.py:181`)
+**Rejects no generic params** (`tests/deployment/test_remote_deployment.py:183`)
 
 ```python
 def test_rejects_no_generic_params(self):
@@ -1143,7 +1172,7 @@ def test_rejects_no_generic_params(self):
             trace_level: ClassVar[TraceLevel] = "off"
 ```
 
-**Rejects non deployment result** (`tests/deployment/test_remote_deployment.py:170`)
+**Rejects non deployment result** (`tests/deployment/test_remote_deployment.py:172`)
 
 ```python
 def test_rejects_non_deployment_result(self):
@@ -1156,7 +1185,7 @@ def test_rejects_non_deployment_result(self):
             trace_level: ClassVar[TraceLevel] = "off"
 ```
 
-**Rejects non document in union** (`tests/deployment/test_remote_deployment.py:145`)
+**Rejects non document in union** (`tests/deployment/test_remote_deployment.py:147`)
 
 ```python
 def test_rejects_non_document_in_union(self):

@@ -108,11 +108,13 @@ class ClickHouseTaskResultStore:
         if not rows:
             return None
         row = rows[0]
+        raw_dt = row[3]
+        stored_at = raw_dt if (isinstance(raw_dt, datetime) and raw_dt.tzinfo is not None) else raw_dt.replace(tzinfo=UTC)
         return TaskResultRecord(
             run_id=row[0],
             result=row[1],
             chain_context=row[2],
-            stored_at=row[3],
+            stored_at=stored_at,
         )
 
     async def write_result(self, run_id: str, result: str, chain_context: str) -> None:

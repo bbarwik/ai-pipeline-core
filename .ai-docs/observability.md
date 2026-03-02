@@ -2,7 +2,7 @@
 # CLASSES: TraceInfo, TraceDebugConfig
 # DEPENDS: BaseModel
 # PURPOSE: Observability system for AI pipelines.
-# VERSION: 0.12.2
+# VERSION: 0.12.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -112,6 +112,60 @@ Each run overwrites previous ``.trace/`` contents."""
 ## Functions
 
 ```python
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for trace download and inspection.
+
+    Usage:
+        ai-trace list --limit 10 --status completed
+        ai-trace show 550e8400-e29b-41d4-a716-446655440000
+        ai-trace download 550e8400-e29b-41d4-a716-446655440000 -o ./debug/
+        ai-trace download my-run-id --children -o ./debug/
+    """
+    parser = argparse.ArgumentParser(
+        prog="ai-trace",
+        description="List, inspect, and download pipeline traces from ClickHouse",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    # download
+    dl = subparsers.add_parser(
+        "download",
+        parents=[_connection_parser],
+        help="Fetch trace data and reconstruct .trace/ directory",
+    )
+    dl.add_argument("identifier", help="Execution UUID or run_id")
+    dl.add_argument("-o", "--output", type=str, default=None, help="Output directory (default: ./{id[:8]}_trace/)")
+    dl.add_argument("--children", action="store_true", help="Include child pipeline runs (matched by run_id prefix)")
+    dl.add_argument("--no-docs", action="store_true", help="Skip downloading documents referenced by replay files")
+
+    # list
+    ls = subparsers.add_parser(
+        "list",
+        parents=[_connection_parser],
+        help="List recent pipeline runs",
+    )
+    ls.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT, help="Number of runs (default: 20)")
+    ls.add_argument("--status", choices=["running", "completed", "failed"], help="Filter by status")
+    ls.add_argument("--flow", type=str, help="Filter by flow name")
+
+    # show
+    sh = subparsers.add_parser(
+        "show",
+        parents=[_connection_parser],
+        help="Show trace summary",
+    )
+    sh.add_argument("execution_id", help="Execution UUID")
+
+    args = parser.parse_args(argv)
+
+    handlers: dict[str, Any] = {"download": _cmd_download, "list": _cmd_list, "show": _cmd_show}
+    handler = handlers.get(args.command)
+    if handler is None:
+        parser.print_help()
+        return 1
+
+    return handler(args)
+
 def trace(  # noqa: UP047
     func: Callable[P, R] | None = None,
     *,

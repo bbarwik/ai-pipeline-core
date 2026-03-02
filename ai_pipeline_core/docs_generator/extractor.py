@@ -7,6 +7,7 @@ and builds a symbol table for dependency resolution.
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 __all__ = [
     "EXTERNAL_STUBS",
@@ -164,6 +165,26 @@ def parse_module(path: Path) -> ModuleInfo:
     )
 
 
+def _dedup_key(name: str, package_name: str, symbols: dict[str, Any], module_map: dict[str, str]) -> str:
+    """Return a unique dict key for a symbol, qualifying with module name on collision.
+
+    When two modules define the same public symbol (e.g. ``main`` in multiple
+    cli.py files), the first is re-keyed as ``existing_module:name`` and the
+    new one is stored as ``package_name:name``.
+    """
+    if name not in symbols:
+        return name
+    existing_module = module_map.get(name, "")
+    if existing_module == package_name:
+        return name
+    # First collision: re-key the existing entry
+    qualified_existing = f"{existing_module}:{name}"
+    if qualified_existing not in symbols:
+        symbols[qualified_existing] = symbols.pop(name)
+        module_map[qualified_existing] = module_map.pop(name)
+    return f"{package_name}:{name}"
+
+
 def build_symbol_table(source_dir: Path) -> SymbolTable:
     """Parse all .py files under source_dir and build a unified symbol table."""
     table = SymbolTable()
@@ -180,14 +201,17 @@ def build_symbol_table(source_dir: Path) -> SymbolTable:
             package_name = relative.stem
 
         for cls in module.classes:
-            table.classes[cls.name] = cls
-            table.class_to_module[cls.name] = package_name
+            key = _dedup_key(cls.name, package_name, table.classes, table.class_to_module)
+            table.classes[key] = cls
+            table.class_to_module[key] = package_name
         for func in module.functions:
-            table.functions[func.name] = func
-            table.function_to_module[func.name] = package_name
+            key = _dedup_key(func.name, package_name, table.functions, table.function_to_module)
+            table.functions[key] = func
+            table.function_to_module[key] = package_name
         for val in module.values:
-            table.values[val.name] = val
-            table.value_to_module[val.name] = package_name
+            key = _dedup_key(val.name, package_name, table.values, table.value_to_module)
+            table.values[key] = val
+            table.value_to_module[key] = package_name
 
     _remap_private_symbols(table, source_dir)
     return table

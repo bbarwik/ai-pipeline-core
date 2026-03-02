@@ -5,9 +5,11 @@ import hashlib
 import json
 import types
 from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
 from uuid import UUID
 
+from opentelemetry import trace as otel_trace
 from prefect import get_client
 from prefect.client.orchestration import PrefectClient
 from prefect.client.schemas import FlowRun
@@ -16,11 +18,18 @@ from prefect.deployments.flow_runs import run_deployment
 from prefect.exceptions import ObjectNotFound
 
 from ai_pipeline_core.deployment import DeploymentResult
-from ai_pipeline_core.deployment._helpers import _CLI_FIELDS, class_name_to_deployment_name, extract_generic_params, validate_run_id
+from ai_pipeline_core.deployment._helpers import (
+    _CLI_FIELDS,
+    class_name_to_deployment_name,
+    extract_generic_params,
+    init_observability_best_effort,
+    validate_run_id,
+)
 from ai_pipeline_core.deployment._resolve import AttachmentInput, DocumentInput
 from ai_pipeline_core.deployment._task_results import ClickHouseTaskResultStore
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.observability._span_data import ATTR_INPUT_DOC_SHA256S, ATTR_OUTPUT_DOC_SHA256S
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
 from ai_pipeline_core.pipeline._type_validation import is_already_traced
 from ai_pipeline_core.pipeline.options import FlowOptions
@@ -310,7 +319,11 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         options: TOptions,
         on_progress: ProgressCallback | None,
     ) -> TResult:
-        """Serialize, call Prefect, deserialize. Wrapped with @trace in __init_subclass__."""
+        """Serialize, call Prefect, deserialize, track document lineage.
+
+        Wrapped with @trace in __init_subclass__. Tracks input/output document
+        SHA256s on the OTel span, matching @pipeline_task/@pipeline_flow behavior.
+        """
         validate_run_id(run_id)
         derived_run_id = _derive_remote_run_id(run_id, documents, options)
         validate_run_id(derived_run_id)
@@ -332,10 +345,25 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
             set_trace_cost(self.trace_cost)
 
         if isinstance(result, DeploymentResult):
-            return cast(TResult, result)
-        if isinstance(result, dict):
-            return cast(TResult, self.result_type.model_validate(result))
-        raise TypeError(f"Remote deployment '{self.name}' returned unexpected type: {type(result).__name__}. Expected DeploymentResult or dict.")
+            typed_result = cast(TResult, result)
+        elif isinstance(result, dict):
+            typed_result = cast(TResult, self.result_type.model_validate(result))
+        else:
+            raise TypeError(f"Remote deployment '{self.name}' returned unexpected type: {type(result).__name__}. Expected DeploymentResult or dict.")
+
+        # Track document lineage on the current span (matching @pipeline_task/@pipeline_flow)
+        try:
+            span = otel_trace.get_current_span()
+            input_sha256s = [doc.sha256 for doc in documents]
+            if input_sha256s:
+                span.set_attribute(ATTR_INPUT_DOC_SHA256S, input_sha256s)
+            if typed_result.documents:
+                output_sha256s = [d.sha256 for d in typed_result.documents]
+                span.set_attribute(ATTR_OUTPUT_DOC_SHA256S, output_sha256s)
+        except Exception:
+            logger.debug("Failed to track document lineage", exc_info=True)
+
+        return typed_result
 
     @final
     async def run(
@@ -352,3 +380,32 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
             options,
             on_progress,
         )
+
+    @final
+    async def run_traced(
+        self,
+        run_id: str,
+        documents: list[TDoc],
+        options: TOptions,
+        output_dir: Path,
+        on_progress: ProgressCallback | None = None,
+    ) -> TResult:
+        """Execute with local .trace/ debug tracing at output_dir/.trace.
+
+        Sets up FilesystemBackend + PipelineSpanProcessor for local debug
+        output, matching the CLI pipeline tracing pattern. Use when running
+        RemoteDeployment standalone (not inside a caller pipeline with tracing).
+        """
+        from ai_pipeline_core.deployment._cli import _init_debug_tracing
+        from ai_pipeline_core.observability._initialization import get_clickhouse_backend
+
+        init_observability_best_effort()
+        debug_backend = _init_debug_tracing(output_dir)
+        try:
+            return await self._execute(run_id, documents, options, on_progress)
+        finally:
+            ch_backend = get_clickhouse_backend()
+            if ch_backend:
+                ch_backend.shutdown()
+            if debug_backend:
+                debug_backend.shutdown()

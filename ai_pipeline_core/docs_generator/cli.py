@@ -36,8 +36,7 @@ EXCLUDED_MODULES: frozenset[str] = frozenset({"docs_generator"})
 PACKAGE_NAME = "ai_pipeline_core"
 README_FILENAME = "README.md"
 
-# Generic entry-point names that are not part of the public API
-_EXCLUDED_SYMBOLS: frozenset[str] = frozenset({"main"})
+_EXCLUDED_SYMBOLS: frozenset[str] = frozenset()
 
 
 _CONSECUTIVE_BLOCKS_RE = re.compile(r"```\n(\s*\n)+```python\n")

@@ -287,8 +287,17 @@ def _fetch_and_materialize(client: Any, *, execution_id: UUID, run_id: str, use_
             run_path = output_path / f"child_{span_run_id}"
 
         materializer = TraceMaterializer(TraceDebugConfig(path=run_path))
-        for span in spans:
+        real_spans = sorted((s for s in spans if s.span_order > 0), key=lambda s: s.span_order)
+        filtered_spans = [s for s in spans if s.span_order == 0]
+        # Pass 1: register all spans (status="running") to prevent premature finalization
+        for span in real_spans:
+            materializer.on_span_start(span)
+        # Pass 2: write span data (status→"completed")
+        for span in real_spans:
             materializer.add_span(span)
+        # Route filtered LLM spans to metrics only (matching live FilesystemBackend behavior)
+        for span in filtered_spans:
+            materializer.record_filtered_llm_metrics(span)
         materializer.finalize_all()
 
     return child_run_ids
@@ -323,6 +332,16 @@ def _cmd_download(args: argparse.Namespace) -> int:
         logger.debug("Trace download failed", exc_info=True)
         return 1
 
+    # Download documents referenced by replay files
+    found, total = 0, 0
+    if not args.no_docs:
+        from ai_pipeline_core.observability._download_docs import fetch_trace_documents
+
+        try:
+            found, total = fetch_trace_documents(client, output_path)
+        except Exception as e:
+            logger.warning("Document download failed: %s", e)
+
     # Print summary
     span_dirs = [d for d in output_path.iterdir() if d.is_dir() and d.name[:1].isdigit()]
     flow_name = _extract_flow_name(output_path)
@@ -330,6 +349,11 @@ def _cmd_download(args: argparse.Namespace) -> int:
     print(f"  spans: {len(span_dirs)}")
     if child_run_ids:
         print(f"  children: {len(child_run_ids)}")
+    if total > 0:
+        doc_msg = f"  documents: {found}/{total}"
+        if found < total:
+            doc_msg += f" ({total - found} not found in ClickHouse)"
+        print(doc_msg)
     print(f"  path: {output_path}")
 
     return 0
@@ -484,6 +508,7 @@ def main(argv: list[str] | None = None) -> int:
     dl.add_argument("identifier", help="Execution UUID or run_id")
     dl.add_argument("-o", "--output", type=str, default=None, help="Output directory (default: ./{id[:8]}_trace/)")
     dl.add_argument("--children", action="store_true", help="Include child pipeline runs (matched by run_id prefix)")
+    dl.add_argument("--no-docs", action="store_true", help="Skip downloading documents referenced by replay files")
 
     # list
     ls = subparsers.add_parser(

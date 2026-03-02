@@ -132,8 +132,8 @@ class SpanData:
             run_scope=row.get("run_scope", ""),
             span_type=row.get("span_type", "trace"),
             status=row.get("status", "completed"),
-            start_time=row["start_time"],
-            end_time=row["end_time"],
+            start_time=_ensure_utc(row["start_time"]),
+            end_time=_ensure_utc(row["end_time"]),
             duration_ms=row.get("duration_ms", 0),
             span_order=row.get("span_order", 0),
             cost=row.get("cost", 0.0),
@@ -150,6 +150,13 @@ class SpanData:
             input_doc_sha256s=tuple(row.get("input_doc_sha256s", ())),
             output_doc_sha256s=tuple(row.get("output_doc_sha256s", ())),
         )
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    """Ensure a datetime is UTC-aware. clickhouse_connect strips tzinfo from DateTime64('UTC') columns."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 def _extract_identity(ctx: Any, parent: Any, name: str, attrs: dict[str, Any], res_attrs: dict[str, Any]) -> dict[str, Any]:

@@ -280,12 +280,13 @@ class TestFindPublicSymbols:
         symbols = _find_public_symbols(src)
         assert symbols == set()
 
-    def test_excludes_main(self, tmp_path):
+    def test_includes_main(self, tmp_path):
+        """main() is a valid public symbol (CLI entry points are part of the API)."""
         src = tmp_path / "pkg"
         src.mkdir()
         _write_py(src / "cli.py", "def main(): pass\n")
         symbols = _find_public_symbols(src)
-        assert "main" not in symbols
+        assert "main" in symbols
 
     def test_skips_private_package(self, tmp_path):
         src = tmp_path / "pkg"
@@ -322,8 +323,10 @@ class TestValidateSizeSkipsReadme:
         assert violations == []
 
 
-class TestValidateCompletenessExcludesMain:
-    def test_main_excluded(self, tmp_path):
+class TestValidateCompletenessIncludesMain:
+    """main() is a valid public symbol and must be tracked by completeness checks."""
+
+    def test_main_included(self, tmp_path):
         src = tmp_path / "pkg"
         src.mkdir()
         _write_py(src / "cli.py", "def main(): pass\nclass PublicThing: pass\n")
@@ -331,5 +334,5 @@ class TestValidateCompletenessExcludesMain:
         ai_docs.mkdir()
         (ai_docs / "cli.md").write_text("nothing here\n")
         missing = validate_completeness(ai_docs, src)
-        assert "main" not in missing
+        assert "main" in missing
         assert "PublicThing" in missing

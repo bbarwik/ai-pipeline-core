@@ -1,8 +1,8 @@
 # MODULE: prompt_compiler
-# CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
+# CLASSES: Role, Rule, OutputRule, Guide, PromptSpec, Role
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.12.2
+# VERSION: 0.12.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -334,6 +334,32 @@ Pydantic fields (dynamic input values):
         _check_unknown_attrs(cls, name)
 
 
+class Role:
+    """Base class for LLM role definitions.
+
+Role text is rendered into the **user message**, not the system prompt. The renderer
+produces ``"You are a/an {text}."`` as the first section of the compiled prompt text,
+which is sent via ``Conversation.send()`` / ``send_spec()`` as a user message.
+
+This is not a system prompt. Role does not set, replace, or interact with the
+system prompt in any way. It is purely a section in the user message produced
+by ``render_text()``.
+
+Must define a non-empty docstring and a ``text`` ClassVar on every Role subclass.
+Must not end Role text with sentence punctuation (.!?) — the renderer adds a period automatically.
+Must use domain-neutral Roles for specs that handle multiple domains — a PromptSpec
+parameterized by domain (e.g., finding_type field that can be "risk", "opportunity",
+or "question") needs a Role that doesn't bias toward any single domain."""
+    text: ClassVar[str]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_docstring(cls, kind="Role")
+        _require_text(cls, kind="Role")
+        if cls.text[-1] in ".!?":
+            raise TypeError(f"Role '{cls.__name__}' text must not end with punctuation (the renderer adds a period automatically)")
+
+
 ```
 
 ## Functions
@@ -465,6 +491,36 @@ def is_multi_line_field(field_info: FieldInfo) -> bool:
     extra = field_info.json_schema_extra
     return isinstance(extra, dict) and bool(extra.get(_MULTI_LINE_KEY))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for prompt compiler operations."""
+    parser = argparse.ArgumentParser(prog="prompt_compiler", description="Prompt compiler CLI")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # inspect
+    inspect_parser = subparsers.add_parser("inspect", help="Show detailed anatomy of a single spec")
+    inspect_parser.add_argument("spec", help="Spec class name or module.path:ClassName")
+    inspect_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
+
+    # render
+    render_parser = subparsers.add_parser("render", help="Render a prompt preview with placeholder values")
+    render_parser.add_argument("spec", help="Spec class name or module.path:ClassName")
+    render_parser.add_argument("--no-input-documents", action="store_true", help="Hide input document listing")
+    render_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
+
+    # compile (also discovers and lists specs)
+    compile_parser = subparsers.add_parser("compile", help="Discover, list, and compile all specs to .prompts/")
+    compile_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
+
+    args = parser.parse_args(argv)
+
+    handlers = {"inspect": _cmd_inspect, "render": _cmd_render, "compile": _cmd_compile}
+    handler = handlers.get(args.command)
+    if handler is None:
+        parser.print_help()
+        return 1
+
+    return handler(args)
+
 ```
 
 ## Examples
@@ -587,41 +643,46 @@ def test_render_full_prompt_spec_workflow() -> None:
     assert "# Output Structure\n\n## Key Findings" in rendered
 ```
 
-**Role normalizes text** (`tests/prompt_compiler/test_components.py:169`)
+**Main compile empty dir** (`tests/prompt_compiler/test_cli.py:351`)
 
 ```python
-def test_role_normalizes_text() -> None:
-    class NormalizedRole(Role):
-        """Role doc."""
-
-        text = """
-            experienced evaluator
-        """
-
-    assert NormalizedRole.text == "experienced evaluator"
+def test_main_compile_empty_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["compile", "--root", str(tmp_path)])
+    assert ret == 0
+    capsys.readouterr()  # Consume output; we only verify it doesn't crash
 ```
 
-**Rule accepts exactly max lines** (`tests/prompt_compiler/test_components.py:195`)
+**Main inspect basemodel output** (`tests/prompt_compiler/test_cli.py:425`)
 
 ```python
-def test_rule_accepts_exactly_max_lines() -> None:
-    text = "\n".join(f"line {i}" for i in range(1, MAX_RULE_LINES + 1))
-    cls = type("ExactLinesRule", (Rule,), {"__doc__": "Doc.", "text": text})
-    assert cls.text == text
+def test_main_inspect_basemodel_output(capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["inspect", f"{StructuredInspectSpec.__module__}:StructuredInspectSpec"])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "Type: CliPayload" in out
 ```
 
-**Guide allows h2 and deeper headers** (`tests/prompt_compiler/test_components.py:308`)
+**Main inspect not found** (`tests/prompt_compiler/test_cli.py:442`)
 
 ```python
-def test_guide_allows_h2_and_deeper_headers(tmp_path: Path, temp_modules: list[str]) -> None:
-    template_file = tmp_path / "ok_header.txt"
-    template_file.write_text("## H2 header\n### H3 header\n#### H4 header\n", encoding="utf-8")
+def test_main_inspect_not_found(capsys: pytest.CaptureFixture[str]) -> None:
+    ret = main(["inspect", "NoSuchSpec12345"])
+    assert ret == 1
+    err = capsys.readouterr().err
+    assert "not found" in err
+```
 
-    module_name = f"mod_h2_{uuid4().hex}"
-    _register_module(temp_modules, module_name, module_file=tmp_path / "module.py")
+**Main inspect with guides** (`tests/prompt_compiler/test_cli.py:432`)
 
-    guide_cls = _build_guide_class(module_name, "OkHeaderGuide", "ok_header.txt")
-    assert "## H2 header" in guide_cls.render()
+```python
+def test_main_inspect_with_guides(capsys: pytest.CaptureFixture[str]) -> None:
+    """Inspect a spec that has guides — covers the guides section rendering."""
+    ret = main(["inspect", "examples.showcase_prompt_compiler:IssueOptimisticSpec"])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "Guides (2):" in out
+    assert "RiskAssessmentFramework" in out
+    assert "chars)" in out
 ```
 
 
@@ -704,4 +765,16 @@ def test_guide_rejects_absolute_path(tmp_path: Path) -> None:
 def test_guide_requires_non_empty_string_template(template_value: object) -> None:
     with pytest.raises(TypeError, match="must define 'template' as a ClassVar"):
         type("BadTemplateGuide", (Guide,), {"__module__": __name__, "__doc__": "Guide doc.", "template": template_value})
+```
+
+**Role empty docstring** (`tests/prompt_compiler/test_components.py:125`)
+
+```python
+def test_role_empty_docstring() -> None:
+    with pytest.raises(TypeError, match="must define a non-empty docstring"):
+
+        class EmptyDocRole(Role):
+            """ """
+
+            text = "valid"
 ```

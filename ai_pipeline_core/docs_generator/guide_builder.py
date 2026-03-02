@@ -471,9 +471,9 @@ def build_guide(  # noqa: PLR0914, PLR0917
     if repo_root is None:
         repo_root = source_dir.parent
 
-    public_classes = [c for c in table.classes.values() if c.is_public and table.class_to_module.get(c.name) == module_name]
-    public_functions = [f for f in table.functions.values() if f.is_public and table.function_to_module.get(f.name) == module_name]
-    public_values = [v for v in table.values.values() if v.is_public and table.value_to_module.get(v.name) == module_name]
+    public_classes = [c for key, c in table.classes.items() if c.is_public and table.class_to_module.get(key) == module_name]
+    public_functions = [f for key, f in table.functions.items() if f.is_public and table.function_to_module.get(key) == module_name]
+    public_values = [v for key, v in table.values.items() if v.is_public and table.value_to_module.get(key) == module_name]
 
     # Resolve dependencies
     root_names = [c.name for c in public_classes]

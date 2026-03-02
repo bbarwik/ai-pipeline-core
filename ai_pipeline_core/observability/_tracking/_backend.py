@@ -24,6 +24,7 @@ class ClickHouseBackend:
         self._writer = writer
         self._last_version: int = 0
         self._lock = Lock()
+        self._run_execution_id: UUID | None = None
 
     def _next_version(self) -> int:
         """Generate a monotonically increasing version (nanosecond timestamp)."""
@@ -41,10 +42,11 @@ class ClickHouseBackend:
 
     def on_span_end(self, span_data: SpanData) -> None:
         """Build a PipelineSpanRow and queue it for insertion."""
-        if span_data.execution_id is None:
+        execution_id = span_data.execution_id or self._run_execution_id
+        if execution_id is None:
             return
         row = PipelineSpanRow(
-            execution_id=span_data.execution_id,
+            execution_id=execution_id,
             span_id=span_data.span_id,
             trace_id=span_data.trace_id,
             parent_span_id=span_data.parent_span_id,
@@ -89,6 +91,7 @@ class ClickHouseBackend:
         run_scope: str = "",
     ) -> datetime:
         """Write a running-status row to pipeline_runs. Returns the start_time for use in track_run_end."""
+        self._run_execution_id = execution_id
         start_time = datetime.now(UTC)
         row = PipelineRunRow(
             execution_id=execution_id,
@@ -116,6 +119,7 @@ class ClickHouseBackend:
         metadata: dict[str, object] | None = None,
     ) -> None:
         """Write a completed/failed-status row to pipeline_runs."""
+        self._run_execution_id = None
         row = PipelineRunRow(
             execution_id=execution_id,
             run_id=run_id,

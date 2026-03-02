@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.12.2"
+version = "0.12.3"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -166,7 +166,7 @@ convention = "google"
 "ai_pipeline_core/pipeline/limits.py" = ["BLE001", "ASYNC109", "TID251"]
 "tests/pipeline/test_limits.py" = ["PLC2801"]
 "ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912", "BLE001", "TID251"]
-"ai_pipeline_core/deployment/remote.py" = ["UP046", "UP047", "TID251", "BLE001"]
+"ai_pipeline_core/deployment/remote.py" = ["UP046", "UP047", "TID251", "BLE001", "PLC0415"]
 "ai_pipeline_core/deployment/_pubsub.py" = ["BLE001"]
 "ai_pipeline_core/deployment/progress.py" = ["RUF029", "BLE001", "TID251"]
 "ai_pipeline_core/documents/document.py" = ["PLR0904"]
@@ -184,6 +184,7 @@ convention = "google"
 "ai_pipeline_core/observability/_debug/_content.py" = ["PLR1702", "C901", "PLR0912", "PLR0915", "PLR6301", "BLE001"]
 "ai_pipeline_core/observability/_debug/_writer.py" = ["S112", "S324", "SIM116", "BLE001"]
 "ai_pipeline_core/observability/_debug/_summary.py" = ["BLE001"]
+"ai_pipeline_core/observability/_download_docs.py" = ["S608"]
 "ai_pipeline_core/observability/_initialization.py" = ["BLE001"]
 "ai_pipeline_core/observability/_tracking/_processor.py" = ["BLE001"]
 "ai_pipeline_core/observability/_tracking/_writer.py" = ["BLE001"]
@@ -280,7 +281,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.12.2"
+current_version = "0.12.3"
 commit = true
 tag = true
 tag_name = "v{new_version}"

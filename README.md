@@ -973,7 +973,7 @@ Duplicate LLM spans are filtered by default (every `Conversation` call creates b
 
 When ClickHouse tracking is enabled, all span data (input/output, replay payloads, attributes, events, timing, LLM metrics) is stored in the `pipeline_spans` table with ZSTD-compressed content columns. This enables downloading traces from remote/cloud pipeline runs and rebuilding the `.trace/` directory locally for debugging and replay via `ai-trace download`.
 
-The reconstructed directory has the same structure as local `.trace/` output — `summary.md`, `llm_calls.yaml`, per-span directories with `span.yaml`, `input.yaml`, `output.yaml`, replay files, and `events.yaml`.
+The reconstructed directory has the same structure as local `.trace/` output — `summary.md`, `llm_calls.yaml`, per-span directories with `span.yaml`, `input.yaml`, `output.yaml`, replay files, and `events.yaml`. Documents referenced by replay files (`$doc_ref` SHA256 hashes) are automatically downloaded and written in `LocalDocumentStore` format, making `ai-replay run` work on downloaded traces out of the box.
 
 ### `ai-trace` CLI
 
@@ -986,8 +986,14 @@ ai-trace list --limit 10 --status completed
 # Show trace summary without downloading
 ai-trace show 550e8400-e29b-41d4-a716-446655440000
 
-# Download trace and rebuild .trace/ directory
+# Download trace and rebuild .trace/ directory (includes referenced documents)
 ai-trace download 550e8400-e29b-41d4-a716-446655440000 -o ./debug/
+
+# Download with child pipeline runs
+ai-trace download my-run-001 --children -o ./debug/
+
+# Download trace only (skip document download)
+ai-trace download 550e8400-e29b-41d4-a716-446655440000 --no-docs -o ./debug/
 ```
 
 Connection defaults to `CLICKHOUSE_*` environment variables. Override with `--host`, `--port`, `--database`, `--user`, `--password`, `--no-secure`.

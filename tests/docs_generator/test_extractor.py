@@ -468,6 +468,27 @@ def test_build_symbol_table_includes_values(tmp_path):
     assert table.value_to_module["DocSha"] == "pkg"
 
 
+def test_build_symbol_table_deduplicates_cross_module_functions(tmp_path):
+    """Same-named functions in different modules must all be stored, not overwritten."""
+    pkg_a = tmp_path / "alpha"
+    pkg_a.mkdir()
+    _write_py(pkg_a / "cli.py", 'def main():\n    """Alpha entry."""\n    pass\n')
+    pkg_b = tmp_path / "beta"
+    pkg_b.mkdir()
+    _write_py(pkg_b / "cli.py", 'def main():\n    """Beta entry."""\n    pass\n')
+
+    table = build_symbol_table(tmp_path)
+
+    # Both functions must be present (under any key)
+    all_functions = list(table.functions.values())
+    main_functions = [f for f in all_functions if f.name == "main"]
+    assert len(main_functions) == 2, f"Expected 2 main functions, got {len(main_functions)}: {[f.module_path for f in main_functions]}"
+
+    # Module mappings must be correct
+    modules = {table.function_to_module[k] for k, f in table.functions.items() if f.name == "main"}
+    assert modules == {"alpha", "beta"}
+
+
 def test_parse_module_values_make_module_public(tmp_path):
     src = tmp_path / "sample.py"
     src.write_text("MAX_SIZE = 1024\n")

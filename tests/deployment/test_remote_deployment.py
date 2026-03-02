@@ -16,7 +16,9 @@ from pydantic import BaseModel
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions
 from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
+from ai_pipeline_core.deployment._resolve import _OutputDocument
 from ai_pipeline_core.deployment.remote import RemoteDeployment, _get_completed_result, _read_from_task_results
+from ai_pipeline_core.observability._span_data import ATTR_INPUT_DOC_SHA256S, ATTR_OUTPUT_DOC_SHA256S
 from ai_pipeline_core.observability.tracing import TraceLevel
 
 
@@ -915,3 +917,179 @@ class TestValidateRunIdWiring:
         long_run_id = "a" * 92  # 92 + 1 ('-') + 8 (fingerprint) = 101 > 100
         with pytest.raises(ValueError, match="Shorten the base run_id"):
             await Wired3().run(long_run_id, [doc], FlowOptions())
+
+
+# ===================================================================
+# 12. Document lineage tracking
+# ===================================================================
+
+
+class TestDocumentLineageTracking:
+    """Tests for automatic document lineage tracking in _execute."""
+
+    async def test_input_sha256s_set_on_span(self):
+        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        mock_span = MagicMock()
+
+        with (
+            patch(_REMOTE_RUN) as mock_run,
+            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
+        ):
+            mock_run.return_value = SimpleResult(success=True)
+            await Tracked().run("project", [doc], FlowOptions())
+
+        mock_span.set_attribute.assert_any_call(ATTR_INPUT_DOC_SHA256S, [doc.sha256])
+
+    async def test_output_sha256s_set_on_span(self):
+        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        output_doc = _OutputDocument(sha256="ABCDEF123456", name="out.txt", class_name="AlphaDoc", mime_type="text/plain", size=5)
+        result_with_docs = SimpleResult(success=True, documents=(output_doc,))
+        mock_span = MagicMock()
+
+        with (
+            patch(_REMOTE_RUN) as mock_run,
+            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
+        ):
+            mock_run.return_value = result_with_docs
+            await Tracked().run("project", [], FlowOptions())
+
+        mock_span.set_attribute.assert_any_call(ATTR_OUTPUT_DOC_SHA256S, ["ABCDEF123456"])
+
+    async def test_both_input_and_output_tracked(self):
+        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        output_doc = _OutputDocument(sha256="OUT123", name="out.txt", class_name="AlphaDoc", mime_type="text/plain", size=5)
+        result_with_docs = SimpleResult(success=True, documents=(output_doc,))
+        mock_span = MagicMock()
+
+        with (
+            patch(_REMOTE_RUN) as mock_run,
+            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
+        ):
+            mock_run.return_value = result_with_docs
+            await Tracked().run("project", [doc], FlowOptions())
+
+        calls = {call.args[0]: call.args[1] for call in mock_span.set_attribute.call_args_list}
+        assert calls[ATTR_INPUT_DOC_SHA256S] == [doc.sha256]
+        assert calls[ATTR_OUTPUT_DOC_SHA256S] == ["OUT123"]
+
+    async def test_empty_documents_no_attributes_set(self):
+        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        mock_span = MagicMock()
+
+        with (
+            patch(_REMOTE_RUN) as mock_run,
+            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
+        ):
+            mock_run.return_value = SimpleResult(success=True)
+            await Tracked().run("project", [], FlowOptions())
+
+        mock_span.set_attribute.assert_not_called()
+
+    async def test_tracking_failure_does_not_propagate(self):
+        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+
+        with (
+            patch(_REMOTE_RUN) as mock_run,
+            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", side_effect=RuntimeError("broken")),
+        ):
+            mock_run.return_value = SimpleResult(success=True)
+            result = await Tracked().run("project", [doc], FlowOptions())
+
+        assert result.success
+
+    async def test_dict_result_also_tracked(self):
+        """Document lineage works when remote returns a dict (deserialized via model_validate)."""
+
+        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        mock_span = MagicMock()
+
+        with (
+            patch(_REMOTE_RUN) as mock_run,
+            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
+        ):
+            mock_run.return_value = {"success": True, "report": "done"}
+            await Tracked().run("project", [doc], FlowOptions())
+
+        mock_span.set_attribute.assert_called_once_with(ATTR_INPUT_DOC_SHA256S, [doc.sha256])
+
+
+# ===================================================================
+# 13. run_traced()
+# ===================================================================
+
+
+class TestRunTraced:
+    """Tests for run_traced() standalone tracing."""
+
+    async def test_run_traced_calls_init_and_shutdown(self, tmp_path):
+        class Traced(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        mock_fs_backend = MagicMock()
+
+        with (
+            patch(_REMOTE_RUN) as mock_run,
+            patch("ai_pipeline_core.deployment.remote.init_observability_best_effort") as mock_init,
+            patch("ai_pipeline_core.deployment._cli._init_debug_tracing", return_value=mock_fs_backend) as mock_debug,
+            patch("ai_pipeline_core.observability._initialization.get_clickhouse_backend", return_value=None),
+        ):
+            mock_run.return_value = SimpleResult(success=True)
+            result = await Traced().run_traced("project", [], FlowOptions(), output_dir=tmp_path)
+
+        assert result.success
+        mock_init.assert_called_once()
+        mock_debug.assert_called_once_with(tmp_path)
+        mock_fs_backend.shutdown.assert_called_once()
+
+    async def test_run_traced_shuts_down_on_failure(self, tmp_path):
+        class Traced(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        mock_fs_backend = MagicMock()
+
+        with (
+            patch(_REMOTE_RUN) as mock_run,
+            patch("ai_pipeline_core.deployment.remote.init_observability_best_effort"),
+            patch("ai_pipeline_core.deployment._cli._init_debug_tracing", return_value=mock_fs_backend),
+            patch("ai_pipeline_core.observability._initialization.get_clickhouse_backend", return_value=None),
+        ):
+            mock_run.side_effect = RuntimeError("remote failed")
+            with pytest.raises(RuntimeError, match="remote failed"):
+                await Traced().run_traced("project", [], FlowOptions(), output_dir=tmp_path)
+
+        mock_fs_backend.shutdown.assert_called_once()
+
+    async def test_run_traced_shuts_down_clickhouse_backend(self, tmp_path):
+        class Traced(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+            trace_level: ClassVar[TraceLevel] = "off"
+
+        mock_fs_backend = MagicMock()
+        mock_ch_backend = MagicMock()
+
+        with (
+            patch(_REMOTE_RUN) as mock_run,
+            patch("ai_pipeline_core.deployment.remote.init_observability_best_effort"),
+            patch("ai_pipeline_core.deployment._cli._init_debug_tracing", return_value=mock_fs_backend),
+            patch("ai_pipeline_core.observability._initialization.get_clickhouse_backend", return_value=mock_ch_backend),
+        ):
+            mock_run.return_value = SimpleResult(success=True)
+            await Traced().run_traced("project", [], FlowOptions(), output_dir=tmp_path)
+
+        mock_ch_backend.shutdown.assert_called_once()
+        mock_fs_backend.shutdown.assert_called_once()
