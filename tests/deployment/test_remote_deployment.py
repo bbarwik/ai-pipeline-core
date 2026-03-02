@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions
 from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
-from ai_pipeline_core.deployment._resolve import _OutputDocument
+from ai_pipeline_core.deployment._resolve import OutputDocument
 from ai_pipeline_core.deployment.remote import RemoteDeployment, _get_completed_result, _read_from_task_results
 from ai_pipeline_core.observability._span_data import ATTR_INPUT_DOC_SHA256S, ATTR_OUTPUT_DOC_SHA256S
 from ai_pipeline_core.observability.tracing import TraceLevel
@@ -947,7 +947,7 @@ class TestDocumentLineageTracking:
         class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
             trace_level: ClassVar[TraceLevel] = "off"
 
-        output_doc = _OutputDocument(sha256="ABCDEF123456", name="out.txt", class_name="AlphaDoc", mime_type="text/plain", size=5)
+        output_doc = OutputDocument(sha256="ABCDEF123456", name="out.txt", class_name="AlphaDoc", mime_type="text/plain", size=5)
         result_with_docs = SimpleResult(success=True, documents=(output_doc,))
         mock_span = MagicMock()
 
@@ -965,7 +965,7 @@ class TestDocumentLineageTracking:
             trace_level: ClassVar[TraceLevel] = "off"
 
         doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
-        output_doc = _OutputDocument(sha256="OUT123", name="out.txt", class_name="AlphaDoc", mime_type="text/plain", size=5)
+        output_doc = OutputDocument(sha256="OUT123", name="out.txt", class_name="AlphaDoc", mime_type="text/plain", size=5)
         result_with_docs = SimpleResult(success=True, documents=(output_doc,))
         mock_span = MagicMock()
 

@@ -150,7 +150,7 @@ class TestLLMIntegration:
         """Test that usage tracking works."""
         conv = Conversation(
             model="gemini-3-flash",
-            model_options=ModelOptions(max_completion_tokens=100, usage_tracking=True),
+            model_options=ModelOptions(max_completion_tokens=100, usage_tracking=True, reasoning_effort="low"),
         )
 
         conv = await conv.send("Count to 3")
@@ -165,7 +165,7 @@ class TestLLMIntegration:
         """Test that Conversation is immutable - send returns new instance."""
         conv = Conversation(
             model="gemini-3-flash",
-            model_options=ModelOptions(max_completion_tokens=100),
+            model_options=ModelOptions(max_completion_tokens=100, reasoning_effort="low"),
         )
 
         result = await conv.send("Hello")
@@ -184,7 +184,7 @@ class TestLLMIntegration:
         """
         conv = Conversation(
             model="gemini-3-flash",
-            model_options=ModelOptions(max_completion_tokens=100),
+            model_options=ModelOptions(max_completion_tokens=100, reasoning_effort="low"),
         )
 
         # First message
@@ -203,7 +203,7 @@ class TestLLMIntegration:
         """Test adding document to conversation."""
         conv = Conversation(
             model="gemini-3-flash",
-            model_options=ModelOptions(max_completion_tokens=100),
+            model_options=ModelOptions(max_completion_tokens=300, reasoning_effort="low"),
         )
 
         doc = ConcreteDocument(
@@ -222,7 +222,7 @@ class TestLLMIntegration:
 
         conv = Conversation(
             model="gemini-3-flash",
-            model_options=ModelOptions(max_completion_tokens=100),
+            model_options=ModelOptions(max_completion_tokens=100, reasoning_effort="low"),
         )
 
         json_str = conv.model_dump_json()
@@ -386,7 +386,7 @@ class TestLLMIntegration:
         nonce = uuid.uuid4().hex[:12]
         conv = Conversation(
             model=model,
-            model_options=ModelOptions(max_completion_tokens=100),
+            model_options=ModelOptions(max_completion_tokens=100, reasoning_effort="low"),
             enable_substitutor=False,
         )
         conv = await conv.send(f"Say hello. Nonce: {nonce}")

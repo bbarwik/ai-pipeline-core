@@ -17,11 +17,11 @@ __all__ = [
     "FlowReplay",
     "HistoryEntry",
     "TaskReplay",
-    "infer_store_base",
+    "_infer_store_base",
 ]
 
 
-def infer_store_base(replay_file: Path) -> Path:
+def _infer_store_base(replay_file: Path) -> Path:
     """Walk up from replay_file to find .trace/ directory, return its parent.
 
     Used automatically by the CLI. Only needed programmatically when bypassing the CLI.

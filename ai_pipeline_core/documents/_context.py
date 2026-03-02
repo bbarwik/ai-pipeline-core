@@ -76,6 +76,7 @@ class TaskContext:
     """Mutable set of document SHA256s created within the current task/flow."""
 
     created: set[DocumentSha256] = field(default_factory=set)
+    scope_kind: str = "task"
 
 
 _task_context: ContextVar[TaskContext | None] = ContextVar("_task_context", default=None)

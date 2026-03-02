@@ -55,7 +55,7 @@ from ._helpers import (
     init_observability_best_effort,
     validate_run_id,
 )
-from ._resolve import DocumentInput, _OutputDocument, build_output_document, resolve_document_inputs
+from ._resolve import DocumentInput, OutputDocument, build_output_document, resolve_document_inputs
 from ._types import (
     CompletedEvent,
     ErrorCode,
@@ -236,7 +236,7 @@ class DeploymentResult(BaseModel):
 
     success: bool
     error: str | None = None
-    documents: tuple[_OutputDocument, ...] = ()
+    documents: tuple[OutputDocument, ...] = ()
 
     model_config = ConfigDict(frozen=True)
 
@@ -292,7 +292,9 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
-    pubsub_service_type: ClassVar[str] = ""  # Pub/Sub source identifier; requires PUBSUB_PROJECT_ID + PUBSUB_TOPIC_ID. Empty = NoopPublisher.
+    # Sets CloudEvents ``source`` attribute (e.g. ``ai-{service_type}-worker``).
+    # Does not affect topic routing. Requires PUBSUB_PROJECT_ID + PUBSUB_TOPIC_ID. Empty = NoopPublisher.
+    pubsub_service_type: ClassVar[str] = ""
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
@@ -344,12 +346,16 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         """Extract typed result from pipeline documents loaded from DocumentStore.
 
         Called for both full runs and partial runs (--start/--end). For partial runs,
-        _build_partial_result() delegates here by default — override _build_partial_result()
+        build_partial_result() delegates here by default — override build_partial_result()
         to customize partial run results.
+
+        The base ``documents`` field on ``DeploymentResult`` is populated automatically
+        by the framework after this method returns — only set fields defined on your
+        custom result subclass.
         """
         ...
 
-    def _build_partial_result(self, run_id: str, documents: list[Document], options: TOptions) -> TResult:
+    def build_partial_result(self, run_id: str, documents: list[Document], options: TOptions) -> TResult:
         """Build a result for partial pipeline runs (--start/--end that don't reach the last step).
 
         Override this method to customize partial run results. Default delegates to build_result.
@@ -678,7 +684,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             is_partial_run = end_step < total_steps
             if is_partial_run:
                 logger.info("Partial run (steps %d-%d of %d) — skipping build_result", start_step, end_step, total_steps)
-                result = self._build_partial_result(run_id, all_docs, options)
+                result = self.build_partial_result(run_id, all_docs, options)
             else:
                 result = self.build_result(run_id, all_docs, options)
 

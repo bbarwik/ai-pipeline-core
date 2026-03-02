@@ -1,7 +1,7 @@
 # MODULE: logging
 # CLASSES: LoggingConfig
 # PURPOSE: Logging infrastructure for AI Pipeline Core.
-# VERSION: 0.12.3
+# VERSION: 0.12.4
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -135,6 +135,26 @@ def test_setup_logging_basic(self, mock_apply: Mock) -> None:
     mock_apply.assert_called_once()
 ```
 
+**Default config path from env** (`tests/logging/test_logging_config.py:14`)
+
+```python
+def test_default_config_path_from_env(self):
+    """Test getting config path from environment."""
+    with patch.dict(os.environ, {"AI_PIPELINE_LOGGING_CONFIG": "/path/to/config.yml"}):
+        config = LoggingConfig()
+        assert config.config_path == Path("/path/to/config.yml")
+```
+
+**Default config path from prefect env** (`tests/logging/test_logging_config.py:20`)
+
+```python
+def test_default_config_path_from_prefect_env(self):
+    """Test getting config path from Prefect environment."""
+    with patch.dict(os.environ, {"PREFECT_LOGGING_SETTINGS_PATH": "/prefect/config.yml"}):
+        config = LoggingConfig()
+        assert config.config_path == Path("/prefect/config.yml")
+```
+
 **Get pipeline logger ensures setup** (`tests/logging/test_logging_config.py:127`)
 
 ```python
@@ -181,6 +201,30 @@ def test_get_pipeline_logger_reuses_config(self, mock_get_logger: Mock) -> None:
         assert mock_get_logger.call_count == 2
 ```
 
+**Load default config when no file** (`tests/logging/test_logging_config.py:50`)
+
+```python
+def test_load_default_config_when_no_file(self):
+    """Test loading default config when no file exists."""
+    config = LoggingConfig()
+    loaded = config.load_config()
+
+    assert loaded["version"] == 1
+    assert "formatters" in loaded
+    assert "handlers" in loaded
+    assert "loggers" in loaded
+```
+
+**No config path returns none** (`tests/logging/test_logging_config.py:26`)
+
+```python
+def test_no_config_path_returns_none(self):
+    """Test that no env vars results in None config path."""
+    with patch.dict(os.environ, clear=True):
+        config = LoggingConfig()
+        assert config.config_path is None
+```
+
 **Setup logging with config path** (`tests/logging/test_logging_config.py:110`)
 
 ```python
@@ -195,58 +239,4 @@ def test_setup_logging_with_config_path(self, mock_config_class: Mock, tmp_path:
 
     mock_config_class.assert_called_once_with(config_file)
     mock_instance.apply.assert_called_once()
-```
-
-**Setup logging with level** (`tests/logging/test_logging_config.py:95`)
-
-```python
-@patch("ai_pipeline_core.logging.logging_config.get_logger")
-@patch("ai_pipeline_core.logging.logging_config.LoggingConfig.apply")
-def test_setup_logging_with_level(self, mock_apply: Mock, mock_get_logger: Mock) -> None:
-    """Test setup_logging with custom level."""
-    mock_logger = MagicMock()
-    mock_get_logger.return_value = mock_logger
-
-    setup_logging(level="DEBUG")
-
-    # Should set level on loggers
-    assert mock_get_logger.call_count > 0
-    mock_logger.setLevel.assert_called_with("DEBUG")
-
-    # Should set Prefect env
-    assert os.environ["PREFECT_LOGGING_LEVEL"] == "DEBUG"
-```
-
-**Default config path from env** (`tests/logging/test_logging_config.py:14`)
-
-```python
-def test_default_config_path_from_env(self):
-    """Test getting config path from environment."""
-    with patch.dict(os.environ, {"AI_PIPELINE_LOGGING_CONFIG": "/path/to/config.yml"}):
-        config = LoggingConfig()
-        assert config.config_path == Path("/path/to/config.yml")
-```
-
-**Default config path from prefect env** (`tests/logging/test_logging_config.py:20`)
-
-```python
-def test_default_config_path_from_prefect_env(self):
-    """Test getting config path from Prefect environment."""
-    with patch.dict(os.environ, {"PREFECT_LOGGING_SETTINGS_PATH": "/prefect/config.yml"}):
-        config = LoggingConfig()
-        assert config.config_path == Path("/prefect/config.yml")
-```
-
-**Load default config when no file** (`tests/logging/test_logging_config.py:50`)
-
-```python
-def test_load_default_config_when_no_file(self):
-    """Test loading default config when no file exists."""
-    config = LoggingConfig()
-    loaded = config.load_config()
-
-    assert loaded["version"] == 1
-    assert "formatters" in loaded
-    assert "handlers" in loaded
-    assert "loggers" in loaded
 ```

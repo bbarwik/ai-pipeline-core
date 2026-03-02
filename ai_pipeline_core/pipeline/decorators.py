@@ -74,7 +74,7 @@ R_co = TypeVar("R_co", covariant=True)
 FO_contra = TypeVar("FO_contra", bound=FlowOptions, contravariant=True)
 
 
-class _TaskLike(Protocol[R_co]):
+class TaskLike(Protocol[R_co]):
     """Protocol for type-safe Prefect task representation."""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Coroutine[Any, Any, R_co]: ...
@@ -87,7 +87,7 @@ class _TaskLike(Protocol[R_co]):
     def __getattr__(self, name: str) -> Any: ...
 
 
-class _FlowLike(Protocol[FO_contra]):
+class FlowLike(Protocol[FO_contra]):
     """Protocol for decorated flow objects returned by @pipeline_flow."""
 
     def __call__(
@@ -248,7 +248,7 @@ def _attach_flow_replay_payload(
 # @pipeline_task — async-only, traced, auto-persists documents
 # --------------------------------------------------------------------------- #
 @overload
-def pipeline_task(__fn: Callable[..., Coroutine[Any, Any, R_co]], /) -> _TaskLike[R_co]: ...  # noqa: UP047
+def pipeline_task(__fn: Callable[..., Coroutine[Any, Any, R_co]], /) -> TaskLike[R_co]: ...  # noqa: UP047
 @overload
 def pipeline_task(
     *,
@@ -289,7 +289,7 @@ def pipeline_task(
     retry_condition_fn: RetryConditionCallable | None = None,
     viz_return_value: bool | None = None,
     asset_deps: list[str | Asset] | None = None,
-) -> Callable[[Callable[..., Coroutine[Any, Any, R_co]]], _TaskLike[R_co]]: ...
+) -> Callable[[Callable[..., Coroutine[Any, Any, R_co]]], TaskLike[R_co]]: ...
 
 
 def pipeline_task(  # noqa: UP047
@@ -333,7 +333,7 @@ def pipeline_task(  # noqa: UP047
     retry_condition_fn: RetryConditionCallable | None = None,
     viz_return_value: bool | None = None,
     asset_deps: list[str | Asset] | None = None,
-) -> _TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], _TaskLike[R_co]]:
+) -> TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], TaskLike[R_co]]:
     """Decorate an async function as a traced Prefect task with document auto-save.
 
     After the wrapped function returns, if documents are found in the result
@@ -356,6 +356,9 @@ def pipeline_task(  # noqa: UP047
         -> DocA | None                          # optional Document
 
     For non-document functions, use plain ``async def`` with ``@trace`` instead.
+
+    Documents created inside the task must be **returned** to be auto-saved.
+    Created-but-unreturned documents trigger orphan warnings and are not persisted.
 
     Document is the universal container for pipeline data. Any structured data
     (Pydantic models, dicts, lists) can be wrapped via Document.create():
@@ -405,7 +408,7 @@ def pipeline_task(  # noqa: UP047
 
     task_decorator: Callable[..., Any] = _prefect_task
 
-    def _apply(fn: Callable[..., Coroutine[Any, Any, R_co]]) -> _TaskLike[R_co]:
+    def _apply(fn: Callable[..., Coroutine[Any, Any, R_co]]) -> TaskLike[R_co]:
         fname = callable_name(fn, "task")
 
         if not inspect.iscoroutinefunction(fn):
@@ -487,7 +490,7 @@ def pipeline_task(  # noqa: UP047
         )(_wrapper)
 
         task_obj = cast(
-            _TaskLike[R_co],
+            TaskLike[R_co],
             task_decorator(
                 name=name or fname,
                 description=description,
@@ -559,7 +562,7 @@ def pipeline_flow(
     on_cancellation: list[FlowStateHook[Any, Any]] | None = None,
     on_crashed: list[FlowStateHook[Any, Any]] | None = None,
     on_running: list[FlowStateHook[Any, Any]] | None = None,
-) -> Callable[[Callable[..., Coroutine[Any, Any, Sequence[Document]]]], _FlowLike[Any]]:
+) -> Callable[[Callable[..., Coroutine[Any, Any, Sequence[Document]]]], FlowLike[Any]]:
     """Decorate an async function as a traced Prefect flow with annotation-driven document types.
 
     Extracts input/output document types from the function's type annotations
@@ -579,9 +582,11 @@ def pipeline_flow(
     Args:
         estimated_minutes: Weight for progress bar calculation only (must be >= 1).
             Does not affect execution timeout or scheduling.
+        stub: Mark flow as a stub for deployment introspection — the flow is
+            registered but skipped during execution when stub=True.
 
     Returns:
-        Decorator that produces a _FlowLike object with ``input_document_types``,
+        Decorator that produces a FlowLike object with ``input_document_types``,
         ``output_document_types``, and ``estimated_minutes`` attributes.
 
     Raises:
@@ -594,7 +599,7 @@ def pipeline_flow(
 
     flow_decorator: Callable[..., Any] = _prefect_flow
 
-    def _apply(fn: Callable[..., Coroutine[Any, Any, Sequence[Document]]]) -> _FlowLike[Any]:
+    def _apply(fn: Callable[..., Coroutine[Any, Any, Sequence[Document]]]) -> FlowLike[Any]:
         fname = callable_name(fn, "flow")
 
         if not inspect.iscoroutinefunction(fn):
@@ -690,7 +695,7 @@ def pipeline_flow(
                 run_token = set_run_context(RunContext(run_scope=run_scope))
 
             # Set up task context for document lifecycle tracking
-            task_ctx = TaskContext()
+            task_ctx = TaskContext(scope_kind="flow")
             task_token = set_task_context(task_ctx)
             try:
                 result = await fn(run_id, documents, flow_options)
@@ -732,7 +737,7 @@ def pipeline_flow(
         )(_wrapper)
 
         flow_obj = cast(
-            _FlowLike[Any],
+            FlowLike[Any],
             flow_decorator(
                 name=name or fname,
                 version=version,

@@ -214,7 +214,7 @@ class TestCmdRunWithTracing:
         )
 
         mock_result = _MockConversationResult(content="test response")
-        monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: mock_result)
+        monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), mock_result)[1])
 
         args = SimpleNamespace(
             replay_file=str(replay_file),
@@ -249,7 +249,7 @@ class TestCmdRunWithTracing:
         )
 
         mock_result = _MockConversationResult(content="saved response")
-        monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: mock_result)
+        monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), mock_result)[1])
         monkeypatch.setattr("ai_pipeline_core.replay.cli._init_replay_tracing", lambda _d: None)
 
         args = SimpleNamespace(
@@ -284,7 +284,7 @@ class TestCmdRunWithTracing:
         )
 
         mock_result = _MockConversationResult(content="custom dir")
-        monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: mock_result)
+        monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), mock_result)[1])
         monkeypatch.setattr("ai_pipeline_core.replay.cli._init_replay_tracing", lambda _d: None)
 
         custom_dir = tmp_path / "custom_output"

@@ -12,12 +12,18 @@ from pydantic.fields import FieldInfo
 from typing_extensions import TypeVar
 
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.logging import get_pipeline_logger
 
 from .components import Guide, OutputRule, Role, Rule
+
+logger = get_pipeline_logger(__name__)
 
 OutputT = TypeVar("OutputT", default=str)
 
 _XML_TAG_PATTERN = re.compile(r"</?[a-zA-Z]\w*[\s>/]")
+
+MAX_TASK_CHARS = 2000
+MAX_TASK_LINES = 40
 
 # Pattern matching Python-style {identifier} placeholders in task text
 _FIELD_PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
@@ -153,6 +159,25 @@ def _check_task_field_placeholders(cls: type, name: str) -> None:
     )
 
 
+def _warn_large_task(name: str, task: str) -> None:
+    """Warn when task text is excessively large — suggest using Guides for detailed instructions."""
+    char_count = len(task)
+    line_count = len(task.splitlines())
+    if char_count <= MAX_TASK_CHARS and line_count <= MAX_TASK_LINES:
+        return
+    logger.warning(
+        "PromptSpec '%s' task is too large (%d chars, %d lines). "
+        "The task field should be a concise description of WHAT to do (up to %d chars / %d lines). "
+        "Move detailed instructions, methodology, and step-by-step explanations into a Guide "
+        "and reference it via guides=(MyGuide,).",
+        name,
+        char_count,
+        line_count,
+        MAX_TASK_CHARS,
+        MAX_TASK_LINES,
+    )
+
+
 def _validate_prompt_spec(cls: type, name: str, follows: type["PromptSpec"] | None) -> None:  # noqa: C901, PLR0912, PLR0915
     """Validate a PromptSpec subclass at definition time."""
     # Block inheritance chains — must inherit directly from PromptSpec (or PromptSpec[T]).
@@ -206,6 +231,7 @@ def _validate_prompt_spec(cls: type, name: str, follows: type["PromptSpec"] | No
     cls.task = dedent(task).strip()
     if not cls.task:
         raise TypeError(f"PromptSpec '{name}'.task must not be empty")
+    _warn_large_task(name, cls.task)
 
     # Validate input_documents (required for standalone specs, optional for follow-ups)
     if "input_documents" not in cls.__dict__:
@@ -296,6 +322,8 @@ class PromptSpec(BaseModel, Generic[OutputT]):
 
     Must subclass PromptSpec directly — no inheritance chains allowed.
     Must define task on every PromptSpec subclass.
+    Must not use ``{field}`` placeholders in task text — raises TypeError at definition time.
+    Use dynamic Pydantic ``Field()`` parameters instead.
     Must define role and input_documents on standalone specs (not required when ``follows`` is set).
     Must use ``Field(description='...')`` for all dynamic Pydantic fields on PromptSpec subclasses.
     Must include all Guides that define terminology referenced in the task text — missing Guides

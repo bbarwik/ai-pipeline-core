@@ -1,7 +1,7 @@
 """Document reference resolution tests for the replay module.
 
 Tests resolve_document_ref (loading a Document from LocalDocumentStore by SHA256)
-and infer_store_base (walking up to find .trace/ parent directory).
+and _infer_store_base (walking up to find .trace/ parent directory).
 The replay module does not exist yet — these tests will fail with ImportError
 until it is implemented.
 """
@@ -21,7 +21,7 @@ from tests.replay.conftest import (
 from ai_pipeline_core.document_store._local import _safe_filename
 from ai_pipeline_core.documents.document import _class_name_registry
 from ai_pipeline_core.replay import DocumentRef
-from ai_pipeline_core.replay import infer_store_base
+from ai_pipeline_core.replay.types import _infer_store_base
 from ai_pipeline_core.replay._resolve import resolve_document_ref
 
 
@@ -146,7 +146,7 @@ class TestResolveDocumentRef:
 
 class TestInferStoreBase:
     def test_from_nested_span_dir(self, tmp_path: Path) -> None:
-        """Create a deeply nested path under .trace/ and verify infer_store_base
+        """Create a deeply nested path under .trace/ and verify _infer_store_base
         finds the correct store base (parent of .trace/)."""
         # Layout: tmp_path/output/.trace/spans/task_abc/span_123/
         output_dir = tmp_path / "output"
@@ -157,7 +157,7 @@ class TestInferStoreBase:
         replay_file = nested / "conversation.replay.yaml"
         replay_file.write_text("dummy")
 
-        result = infer_store_base(replay_file)
+        result = _infer_store_base(replay_file)
         assert result == output_dir
 
     def test_missing_trace_raises(self, tmp_path: Path) -> None:
@@ -168,4 +168,4 @@ class TestInferStoreBase:
         replay_file.write_text("dummy")
 
         with pytest.raises(FileNotFoundError):
-            infer_store_base(replay_file)
+            _infer_store_base(replay_file)

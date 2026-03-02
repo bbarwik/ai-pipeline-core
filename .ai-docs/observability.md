@@ -1,50 +1,20 @@
 # MODULE: observability
-# CLASSES: TraceInfo, TraceDebugConfig
+# CLASSES: TraceInfo
 # DEPENDS: BaseModel
 # PURPOSE: Observability system for AI pipelines.
-# VERSION: 0.12.3
+# VERSION: 0.12.4
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
 from ai_pipeline_core import TraceInfo, TraceLevel, set_trace_cost, trace
-from ai_pipeline_core.observability import TraceDebugConfig
 ```
 
 ## Types & Constants
 
 ```python
-DEFAULT_LIST_LIMIT = 20
-
-EXECUTION_ID_SHORT_LENGTH = 8
-
 TraceLevel = Literal["always", "debug", "off"]
-
-```
-
-## Internal Types
-
-```python
-@dataclass(frozen=True, slots=True)
-class _TraceConfig:
-    """Pre-computed parameters for a traced function."""
-    observe_name: str
-    sig: inspect.Signature
-    session_id: str | None
-    user_id: str | None
-    metadata: dict[str, Any]
-    tags: list[str]
-    span_type: str | None
-    ignore_input: bool
-    ignore_output: bool
-    ignore_inputs: list[str] | None
-    input_formatter: Callable[..., str] | None
-    output_formatter: Callable[..., str] | None
-    ignore_exceptions: bool
-    preserve_global_context: bool
-    trim_documents: bool
-
 
 ```
 
@@ -78,33 +48,6 @@ consistent tracing context."""
     user_id: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
-
-    def get_observe_kwargs(self) -> dict[str, Any]:
-        """Build kwargs for ``lmnr.observe()``, with env-var fallbacks for session/user ID."""
-        kwargs: dict[str, Any] = {}
-        if sid := (self.session_id or os.getenv("LMNR_SESSION_ID")):
-            kwargs["session_id"] = sid
-        if uid := (self.user_id or os.getenv("LMNR_USER_ID")):
-            kwargs["user_id"] = uid
-        if self.metadata:
-            kwargs["metadata"] = self.metadata
-        if self.tags:
-            kwargs["tags"] = self.tags
-        return kwargs
-
-
-class TraceDebugConfig(BaseModel):
-    """Configuration for local ``.trace/`` directory generation.
-
-Controls filesystem trace output. Enabled automatically in CLI mode.
-Each run overwrites previous ``.trace/`` contents."""
-    model_config = ConfigDict(frozen=True)
-    path: Path = Field(description='Directory for debug traces')  # Directory for debug traces
-    max_file_bytes: int = Field(default=500000, description='Max bytes for input.yaml or output.yaml. Truncated to stay under.')  # Max bytes for input.yaml or output.yaml. Truncated to stay under.
-    verbose: bool = Field(default=False, description='When False (default), duplicate LLM spans are filtered from per-span directories but their cost/token metrics still count in totals.')  # When False (default), duplicate LLM spans are filtered from per-span directories but their cost/token metrics still count in totals.
-    merge_wrapper_spans: bool = Field(default=True, description='Merge Prefect wrapper spans with inner traced function spans')  # Merge Prefect wrapper spans with inner traced function spans
-    redact_patterns: tuple[str, ...] = Field(default=('sk-[a-zA-Z0-9]{20,}', 'sk-proj-[a-zA-Z0-9\\-_]{20,}', 'AKIA[0-9A-Z]{16}', 'ghp_[a-zA-Z0-9]{36}', 'gho_[a-zA-Z0-9]{36}', 'xoxb-[a-zA-Z0-9\\-]+', 'xoxp-[a-zA-Z0-9\\-]+', '(?i)password\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]+', '(?i)secret\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]+', '(?i)api[_\\-]?key\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]+', '(?i)bearer\\s+[a-zA-Z0-9\\-_\\.]+'), description='Regex patterns for secrets to redact')  # Regex patterns for secrets to redact
-    generate_summary: bool = Field(default=True, description='Generate summary.md')  # Generate summary.md
 
 
 ```
@@ -144,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         parents=[_connection_parser],
         help="List recent pipeline runs",
     )
-    ls.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT, help="Number of runs (default: 20)")
+    ls.add_argument("--limit", type=int, default=_DEFAULT_LIST_LIMIT, help="Number of runs (default: 20)")
     ls.add_argument("--status", choices=["running", "completed", "failed"], help="Filter by status")
     ls.add_argument("--flow", type=str, help="Filter by flow name")
 
@@ -279,7 +222,9 @@ def set_trace_cost(cost: float | str) -> None:
 
     Only positive values are set; zero or negative values are ignored.
     Only works within a traced context (@trace, @pipeline_task, @pipeline_flow).
-    Use for non-LLM costs; LLM costs are tracked automatically via ModelResponse.
+    WARNING: Do not use for LLM conversation costs — those are tracked automatically
+    via ModelResponse. Using this for LLM costs causes double-counting.
+    Use only for non-LLM costs (e.g. external API calls, search services).
     """
     # Parse string format if provided
     if isinstance(cost, str):
@@ -329,44 +274,53 @@ def test_generates_summary_and_costs(self, tmp_path):
     assert (tmp_path / "summary.md").exists()
 ```
 
-**Set trace cost negative** (`tests/observability/test_trace_decorator.py:309`)
+**Trace info immutability expectation** (`tests/observability/test_trace_mutable_defaults.py:172`)
 
 ```python
-@patch("ai_pipeline_core.observability.tracing.Laminar.set_span_attributes")
-def test_set_trace_cost_negative(self, mock_set_attrs: Mock) -> None:
-    """Test set_trace_cost with negative cost (should not call Laminar)."""
-    set_trace_cost(-0.05)
-    mock_set_attrs.assert_not_called()
+def test_trace_info_immutability_expectation(self):
+    """Test that TraceInfo follows Pydantic patterns for immutability."""
+    trace = TraceInfo(metadata={"key": "value"}, tags=["tag1"])
+
+    # Pydantic models with mutable fields should still protect against
+    # default parameter sharing issues
+    original_metadata_id = id(trace.metadata)
+    original_tags_id = id(trace.tags)
+
+    # Create another instance
+    trace2 = TraceInfo()
+
+    # Verify different instances
+    assert id(trace2.metadata) != original_metadata_id
+    assert id(trace2.tags) != original_tags_id
 ```
 
-**Set trace cost usd string negative** (`tests/observability/test_trace_decorator.py:343`)
+**Default trace** (`tests/observability/test_span_data_unit.py:310`)
 
 ```python
-@patch("ai_pipeline_core.observability.tracing.Laminar.set_span_attributes")
-def test_set_trace_cost_usd_string_negative(self, mock_set_attrs: Mock) -> None:
-    """Test set_trace_cost with negative USD string (should not call Laminar)."""
-    set_trace_cost("$-0.50")
-    mock_set_attrs.assert_not_called()
+def test_default_trace(self):
+    assert _classify_span_type({}) == "trace"
 ```
 
-**Set trace cost usd string zero** (`tests/observability/test_trace_decorator.py:337`)
+**Empty trace dir** (`tests/observability/test_download_docs.py:172`)
 
 ```python
-@patch("ai_pipeline_core.observability.tracing.Laminar.set_span_attributes")
-def test_set_trace_cost_usd_string_zero(self, mock_set_attrs: Mock) -> None:
-    """Test set_trace_cost with USD string format of zero (should not call Laminar)."""
-    set_trace_cost("$0.00")
-    mock_set_attrs.assert_not_called()
+def test_empty_trace_dir(self, tmp_path: Path):
+    trace = tmp_path / ".trace"
+    trace.mkdir()
+    refs = _collect_doc_refs(trace)
+    assert refs == {}
 ```
 
-**Set trace cost zero** (`tests/observability/test_trace_decorator.py:303`)
+**Root span detected when parent not in trace** (`tests/observability/test_materializer_unit.py:493`)
 
 ```python
-@patch("ai_pipeline_core.observability.tracing.Laminar.set_span_attributes")
-def test_set_trace_cost_zero(self, mock_set_attrs: Mock) -> None:
-    """Test set_trace_cost with zero cost (should not call Laminar)."""
-    set_trace_cost(0.0)
-    mock_set_attrs.assert_not_called()
+def test_root_span_detected_when_parent_not_in_trace(self, tmp_path: Path) -> None:
+    """A span whose parent_span_id is not in trace.spans should become root."""
+    mat = _make_materializer(tmp_path / "r1")
+    s = _make_span_data(span_id="s1", parent_span_id="external-laminar-id", span_order=1, status="running")
+    mat.on_span_start(s)
+    trace = mat._traces["trace1"]
+    assert trace.root_span_id == "s1"
 ```
 
 

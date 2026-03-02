@@ -73,3 +73,46 @@ rules:
     message: "JSON->YAML fallback is a bug — YAML is a JSON superset. Use extension-based dispatch."
     severity: ERROR
     languages: [python]
+
+  - id: document-content-model-dump-without-generic
+    pattern-either:
+      - pattern: $DOC.create(..., content=$X.model_dump_json(...), ...)
+      - pattern: $DOC.derive(..., content=$X.model_dump_json(...), ...)
+      - pattern: $DOC.create_root(..., content=$X.model_dump_json(...), ...)
+    message: >
+      Document created with model_dump_json() content. Declare Document[ModelClass]
+      on the Document subclass for creation-time schema validation, then pass the
+      model instance directly as content= instead of serializing manually.
+    severity: WARNING
+    languages: [python]
+    paths:
+      exclude:
+        - "**/test_*"
+
+  - id: document-create-in-flow-body
+    patterns:
+      - pattern-either:
+          - pattern: $DOC.create(...)
+          - pattern: $DOC.derive(...)
+          - pattern: $DOC.create_root(...)
+      - pattern-inside: |
+          @pipeline_flow(...)
+          async def $FUNC(...):
+              ...
+      - pattern-not-inside: |
+          @pipeline_task
+          async def $INNER(...):
+              ...
+      - pattern-not-inside: |
+          @pipeline_task(...)
+          async def $INNER(...):
+              ...
+    message: >
+      Document created directly in @pipeline_flow body. Wrap document creation
+      in a @pipeline_task for proper lifecycle management (tracing, persistence,
+      retries).
+    severity: WARNING
+    languages: [python]
+    paths:
+      exclude:
+        - "**/test_*"

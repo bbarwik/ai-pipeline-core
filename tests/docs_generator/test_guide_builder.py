@@ -233,6 +233,23 @@ def test_score_test_pattern_bonus():
     assert score >= 3
 
 
+def test_score_test_heavy_mock_penalty():
+    """Tests with 3+ mock usages get a -3 penalty, dropping score to 0 when no symbol match."""
+    code = "monkeypatch.setattr(x, y)\nMock()\npatch('z')\nmonkeypatch.delattr(a)"
+    ex = _make_test_example(name="test_stuff", code=code)
+    assert score_test(ex, ["Unrelated"]) == 0
+
+
+def test_score_test_private_api_penalty():
+    """Tests calling private _methods (excluding __dunder__) get penalized."""
+    code = "result = obj._internal_helper()\nassert result == 1"
+    ex = _make_test_example(name="test_stuff", code=code)
+    score_private = score_test(ex, ["Unrelated"])
+    ex_clean = _make_test_example(name="test_stuff", code="result = obj.public_method()\nassert result == 1")
+    score_clean = score_test(ex_clean, ["Unrelated"])
+    assert score_private < score_clean
+
+
 # ---------------------------------------------------------------------------
 # select_examples
 # ---------------------------------------------------------------------------
@@ -844,10 +861,10 @@ def test_build_guide_collects_internal_types(tmp_path):
     _write_py(
         pkg / "core.py",
         "from typing import Protocol\n"
-        "class _TaskLike(Protocol):\n"
+        "class _InternalProto(Protocol):\n"
         '    """Internal protocol."""\n'
         "    def __call__(self) -> None: ...\n"
-        "def pipeline_task() -> _TaskLike:\n"
+        "def pipeline_task() -> _InternalProto:\n"
         '    """Public func."""\n'
         "    ...\n",
     )
@@ -857,7 +874,30 @@ def test_build_guide_collects_internal_types(tmp_path):
     table = build_symbol_table(src)
     guide = build_guide("mymod", src, tests_dir, table)
     assert len(guide.internal_types) == 1
-    assert guide.internal_types[0].name == "_TaskLike"
+    assert guide.internal_types[0].name == "_InternalProto"
+
+
+def test_build_guide_ignores_private_types_used_only_in_body(tmp_path):
+    """Private classes used only inside function bodies must not appear in internal_types."""
+    src = tmp_path / "src"
+    pkg = src / "mymod"
+    pkg.mkdir(parents=True)
+    _write_py(
+        pkg / "core.py",
+        "class _BodyOnly:\n"
+        '    """Only used inside function body."""\n'
+        "    value: int = 0\n"
+        "def public_func() -> int:\n"
+        '    """Public func."""\n'
+        "    cfg = _BodyOnly()\n"
+        "    return cfg.value\n",
+    )
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+
+    table = build_symbol_table(src)
+    guide = build_guide("mymod", src, tests_dir, table)
+    assert guide.internal_types == [], f"_BodyOnly should not be in internal_types, got: {[c.name for c in guide.internal_types]}"
 
 
 def test_build_guide_no_internal_types_when_none_referenced(tmp_path):

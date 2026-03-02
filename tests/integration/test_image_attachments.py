@@ -21,7 +21,7 @@ pytestmark = pytest.mark.integration
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
 
 MODEL = "gemini-3-flash"
-OPTIONS = ModelOptions(max_completion_tokens=500)
+OPTIONS = ModelOptions(max_completion_tokens=1000)
 
 
 def _make_text_image(text: str, width: int = 400, height: int = 200, bg: str = "white", fg: str = "black") -> bytes:

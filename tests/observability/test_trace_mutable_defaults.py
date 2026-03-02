@@ -150,21 +150,21 @@ class TestTraceInfoMutableDefaults:
         assert trace1.tags[0] == "tag1"
         assert trace2.tags[0] == "tag2"
 
-    def test_trace_info_get_observe_kwargs(self):
-        """Test that get_observe_kwargs creates fresh wrapper dicts."""
+    def test_trace_info__get_observe_kwargs(self):
+        """Test that _get_observe_kwargs creates fresh wrapper dicts."""
         trace = TraceInfo(
             session_id="test_session",
             metadata={"key": "value"},
             tags=["tag1"],
         )
 
-        # Call get_observe_kwargs multiple times
-        kwargs1 = trace.get_observe_kwargs()
-        kwargs2 = trace.get_observe_kwargs()
+        # Call _get_observe_kwargs multiple times
+        kwargs1 = trace._get_observe_kwargs()
+        kwargs2 = trace._get_observe_kwargs()
 
         # Should return equal but independent wrapper dicts
         assert kwargs1 == kwargs2
-        assert kwargs1 is not kwargs2, "get_observe_kwargs() is returning the same dict instance"
+        assert kwargs1 is not kwargs2, "_get_observe_kwargs() is returning the same dict instance"
 
         # Note: The metadata and tags inside are references to the TraceInfo's
         # internal objects - this is existing behavior and not a bug

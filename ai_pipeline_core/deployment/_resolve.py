@@ -108,7 +108,7 @@ class OutputAttachment(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
-class _OutputDocument(BaseModel):
+class OutputDocument(BaseModel):
     """Document metadata in deployment results. Binary content is None."""
 
     sha256: DocumentSha256
@@ -123,8 +123,8 @@ class _OutputDocument(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
-def build_output_document(doc: Document) -> _OutputDocument:
-    """Build an _OutputDocument from a live Document object."""
+def build_output_document(doc: Document) -> OutputDocument:
+    """Build an OutputDocument from a live Document object."""
     from ai_pipeline_core.documents._hashing import compute_content_sha256
 
     att_outputs = tuple(
@@ -138,7 +138,7 @@ def build_output_document(doc: Document) -> _OutputDocument:
         )
         for att in doc.attachments
     )
-    return _OutputDocument(
+    return OutputDocument(
         sha256=doc.sha256,
         name=doc.name,
         class_name=doc.__class__.__name__,
@@ -361,7 +361,7 @@ __all__ = [
     "AttachmentInput",
     "DocumentInput",
     "OutputAttachment",
-    "_OutputDocument",
+    "OutputDocument",
     "build_output_document",
     "resolve_document_inputs",
 ]

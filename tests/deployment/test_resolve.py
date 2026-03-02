@@ -8,7 +8,7 @@ import pytest
 from ai_pipeline_core.deployment._resolve import (
     AttachmentInput,
     DocumentInput,
-    _OutputDocument,
+    OutputDocument,
     _derive_name,
     _is_ip_private,
     build_output_document,
@@ -197,7 +197,7 @@ class TestBuildOutputDocument:
     def test_text_document(self):
         doc = ResolveDoc(name="out.txt", content=b"result text")
         out = build_output_document(doc)
-        assert isinstance(out, _OutputDocument)
+        assert isinstance(out, OutputDocument)
         assert out.name == "out.txt"
         assert out.class_name == "ResolveDoc"
         assert out.content == "result text"

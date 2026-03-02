@@ -12,7 +12,7 @@ from pydantic import Field
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.prompt_compiler.components import Guide, OutputRule, Role, Rule
 from ai_pipeline_core.prompt_compiler.render import (
-    MAX_FIELD_VALUE_LENGTH,
+    _MAX_FIELD_VALUE_LENGTH,
     RESULT_OPEN,
     _format_numbered_rule,
     _pascal_to_title,
@@ -673,7 +673,7 @@ def test_render_full_prompt_spec_workflow() -> None:
 
 
 class TestFieldValueValidation:
-    """Regular field values exceeding MAX_FIELD_VALUE_LENGTH or containing newlines are auto-promoted to multi-line treatment."""
+    """Regular field values exceeding _MAX_FIELD_VALUE_LENGTH or containing newlines are auto-promoted to multi-line treatment."""
 
     def test_short_single_line_renders_inline(self):
         """Short single-line values render as plain '**label:**\\nvalue'."""
@@ -691,7 +691,7 @@ class TestFieldValueValidation:
         assert "<topic>" not in rendered
 
     def test_long_value_treated_as_multi_line(self):
-        """Values exceeding MAX_FIELD_VALUE_LENGTH are auto-promoted to multi-line (no ValueError)."""
+        """Values exceeding _MAX_FIELD_VALUE_LENGTH are auto-promoted to multi-line (no ValueError)."""
 
         class LongSpec(PromptSpec):
             """Doc."""
@@ -701,7 +701,7 @@ class TestFieldValueValidation:
             task = "Task"
             review_text: str = Field(description="Review feedback")
 
-        long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
+        long_value = "x" * (_MAX_FIELD_VALUE_LENGTH + 1)
         rendered = render_text(LongSpec(review_text=long_value))
         # Value is NOT inlined in Context
         assert long_value not in rendered
@@ -726,7 +726,7 @@ class TestFieldValueValidation:
         assert "(provided in <feedback> tags in previous message)" in rendered
 
     def test_exactly_at_limit_not_rejected(self):
-        """Value exactly at MAX_FIELD_VALUE_LENGTH is accepted."""
+        """Value exactly at _MAX_FIELD_VALUE_LENGTH is accepted."""
 
         class ExactSpec(PromptSpec):
             """Doc."""
@@ -736,7 +736,7 @@ class TestFieldValueValidation:
             task = "Task"
             text: str = Field(description="Some text")
 
-        exact_value = "x" * MAX_FIELD_VALUE_LENGTH
+        exact_value = "x" * _MAX_FIELD_VALUE_LENGTH
         rendered = render_text(ExactSpec(text=exact_value))
         assert f"**Some text:**\n{exact_value}" in rendered
         assert "<text>" not in rendered
@@ -753,7 +753,7 @@ class TestFieldValueValidation:
             task = "Task"
             review: str = Field(description="Review")
 
-        long_value = "x" * (MAX_FIELD_VALUE_LENGTH + 1)
+        long_value = "x" * (_MAX_FIELD_VALUE_LENGTH + 1)
         with caplog.at_level(logging.WARNING):
             render_text(WarnSpec(review=long_value))
 

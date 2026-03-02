@@ -266,7 +266,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         The client defines local Document subclasses ('mirror types') whose class_name must
         match the remote pipeline's document types exactly. When the remote returns documents,
         they are deserialized using the local mirror types. If class names don't match,
-        documents fail to deserialize.
+        documents are silently skipped with a warning log.
 
         Tasks that return mirror-typed remote results should use persist_result=False
         to avoid polluting the DocumentStore with unknown class_name entries.

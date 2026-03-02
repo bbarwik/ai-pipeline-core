@@ -1,5 +1,6 @@
 """Pipeline deployment utilities for unified, type-safe deployments."""
 
+from ._resolve import OutputDocument
 from ._types import (
     CompletedEvent,
     FailedEvent,
@@ -33,6 +34,7 @@ __all__ = [
     "FlowStatus",
     "MemoryPublisher",
     "NoopPublisher",
+    "OutputDocument",
     "PendingRun",
     "PipelineDeployment",
     "ProgressCallback",

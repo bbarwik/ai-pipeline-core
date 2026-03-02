@@ -2,7 +2,7 @@
 # CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
 # DEPENDS: BaseModel, Generic, Role
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.12.3
+# VERSION: 0.12.4
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -14,17 +14,15 @@ from ai_pipeline_core import Guide, MultiLineField, OutputRule, PromptSpec, Role
 ## Types & Constants
 
 ```python
-APPROX_CHARS_PER_TOKEN = 4
-
-MAX_RULE_LINES = 5
-
-MAX_FIELD_VALUE_LENGTH = 500
-
 RESULT_TAG = "result"
 
 RESULT_OPEN = f"<{RESULT_TAG}>"
 
 RESULT_CLOSE = f"</{RESULT_TAG}>"
+
+MAX_TASK_CHARS = 2000
+
+MAX_TASK_LINES = 40
 
 ```
 
@@ -65,7 +63,7 @@ Must define a non-empty docstring and a ``text`` ClassVar on every Rule subclass
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        _init_text_component(cls, "Rule", max_lines=MAX_RULE_LINES)
+        _init_text_component(cls, "Rule", max_lines=_MAX_RULE_LINES)
 
 
 class OutputRule:
@@ -76,14 +74,15 @@ Must define a non-empty docstring and a ``text`` ClassVar on every OutputRule su
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        _init_text_component(cls, "OutputRule", max_lines=MAX_RULE_LINES)
+        _init_text_component(cls, "OutputRule", max_lines=_MAX_RULE_LINES)
 
 
 class Guide:
     """Base class for reference material / methodology guides.
 
 Must define a non-empty docstring and a ``template`` ClassVar on every Guide subclass.
-Must use a relative path for Guide template — content is loaded and cached at import time.
+Must use a relative path for Guide template — resolved relative to the Python file
+that defines the Guide subclass. Content is loaded and cached at import time.
 Never use ``#`` (H1) headers in Guide templates — reserved for prompt section boundaries. Use ``##`` or deeper."""
     template: ClassVar[str]
 
@@ -106,6 +105,8 @@ Generic parameter ``OutputT`` determines the output type:
 
 Must subclass PromptSpec directly — no inheritance chains allowed.
 Must define task on every PromptSpec subclass.
+Must not use ``{field}`` placeholders in task text — raises TypeError at definition time.
+Use dynamic Pydantic ``Field()`` parameters instead.
 Must define role and input_documents on standalone specs (not required when ``follows`` is set).
 Must use ``Field(description='...')`` for all dynamic Pydantic fields on PromptSpec subclasses.
 Must include all Guides that define terminology referenced in the task text — missing Guides

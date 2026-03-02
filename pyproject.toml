@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.12.3"
+version = "0.12.4"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -281,7 +281,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.12.3"
+current_version = "0.12.4"
 commit = true
 tag = true
 tag_name = "v{new_version}"

@@ -16,7 +16,7 @@ from ai_pipeline_core.settings import settings
 pytestmark = pytest.mark.integration
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
 DEFAULT_MODEL = "gemini-3-flash"
-MAX_COMPLETION_TOKENS = 300
+MAX_COMPLETION_TOKENS = 1000
 
 
 # -- Structured output models ------------------------------------------------
@@ -105,7 +105,7 @@ class _TaskCaptureLaminar:
 
 @pipeline_task(estimated_minutes=1)
 async def replay_integration_task(source: ReplayTaskInputDocument, *, model_name: str) -> ReplayTaskOutputDocument:
-    conv = Conversation(model=model_name, model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS))
+    conv = Conversation(model=model_name, model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"))
     conv = conv.with_context(source)
     conv = await conv.send_structured(
         "Extract source_summary and extracted_code from context.",
@@ -173,7 +173,7 @@ class TestReplayIntegration:
 
         conv = Conversation(
             model=DEFAULT_MODEL,
-            model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS),
+            model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"),
             context=(doc,),
             enable_substitutor=False,
         )
@@ -201,7 +201,7 @@ class TestReplayIntegration:
 
         conv = Conversation(
             model=DEFAULT_MODEL,
-            model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS),
+            model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"),
             enable_substitutor=False,
         )
         conv = await conv.send_structured(
@@ -233,7 +233,7 @@ class TestReplayIntegration:
 
         conv = Conversation(
             model=DEFAULT_MODEL,
-            model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS),
+            model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"),
             enable_substitutor=False,
         )
         conv = await conv.send(f"Reply with only this token: {token_a}")
@@ -286,7 +286,7 @@ class TestReplayIntegration:
 
         conv = Conversation(
             model=DEFAULT_MODEL,
-            model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS),
+            model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"),
             enable_substitutor=False,
         )
         conv = await conv.send_structured(
@@ -319,7 +319,7 @@ class TestReplayIntegration:
 
         conv = Conversation(
             model=DEFAULT_MODEL,
-            model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS),
+            model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"),
             enable_substitutor=False,
         )
         conv = await conv.send(f"Remember codename: {token}")

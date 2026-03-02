@@ -1,14 +1,15 @@
 # MODULE: pipeline
-# CLASSES: LimitKind, PipelineLimit, FlowOptions
-# DEPENDS: BaseSettings, StrEnum
+# CLASSES: TaskLike, FlowLike, LimitKind, PipelineLimit, FlowOptions
+# DEPENDS: BaseSettings, Protocol, StrEnum
 # PURPOSE: Pipeline framework primitives — decorators, flow options, and concurrency limits.
-# VERSION: 0.12.3
+# VERSION: 0.12.4
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
 from ai_pipeline_core import FlowOptions, LimitKind, PipelineLimit, pipeline_concurrency, pipeline_flow, pipeline_task, safe_gather, safe_gather_indexed
+from ai_pipeline_core.pipeline import FlowLike, TaskLike
 ```
 
 ## Types & Constants
@@ -22,11 +23,24 @@ type TaskRunNameValueOrCallable = str | Callable[[], str]
 
 ```
 
-## Internal Types
+## Public API
 
 ```python
 # Protocol — implement in concrete class
-class _FlowLike(Protocol[FO_contra]):
+class TaskLike(Protocol[R_co]):
+    """Protocol for type-safe Prefect task representation."""
+    submit: Callable[..., Any]
+    map: Callable[..., Any]
+    name: str | None
+    estimated_minutes: int
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Coroutine[Any, Any, R_co]: ...
+
+    def __getattr__(self, name: str) -> Any: ...
+
+
+# Protocol — implement in concrete class
+class FlowLike(Protocol[FO_contra]):
     """Protocol for decorated flow objects returned by @pipeline_flow."""
     name: str | None
     input_document_types: list[type[Document]]
@@ -44,24 +58,6 @@ class _FlowLike(Protocol[FO_contra]):
     def __getattr__(self, name: str) -> Any: ...
 
 
-# Protocol — implement in concrete class
-class _TaskLike(Protocol[R_co]):
-    """Protocol for type-safe Prefect task representation."""
-    submit: Callable[..., Any]
-    map: Callable[..., Any]
-    name: str | None
-    estimated_minutes: int
-
-    def __call__(self, *args: Any, **kwargs: Any) -> Coroutine[Any, Any, R_co]: ...
-
-    def __getattr__(self, name: str) -> Any: ...
-
-
-```
-
-## Public API
-
-```python
 # Enum
 class LimitKind(StrEnum):
     """Kind of concurrency/rate limit.
@@ -159,7 +155,7 @@ def pipeline_task(  # noqa: UP047
     retry_condition_fn: RetryConditionCallable | None = None,
     viz_return_value: bool | None = None,
     asset_deps: list[str | Asset] | None = None,
-) -> _TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], _TaskLike[R_co]]:
+) -> TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], TaskLike[R_co]]:
     """Decorate an async function as a traced Prefect task with document auto-save.
 
     After the wrapped function returns, if documents are found in the result
@@ -182,6 +178,9 @@ def pipeline_task(  # noqa: UP047
         -> DocA | None                          # optional Document
 
     For non-document functions, use plain ``async def`` with ``@trace`` instead.
+
+    Documents created inside the task must be **returned** to be auto-saved.
+    Created-but-unreturned documents trigger orphan warnings and are not persisted.
 
     Document is the universal container for pipeline data. Any structured data
     (Pydantic models, dicts, lists) can be wrapped via Document.create():
@@ -231,7 +230,7 @@ def pipeline_task(  # noqa: UP047
 
     task_decorator: Callable[..., Any] = _prefect_task
 
-    def _apply(fn: Callable[..., Coroutine[Any, Any, R_co]]) -> _TaskLike[R_co]:
+    def _apply(fn: Callable[..., Coroutine[Any, Any, R_co]]) -> TaskLike[R_co]:
         fname = callable_name(fn, "task")
 
         if not inspect.iscoroutinefunction(fn):
@@ -313,7 +312,7 @@ def pipeline_task(  # noqa: UP047
         )(_wrapper)
 
         task_obj = cast(
-            _TaskLike[R_co],
+            TaskLike[R_co],
             task_decorator(
                 name=name or fname,
                 description=description,
@@ -381,7 +380,7 @@ def pipeline_flow(
     on_cancellation: list[FlowStateHook[Any, Any]] | None = None,
     on_crashed: list[FlowStateHook[Any, Any]] | None = None,
     on_running: list[FlowStateHook[Any, Any]] | None = None,
-) -> Callable[[Callable[..., Coroutine[Any, Any, Sequence[Document]]]], _FlowLike[Any]]:
+) -> Callable[[Callable[..., Coroutine[Any, Any, Sequence[Document]]]], FlowLike[Any]]:
     """Decorate an async function as a traced Prefect flow with annotation-driven document types.
 
     Extracts input/output document types from the function's type annotations
@@ -401,9 +400,11 @@ def pipeline_flow(
     Args:
         estimated_minutes: Weight for progress bar calculation only (must be >= 1).
             Does not affect execution timeout or scheduling.
+        stub: Mark flow as a stub for deployment introspection — the flow is
+            registered but skipped during execution when stub=True.
 
     Returns:
-        Decorator that produces a _FlowLike object with ``input_document_types``,
+        Decorator that produces a FlowLike object with ``input_document_types``,
         ``output_document_types``, and ``estimated_minutes`` attributes.
 
     Raises:
@@ -416,7 +417,7 @@ def pipeline_flow(
 
     flow_decorator: Callable[..., Any] = _prefect_flow
 
-    def _apply(fn: Callable[..., Coroutine[Any, Any, Sequence[Document]]]) -> _FlowLike[Any]:
+    def _apply(fn: Callable[..., Coroutine[Any, Any, Sequence[Document]]]) -> FlowLike[Any]:
         fname = callable_name(fn, "flow")
 
         if not inspect.iscoroutinefunction(fn):
@@ -512,7 +513,7 @@ def pipeline_flow(
                 run_token = set_run_context(RunContext(run_scope=run_scope))
 
             # Set up task context for document lifecycle tracking
-            task_ctx = TaskContext()
+            task_ctx = TaskContext(scope_kind="flow")
             task_token = set_task_context(task_ctx)
             try:
                 result = await fn(run_id, documents, flow_options)
@@ -554,7 +555,7 @@ def pipeline_flow(
         )(_wrapper)
 
         flow_obj = cast(
-            _FlowLike[Any],
+            FlowLike[Any],
             flow_decorator(
                 name=name or fname,
                 version=version,
@@ -654,6 +655,7 @@ async def pipeline_concurrency(
 
     Proceeds unthrottled when Prefect is unavailable.
     Timeout always raises AcquireConcurrencySlotTimeoutError.
+    Logs a warning if slot acquisition takes longer than 120 seconds.
     """
     state = _limits_state.get()
     cfg = state.limits.get(name)
@@ -826,6 +828,51 @@ async def test_pipeline_flow_saves_returned_documents(prefect_test_fixture, memo
     assert loaded[0].name == "output.txt"
 ```
 
+**Pipeline flow sets run context when missing** (`tests/pipeline/test_flow_storage.py:70`)
+
+```python
+@pytest.mark.asyncio
+async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture, memory_store):
+    """Test that pipeline_flow sets RunContext if none exists."""
+    from ai_pipeline_core.documents import get_run_context
+
+    captured_ctx = None
+
+    @pipeline_flow()
+    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
+        nonlocal captured_ctx
+        captured_ctx = get_run_context()
+        return []
+
+    await test_flow("my-project", [], FlowOptions())
+
+    assert captured_ctx is not None
+    assert captured_ctx.run_scope == "my-project/test_flow"
+```
+
+**Pipeline flow with documents** (`tests/pipeline/test_wrapper_compatibility.py:54`)
+
+```python
+def test_pipeline_flow_with_documents():
+    """Test that pipeline_flow creates a proper flow for document processing."""
+    from ai_pipeline_core.documents import Document
+    from ai_pipeline_core.pipeline import FlowOptions
+
+    class InputDoc(Document):
+        pass
+
+    class OutputDoc(Document):
+        pass
+
+    @pipeline_flow()
+    async def my_doc_flow(run_id: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
+        return [OutputDoc.create_root(name="output.txt", content=b"output", reason="test input")]
+
+    # Check it's a Prefect Flow
+    assert hasattr(my_doc_flow, "__wrapped__")
+    assert hasattr(my_doc_flow, "serve")
+```
+
 
 ## Error Examples
 
@@ -877,5 +924,32 @@ def test_sync_function_with_pipeline_task_raises_error(self):
 
         @cast(Any, pipeline_task)
         def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
+            return x * 2
+```
+
+**Sync function with pipeline task with params raises error** (`tests/pipeline/test_decorators.py:787`)
+
+```python
+def test_sync_function_with_pipeline_task_with_params_raises_error(self):
+    from typing import Any, cast
+
+    with pytest.raises(TypeError, match="must be 'async def'"):
+
+        @cast(Any, pipeline_task(retries=3, trace_level="debug"))
+        def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
+            return x * 2
+```
+
+**Trace then pipeline task raises error** (`tests/pipeline/test_decorators.py:822`)
+
+```python
+def test_trace_then_pipeline_task_raises_error(self):
+    from ai_pipeline_core import trace
+
+    with pytest.raises(TypeError, match=r"already decorated.*with @trace"):
+
+        @pipeline_task
+        @trace
+        async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
             return x * 2
 ```

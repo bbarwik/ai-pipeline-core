@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 
 from ai_pipeline_core.prompt_compiler.components import (
-    MAX_RULE_LINES,
+    _MAX_RULE_LINES,
     Guide,
     OutputRule,
     Role,
@@ -87,10 +87,10 @@ def test_require_text_rejects_empty_after_strip() -> None:
 
 
 def test_require_text_rejects_too_many_lines() -> None:
-    text = "\n".join(f"line {i}" for i in range(1, MAX_RULE_LINES + 2))
+    text = "\n".join(f"line {i}" for i in range(1, _MAX_RULE_LINES + 2))
     cls = type("LongTextClass", (), {"text": text})
-    with pytest.raises(TypeError, match=f"exceeds {MAX_RULE_LINES} lines"):
-        _require_text(cls, kind="Rule", max_lines=MAX_RULE_LINES)
+    with pytest.raises(TypeError, match=f"exceeds {_MAX_RULE_LINES} lines"):
+        _require_text(cls, kind="Rule", max_lines=_MAX_RULE_LINES)
 
 
 def test_require_text_no_max_lines_allows_any_length() -> None:
@@ -193,14 +193,14 @@ def test_rule_valid() -> None:
 
 
 def test_rule_accepts_exactly_max_lines() -> None:
-    text = "\n".join(f"line {i}" for i in range(1, MAX_RULE_LINES + 1))
+    text = "\n".join(f"line {i}" for i in range(1, _MAX_RULE_LINES + 1))
     cls = type("ExactLinesRule", (Rule,), {"__doc__": "Doc.", "text": text})
     assert cls.text == text
 
 
 def test_rule_rejects_too_many_lines() -> None:
-    text = "\n".join(f"line {i}" for i in range(1, MAX_RULE_LINES + 2))
-    with pytest.raises(TypeError, match=f"exceeds {MAX_RULE_LINES} lines"):
+    text = "\n".join(f"line {i}" for i in range(1, _MAX_RULE_LINES + 2))
+    with pytest.raises(TypeError, match=f"exceeds {_MAX_RULE_LINES} lines"):
         type("LongRule", (Rule,), {"__doc__": "Doc.", "text": text})
 
 
@@ -226,8 +226,8 @@ def test_output_rule_valid() -> None:
 
 
 def test_output_rule_rejects_too_many_lines() -> None:
-    text = "\n".join(f"line {i}" for i in range(1, MAX_RULE_LINES + 2))
-    with pytest.raises(TypeError, match=f"exceeds {MAX_RULE_LINES} lines"):
+    text = "\n".join(f"line {i}" for i in range(1, _MAX_RULE_LINES + 2))
+    with pytest.raises(TypeError, match=f"exceeds {_MAX_RULE_LINES} lines"):
         type("LongOutput", (OutputRule,), {"__doc__": "Doc.", "text": text})
 
 

@@ -11,6 +11,9 @@ __all__ = [
 class Settings(BaseSettings):
     """Base configuration for AI Pipeline applications.
 
+    Fields map to environment variables via Pydantic BaseSettings
+    (e.g. ``clickhouse_host`` → ``CLICKHOUSE_HOST``). Uses ``.env`` file when present.
+
     Inherit to add application-specific fields::
 
         class ProjectSettings(Settings):

@@ -43,7 +43,7 @@ async def generate_document_summary(name: str, excerpt: str, model: str = "gemin
             CoreMessage(role=Role.SYSTEM, content=_DOC_SUMMARY_SYSTEM_PROMPT),
             CoreMessage(role=Role.USER, content=user_content),
         ]
-        options = ModelOptions(cache_ttl=None, retries=3, timeout=30)
+        options = ModelOptions(cache_ttl=None, retries=3, timeout=30, reasoning_effort="low")
         response = await generate_structured(
             messages,
             response_format=DocumentSummary,
