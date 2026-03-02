@@ -28,6 +28,7 @@ from ai_pipeline_core.deployment._helpers import (
 from ai_pipeline_core.deployment._resolve import AttachmentInput, DocumentInput
 from ai_pipeline_core.deployment._task_results import ClickHouseTaskResultStore
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._context import get_run_context
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._span_data import ATTR_INPUT_DOC_SHA256S, ATTR_OUTPUT_DOC_SHA256S
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
@@ -328,10 +329,24 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         derived_run_id = _derive_remote_run_id(run_id, documents, options)
         validate_run_id(derived_run_id)
 
+        # Extract parent lineage from RunContext and current OTel span
+        run_ctx = get_run_context()
+        parent_exec_id = str(run_ctx.execution_id) if run_ctx and run_ctx.execution_id else None
+        parent_span_hex: str | None = None
+        try:
+            current_span = otel_trace.get_current_span()
+            span_ctx = current_span.get_span_context() if current_span else None
+            if span_ctx and isinstance(span_ctx.span_id, int) and span_ctx.span_id:
+                parent_span_hex = format(span_ctx.span_id, "016x")
+        except Exception:
+            logger.debug("Failed to extract parent span context for lineage tracking")
+
         parameters: dict[str, Any] = {
             "run_id": derived_run_id,
             "documents": [_strip_for_prefect(doc.serialize_model()) for doc in documents],
             "options": options,
+            "parent_execution_id": parent_exec_id,
+            "parent_span_id": parent_span_hex,
         }
 
         result = await run_remote_deployment(

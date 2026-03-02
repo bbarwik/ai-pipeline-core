@@ -402,3 +402,89 @@ class TestSpanDataReplace:
         assert replaced.run_id == "new_run"
         assert original.execution_id is None
         assert original.run_id == ""
+
+
+# ---------------------------------------------------------------------------
+# Bug 4: Deferred clear preserves execution_id for in-flight spans
+# ---------------------------------------------------------------------------
+
+
+class TestDeferredClear:
+    def test_deferred_clear_preserves_execution_id_for_last_span(self) -> None:
+        """After clear_run_context, in-flight spans still get dispatched with execution_id."""
+        backend = MockBackend()
+        processor = PipelineSpanProcessor(backends=(backend,))
+        exec_id = uuid4()
+        processor.set_run_context(execution_id=exec_id, run_id="r1", flow_name="f", run_scope="s")
+
+        # Start root span A
+        span_a = _make_span(span_id=10, trace_id=1, name="root")
+        processor.on_start(span_a)
+
+        # Start child span B
+        span_b = _make_span(span_id=20, trace_id=1, name="child", parent=_make_span_context(10, 1))
+        processor.on_start(span_b)
+
+        # End B — should get execution_id
+        readable_b = _make_readable_span(span_id=20, trace_id=1, name="child", parent=_make_span_context(10, 1))
+        processor.on_end(readable_b)
+        assert backend.end_calls[-1].execution_id == exec_id
+
+        # Clear while A is still in flight
+        processor.clear_run_context()
+
+        # End A — should STILL get execution_id (deferred clear)
+        readable_a = _make_readable_span(span_id=10, trace_id=1, name="root")
+        processor.on_end(readable_a)
+        assert backend.end_calls[-1].execution_id == exec_id
+
+        # After last span ends, execution_id should be None
+        assert processor._execution_id is None
+
+    def test_clear_run_context_immediate_when_no_inflight_spans(self) -> None:
+        """If no spans are in flight, clear_run_context clears immediately."""
+        backend = MockBackend()
+        processor = PipelineSpanProcessor(backends=(backend,))
+        exec_id = uuid4()
+        processor.set_run_context(execution_id=exec_id, run_id="r1", flow_name="f", run_scope="s")
+        processor.clear_run_context()
+        assert processor._execution_id is None
+
+    def test_set_run_context_resets_pending_clear(self) -> None:
+        """set_run_context cancels any pending clear."""
+        backend = MockBackend()
+        processor = PipelineSpanProcessor(backends=(backend,))
+        exec_id = uuid4()
+        processor.set_run_context(execution_id=exec_id, run_id="r1", flow_name="f", run_scope="s")
+
+        span = _make_span(span_id=10, trace_id=1)
+        processor.on_start(span)
+        processor.clear_run_context()
+        assert processor._pending_clear is True
+
+        new_exec_id = uuid4()
+        processor.set_run_context(execution_id=new_exec_id, run_id="r2", flow_name="f2", run_scope="s2")
+        assert processor._pending_clear is False
+
+    def test_deferred_clear_fires_after_last_filtered_span(self) -> None:
+        """Deferred clear fires when the last tracked span (including filtered) ends."""
+        backend = MockBackend()
+        processor = PipelineSpanProcessor(backends=(backend,))
+        exec_id = uuid4()
+        processor.set_run_context(execution_id=exec_id, run_id="r1", flow_name="f", run_scope="s")
+
+        # Start a filtered LLM span (in _filtered_span_ids)
+        span = _make_span(span_id=10, trace_id=1, attrs={"lmnr.span.type": "LLM"})
+        processor.on_start(span)
+        # It was filtered — check it's in _filtered_span_ids
+        span_hex = format(10, "016x")
+        assert span_hex in processor._filtered_span_ids
+
+        processor.clear_run_context()
+        # Still pending
+        assert processor._execution_id == exec_id
+
+        # End the filtered span
+        readable = _make_readable_span(span_id=10, trace_id=1, attrs={"lmnr.span.type": "LLM"})
+        processor.on_end(readable)
+        assert processor._execution_id is None

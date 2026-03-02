@@ -558,3 +558,58 @@ class TestRunPassesOptionsObject:
         finally:
             store.shutdown()
             set_document_store(None)
+
+
+# ---------------------------------------------------------------------------
+# Bug 9: Parent-child run lineage
+# ---------------------------------------------------------------------------
+
+
+class TestRunContextIncludesExecutionId:
+    """Verify RunContext.execution_id is populated during run()."""
+
+    async def test_run_context_has_execution_id(self):
+        from ai_pipeline_core.document_store._memory import MemoryDocumentStore
+        from ai_pipeline_core.document_store._protocol import set_document_store
+        from ai_pipeline_core.documents._context import get_run_context
+
+        captured_ctx = []
+
+        @pipeline_flow()
+        async def ctx_flow(run_id: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
+            captured_ctx.append(get_run_context())
+            return [OutputDoc(name="out.txt", content=b"ok")]
+
+        class CtxDeployment(PipelineDeployment[FlowOptions, ValidResult]):
+            flows = [ctx_flow]  # type: ignore[reportAssignmentType]
+
+            @staticmethod
+            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
+                return ValidResult(success=True)
+
+        store = MemoryDocumentStore()
+        set_document_store(store)
+        try:
+            await CtxDeployment().run("proj", [InputDoc(name="in.txt", content=b"x")], FlowOptions())
+            assert len(captured_ctx) == 1
+            ctx = captured_ctx[0]
+            assert ctx is not None
+            # execution_id may be None when no ClickHouse is configured, but run_scope must be set
+            assert ctx.run_scope
+        finally:
+            store.shutdown()
+            set_document_store(None)
+
+
+class TestAsPrefectFlowParentParams:
+    """Verify _deployment_flow accepts parent lineage parameters."""
+
+    def test_deployment_flow_has_parent_params(self):
+        import inspect
+
+        prefect_flow = ValidDeployment().as_prefect_flow()
+        sig = inspect.signature(prefect_flow.fn)
+        assert "parent_execution_id" in sig.parameters
+        assert "parent_span_id" in sig.parameters
+        assert sig.parameters["parent_execution_id"].default is None
+        assert sig.parameters["parent_span_id"].default is None

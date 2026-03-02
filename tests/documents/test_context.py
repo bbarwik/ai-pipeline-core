@@ -69,6 +69,17 @@ class TestRunContext:
         _run_context.reset(token1)
         assert get_run_context() is None
 
+    def test_execution_id_defaults_to_none(self):
+        ctx = RunContext(run_scope=RunScope("test"))
+        assert ctx.execution_id is None
+
+    def test_execution_id_stored(self):
+        from uuid import uuid4
+
+        uid = uuid4()
+        ctx = RunContext(run_scope=RunScope("test"), execution_id=uid)
+        assert ctx.execution_id == uid
+
 
 # ===== TaskDocumentContext.register_created =====
 

@@ -63,17 +63,21 @@ WHERE execution_id = {execution_id:UUID}
 ORDER BY span_order
 """
 
-_DOWNLOAD_SPANS_BY_RUN_PREFIX_QUERY = """
-SELECT span_id, trace_id, parent_span_id, name, span_type, status,
-       start_time, end_time, duration_ms, span_order,
-       cost, tokens_input, tokens_output, tokens_cached, llm_model,
-       error_message, input_json, output_json, replay_payload,
-       attributes_json, events_json, execution_id,
-       run_id, flow_name, run_scope,
-       input_doc_sha256s, output_doc_sha256s
-FROM pipeline_spans FINAL
-WHERE run_id LIKE {run_id_prefix:String}
-ORDER BY run_id, span_order
+_DOWNLOAD_CHILDREN_SPANS_QUERY = """
+SELECT s.span_id, s.trace_id, s.parent_span_id, s.name, s.span_type, s.status,
+       s.start_time, s.end_time, s.duration_ms, s.span_order,
+       s.cost, s.tokens_input, s.tokens_output, s.tokens_cached, s.llm_model,
+       s.error_message, s.input_json, s.output_json, s.replay_payload,
+       s.attributes_json, s.events_json, s.execution_id,
+       s.run_id, s.flow_name, s.run_scope,
+       s.input_doc_sha256s, s.output_doc_sha256s
+FROM pipeline_spans FINAL AS s
+WHERE s.execution_id = {execution_id:UUID}
+   OR s.execution_id IN (
+       SELECT execution_id FROM pipeline_runs FINAL
+       WHERE parent_execution_id = {execution_id:UUID}
+   )
+ORDER BY s.run_id, s.span_order
 """
 
 _RESOLVE_RUN_ID_QUERY = """
@@ -260,13 +264,13 @@ def _fetch_and_materialize(client: Any, *, execution_id: UUID, run_id: str, use_
     from ai_pipeline_core.observability._span_data import SpanData
 
     if use_children:
-        result = client.query(_DOWNLOAD_SPANS_BY_RUN_PREFIX_QUERY, parameters={"run_id_prefix": f"{run_id}%"})
+        result = client.query(_DOWNLOAD_CHILDREN_SPANS_QUERY, parameters={"execution_id": str(execution_id)})
     else:
         result = client.query(_DOWNLOAD_SPANS_QUERY, parameters={"execution_id": str(execution_id)})
 
     rows = result.result_rows
     if not rows:
-        identifier_desc = f"run_id prefix {run_id!r}" if use_children else f"execution_id {execution_id}"
+        identifier_desc = f"execution_id {execution_id} (with children)" if use_children else f"execution_id {execution_id}"
         print(f"No spans found for {identifier_desc}.", file=sys.stderr)
         raise SystemExit(1)
 
@@ -286,7 +290,7 @@ def _fetch_and_materialize(client: Any, *, execution_id: UUID, run_id: str, use_
             child_run_ids.append(span_run_id)
             run_path = output_path / f"child_{span_run_id}"
 
-        materializer = TraceMaterializer(TraceDebugConfig(path=run_path))
+        materializer = TraceMaterializer(TraceDebugConfig(path=run_path / ".trace"), batch_mode=True)
         real_spans = sorted((s for s in spans if s.span_order > 0), key=lambda s: s.span_order)
         filtered_spans = [s for s in spans if s.span_order == 0]
         # Pass 1: register all spans (status="running") to prevent premature finalization
@@ -311,10 +315,10 @@ def _cmd_download(args: argparse.Namespace) -> int:
     short_id = str(execution_id)[:EXECUTION_ID_SHORT_LENGTH]
     output_path = Path(args.output).resolve() if args.output else Path(f"./{short_id}_trace").resolve()
 
-    use_children = args.children and bool(run_id)
+    use_children = args.children
     print(f"Downloading trace {execution_id}" + (f" (run_id: {run_id})" if run_id else ""))
     if use_children:
-        print(f"  including children of: {run_id}")
+        print(f"  including children of: {execution_id}")
     print(f"  output: {output_path}")
 
     try:
@@ -332,18 +336,23 @@ def _cmd_download(args: argparse.Namespace) -> int:
         logger.debug("Trace download failed", exc_info=True)
         return 1
 
-    # Download documents referenced by replay files
+    # Download documents referenced by replay files (parent + each child)
     found, total = 0, 0
     if not args.no_docs:
         from ai_pipeline_core.observability._download_docs import fetch_trace_documents
 
-        try:
-            found, total = fetch_trace_documents(client, output_path)
-        except Exception as e:
-            logger.warning("Document download failed: %s", e)
+        doc_paths = [output_path] + [output_path / f"child_{rid}" for rid in child_run_ids]
+        for doc_path in doc_paths:
+            try:
+                f, t = fetch_trace_documents(client, doc_path)
+                found += f
+                total += t
+            except Exception as e:
+                logger.warning("Document download failed for %s: %s", doc_path, e)
 
     # Print summary
-    span_dirs = [d for d in output_path.iterdir() if d.is_dir() and d.name[:1].isdigit()]
+    trace_dir = output_path / ".trace"
+    span_dirs = [d for d in trace_dir.iterdir() if d.is_dir() and d.name[:1].isdigit()] if trace_dir.is_dir() else []
     flow_name = _extract_flow_name(output_path)
     print(f"\nDownloaded: {flow_name}")
     print(f"  spans: {len(span_dirs)}")
@@ -361,7 +370,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
 
 def _extract_flow_name(output_path: Path) -> str:
     """Extract flow name from summary.md in the output directory."""
-    summary_path = output_path / "summary.md"
+    summary_path = output_path / ".trace" / "summary.md"
     if summary_path.exists():
         first_line = summary_path.read_text(encoding="utf-8").split("\n", maxsplit=1)[0]
         if first_line.startswith("# "):

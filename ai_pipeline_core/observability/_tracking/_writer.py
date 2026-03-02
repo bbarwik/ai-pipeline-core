@@ -32,7 +32,9 @@ _CREATE_TABLES_SQL = [
         total_cost         Float64         DEFAULT 0,
         total_tokens       UInt64          DEFAULT 0,
         metadata_json      String          DEFAULT '{{}}' CODEC(ZSTD(3)),
-        version            UInt64          DEFAULT 1
+        version            UInt64          DEFAULT 1,
+        parent_execution_id Nullable(UUID) DEFAULT NULL,
+        parent_span_id     Nullable(String) DEFAULT NULL
     )
     ENGINE = ReplacingMergeTree(version)
     PARTITION BY toYYYYMM(start_time)

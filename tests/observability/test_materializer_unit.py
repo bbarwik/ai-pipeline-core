@@ -290,12 +290,11 @@ class TestWrapperSpanDetection:
         mat2.on_span_start(wrapper)
         child = _make_span_data(span_id="c1", trace_id="t1", parent_span_id="w1", name="my_task-abc")
         mat2.on_span_start(child)
-        # Write wrapper span.yaml with input type "none"
+        # Set wrapper span info for detection
         trace = mat2._traces["t1"]
         wrapper_info = trace.spans["w1"]
         wrapper_info.prefect_info = {"run_id": "r1"}
-        span_meta = {"input": {"type": "none"}, "output": {"type": "file"}}
-        (wrapper_info.path / "span.yaml").write_text(yaml.dump(span_meta))
+        wrapper_info.input_type = "none"
         from ai_pipeline_core.observability._debug._materializer import _detect_wrapper_spans
 
         wrappers = _detect_wrapper_spans(trace)
@@ -315,8 +314,7 @@ class TestWrapperMerge:
         # Set up wrapper conditions
         wrapper_info = trace.spans["w1"]
         wrapper_info.prefect_info = {"run_id": "r1"}
-        span_meta = {"input": {"type": "none"}}
-        (wrapper_info.path / "span.yaml").write_text(yaml.dump(span_meta))
+        wrapper_info.input_type = "none"
         from ai_pipeline_core.observability._debug._materializer import _merge_wrapper_spans
 
         _merge_wrapper_spans(trace)
@@ -345,3 +343,175 @@ class TestSanitizeName:
 
     def test_empty_fallback(self):
         assert _sanitize_name("...") == "span"
+
+
+# ---------------------------------------------------------------------------
+# Bug 3: _detect_wrapper_spans reads from disk instead of SpanInfo
+# ---------------------------------------------------------------------------
+
+
+class TestSpanInfoInputType:
+    def test_span_info_has_input_type_after_add_span(self, tmp_path: Path) -> None:
+        """After add_span, span_info.input_type reflects the content writer result."""
+        mat = _make_materializer(tmp_path / "t2")
+        s1 = _make_span_data(span_id="s1", name="root", span_order=1, input_json='{"x": 1}')
+        s2 = _make_span_data(span_id="s2", name="child", span_order=2, status="running")
+        mat.on_span_start(s1)
+        mat.on_span_start(s2)
+        mat.add_span(s1)
+        info = mat._traces["trace1"].spans["s1"]
+        assert info.input_type == "file"
+
+    def test_span_info_input_type_none_for_empty(self, tmp_path: Path) -> None:
+        """input_type is 'none' when input_json is empty."""
+        mat = _make_materializer(tmp_path / "t3")
+        s1 = _make_span_data(span_id="s1", name="root", span_order=1, input_json="")
+        s2 = _make_span_data(span_id="s2", name="child", span_order=2, status="running")
+        mat.on_span_start(s1)
+        mat.on_span_start(s2)
+        mat.add_span(s1)
+        info = mat._traces["trace1"].spans["s1"]
+        assert info.input_type == "none"
+
+
+# ---------------------------------------------------------------------------
+# Bug 3b: SpanInfo.start_time not updated from span data
+# ---------------------------------------------------------------------------
+
+
+class TestSpanInfoStartTime:
+    def test_span_info_start_time_matches_span_data(self, tmp_path: Path) -> None:
+        """After add_span, span_info.start_time should match span_data.start_time, not datetime.now()."""
+        original_start = datetime(2024, 1, 1, tzinfo=UTC)
+        mat = _make_materializer(tmp_path / "st")
+        s1 = _make_span_data(span_id="s1", span_order=1, status="completed")
+        s2 = _make_span_data(span_id="s2", span_order=2, status="running")
+        mat.on_span_start(s1)
+        mat.on_span_start(s2)
+        # add_span with the real start_time from SpanData
+        mat.add_span(s1)  # s1 has start_time=_EPOCH = 2024-01-01
+        info = mat._traces["trace1"].spans["s1"]
+        assert info.start_time == original_start
+
+
+# ---------------------------------------------------------------------------
+# Bug 2: ContentWriter re-created per span
+# ---------------------------------------------------------------------------
+
+
+class TestContentWriterReuse:
+    def test_content_writer_created_once(self, tmp_path: Path) -> None:
+        """ContentWriter should be created once in __init__, not per add_span call."""
+        from unittest.mock import patch
+        from ai_pipeline_core.observability._debug._content import ContentWriter
+
+        _make_materializer(tmp_path / "cw")
+        call_count = 0
+        original_init = ContentWriter.__init__
+
+        def counting_init(self, config):
+            nonlocal call_count
+            call_count += 1
+            original_init(self, config)
+
+        with patch.object(ContentWriter, "__init__", counting_init):
+            mat2 = _make_materializer(tmp_path / "cw2")
+            s1 = _make_span_data(span_id="s1", span_order=1)
+            s2 = _make_span_data(span_id="s2", span_order=2)
+            mat2.add_span(s1)
+            mat2.add_span(s2)
+
+        # Should be 1 (from __init__), not 2+ (from each add_span)
+        assert call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Bug 1: O(N²) index writes in batch mode
+# ---------------------------------------------------------------------------
+
+
+class TestBatchMode:
+    def test_batch_mode_skips_index_writes(self, tmp_path: Path) -> None:
+        """In batch_mode, llm_calls.yaml should NOT exist after add_span — only after finalize_all."""
+        config = TraceDebugConfig(path=tmp_path)
+        mat = TraceMaterializer(config, batch_mode=True)
+        s1 = _make_span_data(
+            span_id="s1",
+            span_order=1,
+            attributes={"gen_ai.usage.input_tokens": 100, "gen_ai.usage.output_tokens": 50, "gen_ai.usage.cost": 0.01},
+        )
+        s2 = _make_span_data(span_id="s2", span_order=2, status="running")
+        mat.on_span_start(s1)
+        mat.on_span_start(s2)
+        mat.add_span(s1)
+        assert not (tmp_path / "llm_calls.yaml").exists()
+        mat.add_span(_make_span_data(span_id="s2", span_order=2))
+        mat.finalize_all()
+        assert (tmp_path / "llm_calls.yaml").exists()
+
+    def test_batch_mode_skips_finalization_check(self, tmp_path: Path) -> None:
+        """In batch_mode, trace stays in _traces after last span completes — not auto-finalized."""
+        config = TraceDebugConfig(path=tmp_path)
+        mat = TraceMaterializer(config, batch_mode=True)
+        s1 = _make_span_data(span_id="s1", span_order=1)
+        mat.on_span_start(s1)
+        mat.add_span(s1)
+        # In batch_mode, trace should NOT be auto-finalized
+        assert "trace1" in mat._traces
+        mat.finalize_all()
+        assert "trace1" not in mat._traces
+
+    def test_default_mode_writes_index_per_span(self, tmp_path: Path) -> None:
+        """In default mode (batch_mode=False), llm_calls.yaml exists after add_span."""
+        mat = _make_materializer(tmp_path)
+        s1 = _make_span_data(
+            span_id="s1",
+            span_order=1,
+            attributes={"gen_ai.usage.input_tokens": 100, "gen_ai.usage.output_tokens": 50, "gen_ai.usage.cost": 0.01},
+        )
+        mat.add_span(s1)
+        # Default mode: index written immediately (trace auto-finalized since only one completed span)
+        assert (tmp_path / "llm_calls.yaml").exists()
+
+    def test_batch_mode_finalize_all_writes_summary(self, tmp_path: Path) -> None:
+        """In batch_mode, finalize_all writes summary.md."""
+        config = TraceDebugConfig(path=tmp_path)
+        mat = TraceMaterializer(config, batch_mode=True)
+        s1 = _make_span_data(span_id="s1", span_order=1)
+        mat.on_span_start(s1)
+        mat.add_span(s1)
+        mat.finalize_all()
+        assert (tmp_path / "summary.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Bug 7: root_span_id never set when parent is external
+# ---------------------------------------------------------------------------
+
+
+class TestRootSpanDetection:
+    def test_root_span_detected_when_parent_not_in_trace(self, tmp_path: Path) -> None:
+        """A span whose parent_span_id is not in trace.spans should become root."""
+        mat = _make_materializer(tmp_path / "r1")
+        s = _make_span_data(span_id="s1", parent_span_id="external-laminar-id", span_order=1, status="running")
+        mat.on_span_start(s)
+        trace = mat._traces["trace1"]
+        assert trace.root_span_id == "s1"
+
+    def test_root_span_not_overwritten_by_later_orphan(self, tmp_path: Path) -> None:
+        """Only the first span with an external parent becomes root."""
+        mat = _make_materializer(tmp_path / "r2")
+        s1 = _make_span_data(span_id="s1", parent_span_id="ext1", span_order=1, status="running")
+        s2 = _make_span_data(span_id="s2", parent_span_id="ext2", span_order=2, status="running")
+        mat.on_span_start(s1)
+        mat.on_span_start(s2)
+        trace = mat._traces["trace1"]
+        assert trace.root_span_id == "s1"
+
+    def test_root_span_set_when_parent_is_none(self, tmp_path: Path) -> None:
+        """Existing behavior: parent_span_id=None sets root."""
+        mat = _make_materializer(tmp_path / "r3")
+        s = _make_span_data(span_id="s1", parent_span_id=None, span_order=1, status="running")
+        mat.on_span_start(s)
+        trace = mat._traces["trace1"]
+        assert trace.root_span_id == "s1"

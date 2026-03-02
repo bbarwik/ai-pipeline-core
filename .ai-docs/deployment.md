@@ -118,6 +118,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             run_id: str,
             documents: list[DocumentInput],
             options: FlowOptions,
+            parent_execution_id: str | None = None,
+            parent_span_id: str | None = None,
         ) -> DeploymentResult:
             # Initialize observability for remote workers
             init_observability_best_effort()
@@ -148,12 +150,15 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                         deployment._all_document_types(),
                         start_step_input_types=start_step_input_types,
                     )
+                    parent_uuid = UUID(parent_execution_id) if parent_execution_id else None
                     result = await deployment.run(
                         run_id,
                         typed_docs,
                         cast(Any, options),
                         publisher=publisher,
                         task_result_store=task_result_store,
+                        parent_execution_id=parent_uuid,
+                        parent_span_id=parent_span_id,
                     )
                     Laminar.set_span_output(result.model_dump())
                     return result
@@ -199,6 +204,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         start_step: int = 1,
         end_step: int | None = None,
         task_result_store: TaskResultStore | None = None,
+        parent_execution_id: UUID | None = None,
+        parent_span_id: str | None = None,
     ) -> TResult:
         """Execute flows with resume, per-flow uploads, and step control.
 
@@ -252,6 +259,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     run_id=run_id,
                     flow_name=self.name,
                     run_scope=str(run_scope),
+                    parent_execution_id=parent_execution_id,
+                    parent_span_id=parent_span_id,
                 )
             # Set run context on processors so child spans inherit execution_id
             _set_run_context_on_processors(run_uuid or uuid4(), run_id, self.name, str(run_scope))
@@ -263,7 +272,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         failed_published = False
         heartbeat_task: asyncio.Task[None] | None = None
         limits_token = _set_limits_state(_LimitsState(limits=self.concurrency_limits, status=_SharedStatus()))
-        run_token = set_run_context(RunContext(run_scope=run_scope))
+        run_token = set_run_context(RunContext(run_scope=run_scope, execution_id=run_uuid))
         try:
             # Publish task.started event (inside try so failures still hit finally cleanup)
             await publisher.publish_started(StartedEvent(run_id=run_id, flow_run_id=flow_run_id, run_scope=str(run_scope)))

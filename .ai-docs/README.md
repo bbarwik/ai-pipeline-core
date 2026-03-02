@@ -65,7 +65,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         """Generate a Prefect flow for production deployment via ``ai-pipeline-deploy`` CLI."""
     def build_result(run_id: str, documents: list[Document], options: TOptions) -> TResult:
         """Extract typed result from pipeline documents loaded from DocumentStore."""
-    def run(self, run_id: str, documents: Sequence[Document], options: TOptions, publisher: ResultPublisher | None=None, start_step: int=1, end_step: int | None=None, task_result_store: TaskResultStore | None=None) -> TResult:
+    def run(self, run_id: str, documents: Sequence[Document], options: TOptions, publisher: ResultPublisher | None=None, start_step: int=1, end_step: int | None=None, task_result_store: TaskResultStore | None=None, parent_execution_id: UUID | None=None, parent_span_id: str | None=None) -> TResult:
         """Execute flows with resume, per-flow uploads, and step control."""
     def run_cli(self, initializer: Callable[[TOptions], tuple[str, list[Document]]] | None=None, trace_name: str | None=None, cli_mixin: type[BaseSettings] | None=None) -> None:
         """Execute pipeline from CLI with positional working_directory and --start/--end/--no-trace flags."""
@@ -518,6 +518,7 @@ class RunContext:
 
     # Fields
     run_scope: RunScope
+    execution_id: UUID | None = None
 
 
 class TaskDocumentContext:

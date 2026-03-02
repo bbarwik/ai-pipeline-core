@@ -211,3 +211,33 @@ class TestFlushAndShutdown:
         backend, writer = _make_backend()
         backend.shutdown()
         writer.shutdown.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Bug 9: Parent-child run lineage
+# ---------------------------------------------------------------------------
+
+
+class TestTrackRunStartParentLineage:
+    def test_stores_parent_execution_id(self):
+        backend, writer = _make_backend()
+        uid = uuid4()
+        parent_uid = uuid4()
+        backend.track_run_start(
+            execution_id=uid,
+            run_id="run-child",
+            flow_name="child_flow",
+            parent_execution_id=parent_uid,
+            parent_span_id="abc123",
+        )
+        row = writer.write.call_args[0][1][0]
+        assert row.parent_execution_id == parent_uid
+        assert row.parent_span_id == "abc123"
+
+    def test_defaults_parent_to_none(self):
+        backend, writer = _make_backend()
+        uid = uuid4()
+        backend.track_run_start(execution_id=uid, run_id="run-1", flow_name="flow")
+        row = writer.write.call_args[0][1][0]
+        assert row.parent_execution_id is None
+        assert row.parent_span_id is None

@@ -88,3 +88,17 @@ class TestRowModels:
         )
         with pytest.raises(ValidationError):
             row.run_id = "changed"  # type: ignore[misc]
+
+    def test_pipeline_run_row_has_parent_fields(self):
+        parent_uid = uuid4()
+        row = PipelineRunRow(
+            execution_id=uuid4(),
+            run_id="child-run",
+            flow_name="child_flow",
+            status=RunStatus.RUNNING,
+            start_time=datetime.now(UTC),
+            parent_execution_id=parent_uid,
+            parent_span_id="span123",
+        )
+        assert row.parent_execution_id == parent_uid
+        assert row.parent_span_id == "span123"

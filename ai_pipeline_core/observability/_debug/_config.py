@@ -92,6 +92,7 @@ class SpanInfo:
     prefect_info: dict[str, Any] | None = None
     description: str | None = None
     expected_cost: float | None = None
+    input_type: str | None = None
 
 
 @dataclass(slots=True)

@@ -743,6 +743,7 @@ Attachments:
 class RunContext:
     """Immutable context for a pipeline run, carried via ContextVar."""
     run_scope: RunScope
+    execution_id: UUID | None = None
 
 
 @dataclass

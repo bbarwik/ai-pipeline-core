@@ -6,8 +6,6 @@ cost breakdown, and navigation guide. No LLM dependencies — pure text formatti
 
 from typing import Any
 
-import yaml
-
 from ai_pipeline_core.logging import get_pipeline_logger
 
 from ._config import REPLAY_FILENAME_TO_LABEL, SpanInfo, TraceState
@@ -95,41 +93,34 @@ def generate_costs(trace: TraceState) -> str | None:
 def _build_replay_section(trace: TraceState) -> list[str]:
     """Scan span directories for replay YAML files and build a ## Replay section.
 
-    Groups files by payload type with relative paths and example CLI commands.
+    Shows counts per payload type with example CLI commands.
     Returns empty list if no replay files found.
     """
-    found: dict[str, list[tuple[str, dict[str, Any]]]] = {}  # label -> [(relative_path, yaml_data)]
+    counts: dict[str, int] = {}
+    first_path: str | None = None
 
     for span in sorted(trace.spans.values(), key=lambda s: s.order):
         for filename, label in REPLAY_FILENAME_TO_LABEL.items():
             replay_path = span.path / filename
             if not replay_path.exists():
                 continue
-            relative = replay_path.relative_to(trace.path).as_posix()
-            data: dict[str, Any] = {}
-            try:
-                data = yaml.safe_load(replay_path.read_text(encoding="utf-8")) or {}
-            except (yaml.YAMLError, OSError) as e:
-                logger.debug("Failed to parse replay file %s: %s", replay_path, e)
-            found.setdefault(label, []).append((relative, data))
+            counts[label] = counts.get(label, 0) + 1
+            if first_path is None:
+                first_path = replay_path.relative_to(trace.path).as_posix()
 
-    if not found:
+    if not counts:
         return []
 
     lines = ["## Replay", "", "Re-execute any captured boundary with `ai-replay run <file> --import <your_app>`.", ""]
 
     for label in ("conversation", "task", "flow"):
-        entries = found.get(label)
-        if not entries:
+        count = counts.get(label)
+        if not count:
             continue
-        lines.append(f"**{label.title()}s** ({len(entries)}):")
-        for rel_path, data in entries:
-            detail = _replay_entry_detail(label, data)
-            lines.append(f"- `{rel_path}`{detail}")
-        lines.append("")
+        noun = label if count == 1 else f"{label}s"
+        lines.append(f"- {count} {noun}")
+    lines.append("")
 
-    # Example commands
-    first_path = next(iter(next(iter(found.values()))))[0]
     lines.extend([
         "```bash",
         f"ai-replay show {first_path}",
@@ -140,31 +131,6 @@ def _build_replay_section(trace: TraceState) -> list[str]:
     ])
 
     return lines
-
-
-def _replay_entry_detail(label: str, data: dict[str, Any]) -> str:
-    """Format a short detail suffix for a replay entry line."""
-    if label == "conversation":
-        model = data.get("model", "")
-        original = data.get("original", {})
-        cost = original.get("cost")
-        suffix = f" — {model}" if model else ""
-        if cost is not None:
-            suffix += f" (${cost:.4f})"
-        return suffix
-    if label == "task":
-        fn = data.get("function_path", "")
-        name = fn.rsplit(":", 1)[-1] if ":" in fn else fn
-        return f" — {name}" if name else ""
-    if label == "flow":
-        fn = data.get("function_path", "")
-        name = fn.rsplit(":", 1)[-1] if ":" in fn else fn
-        doc_count = len(data.get("documents", []))
-        suffix = f" — {name}" if name else ""
-        if doc_count:
-            suffix += f" ({doc_count} docs)"
-        return suffix
-    return ""
 
 
 def _format_markdown_table(headers: list[str], rows: list[list[str]]) -> str:

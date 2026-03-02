@@ -409,30 +409,32 @@ class TestCmdDownloadByRunId:
 
 @pytest.mark.usefixtures("_patch_create_client")
 class TestCmdDownloadChildren:
-    def test_children_queries_by_run_prefix(self, mock_client: MagicMock, tmp_path: Path) -> None:
-        """--children uses LIKE prefix query and creates child directories."""
+    def test_children_queries_by_parent_execution_id(self, mock_client: MagicMock, tmp_path: Path) -> None:
+        """--children uses parent_execution_id query and creates child directories."""
         parent_span = _make_span_row(span_id="s1", trace_id="t1", name="parent_task", run_id="job-1")
         child_span = _make_span_row(span_id="s2", trace_id="t2", name="child_task", run_id="job-1-subtask")
         mock_client.query.side_effect = [
             # _resolve_identifier: _RESOLVE_RUN_ID_QUERY
             MagicMock(result_rows=[(SAMPLE_UUID_OBJ, "job-1")]),
-            # _DOWNLOAD_SPANS_BY_RUN_PREFIX_QUERY
+            # _DOWNLOAD_CHILDREN_SPANS_QUERY
             MagicMock(result_rows=[parent_span, child_span], column_names=_SPAN_COLUMNS),
         ]
         out = tmp_path / "out"
         result = main(["download", "job-1", "--children", "-o", str(out)])
         assert result == 0
-        # Parent spans go to root
-        assert any(d.name[:1].isdigit() for d in out.iterdir() if d.is_dir())
-        # Child spans go to child_{run_id}/ subdirectory
-        child_dir = out / "child_job-1-subtask"
-        assert child_dir.is_dir()
-        assert any(d.name[:1].isdigit() for d in child_dir.iterdir() if d.is_dir())
+        # Parent spans go to .trace/ under root
+        trace_dir = out / ".trace"
+        assert trace_dir.is_dir()
+        assert any(d.name[:1].isdigit() for d in trace_dir.iterdir() if d.is_dir())
+        # Child spans go to child_{run_id}/.trace/ subdirectory
+        child_trace_dir = out / "child_job-1-subtask" / ".trace"
+        assert child_trace_dir.is_dir()
+        assert any(d.name[:1].isdigit() for d in child_trace_dir.iterdir() if d.is_dir())
 
-        # Verify the LIKE query was used
+        # Verify the query uses execution_id (not LIKE run_id_prefix)
         spans_query_call = mock_client.query.call_args_list[1]
-        assert "run_id_prefix" in spans_query_call[1]["parameters"]
-        assert spans_query_call[1]["parameters"]["run_id_prefix"] == "job-1%"
+        assert "execution_id" in spans_query_call[1]["parameters"]
+        assert "run_id_prefix" not in spans_query_call[1]["parameters"]
 
     def test_children_no_children_found(self, mock_client: MagicMock, tmp_path: Path) -> None:
         """--children with only parent spans produces no child directories."""
@@ -454,7 +456,7 @@ class TestCmdDownloadChildren:
         mock_client.query.side_effect = [
             # _resolve_identifier: _RUN_METADATA_QUERY for UUID
             MagicMock(result_rows=[("job-1", "my_flow", "", "completed", _NOW, _LATER, 0, 0, "{}")]),
-            # _DOWNLOAD_SPANS_BY_RUN_PREFIX_QUERY
+            # _DOWNLOAD_CHILDREN_SPANS_QUERY
             MagicMock(result_rows=[parent_span, child_span], column_names=_SPAN_COLUMNS),
         ]
         out = tmp_path / "out"
@@ -462,19 +464,18 @@ class TestCmdDownloadChildren:
         assert result == 0
         assert (out / "child_job-1-sub1").is_dir()
 
-    def test_children_without_run_id_falls_back_to_execution_id(self, mock_client: MagicMock, tmp_path: Path) -> None:
-        """UUID + --children but no run_id in pipeline_runs falls back to execution_id query."""
+    def test_children_with_uuid_and_no_run_metadata(self, mock_client: MagicMock, tmp_path: Path) -> None:
+        """UUID + --children works even without run metadata (uses execution_id directly)."""
         parent_span = _make_span_row(span_id="s1", run_id="")
         mock_client.query.side_effect = [
             # _resolve_identifier: no run metadata
             MagicMock(result_rows=[]),
-            # Falls back to _DOWNLOAD_SPANS_QUERY (execution_id based)
+            # _DOWNLOAD_CHILDREN_SPANS_QUERY
             MagicMock(result_rows=[parent_span], column_names=_SPAN_COLUMNS),
         ]
         out = tmp_path / "out"
         result = main(["download", SAMPLE_UUID, "--children", "-o", str(out)])
         assert result == 0
-        # No children since run_id was empty, so --children had no effect
         spans_query_call = mock_client.query.call_args_list[1]
         assert "execution_id" in spans_query_call[1]["parameters"]
 
@@ -502,7 +503,8 @@ class TestDownloadFilteredSpans:
         ]
         out = tmp_path / "out"
         main(["download", SAMPLE_UUID, "-o", str(out)])
-        span_dirs = [d for d in out.iterdir() if d.is_dir()]
+        trace_dir = out / ".trace"
+        span_dirs = [d for d in trace_dir.iterdir() if d.is_dir()]
         # Only the real span should have a directory, not the filtered LLM span
         assert len(span_dirs) == 1
         assert "my_task" in span_dirs[0].name
@@ -527,8 +529,9 @@ class TestDownloadHierarchy:
         ]
         out = tmp_path / "out"
         main(["download", SAMPLE_UUID, "-o", str(out)])
-        # Parent should be a top-level directory
-        top_dirs = [d for d in out.iterdir() if d.is_dir()]
+        trace_dir = out / ".trace"
+        # Parent should be a top-level directory inside .trace/
+        top_dirs = [d for d in trace_dir.iterdir() if d.is_dir()]
         assert len(top_dirs) == 1, f"Expected 1 top-level dir, got {[d.name for d in top_dirs]}"
         parent_dir = top_dirs[0]
         assert "research_flow" in parent_dir.name
@@ -546,7 +549,7 @@ class TestDownloadHierarchy:
         ]
         out = tmp_path / "out"
         main(["download", SAMPLE_UUID, "-o", str(out)])
-        summary = (out / "summary.md").read_text()
+        summary = (out / ".trace" / "summary.md").read_text()
         tree_section = summary.split("## Execution Tree")[1] if "## Execution Tree" in summary else ""
         # Child should be indented (4 spaces) under parent
         assert "    " in tree_section, "Child span should be indented in execution tree"

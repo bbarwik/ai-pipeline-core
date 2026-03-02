@@ -40,6 +40,8 @@ class PipelineRunRow(BaseModel):
     total_tokens: int = 0
     metadata_json: str = "{}"
     version: int = 1
+    parent_execution_id: UUID | None = None
+    parent_span_id: str | None = None
 
 
 class PipelineSpanRow(BaseModel):

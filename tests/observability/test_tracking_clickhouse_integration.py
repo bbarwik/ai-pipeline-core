@@ -122,3 +122,66 @@ class TestRunTracking:
         assert len(rows) == 1
         assert rows[0][0] == "completed"
         assert rows[0][1] is not None
+
+
+class TestParentChildLineage:
+    """Test parent-child run lineage columns in pipeline_runs."""
+
+    def test_parent_execution_id_persisted(self, backend, clickhouse_container):
+        parent_uid = uuid4()
+        child_uid = uuid4()
+        backend.track_run_start(
+            execution_id=child_uid,
+            run_id="child-run",
+            flow_name="child-flow",
+            parent_execution_id=parent_uid,
+            parent_span_id="abc123def456",
+        )
+        backend.flush(timeout=5.0)
+
+        rows = _query(
+            clickhouse_container,
+            f"SELECT parent_execution_id, parent_span_id FROM {TABLE_PIPELINE_RUNS} FINAL WHERE execution_id = '{child_uid}'",
+        )
+        assert len(rows) == 1
+        assert rows[0][0] == parent_uid
+        assert rows[0][1] == "abc123def456"
+
+    def test_parent_execution_id_null_by_default(self, backend, clickhouse_container):
+        run_uid = uuid4()
+        backend.track_run_start(execution_id=run_uid, run_id="standalone", flow_name="f")
+        backend.flush(timeout=5.0)
+
+        rows = _query(
+            clickhouse_container,
+            f"SELECT parent_execution_id, parent_span_id FROM {TABLE_PIPELINE_RUNS} FINAL WHERE execution_id = '{run_uid}'",
+        )
+        assert len(rows) == 1
+        assert rows[0][0] is None
+        assert rows[0][1] is None
+
+    def test_query_children_by_parent_execution_id(self, backend, clickhouse_container):
+        parent_uid = uuid4()
+        child1_uid = uuid4()
+        child2_uid = uuid4()
+        backend.track_run_start(execution_id=parent_uid, run_id="parent", flow_name="p")
+        backend.track_run_start(
+            execution_id=child1_uid,
+            run_id="child-1",
+            flow_name="c",
+            parent_execution_id=parent_uid,
+        )
+        backend.track_run_start(
+            execution_id=child2_uid,
+            run_id="child-2",
+            flow_name="c",
+            parent_execution_id=parent_uid,
+        )
+        backend.flush(timeout=5.0)
+
+        rows = _query(
+            clickhouse_container,
+            f"SELECT execution_id FROM {TABLE_PIPELINE_RUNS} FINAL WHERE parent_execution_id = '{parent_uid}'",
+        )
+        child_ids = {r[0] for r in rows}
+        assert child_ids == {child1_uid, child2_uid}

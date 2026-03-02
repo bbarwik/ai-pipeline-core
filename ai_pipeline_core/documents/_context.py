@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import NewType
+from uuid import UUID
 
 __all__ = [
     "DocumentSha256",
@@ -46,6 +47,7 @@ class RunContext:
     """Immutable context for a pipeline run, carried via ContextVar."""
 
     run_scope: RunScope
+    execution_id: UUID | None = None
 
 
 _run_context: ContextVar[RunContext | None] = ContextVar("_run_context", default=None)

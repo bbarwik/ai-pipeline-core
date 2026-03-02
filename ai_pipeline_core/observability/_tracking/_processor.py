@@ -50,6 +50,7 @@ class PipelineSpanProcessor(SpanProcessor):
         self._run_id: str = ""
         self._flow_name: str = ""
         self._run_scope: str = ""
+        self._pending_clear: bool = False
 
     def set_run_context(self, *, execution_id: UUID, run_id: str, flow_name: str, run_scope: str) -> None:
         """Store pipeline run context for injection into child spans."""
@@ -58,10 +59,28 @@ class PipelineSpanProcessor(SpanProcessor):
             self._run_id = run_id
             self._flow_name = flow_name
             self._run_scope = run_scope
+            self._pending_clear = False
 
     def clear_run_context(self) -> None:
-        """Clear pipeline run context after run completes."""
+        """Clear pipeline run context after run completes.
+
+        If spans are still in flight, defers clearing until the last span ends.
+        This prevents losing execution_id for the Prefect root span which ends
+        after PipelineDeployment.run() calls clear.
+        """
         with self._lock:
+            if self._span_order_map or self._filtered_span_ids:
+                self._pending_clear = True
+            else:
+                self._execution_id = None
+                self._run_id = ""
+                self._flow_name = ""
+                self._run_scope = ""
+
+    def _maybe_execute_pending_clear(self) -> None:
+        """Execute pending clear if no more spans are in flight. Must be called under lock."""
+        if self._pending_clear and not self._span_order_map and not self._filtered_span_ids:
+            self._pending_clear = False
             self._execution_id = None
             self._run_id = ""
             self._flow_name = ""
@@ -124,11 +143,13 @@ class PipelineSpanProcessor(SpanProcessor):
                 else:
                     order = self._span_order_map.pop(span_id, 0)
 
-                # Capture run context under lock
+                # Capture run context under lock (before potential pending clear)
                 run_ctx_execution_id = self._execution_id
                 run_ctx_run_id = self._run_id
                 run_ctx_flow_name = self._flow_name
                 run_ctx_run_scope = self._run_scope
+
+                self._maybe_execute_pending_clear()
 
             span_data = SpanData.from_otel_span(span, span_order=order)
 

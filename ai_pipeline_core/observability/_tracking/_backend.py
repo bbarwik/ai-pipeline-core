@@ -89,6 +89,8 @@ class ClickHouseBackend:
         run_id: str,
         flow_name: str,
         run_scope: str = "",
+        parent_execution_id: UUID | None = None,
+        parent_span_id: str | None = None,
     ) -> datetime:
         """Write a running-status row to pipeline_runs. Returns the start_time for use in track_run_end."""
         self._run_execution_id = execution_id
@@ -101,6 +103,8 @@ class ClickHouseBackend:
             status=RunStatus.RUNNING,
             start_time=start_time,
             version=self._next_version(),
+            parent_execution_id=parent_execution_id,
+            parent_span_id=parent_span_id,
         )
         self._writer.write(TABLE_PIPELINE_RUNS, [row])
         return start_time

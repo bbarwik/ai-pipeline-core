@@ -35,10 +35,12 @@ class TraceMaterializer:
     background thread with a queue for serialized access.
     """
 
-    def __init__(self, config: TraceDebugConfig) -> None:
+    def __init__(self, config: TraceDebugConfig, *, batch_mode: bool = False) -> None:
         self._config = config
+        self._batch_mode = batch_mode
         self._traces: dict[str, TraceState] = {}
         self._initial_clean_done = False
+        self._content_writer = ContentWriter(config)
 
         config.path.mkdir(parents=True, exist_ok=True)
 
@@ -84,7 +86,7 @@ class TraceMaterializer:
         )
         trace.spans[span_data.span_id] = span_info
 
-        if span_data.parent_span_id is None:
+        if trace.root_span_id is None and (span_data.parent_span_id is None or span_data.parent_span_id not in trace.spans):
             trace.root_span_id = span_data.span_id
 
         if span_data.parent_span_id and span_data.parent_span_id in trace.spans:
@@ -104,7 +106,10 @@ class TraceMaterializer:
             self.on_span_start(span_data)
             span_info = trace.spans[span_data.span_id]
 
-        _write_span_files(span_data, span_info, trace, self._config)
+        _write_span_files(span_data, span_info, trace, self._content_writer)
+
+        if self._batch_mode:
+            return
 
         # Update indexes
         self._write_index(trace)
@@ -197,11 +202,10 @@ class TraceMaterializer:
 # ---------------------------------------------------------------------------
 
 
-def _write_span_files(span_data: SpanData, span_info: SpanInfo, trace: TraceState, config: TraceDebugConfig) -> None:
+def _write_span_files(span_data: SpanData, span_info: SpanInfo, trace: TraceState, content_writer: ContentWriter) -> None:
     """Write all span data files (span.yaml, input/output, replay, events) to disk."""
     span_dir = span_info.path
 
-    content_writer = ContentWriter(config)
     input_ref = content_writer.write(_parse_json_safe(span_data.input_json), span_dir, "input")
     output_ref = content_writer.write(_parse_json_safe(span_data.output_json), span_dir, "output")
 
@@ -210,9 +214,11 @@ def _write_span_files(span_data: SpanData, span_info: SpanInfo, trace: TraceStat
     prefect_info = _extract_prefect_info(span_data.attributes)
 
     # Update span info
+    span_info.start_time = span_data.start_time
     span_info.end_time = span_data.end_time
     span_info.duration_ms = span_data.duration_ms
     span_info.status = span_data.status
+    span_info.input_type = input_ref.get("type")
     span_info.span_type = span_type
     span_info.llm_info = llm_info
     span_info.prefect_info = prefect_info
@@ -517,15 +523,8 @@ def _detect_wrapper_spans(trace: TraceState) -> set[str]:
         if parent_base != child_base:
             continue
 
-        span_yaml = span.path / "span.yaml"
-        if span_yaml.exists():
-            try:
-                span_meta = yaml.safe_load(span_yaml.read_text())
-                if span_meta.get("input", {}).get("type") != "none":
-                    continue
-            except (OSError, yaml.YAMLError, TypeError, ValueError) as e:
-                logger.debug("Failed to parse span YAML at %s: %s", span_yaml, e)
-                continue
+        if span.input_type != "none":
+            continue
 
         if not span.prefect_info:
             continue
