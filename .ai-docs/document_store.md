@@ -2,7 +2,7 @@
 # CLASSES: FlowCompletion, DocumentNode, DocumentReader
 # DEPENDS: Protocol
 # PURPOSE: Document store protocol and backends for AI pipeline flows.
-# VERSION: 0.12.1
+# VERSION: 0.12.2
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

@@ -342,7 +342,9 @@ class _Deployer:
         # Inject integration metadata for the integration-schema middleware endpoint
         integration_meta: dict[str, Any] | None = getattr(flow.fn, "_integration_meta", None)  # pyright: ignore[reportPossiblyUnboundVariable]
         if integration_meta is not None:
-            deployment._parameter_openapi_schema.definitions["_InputDocumentTypes"] = integration_meta["input_document_types"]
+            deployment._parameter_openapi_schema.definitions["_InputDocumentTypes"] = {
+                "document_types": integration_meta["input_document_types"],
+            }
             deployment._parameter_openapi_schema.definitions["_DeploymentMeta"] = {
                 "all_document_types": integration_meta["all_document_types"],
                 "flow_chain": integration_meta["flow_chain"],

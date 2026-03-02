@@ -266,18 +266,20 @@ class TestDeployParameterSchemaPopulation:
         assert "report" in result_props
 
     async def test_input_document_types_injected(self):
-        """_InputDocumentTypes must list the first flow's accepted document types."""
+        """_InputDocumentTypes must be a dict wrapping the document type list."""
         deployment = await _capture_deployed_runner()
         schema = deployment._parameter_openapi_schema
         assert "_InputDocumentTypes" in schema.definitions, f"_InputDocumentTypes missing: {list(schema.definitions.keys())}"
-        items = schema.definitions["_InputDocumentTypes"]
+        wrapper = schema.definitions["_InputDocumentTypes"]
+        assert isinstance(wrapper, dict), f"_InputDocumentTypes must be a dict, got {type(wrapper).__name__}"
+        items = wrapper["document_types"]
         class_names = [item["class_name"] for item in items]
         assert "_DeployInputDoc" in class_names
 
     async def test_input_document_types_have_descriptions(self):
         """Input document type entries must include docstring descriptions."""
         deployment = await _capture_deployed_runner()
-        items = deployment._parameter_openapi_schema.definitions["_InputDocumentTypes"]
+        items = deployment._parameter_openapi_schema.definitions["_InputDocumentTypes"]["document_types"]
         for item in items:
             assert "description" in item, f"Missing description for {item.get('class_name')}"
             assert item["description"], f"Empty description for {item['class_name']}"
@@ -294,6 +296,32 @@ class TestDeployParameterSchemaPopulation:
         assert len(chain) == 1
         assert chain[0]["input_types"] == ["_DeployInputDoc"]
         assert chain[0]["output_types"] == ["_DeployOutputDoc"]
+
+
+class TestSchemaDefinitionsAreValidJsonSchema:
+    """All entries in parameter_openapi_schema.definitions must be valid JSON Schema.
+
+    JSON Schema (draft 2020-12) requires every value in `definitions` to be of
+    type 'object' or 'boolean'. The deployer injects integration metadata
+    (_InputDocumentTypes, _DeploymentMeta) into definitions — these must be
+    dicts, not lists. A raw list causes Prefect server to crash with 500:
+
+        jsonschema.exceptions.SchemaError: [] is not of type 'object', 'boolean'
+
+    See: prefect/server/api/deployments.py → jsonschema.validate() → check_schema()
+    """
+
+    async def test_all_definitions_are_valid_json_schema_types(self):
+        """Every value in schema.definitions must be a dict or bool (JSON Schema requirement)."""
+        deployment = await _capture_deployed_runner()
+        definitions = deployment._parameter_openapi_schema.definitions
+
+        for key, value in definitions.items():
+            assert isinstance(value, (dict, bool)), (
+                f"definitions['{key}'] is {type(value).__name__} ({value!r}), "
+                f"but JSON Schema requires 'object' or 'boolean'. "
+                f"Prefect server will reject this with a 500 error."
+            )
 
 
 class TestDocumentInputFieldDescriptions:

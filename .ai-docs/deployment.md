@@ -2,7 +2,7 @@
 # CLASSES: DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment, StartedEvent, ProgressEvent, CompletedEvent, FailedEvent, ResultPublisher, NoopPublisher, MemoryPublisher
 # DEPENDS: BaseModel, Generic, Protocol, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.12.1
+# VERSION: 0.12.2
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
