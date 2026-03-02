@@ -1,6 +1,7 @@
 """Integration tests for LLM functionality (requires API keys)."""
 
 import uuid
+from datetime import date
 
 import pytest
 from pydantic import BaseModel
@@ -392,3 +393,19 @@ class TestLLMIntegration:
 
         assert conv.cost is not None, f"{model}: cost is None — not extracted from response"
         assert conv.cost > 0, f"{model}: cost is {conv.cost}, expected > 0"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gemini-3-pro", "gpt-5.1", "gemini-3-flash", "gpt-5-mini", "grok-4.1-fast"])
+    async def test_current_date_awareness(self, model):
+        """LLM correctly reports the current date injected via Conversation.current_date."""
+        today = date.today().isoformat()
+        conv = Conversation(
+            model=model,
+            model_options=ModelOptions(max_completion_tokens=1000),
+            enable_substitutor=False,
+        )
+        assert conv.current_date == today
+
+        conv = await conv.send("What is today's date? Reply with only the date in YYYY-MM-DD format, nothing else.")
+
+        assert today in conv.content, f"{model}: expected '{today}' in response, got: {conv.content!r}"

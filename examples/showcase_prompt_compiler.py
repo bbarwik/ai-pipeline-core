@@ -469,7 +469,7 @@ def main() -> None:
     verdict_spec = IssueVerdictSpec(item="Smart contract upgrade authority unclear")
     verdict_text = render_text(verdict_spec)
     print(verdict_text)
-    print(f"\n[output_type = {IssueVerdictSpec.output_type.__name__}]")
+    print(f"\n[output_type = {IssueVerdictSpec._output_type.__name__}]")
     print("[send_spec() would use send_structured() automatically]")
 
     # --- Feature: Minimal spec with no dynamic fields ---
@@ -493,7 +493,7 @@ def main() -> None:
     print("\n--- 7. Follow-up spec (follows=DraftReportSpec) ---\n")
     revision = DraftRevisionSpec(feedback="Add more quantitative evidence and specific metrics.")
     print(render_text(revision))
-    print(f"\n[follows = {DraftRevisionSpec.follows.__name__}]")
+    print(f"\n[follows = {DraftRevisionSpec._follows.__name__}]")
     print(f"[role = {DraftRevisionSpec.role}]")  # None — inherited from conversation
 
     # --- Feature: render_preview without documents ---

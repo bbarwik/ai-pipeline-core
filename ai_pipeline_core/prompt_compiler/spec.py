@@ -3,6 +3,7 @@
 import re
 import typing
 from collections.abc import Mapping
+from pathlib import Path
 from textwrap import dedent
 from typing import Any, ClassVar, Generic, cast
 
@@ -18,12 +19,18 @@ OutputT = TypeVar("OutputT", default=str)
 
 _XML_TAG_PATTERN = re.compile(r"</?[a-zA-Z]\w*[\s>/]")
 
+# Pattern matching Python-style {identifier} placeholders in task text
+_FIELD_PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
+
+# Path to the packaged .ai-docs guide (resolved once, cached)
+_PROMPT_COMPILER_GUIDE = Path(__file__).resolve().parent.parent / ".ai-docs" / "prompt_compiler.md"
+
 _SPEC_KNOWN_ATTRS: frozenset[str] = frozenset({
-    "follows",
+    "_follows",
+    "_output_type",
     "input_documents",
     "role",
     "task",
-    "output_type",
     "guides",
     "rules",
     "output_rules",
@@ -84,9 +91,8 @@ def _check_unknown_attrs(cls: type, name: str) -> None:
         val = cls.__dict__[attr_name]
         if callable(val) or isinstance(val, (classmethod, staticmethod, property)):
             continue
-        raise TypeError(
-            f"PromptSpec '{name}' has unknown attribute '{attr_name}'. Known spec attributes: {', '.join(sorted(_SPEC_KNOWN_ATTRS - {'model_config'}))}"
-        )
+        known = sorted(_SPEC_KNOWN_ATTRS - {"model_config", "_follows", "_output_type"})
+        raise TypeError(f"PromptSpec '{name}' has unknown attribute '{attr_name}'. Known spec attributes: {', '.join(known)}")
 
 
 def _check_field_descriptions(cls: type, name: str) -> None:
@@ -107,8 +113,182 @@ def _check_field_descriptions(cls: type, name: str) -> None:
             raise TypeError(f"PromptSpec '{name}' field '{field_name}' must use Field(description='...'). Bare '{field_name}: ...' is not allowed.")
 
 
+def _check_task_field_placeholders(cls: type, name: str) -> None:
+    """Detect {field_name} placeholders in task text that reference declared Pydantic fields.
+
+    The task ClassVar is rendered literally — {placeholders} are NOT substituted.
+    Field values are rendered automatically in the Context section by the framework.
+    """
+    task = str(getattr(cls, "task", ""))
+    own_annotations = cls.__annotations__ if hasattr(cls, "__annotations__") else {}
+    field_names = {fn for fn in own_annotations if fn not in _SPEC_KNOWN_ATTRS}
+    if not field_names:
+        return
+
+    refs_in_task = set(_FIELD_PLACEHOLDER_RE.findall(task))
+    conflicts = sorted(refs_in_task & field_names)
+    if not conflicts:
+        return
+
+    placeholders_str = ", ".join(f"{{{f}}}" for f in conflicts)
+    guide_hint = f"\n\nSee: {_PROMPT_COMPILER_GUIDE}" if _PROMPT_COMPILER_GUIDE.is_file() else ""
+
+    raise TypeError(
+        f"PromptSpec '{name}' task contains field placeholder references: {placeholders_str}.\n"
+        f"\n"
+        f"The 'task' ClassVar is rendered literally — {{field_name}} placeholders are NOT substituted with field values.\n"
+        f"Field values are rendered automatically by the framework:\n"
+        f"  - Regular fields (Field): inlined in the '# Context' section as '**description:**\\nvalue'\n"
+        f"  - Multi-line fields (MultiLineField): sent as XML-tagged user messages (<field_name>value</field_name>)\n"
+        f"    before the prompt, referenced in Context as '(provided in <field_name> tags in previous message)'\n"
+        f"\n"
+        f"Remove {{field_name}} references from task text. The task should describe WHAT to do,\n"
+        f"not embed data placeholders. Reference data semantically instead.\n"
+        f"\n"
+        f"Example fix — instead of:\n"
+        f'    task = "Analyze the {{topic}} using ..."\n'
+        f"Write:\n"
+        f'    task = "Analyze the topic identified in context using ..."'
+        f"{guide_hint}"
+    )
+
+
+def _validate_prompt_spec(cls: type, name: str, follows: type["PromptSpec"] | None) -> None:  # noqa: C901, PLR0912, PLR0915
+    """Validate a PromptSpec subclass at definition time."""
+    # Block inheritance chains — must inherit directly from PromptSpec (or PromptSpec[T]).
+    # Pydantic creates concrete classes for PromptSpec[T] with names like "PromptSpec[MyModel]".
+    non_spec = [b.__name__ for b in cls.__bases__ if not (b is PromptSpec or (issubclass(b, PromptSpec) and "[" in b.__name__))]
+    if non_spec or len(cls.__bases__) != 1:
+        raise TypeError(f"PromptSpec '{name}' must inherit directly from PromptSpec, not from {', '.join(non_spec) or 'multiple bases'}")
+
+    # Docstring required
+    if cls.__doc__ is None or not cls.__doc__.strip():
+        raise TypeError(f"PromptSpec '{name}' must define a non-empty docstring")
+
+    # Detect 'follows' declared as a class body attribute (must use keyword syntax)
+    if "follows" in cls.__dict__:
+        value = cls.__dict__["follows"]
+        hint = f"class {name}(PromptSpec, follows={value.__name__})" if isinstance(value, type) else f"class {name}(PromptSpec, follows=...)"
+        raise TypeError(f"PromptSpec '{name}' declares 'follows' as a class attribute. Use the class keyword instead: {hint}")
+
+    # Detect 'output_type' declared as a class body attribute (derived from generic parameter)
+    if "output_type" in cls.__dict__:
+        raise TypeError(f"PromptSpec '{name}' must not declare 'output_type' directly. Use the generic parameter instead: class {name}(PromptSpec[MyModel])")
+
+    # Validate follows (runtime check — users may pass invalid types despite annotation)
+    if follows is not None:
+        # Cast to Any for runtime validation (callers may bypass type annotations)
+        follows_raw: Any = follows
+        if not isinstance(follows_raw, type) or not issubclass(follows_raw, PromptSpec):
+            raise TypeError(f"PromptSpec '{name}': follows must be a PromptSpec subclass, got {follows_raw!r}")
+        if follows is PromptSpec:
+            raise TypeError(f"PromptSpec '{name}': follows must be a concrete PromptSpec subclass, not PromptSpec itself")
+        if "[" in follows.__name__:
+            raise TypeError(f"PromptSpec '{name}': follows must be a concrete PromptSpec subclass, not a parameterized generic")
+    cls._follows = follows
+
+    # Validate role (required for standalone specs, optional for follow-ups)
+    if "role" not in cls.__dict__:
+        if follows is None:
+            raise TypeError(f"PromptSpec '{name}' must define 'role'")
+        cls.role = None
+    else:
+        role = cls.__dict__["role"]
+        if not isinstance(role, type) or not issubclass(role, Role):
+            raise TypeError(f"PromptSpec '{name}'.role must be a Role subclass (class reference), got {role!r}")
+
+    # Validate task
+    if "task" not in cls.__dict__:
+        raise TypeError(f"PromptSpec '{name}' must define 'task'")
+    task = cls.__dict__["task"]
+    if not isinstance(task, str):
+        raise TypeError(f"PromptSpec '{name}'.task must be a string")
+    cls.task = dedent(task).strip()
+    if not cls.task:
+        raise TypeError(f"PromptSpec '{name}'.task must not be empty")
+
+    # Validate input_documents (required for standalone specs, optional for follow-ups)
+    if "input_documents" not in cls.__dict__:
+        if follows is None:
+            raise TypeError(f"PromptSpec '{name}' must define 'input_documents'")
+        cls.input_documents = ()
+    else:
+        input_docs = cls.__dict__["input_documents"]
+        if not isinstance(input_docs, tuple):
+            raise TypeError(f"PromptSpec '{name}'.input_documents must be a tuple of Document subclasses")
+        for doc_cls in cast(tuple[Any, ...], input_docs):
+            if not isinstance(doc_cls, type) or not issubclass(doc_cls, Document):
+                raise TypeError(f"PromptSpec '{name}'.input_documents contains non-Document class: {doc_cls!r}")
+        _check_no_duplicates(cast(tuple[type[Document], ...], input_docs), attr="input_documents", spec_name=name)
+
+    # Derive _output_type from generic parameter (PromptSpec[X] -> X)
+    output_type: type[str] | type[BaseModel] = str  # default when no explicit generic arg
+    # Check __orig_bases__ first (standard Python generic alias), then fall back
+    # to parent's __pydantic_generic_metadata__ (Pydantic-resolved concrete class)
+    for base in getattr(cls, "__orig_bases__", ()):
+        origin = typing.get_origin(base)
+        if origin is PromptSpec:
+            args = typing.get_args(base)
+            if args and args[0] is not str:
+                output_type = args[0]
+            break
+    else:
+        # When inheriting from PromptSpec[X] (Pydantic concrete class),
+        # the type info is in the parent's pydantic generic metadata
+        for base in cls.__bases__:
+            meta = getattr(base, "__pydantic_generic_metadata__", None)
+            if meta and meta.get("origin") is PromptSpec and meta.get("args"):
+                arg = meta["args"][0]
+                if arg is not str:
+                    output_type = arg
+                break
+    if output_type is not str and not (isinstance(output_type, type) and issubclass(output_type, BaseModel)):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise TypeError(f"PromptSpec '{name}' generic parameter must be 'str' or a BaseModel subclass, got {output_type!r}")
+    cls._output_type = output_type
+
+    # Validate component tuples (optional, default empty)
+    cls.guides = _validate_component_tuple(cls.__dict__, name, "guides", Guide)
+    cls.rules = _validate_component_tuple(cls.__dict__, name, "rules", Rule, cross_check=OutputRule, cross_attr="output_rules")
+    cls.output_rules = _validate_component_tuple(cls.__dict__, name, "output_rules", OutputRule, cross_check=Rule, cross_attr="rules")
+
+    # Validate output_structure (optional)
+    output_structure = cls.__dict__.get("output_structure")
+    if output_structure is not None:
+        if cls._output_type is not str:
+            raise TypeError(f"PromptSpec '{name}'.output_structure is only allowed when output_type is str")
+        if not isinstance(output_structure, str):
+            raise TypeError(f"PromptSpec '{name}'.output_structure must be a string")
+        cls.output_structure = dedent(output_structure).strip()
+        if not cls.output_structure:
+            raise TypeError(f"PromptSpec '{name}'.output_structure must not be empty")
+        for line in cls.output_structure.splitlines():
+            if line.startswith("# ") and not line.startswith("## "):
+                raise TypeError(f"PromptSpec '{name}'.output_structure must not contain H1 headers ('# '). Use '## ' or deeper. Found: {line!r}")
+    else:
+        cls.output_structure = None
+
+    # Validate OutputRules don't reference XML tags when output_structure is set
+    if cls.output_structure is not None and cls.output_rules:
+        for or_cls in cast(tuple[Any, ...], cls.output_rules):
+            if _XML_TAG_PATTERN.search(str(or_cls.text)):
+                raise TypeError(
+                    f"PromptSpec '{name}' has output_structure with OutputRule "
+                    f"'{or_cls.__name__}' that references XML tags. "
+                    f"output_structure automatically adds <result> wrapping — remove XML instructions from the OutputRule."
+                )
+
+    # Validate Pydantic field descriptions (uses __annotations__ + FieldInfo directly)
+    _check_field_descriptions(cls, name)
+
+    # Detect {field_name} placeholders in task text that reference declared fields
+    _check_task_field_placeholders(cls, name)
+
+    # Detect unknown class attributes (typos)
+    _check_unknown_attrs(cls, name)
+
+
 class PromptSpec(BaseModel, Generic[OutputT]):
-    """Base class for all prompt specifications.
+    r"""Base class for all prompt specifications.
 
     Generic parameter ``OutputT`` determines the output type:
     - ``PromptSpec[str]`` (or just ``PromptSpec``, default) for text output
@@ -144,6 +324,14 @@ class PromptSpec(BaseModel, Generic[OutputT]):
     in XML automatically when they are added to the Conversation via ``with_context()`` or
     ``with_document()``. Use ``Document.create()`` to wrap dicts, lists, or BaseModel instances.
 
+    Never use ``{field_name}`` placeholders in ``task`` text — the ``task`` ClassVar is rendered
+    literally, not as a template. ``{field_name}`` appears as the literal string ``{field_name}``
+    in the LLM prompt. Field values are rendered automatically by the framework: regular fields
+    (``Field``) are inlined in the ``# Context`` section as ``**description:**\nvalue``, and
+    multi-line fields (``MultiLineField``) are sent as XML-tagged user messages before the prompt.
+    Instead of ``task = "Analyze the {topic} ..."``, write ``task = "Analyze the topic identified
+    in context ..."``.
+
     Pydantic fields (dynamic input values):
         Any field declared with ``Field(description=...)`` becomes a dynamic input.
         Fields are for short, single-line parameter values (up to 500 characters) — e.g.,
@@ -154,17 +342,17 @@ class PromptSpec(BaseModel, Generic[OutputT]):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    follows: ClassVar[type["PromptSpec"] | None]
+    _follows: ClassVar[type["PromptSpec"] | None]
     input_documents: ClassVar[tuple[type[Document], ...]]
     role: ClassVar[type[Role] | None]
     task: ClassVar[str]
     guides: ClassVar[tuple[type[Guide], ...]]
     rules: ClassVar[tuple[type[Rule], ...]]
     output_rules: ClassVar[tuple[type[OutputRule], ...]]
-    output_type: ClassVar[type[str] | type[BaseModel]]
+    _output_type: ClassVar[type[str] | type[BaseModel]]
     output_structure: ClassVar[str | None]
 
-    def __init_subclass__(cls, *, follows: type["PromptSpec"] | None = None, **kwargs: Any) -> None:  # noqa: C901, PLR0912, PLR0915
+    def __init_subclass__(cls, *, follows: type["PromptSpec"] | None = None, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
         # Pydantic creates concrete subclasses for parameterized generics (e.g. PromptSpec[str]).
@@ -172,130 +360,7 @@ class PromptSpec(BaseModel, Generic[OutputT]):
         if "[" in cls.__name__:
             return
 
-        name = cls.__name__
-
-        # Block inheritance chains — must inherit directly from PromptSpec (or PromptSpec[T]).
-        # Pydantic creates concrete classes for PromptSpec[T] with names like "PromptSpec[MyModel]".
-        non_spec = [b.__name__ for b in cls.__bases__ if not (b is PromptSpec or (issubclass(b, PromptSpec) and "[" in b.__name__))]
-        if non_spec or len(cls.__bases__) != 1:
-            raise TypeError(f"PromptSpec '{name}' must inherit directly from PromptSpec, not from {', '.join(non_spec) or 'multiple bases'}")
-
-        # Docstring required
-        if cls.__doc__ is None or not cls.__doc__.strip():
-            raise TypeError(f"PromptSpec '{name}' must define a non-empty docstring")
-
-        # Validate follows (runtime check — users may pass invalid types despite annotation)
-        if follows is not None:
-            # Cast to Any for runtime validation (callers may bypass type annotations)
-            follows_raw: Any = follows
-            if not isinstance(follows_raw, type) or not issubclass(follows_raw, PromptSpec):
-                raise TypeError(f"PromptSpec '{name}'.follows must be a PromptSpec subclass, got {follows_raw!r}")
-            if follows is PromptSpec:
-                raise TypeError(f"PromptSpec '{name}'.follows must be a concrete PromptSpec subclass, not PromptSpec itself")
-            if "[" in follows.__name__:
-                raise TypeError(f"PromptSpec '{name}'.follows must be a concrete PromptSpec subclass, not a parameterized generic")
-        cls.follows = follows
-
-        # Validate role (required for standalone specs, optional for follow-ups)
-        if "role" not in cls.__dict__:
-            if follows is None:
-                raise TypeError(f"PromptSpec '{name}' must define 'role'")
-            cls.role = None
-        else:
-            role = cls.__dict__["role"]
-            if not isinstance(role, type) or not issubclass(role, Role):
-                raise TypeError(f"PromptSpec '{name}'.role must be a Role subclass (class reference), got {role!r}")
-
-        # Validate task
-        if "task" not in cls.__dict__:
-            raise TypeError(f"PromptSpec '{name}' must define 'task'")
-        task = cls.__dict__["task"]
-        if not isinstance(task, str):
-            raise TypeError(f"PromptSpec '{name}'.task must be a string")
-        cls.task = dedent(task).strip()
-        if not cls.task:
-            raise TypeError(f"PromptSpec '{name}'.task must not be empty")
-
-        # Validate input_documents (required for standalone specs, optional for follow-ups)
-        if "input_documents" not in cls.__dict__:
-            if follows is None:
-                raise TypeError(f"PromptSpec '{name}' must define 'input_documents'")
-            cls.input_documents = ()
-        else:
-            input_docs = cls.__dict__["input_documents"]
-            if not isinstance(input_docs, tuple):
-                raise TypeError(f"PromptSpec '{name}'.input_documents must be a tuple of Document subclasses")
-            for doc_cls in cast(tuple[Any, ...], input_docs):
-                if not isinstance(doc_cls, type) or not issubclass(doc_cls, Document):
-                    raise TypeError(f"PromptSpec '{name}'.input_documents contains non-Document class: {doc_cls!r}")
-            _check_no_duplicates(cast(tuple[type[Document], ...], input_docs), attr="input_documents", spec_name=name)
-
-        # Derive output_type from generic parameter (PromptSpec[X] -> X)
-        # Reject manual output_type declarations — the generic parameter is the source of truth
-        if "output_type" in cls.__dict__:
-            raise TypeError(
-                f"PromptSpec '{name}' must not declare 'output_type' directly. Use the generic parameter instead: class {name}(PromptSpec[MyModel])"
-            )
-        output_type: type[str] | type[BaseModel] = str  # default when no explicit generic arg
-        # Check __orig_bases__ first (standard Python generic alias), then fall back
-        # to parent's __pydantic_generic_metadata__ (Pydantic-resolved concrete class)
-        for base in getattr(cls, "__orig_bases__", ()):
-            origin = typing.get_origin(base)
-            if origin is PromptSpec:
-                args = typing.get_args(base)
-                if args and args[0] is not str:
-                    output_type = args[0]
-                break
-        else:
-            # When inheriting from PromptSpec[X] (Pydantic concrete class),
-            # the type info is in the parent's pydantic generic metadata
-            for base in cls.__bases__:
-                meta = getattr(base, "__pydantic_generic_metadata__", None)
-                if meta and meta.get("origin") is PromptSpec and meta.get("args"):
-                    arg = meta["args"][0]
-                    if arg is not str:
-                        output_type = arg
-                    break
-        if output_type is not str and not (isinstance(output_type, type) and issubclass(output_type, BaseModel)):  # pyright: ignore[reportUnnecessaryIsInstance]
-            raise TypeError(f"PromptSpec '{name}' generic parameter must be 'str' or a BaseModel subclass, got {output_type!r}")
-        cls.output_type = output_type
-
-        # Validate component tuples (optional, default empty)
-        cls.guides = _validate_component_tuple(cls.__dict__, name, "guides", Guide)
-        cls.rules = _validate_component_tuple(cls.__dict__, name, "rules", Rule, cross_check=OutputRule, cross_attr="output_rules")
-        cls.output_rules = _validate_component_tuple(cls.__dict__, name, "output_rules", OutputRule, cross_check=Rule, cross_attr="rules")
-
-        # Validate output_structure (optional)
-        output_structure = cls.__dict__.get("output_structure")
-        if output_structure is not None:
-            if cls.output_type is not str:
-                raise TypeError(f"PromptSpec '{name}'.output_structure is only allowed when output_type is str")
-            if not isinstance(output_structure, str):
-                raise TypeError(f"PromptSpec '{name}'.output_structure must be a string")
-            cls.output_structure = dedent(output_structure).strip()
-            if not cls.output_structure:
-                raise TypeError(f"PromptSpec '{name}'.output_structure must not be empty")
-            for line in cls.output_structure.splitlines():
-                if line.startswith("# ") and not line.startswith("## "):
-                    raise TypeError(f"PromptSpec '{name}'.output_structure must not contain H1 headers ('# '). Use '## ' or deeper. Found: {line!r}")
-        else:
-            cls.output_structure = None
-
-        # Validate OutputRules don't reference XML tags when output_structure is set
-        if cls.output_structure is not None and cls.output_rules:
-            for or_cls in cast(tuple[Any, ...], cls.output_rules):
-                if _XML_TAG_PATTERN.search(str(or_cls.text)):
-                    raise TypeError(
-                        f"PromptSpec '{name}' has output_structure with OutputRule "
-                        f"'{or_cls.__name__}' that references XML tags. "
-                        f"output_structure automatically adds <result> wrapping — remove XML instructions from the OutputRule."
-                    )
-
-        # Validate Pydantic field descriptions (uses __annotations__ + FieldInfo directly)
-        _check_field_descriptions(cls, name)
-
-        # Detect unknown class attributes (typos)
-        _check_unknown_attrs(cls, name)
+        _validate_prompt_spec(cls, cls.__name__, follows)
 
 
 _MULTI_LINE_KEY = "multi_line"
@@ -315,10 +380,10 @@ def MultiLineField(*, description: str, **kwargs: Any) -> Any:
     return Field(description=description, json_schema_extra={_MULTI_LINE_KEY: True}, **kwargs)
 
 
-def is_multi_line_field(field_info: FieldInfo) -> bool:
+def _is_multi_line_field(field_info: FieldInfo) -> bool:  # pyright: ignore[reportUnusedFunction]  # used by render.py
     """Check whether a FieldInfo was created via MultiLineField."""
     extra = field_info.json_schema_extra
     return isinstance(extra, dict) and bool(extra.get(_MULTI_LINE_KEY))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
 
-__all__ = ["MultiLineField", "OutputT", "PromptSpec", "is_multi_line_field"]
+__all__ = ["MultiLineField", "OutputT", "PromptSpec"]

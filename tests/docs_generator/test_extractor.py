@@ -496,7 +496,41 @@ def test_parse_module_values_make_module_public(tmp_path):
     assert module.is_public is True
 
 
-def test_parse_module_extracts_field_descriptions(tmp_path):
+def test_remap_does_not_duplicate_qualified_class_in_build_guide(tmp_path):
+    """When two modules define a class with the same name and the class is re-exported
+    via __all__, build_guide must not produce duplicate entries.
+
+    Scenario: _internal/types.py defines Role (processed first, stored as key "Role"),
+    then prompt/components.py defines Role (collision → re-keyed to "_internal:Role"
+    and "prompt:Role"). Phase 2 of _remap_private_symbols sees "Role" in prompt's
+    __all__ but not in known_symbols (which has "prompt:Role"), so it re-adds Role
+    under the simple key "Role" → duplicate.
+    """
+    from ai_pipeline_core.docs_generator.guide_builder import build_guide
+
+    # Module A: _internal package with a public types.py defining Role
+    internal = tmp_path / "_internal"
+    internal.mkdir()
+    _write_py(internal / "__init__.py", "")
+    _write_py(internal / "types.py", 'class Role:\n    """Internal role enum."""\n    USER = "user"\n')
+
+    # Module B: prompt package with components.py defining Role + __init__ re-exporting it
+    prompt = tmp_path / "prompt"
+    prompt.mkdir()
+    _write_py(prompt / "__init__.py", '__all__ = ["Role", "Rule"]\nfrom .components import Role, Rule\n')
+    _write_py(prompt / "components.py", 'class Role:\n    """Prompt role."""\n    text = "analyst"\n\nclass Rule:\n    """A rule."""\n    text = "be nice"\n')
+
+    table = build_symbol_table(tmp_path)
+
+    # Build guide for "prompt" module
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    guide = build_guide("prompt", tmp_path, tests_dir, table)
+
+    # Role must appear exactly once
+    role_classes = [c for c in guide.classes if c.name == "Role"]
+    assert len(role_classes) == 1, f"Expected 1 Role class, got {len(role_classes)}"
+
     src = tmp_path / "sample.py"
     src.write_text(
         "from pydantic import BaseModel, Field\n"

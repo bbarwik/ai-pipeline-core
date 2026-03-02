@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
 
-from .spec import PromptSpec, is_multi_line_field
+from .spec import PromptSpec, _is_multi_line_field
 
 logger = get_pipeline_logger(__name__)
 
@@ -99,8 +99,8 @@ def _render_context_fields(spec: PromptSpec) -> list[str]:
     for field_name, field_info in spec_cls.model_fields.items():
         label = field_info.description or field_name
         value = str(getattr(spec, field_name))
-        if is_multi_line_field(field_info) or _is_long_or_multiline(value):
-            if not is_multi_line_field(field_info):
+        if _is_multi_line_field(field_info) or _is_long_or_multiline(value):
+            if not _is_multi_line_field(field_info):
                 _warn_auto_promoted(spec_cls, field_name, value)
             parts.append(f"**{label}:** (provided in <{field_name}> tags in previous message)")
         else:
@@ -187,7 +187,7 @@ def render_multi_line_messages(spec: PromptSpec) -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     for field_name, field_info in spec_cls.model_fields.items():
         value = str(getattr(spec, field_name))
-        if is_multi_line_field(field_info) or _is_long_or_multiline(value):
+        if _is_multi_line_field(field_info) or _is_long_or_multiline(value):
             result.append((field_name, f"<{field_name}>{value}</{field_name}>"))
     return result
 
@@ -206,13 +206,13 @@ def render_preview(spec_class: type[PromptSpec], *, include_input_documents: boo
     # Build multi-line field preview blocks
     ml_blocks: list[str] = []
     for field_name, field_info in spec_class.model_fields.items():
-        if is_multi_line_field(field_info):
+        if _is_multi_line_field(field_info):
             ml_blocks.append(f"<{field_name}>{{{field_name}}}</{field_name}>")
 
     text = render_text(instance, include_input_documents=include_input_documents)
 
-    if spec_class.follows is not None:
-        text = f"[Follows: {spec_class.follows.__name__}]\n\n{text}"
+    if spec_class._follows is not None:
+        text = f"[Follows: {spec_class._follows.__name__}]\n\n{text}"
 
     if ml_blocks:
         return "\n".join(ml_blocks) + "\n\n---\n\n" + text

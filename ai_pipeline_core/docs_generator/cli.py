@@ -174,30 +174,6 @@ def _build_module_import_map(source_dir: Path, excluded_modules: frozenset[str] 
     return result
 
 
-def _count_module_lines(source_dir: Path, module_name: str) -> int:
-    """Count total lines of code in a module (excludes blank lines and comments)."""
-    module_dir = source_dir / module_name
-    if not module_dir.is_dir():
-        single_file = source_dir / f"{module_name}.py"
-        if single_file.exists():
-            return _count_code_lines(single_file)
-        return 0
-    total = 0
-    for py_file in sorted(module_dir.rglob("*.py")):
-        total += _count_code_lines(py_file)
-    return total
-
-
-def _count_code_lines(path: Path) -> int:
-    """Count non-blank, non-comment lines in a Python file."""
-    count = 0
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            count += 1
-    return count
-
-
 def main(argv: list[str] | None = None) -> int:
     """Entry point for AI docs CLI with generate/check subcommands."""
     parser = argparse.ArgumentParser(description="AI documentation generator")
@@ -231,12 +207,27 @@ def _resolve_paths(args: argparse.Namespace) -> tuple[Path, Path, Path, Path]:
 
 
 def _run_generate(source_dir: Path, tests_dir: Path, output_dir: Path, repo_root: Path) -> int:
-    """Generate all module guides and README.md."""
+    """Generate all module guides and README.md.
+
+    Writes to both the repo-level output_dir (.ai-docs/) and a copy inside the
+    package directory (ai_pipeline_core/.ai-docs/) so guides are included in pip
+    packages and can be referenced in error messages at runtime.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Secondary output inside the package (included in wheel builds).
+    # Only created when source_dir exists (skipped for nonexistent/test paths).
+    package_docs_dir: Path | None = None
+    if source_dir.is_dir():
+        package_docs_dir = source_dir / ".ai-docs"
+        package_docs_dir.mkdir(parents=True, exist_ok=True)
 
     # Clean stale files
     for existing in output_dir.glob("*.md"):
         existing.unlink()
+    if package_docs_dir:
+        for existing in package_docs_dir.glob("*.md"):
+            existing.unlink()
 
     version = _read_version(repo_root)
     table = build_symbol_table(source_dir)
@@ -245,8 +236,6 @@ def _run_generate(source_dir: Path, tests_dir: Path, output_dir: Path, repo_root
     generated: list[tuple[str, int]] = []
     module_descriptions: dict[str, str] = {}
     guide_data_map: dict[str, GuideData] = {}
-    module_lines: dict[str, int] = {}
-
     for module_name in _discover_modules(source_dir):
         data = build_guide(module_name, source_dir, tests_dir, table, TEST_DIR_OVERRIDES, repo_root)
         if not data.classes and not data.functions and not data.values:
@@ -269,17 +258,20 @@ def _run_generate(source_dir: Path, tests_dir: Path, output_dir: Path, repo_root
 
         guide_path = output_dir / f"{module_name}.md"
         guide_path.write_text(content)
+        if package_docs_dir:
+            (package_docs_dir / f"{module_name}.md").write_text(content)
         size = len(content.encode("utf-8"))
         generated.append((module_name, size))
         guide_data_map[module_name] = data
-        module_lines[module_name] = _count_module_lines(source_dir, module_name)
         print(f"  wrote {module_name}.md ({size:,} bytes)")
 
     # README.md
-    readme_content = _render_readme(generated, guide_data_map, module_descriptions, module_lines, version)
+    readme_content = _render_readme(generated, guide_data_map, module_descriptions, version)
     readme_content = _consolidate_code_blocks(readme_content)
     readme_content = _normalize_whitespace(readme_content)
     (output_dir / README_FILENAME).write_text(readme_content)
+    if package_docs_dir:
+        (package_docs_dir / README_FILENAME).write_text(readme_content)
     print(f"  wrote {README_FILENAME} ({len(readme_content):,} bytes)")
 
     total = sum(size for _, size in generated)
@@ -329,7 +321,6 @@ def _render_readme(
     generated: list[tuple[str, int]],
     guide_data_map: dict[str, GuideData],
     module_descriptions: dict[str, str],
-    module_lines: dict[str, int],
     version: str,
 ) -> str:
     """Render README.md with version, reading order, and per-module API as Python code snippets."""
@@ -355,7 +346,7 @@ def _render_readme(
     for name, _ in generated:
         data = guide_data_map.get(name)
         if data:
-            _render_module_section(name, data, module_descriptions, module_lines, lines)
+            _render_module_section(name, data, module_descriptions, lines)
 
     return "\n".join(lines)
 
@@ -364,17 +355,15 @@ def _render_module_section(
     name: str,
     data: GuideData,
     module_descriptions: dict[str, str],
-    module_lines: dict[str, int],
     lines: list[str],
 ) -> None:
     """Render a single module section for README.md."""
-    loc = module_lines.get(name, 0)
     lines.extend(["", f"## {name}", ""])
     desc = module_descriptions.get(name, "")
     if desc:
         lines.append(desc)
         lines.append("")
-    lines.append(f"**Source**: {loc:,} lines of code | [Full guide]({name}.md)")
+    lines.append(f"Read [Full guide]({name}.md) for detailed informations how to use it")
     lines.append("")
 
     if data.values:

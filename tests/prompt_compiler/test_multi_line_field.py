@@ -142,7 +142,7 @@ def test_multi_line_field_coexists_with_regular_fields() -> None:
 def test_is_multi_line_field_detection() -> None:
     """is_multi_line_field correctly identifies multi-line fields."""
     from ai_pipeline_core.prompt_compiler import MultiLineField
-    from ai_pipeline_core.prompt_compiler.spec import is_multi_line_field
+    from ai_pipeline_core.prompt_compiler.spec import _is_multi_line_field as is_multi_line_field
 
     class DetectSpec(PromptSpec):
         """Doc."""

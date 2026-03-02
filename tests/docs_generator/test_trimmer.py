@@ -27,7 +27,6 @@ def _small_guide() -> GuideData:
         module_name="small",
         classes=[cls],
         functions=[],
-        rules=[],
         external_bases=set(),
         normal_examples=[],
         error_examples=[],

@@ -10,6 +10,7 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from itertools import chain
 from typing import Any, Generic, cast, overload
 
@@ -216,6 +217,11 @@ class Conversation(BaseModel, Generic[T]):
     auto-disabled for `-search` suffix models. Both `.content` and `.parsed` are
     eagerly restored after each send.
 
+    Date awareness: ``include_date=True`` (default) captures the current date at
+    construction time and appends ``Current date: YYYY-MM-DD`` to the system prompt.
+    The date is frozen at creation and preserved across all builder methods and send()
+    calls, ensuring follow-up turns and replays use the same date.
+
     Attachment rendering in LLM context:
     - Text attachments: wrapped in <attachment name="..." description="..."> tags
     - Binary attachments (images, PDFs): inserted as separate content parts
@@ -229,6 +235,8 @@ class Conversation(BaseModel, Generic[T]):
     model_options: ModelOptions | None = None
     enable_substitutor: bool = True
     extract_result_tags: bool = False
+    include_date: bool = True
+    current_date: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -240,6 +248,16 @@ class Conversation(BaseModel, Generic[T]):
                 model_name = d.get("model", "")
                 if isinstance(model_name, str) and model_name.endswith("-search"):
                     d["enable_substitutor"] = False
+        return data  # pyright: ignore[reportUnknownVariableType]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _initialize_current_date(cls, data: Any) -> Any:
+        """Auto-set current_date to today when include_date is True and no date provided."""
+        if isinstance(data, dict):
+            d = cast(dict[str, Any], data)
+            if d.get("include_date", True) and "current_date" not in d:
+                d["current_date"] = date.today().isoformat()
         return data  # pyright: ignore[reportUnknownVariableType]
 
     @field_validator("model")
@@ -432,6 +450,25 @@ class Conversation(BaseModel, Generic[T]):
 
     # --- Send methods ---
 
+    @staticmethod
+    def _build_effective_options(
+        base: ModelOptions | None,
+        *,
+        current_date: str | None,
+        substitutor_active: bool,
+    ) -> ModelOptions | None:
+        """Build effective ModelOptions by appending date and substitutor instructions to system prompt."""
+        effective = base
+        for extra in (
+            f"Current date: {current_date}" if current_date else None,
+            _SUBSTITUTOR_INSTRUCTION if substitutor_active else None,
+        ):
+            if extra:
+                base_prompt = effective.system_prompt if effective else None
+                combined = f"{base_prompt}\n\n{extra}" if base_prompt else extra
+                effective = (effective or ModelOptions()).model_copy(update={"system_prompt": combined})  # nosemgrep: no-document-model-copy
+        return effective
+
     async def _execute_send(
         self,
         content: ConversationContent,
@@ -450,12 +487,12 @@ class Conversation(BaseModel, Generic[T]):
             all_items = self.context + tuple(m for m in new_messages if isinstance(m, (Document, _UserMessage, _AssistantMessage)))
             substitutor.prepare(self._collect_text(all_items))
 
-        # Adjust system prompt if substitution found patterns to shorten
-        effective_options = self.model_options
-        if substitutor and substitutor.pattern_count > 0:
-            user_prompt = self.model_options.system_prompt if self.model_options else None
-            combined = f"{user_prompt}\n\n{_SUBSTITUTOR_INSTRUCTION}" if user_prompt else _SUBSTITUTOR_INSTRUCTION
-            effective_options = (self.model_options or ModelOptions()).model_copy(update={"system_prompt": combined})  # nosemgrep: no-document-model-copy
+        # Build effective options — append current date and substitutor instructions to system prompt
+        effective_options = self._build_effective_options(
+            self.model_options,
+            current_date=self.current_date,
+            substitutor_active=substitutor is not None and substitutor.pattern_count > 0,
+        )
 
         # Build CoreMessages in thread (CPU-bound image/PDF processing)
         context_core, messages_core = await asyncio.to_thread(lambda: (self._to_core_messages(self.context), self._to_core_messages(new_messages)))
@@ -593,7 +630,7 @@ class Conversation(BaseModel, Generic[T]):
         context. If the follow-up declares input_documents and documents are passed,
         they are listed in the prompt text with their runtime id, name, description.
         """
-        is_follow_up = spec.follows is not None
+        is_follow_up = spec._follows is not None
 
         # Warning for missing documents (only for non-follow-up specs)
         if not is_follow_up and spec.input_documents and not documents and include_input_documents:
@@ -636,10 +673,10 @@ class Conversation(BaseModel, Generic[T]):
         trace_purpose = purpose or spec.__class__.__name__
 
         # Dispatch to structured or text generation
-        if spec.output_type is not str:
+        if spec._output_type is not str:
             return await conv.send_structured(
                 prompt_text,
-                response_format=cast(type[BaseModel], spec.output_type),
+                response_format=cast(type[BaseModel], spec._output_type),
                 purpose=trace_purpose,
                 expected_cost=expected_cost,
             )

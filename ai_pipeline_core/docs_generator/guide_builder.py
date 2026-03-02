@@ -35,7 +35,6 @@ __all__ = [
     "ScoredExample",
     "build_guide",
     "discover_tests",
-    "extract_rules",
     "flatten_methods",
     "manage_guide_size",
     "render_guide",
@@ -47,8 +46,6 @@ MAX_EXAMPLES = 8
 MAX_GUIDE_SIZE = 51_200  # 50KB in bytes
 README_WARN_SIZE = 51_200  # 50KB — warn threshold for README.md
 README_ERROR_SIZE = 102_400  # 100KB — error threshold for README.md
-
-_RULE_PREFIXES = ("cannot", "must", "never", "always", "critical")
 
 
 def manage_guide_size(
@@ -94,7 +91,6 @@ class GuideData:
     module_name: str
     classes: list[ClassInfo]
     functions: list[FunctionInfo]
-    rules: list[str]
     external_bases: set[str]
     normal_examples: list[ScoredExample]
     error_examples: list[ScoredExample]
@@ -294,45 +290,6 @@ def flatten_methods(cls: ClassInfo, table: SymbolTable) -> tuple[MethodInfo, ...
 
 
 # ---------------------------------------------------------------------------
-# Rule extraction
-# ---------------------------------------------------------------------------
-
-
-def extract_rules(classes: list[ClassInfo]) -> list[str]:
-    """Extract rules from docstrings (lines starting with constraint keywords).
-
-    Continuation lines (non-empty, non-keyword lines following a keyword line)
-    are joined with a space to form the complete rule text.
-    """
-    rules: list[str] = []
-    seen: set[str] = set()
-
-    for cls in classes:
-        if not cls.docstring:
-            continue
-        lines = cls.docstring.splitlines()
-        i = 0
-        while i < len(lines):
-            stripped = lines[i].strip()
-            if any(stripped.lower().startswith(prefix) for prefix in _RULE_PREFIXES):
-                parts = [stripped]
-                i += 1
-                while i < len(lines):
-                    cont = lines[i].strip()
-                    if not cont or any(cont.lower().startswith(p) for p in _RULE_PREFIXES):
-                        break
-                    parts.append(cont)
-                    i += 1
-                full_rule = " ".join(parts)
-                if full_rule not in seen:
-                    rules.append(full_rule)
-                    seen.add(full_rule)
-            else:
-                i += 1
-    return rules
-
-
-# ---------------------------------------------------------------------------
 # Guide rendering
 # ---------------------------------------------------------------------------
 
@@ -366,14 +323,6 @@ def render_guide(data: GuideData, *, version: str = "") -> str:  # noqa: C901, P
         if data.module_imports:
             parts.append(f"from ai_pipeline_core.{data.module_name} import {', '.join(data.module_imports)}")
         parts.append("```")
-
-    # Rules
-    if data.rules:
-        parts.append("")
-        parts.append("## Rules")
-        parts.append("")
-        for i, rule in enumerate(data.rules, 1):
-            parts.append(f"{i}. {rule}")
 
     # Types & Constants
     if data.values:
@@ -455,7 +404,7 @@ def render_guide(data: GuideData, *, version: str = "") -> str:  # noqa: C901, P
 # ---------------------------------------------------------------------------
 
 
-def build_guide(  # noqa: PLR0914, PLR0917
+def build_guide(  # noqa: PLR0917
     module_name: str,
     source_dir: Path,
     tests_dir: Path,
@@ -519,13 +468,10 @@ def build_guide(  # noqa: PLR0914, PLR0917
     example_budget = _compute_example_budget(len(flattened_classes))
     normal_examples, error_examples = select_examples(tests, symbol_names, max_total=example_budget)
 
-    rules = extract_rules(flattened_classes)
-
     return GuideData(
         module_name=module_name,
         classes=flattened_classes,
         functions=public_functions,
-        rules=rules,
         external_bases=external_bases,
         normal_examples=normal_examples,
         error_examples=error_examples,

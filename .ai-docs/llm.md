@@ -11,10 +11,6 @@
 from ai_pipeline_core import Citation, Conversation, ConversationContent, ModelName, ModelOptions, TokenUsage
 ```
 
-## Rules
-
-1. Never discard the return value — the original Conversation is unchanged.
-
 ## Types & Constants
 
 ```python
@@ -141,6 +137,11 @@ Content protection (URLs, addresses, high-entropy strings) is enabled by default
 auto-disabled for `-search` suffix models. Both `.content` and `.parsed` are
 eagerly restored after each send.
 
+Date awareness: ``include_date=True`` (default) captures the current date at
+construction time and appends ``Current date: YYYY-MM-DD`` to the system prompt.
+The date is frozen at creation and preserved across all builder methods and send()
+calls, ensuring follow-up turns and replays use the same date.
+
 Attachment rendering in LLM context:
 - Text attachments: wrapped in <attachment name="..." description="..."> tags
 - Binary attachments (images, PDFs): inserted as separate content parts"""
@@ -151,6 +152,8 @@ Attachment rendering in LLM context:
     model_options: ModelOptions | None = None
     enable_substitutor: bool = True
     extract_result_tags: bool = False
+    include_date: bool = True
+    current_date: str | None = None
 
     @property
     def approximate_tokens_count(self) -> int:
@@ -282,7 +285,7 @@ Attachment rendering in LLM context:
         context. If the follow-up declares input_documents and documents are passed,
         they are listed in the prompt text with their runtime id, name, description.
         """
-        is_follow_up = spec.follows is not None
+        is_follow_up = spec._follows is not None
 
         # Warning for missing documents (only for non-follow-up specs)
         if not is_follow_up and spec.input_documents and not documents and include_input_documents:
@@ -325,10 +328,10 @@ Attachment rendering in LLM context:
         trace_purpose = purpose or spec.__class__.__name__
 
         # Dispatch to structured or text generation
-        if spec.output_type is not str:
+        if spec._output_type is not str:
             return await conv.send_structured(
                 prompt_text,
-                response_format=cast(type[BaseModel], spec.output_type),
+                response_format=cast(type[BaseModel], spec._output_type),
                 purpose=trace_purpose,
                 expected_cost=expected_cost,
             )

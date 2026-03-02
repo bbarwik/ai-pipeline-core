@@ -248,7 +248,13 @@ def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:  # noq
 
     # Discover symbols from private files that are re-exported via __all__
     # but were skipped during initial parsing (build_symbol_table skips _-prefixed files).
-    known_symbols = set(table.classes) | set(table.functions) | set(table.values)
+    # Include bare names from qualified keys ("module:Name" → "Name") so that
+    # cross-module collisions handled by _dedup_key are not re-discovered as "missing".
+    known_symbols: set[str] = set()
+    for key in (*table.classes, *table.functions, *table.values):
+        known_symbols.add(key)
+        if ":" in key:
+            known_symbols.add(key.split(":", 1)[1])
     for public_module, exports in public_exports.items():
         missing = exports - known_symbols
         if not missing:

@@ -301,6 +301,7 @@ include = [
   "ai_pipeline_core/py.typed",
   "ai_pipeline_core/**/*.yml",
   "ai_pipeline_core/**/*.jinja2",
+  "ai_pipeline_core/.ai-docs/*.md",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -309,6 +310,8 @@ include = [
     "ai_pipeline_core/py.typed",
     "ai_pipeline_core/**/*.yml",
     "ai_pipeline_core/**/*.jinja2",
+    "ai_pipeline_core/.ai-docs/*.md",
+    "tests/**/*.py",
     "README.md",
     "LICENSE",
     "pyproject.toml",

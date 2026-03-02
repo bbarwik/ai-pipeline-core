@@ -7,7 +7,7 @@ Focus on:
 - Implementation details that a USER of the API does not need (internal architecture, backend specifics, table schemas, storage internals)
 - Duplicated information — same thing explained in multiple places
 - Overly verbose explanations that could be shorter
-- Private/internal APIs that leaked into public documentation
+- Private/internal APIs that are not needed to be known by end-user
 - Configuration details for infrastructure the user doesn't control
 - Information that belongs in a separate ops/admin guide, not an API reference
 - Boilerplate text that adds no value

@@ -16,7 +16,6 @@ from ai_pipeline_core.docs_generator.guide_builder import (
     _compute_example_budget,
     build_guide,
     discover_tests,
-    extract_rules,
     flatten_methods,
     render_guide,
     score_test,
@@ -325,58 +324,6 @@ def test_flatten_methods_external_stubs_skipped():
 
 
 # ---------------------------------------------------------------------------
-# extract_rules
-# ---------------------------------------------------------------------------
-
-
-def test_extract_rules_finds_constraint_keywords():
-    cls = _make_class(docstring="Must validate input.\nCannot be empty.\n\nNormal text here.")
-    rules = extract_rules([cls])
-    assert len(rules) == 2
-    assert "Must validate input." in rules
-    assert "Cannot be empty." in rules
-
-
-def test_extract_rules_deduplicates():
-    c1 = _make_class(name="A", docstring="Must be unique.")
-    c2 = _make_class(name="B", docstring="Must be unique.")
-    rules = extract_rules([c1, c2])
-    assert rules.count("Must be unique.") == 1
-
-
-def test_extract_rules_empty_docstring():
-    cls = _make_class(docstring="")
-    rules = extract_rules([cls])
-    assert rules == []
-
-
-def test_extract_rules_multiline_continuation():
-    """Rules spanning multiple lines are joined into a single rule."""
-    cls = _make_class(docstring="Must include all Guides — missing Guides\ncause hallucinated definitions.\n\nNormal text here.")
-    rules = extract_rules([cls])
-    assert len(rules) == 1
-    assert rules[0] == "Must include all Guides — missing Guides cause hallucinated definitions."
-
-
-def test_extract_rules_multiline_stops_at_next_keyword():
-    """Continuation stops when the next constraint keyword is reached."""
-    cls = _make_class(docstring="Must validate input\nfor correctness.\nCannot be empty.\nAlways check twice.")
-    rules = extract_rules([cls])
-    assert len(rules) == 3
-    assert rules[0] == "Must validate input for correctness."
-    assert rules[1] == "Cannot be empty."
-    assert rules[2] == "Always check twice."
-
-
-def test_extract_rules_multiline_stops_at_blank_line():
-    """Continuation stops at a blank line."""
-    cls = _make_class(docstring="Must validate input\nfor correctness.\n\nSome other paragraph.")
-    rules = extract_rules([cls])
-    assert len(rules) == 1
-    assert rules[0] == "Must validate input for correctness."
-
-
-# ---------------------------------------------------------------------------
 # build_guide
 # ---------------------------------------------------------------------------
 
@@ -431,7 +378,6 @@ def _empty_guide(**overrides) -> GuideData:
         module_name="mymod",
         classes=[],
         functions=[],
-        rules=[],
         external_bases=set(),
         normal_examples=[],
         error_examples=[],

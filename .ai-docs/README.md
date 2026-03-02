@@ -22,7 +22,7 @@ Auto-generated API reference. Do not edit manually. Run: `make docs-ai-build`
 
 Pipeline deployment utilities for unified, type-safe deployments.
 
-**Source**: 2,644 lines of code | [Full guide](deployment.md)
+Read [Full guide](deployment.md) for detailed informations how to use it
 
 ### Types & Constants
 
@@ -278,7 +278,7 @@ async def run_remote_deployment(deployment_name: str, parameters: dict[str, Any]
 
 Document store protocol and backends for AI pipeline flows.
 
-**Source**: 2,170 lines of code | [Full guide](document_store.md)
+Read [Full guide](document_store.md) for detailed informations how to use it
 
 ### Classes
 
@@ -342,7 +342,7 @@ def get_document_store() -> DocumentStore | None:
 
 Document system for AI pipeline flows.
 
-**Source**: 1,130 lines of code | [Full guide](documents.md)
+Read [Full guide](documents.md) for detailed informations how to use it
 
 ### Types & Constants
 
@@ -568,7 +568,7 @@ def reset_run_context(token: Token[RunContext | None]) -> None:
 
 ## exceptions
 
-**Source**: 24 lines of code | [Full guide](exceptions.md)
+Read [Full guide](exceptions.md) for detailed informations how to use it
 
 ### Classes
 
@@ -602,7 +602,7 @@ class OutputDegenerationError(LLMError):
 
 Large Language Model integration via LiteLLM proxy.
 
-**Source**: 1,307 lines of code | [Full guide](llm.md)
+Read [Full guide](llm.md) for detailed informations how to use it
 
 ### Types & Constants
 
@@ -693,6 +693,8 @@ class Conversation(BaseModel, Generic[T]):
     model_options: ModelOptions | None = None
     enable_substitutor: bool = True
     extract_result_tags: bool = False
+    include_date: bool = True
+    current_date: str | None = None
 
     # Methods
     @property
@@ -748,7 +750,7 @@ class Conversation(BaseModel, Generic[T]):
 
 Logging infrastructure for AI Pipeline Core.
 
-**Source**: 156 lines of code | [Full guide](logging.md)
+Read [Full guide](logging.md) for detailed informations how to use it
 
 ### Classes
 
@@ -780,7 +782,7 @@ def get_pipeline_logger(name: str) -> logging.Logger:
 
 Observability system for AI pipelines.
 
-**Source**: 3,266 lines of code | [Full guide](observability.md)
+Read [Full guide](observability.md) for detailed informations how to use it
 
 ### Types & Constants
 
@@ -838,7 +840,7 @@ def set_trace_cost(cost: float | str) -> None:
 
 Pipeline framework primitives — decorators, flow options, and concurrency limits.
 
-**Source**: 1,067 lines of code | [Full guide](pipeline.md)
+Read [Full guide](pipeline.md) for detailed informations how to use it
 
 ### Types & Constants
 
@@ -903,7 +905,7 @@ async def pipeline_concurrency(name: str, *, timeout: int | None=None) -> AsyncG
 
 Prompt compiler for type-safe, validated prompt specifications.
 
-**Source**: 796 lines of code | [Full guide](prompt_compiler.md)
+Read [Full guide](prompt_compiler.md) for detailed informations how to use it
 
 ### Types & Constants
 
@@ -967,28 +969,16 @@ class PromptSpec(BaseModel, Generic[OutputT]):
 
     # Fields
     model_config = ConfigDict(frozen=True, extra='forbid')
-    follows: ClassVar[type['PromptSpec'] | None]
     input_documents: ClassVar[tuple[type[Document], ...]]
     role: ClassVar[type[Role] | None]
     task: ClassVar[str]
     guides: ClassVar[tuple[type[Guide], ...]]
     rules: ClassVar[tuple[type[Rule], ...]]
     output_rules: ClassVar[tuple[type[OutputRule], ...]]
-    output_type: ClassVar[type[str] | type[BaseModel]]
     output_structure: ClassVar[str | None]
 
     # Methods
     def __init_subclass__(cls, *, follows: type['PromptSpec'] | None=None, **kwargs: Any) -> None: ...
-
-
-class Role:
-    """Base class for LLM role definitions."""
-
-    # Fields
-    text: ClassVar[str]
-
-    # Methods
-    def __init_subclass__(cls, **kwargs: Any) -> None: ...
 ```
 
 ### Functions
@@ -1006,11 +996,8 @@ def render_preview(spec_class: type[PromptSpec], *, include_input_documents: boo
 def MultiLineField(*, description: str, **kwargs: Any) -> Any:
     """Declare a multi-line field on a PromptSpec."""
 
-def is_multi_line_field(field_info: FieldInfo) -> bool:
-    """Check whether a FieldInfo was created via MultiLineField."""
-
 def main(argv: list[str] | None=None) -> int:
-    """CLI entry point for prompt compiler operations."""
+    """CLI entry point for prompt compiler operations (``ai-prompt-compiler`` command)."""
 ```
 
 
@@ -1018,7 +1005,7 @@ def main(argv: list[str] | None=None) -> int:
 
 First-class replay system for AI pipeline debugging.
 
-**Source**: 835 lines of code | [Full guide](replay.md)
+Read [Full guide](replay.md) for detailed informations how to use it
 
 ### Classes
 
@@ -1131,7 +1118,7 @@ def infer_store_base(replay_file: Path) -> Path:
 
 ## settings
 
-**Source**: 44 lines of code | [Full guide](settings.md)
+Read [Full guide](settings.md) for detailed informations how to use it
 
 ### Classes
 

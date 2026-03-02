@@ -27,7 +27,7 @@ class TestPromptInjection:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        conv = Conversation(model="test-model")
+        conv = Conversation(model="test-model", include_date=False)
         await conv.send(f"Check {LONG_URL}")
 
         assert len(captured_options) == 1
@@ -47,7 +47,7 @@ class TestPromptInjection:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        conv = Conversation(model="test-model", model_options=ModelOptions(system_prompt=user_prompt))
+        conv = Conversation(model="test-model", include_date=False, model_options=ModelOptions(system_prompt=user_prompt))
         await conv.send(f"Check {LONG_URL}")
 
         assert len(captured_options) == 1
@@ -66,12 +66,12 @@ class TestPromptInjection:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        conv = Conversation(model="test-model", enable_substitutor=False)
+        conv = Conversation(model="test-model", include_date=False, enable_substitutor=False)
         await conv.send(f"Check {LONG_URL}")
 
         assert len(captured_options) == 1
         opts = captured_options[0]
-        # No model_options at all (substitutor disabled, no user options)
+        # No model_options at all (substitutor disabled, no user options, no date)
         assert opts is None
 
     @pytest.mark.asyncio
@@ -85,7 +85,7 @@ class TestPromptInjection:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        conv = Conversation(model="test-model")
+        conv = Conversation(model="test-model", include_date=False)
         await conv.send("Plain text with no URLs or addresses")
 
         assert len(captured_options) == 1
@@ -108,7 +108,7 @@ class TestPromptIntegration:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        conv = Conversation(model="test-model", model_options=None)
+        conv = Conversation(model="test-model", include_date=False, model_options=None)
         await conv.send(f"Check {LONG_URL}")
 
         opts = captured_options[0]
@@ -143,7 +143,7 @@ class TestPromptIntegration:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        conv = Conversation(model="test-model", model_options=ModelOptions(reasoning_effort="high", retries=5))
+        conv = Conversation(model="test-model", include_date=False, model_options=ModelOptions(reasoning_effort="high", retries=5))
         await conv.send(f"Check {LONG_URL}")
 
         opts = captured_options[0]
@@ -170,7 +170,7 @@ class TestPromptIntegration:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate_structured", fake_generate_structured)
 
-        conv = Conversation(model="test-model")
+        conv = Conversation(model="test-model", include_date=False)
         await conv.send_structured(f"Check {LONG_URL}", Result)
 
         opts = captured_options[0]

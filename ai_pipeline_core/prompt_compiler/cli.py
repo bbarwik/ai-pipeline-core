@@ -130,11 +130,11 @@ def _discover_all_specs(root: Path) -> tuple[list[type[PromptSpec[Any]]], list[s
 
 def _output_label(spec_cls: type[PromptSpec[Any]]) -> str:
     """Build output type label like 'str', 'str [structure]', or 'RiskVerdict'."""
-    if spec_cls.output_type is str:
+    if spec_cls._output_type is str:
         if spec_cls.output_structure:
             return "str [structure]"
         return "str"
-    return spec_cls.output_type.__name__
+    return spec_cls._output_type.__name__
 
 
 def _ensure_importable(root: Path) -> None:
@@ -179,8 +179,8 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     print(f"{spec_cls.__name__}")
     print(f"  {doc_first_line}")
     print(f"  Module: {spec_cls.__module__}")
-    if spec_cls.follows is not None:
-        print(f"  Follows: {spec_cls.follows.__name__}")
+    if spec_cls._follows is not None:
+        print(f"  Follows: {spec_cls._follows.__name__}")
 
     # Role
     if spec_cls.role is not None:
@@ -292,7 +292,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     rows = [
         [
             cls.__name__,
-            cls.follows.__name__ if cls.follows else "",
+            cls._follows.__name__ if cls._follows else "",
             str(len(cls.input_documents)),
             str(len(cls.model_fields)),
             _output_label(cls),
@@ -326,7 +326,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point for prompt compiler operations."""
+    """CLI entry point for prompt compiler operations (``ai-prompt-compiler`` command)."""
     parser = argparse.ArgumentParser(prog="prompt_compiler", description="Prompt compiler CLI")
     subparsers = parser.add_subparsers(dest="command")
 

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.prompt_compiler.components import Guide, OutputRule, Role, Rule
 from ai_pipeline_core.prompt_compiler.spec import (
+    MultiLineField,
     PromptSpec,
     _check_field_descriptions,
     _check_no_duplicates,
@@ -254,7 +255,7 @@ def test_follows_basic() -> None:
 
         task = "continue"
 
-    assert FollowSpec.follows is InitSpec
+    assert FollowSpec._follows is InitSpec
     assert FollowSpec.role is None
     assert FollowSpec.input_documents == ()
 
@@ -513,7 +514,7 @@ def test_spec_output_type_defaults_to_str() -> None:
         role = SpecRole
         task = "do it"
 
-    assert DefaultOutputSpec.output_type is str
+    assert DefaultOutputSpec._output_type is str
 
 
 def test_spec_output_type_explicit_str() -> None:
@@ -524,7 +525,7 @@ def test_spec_output_type_explicit_str() -> None:
         role = SpecRole
         task = "do it"
 
-    assert ExplicitStrSpec.output_type is str
+    assert ExplicitStrSpec._output_type is str
 
 
 def test_spec_output_type_rejects_invalid_generic_param() -> None:
@@ -539,7 +540,7 @@ def test_spec_output_type_rejects_invalid_generic_param() -> None:
 
 
 def test_spec_output_type_rejects_manual_declaration() -> None:
-    with pytest.raises(TypeError, match="must not declare 'output_type' directly"):
+    with pytest.raises(TypeError, match="output_type"):
 
         class ManualOutputSpec(PromptSpec):
             """Doc."""
@@ -558,7 +559,7 @@ def test_spec_output_type_basemodel_via_generic() -> None:
         role = SpecRole
         task = "do it"
 
-    assert ModelOutputSpec.output_type is SpecPayload
+    assert ModelOutputSpec._output_type is SpecPayload
 
 
 # ---------------------------------------------------------------------------
@@ -1042,7 +1043,7 @@ def test_spec_full_valid(tmp_path: Path, temp_modules: list[str]) -> None:
         output_structure = "## Summary\n## Details"
         item: str = Field(description="The item to analyze")
 
-    assert FullSpec.follows is None
+    assert FullSpec._follows is None
     assert FullSpec.role is SpecRole
     assert FullSpec.task == "Analyze input"
     assert FullSpec.output_structure == "## Summary\n## Details"
@@ -1063,3 +1064,127 @@ def test_spec_frozen_model() -> None:
     spec = FrozenSpec(item="x")
     with pytest.raises(Exception):
         spec.item = "y"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Task field placeholder detection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.ai_docs
+def test_task_field_placeholder_single_field() -> None:
+    """Task referencing a single field via {field_name} should raise."""
+    with pytest.raises(TypeError, match=r"task contains field placeholder references.*\{topic\}"):
+
+        class BadSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = SpecRole
+            task = 'Analyze the "{topic}" for key findings.'  # Wrong! task is rendered literally, not as a template
+            topic: str = Field(description="Research topic")
+
+
+def test_task_field_placeholder_multiple_fields() -> None:
+    """Task referencing multiple fields should list all conflicts."""
+    with pytest.raises(TypeError, match=r"task contains field placeholder references.*\{item\}.*\{scope\}"):
+
+        class BadSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = SpecRole
+            task = "Evaluate {item} within {scope}."
+            item: str = Field(description="The item")
+            scope: str = Field(description="The scope")
+
+
+def test_task_field_placeholder_multiline_field() -> None:
+    """Task referencing a MultiLineField should also be caught."""
+    with pytest.raises(TypeError, match=r"task contains field placeholder references.*\{feedback\}"):
+
+        class BadSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = SpecRole
+            task = "Review the document and apply the {feedback}."
+            feedback: str = MultiLineField(description="Review feedback")
+
+
+def test_task_braces_not_matching_field_allowed() -> None:
+    """{identifier} in task that does NOT match a declared field should be fine."""
+
+    class OkSpec(PromptSpec):
+        """Doc."""
+
+        input_documents = ()
+        role = SpecRole
+        task = "Return JSON like {key: value} or use {some_other_thing} in your response."
+        item: str = Field(description="The item")
+
+    assert OkSpec.task
+
+
+def test_task_field_name_without_braces_allowed() -> None:
+    """Field name mentioned in task as plain text (no braces) should be fine."""
+
+    class OkSpec(PromptSpec):
+        """Doc."""
+
+        input_documents = ()
+        role = SpecRole
+        task = "Use the topic provided in context to classify findings."
+        topic: str = Field(description="Research topic")
+
+    assert OkSpec.task
+
+
+def test_task_no_fields_with_braces_allowed() -> None:
+    """Spec with no dynamic fields should allow any braces in task."""
+
+    class OkSpec(PromptSpec):
+        """Doc."""
+
+        input_documents = ()
+        role = SpecRole
+        task = "Return output as {key: value} pairs."
+
+    assert OkSpec.task
+
+
+def test_task_placeholder_error_includes_guide_path() -> None:
+    """Error message should include path to .ai-docs/prompt_compiler.md when available."""
+    from ai_pipeline_core.prompt_compiler.spec import _PROMPT_COMPILER_GUIDE
+
+    if not _PROMPT_COMPILER_GUIDE.is_file():
+        pytest.skip("Package .ai-docs not available")
+
+    with pytest.raises(TypeError, match=r"prompt_compiler\.md"):
+
+        class BadSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = SpecRole
+            task = "Analyze {topic}."
+            topic: str = Field(description="Topic")
+
+
+def test_task_placeholder_error_explains_framework_rendering() -> None:
+    """Error message should explain how the framework renders fields."""
+    with pytest.raises(TypeError, match=r"rendered literally") as exc_info:
+
+        class BadSpec(PromptSpec):
+            """Doc."""
+
+            input_documents = ()
+            role = SpecRole
+            task = "Classify {category}."
+            category: str = Field(description="Category")
+
+    msg = str(exc_info.value)
+    assert "# Context" in msg
+    assert "MultiLineField" in msg
+    assert "Remove {field_name} references" in msg
+    assert "Example fix" in msg

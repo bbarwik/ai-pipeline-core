@@ -540,9 +540,7 @@ The framework auto-generates documentation for AI coding agents via `docs_genera
 
 **Docstring Rules:**
 - No `Example:` blocks — tests serve as examples
-- Constraint keywords (`cannot`, `must`, `never`, `always`, `critical`) at line start are extracted to RULES section
 - Inline comments within method bodies are preserved
-- Constraint keyword must be the **first word** after optional whitespace
 
 **Test Marking:**
 - `@pytest.mark.ai_docs` — Explicitly include a test as an example

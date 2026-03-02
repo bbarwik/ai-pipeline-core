@@ -87,6 +87,40 @@ class OutputRule:
         _init_text_component(cls, "OutputRule", max_lines=MAX_RULE_LINES)
 
 
+def _validate_guide(cls: type) -> None:
+    """Validate a Guide subclass: docstring, template path, content, no H1 headers."""
+    _require_docstring(cls, kind="Guide")
+
+    template = cls.__dict__.get("template")
+    if not isinstance(template, str) or not template.strip():
+        raise TypeError(f"Guide '{cls.__name__}' must define 'template' as a ClassVar[str]")
+    if Path(template).is_absolute():
+        raise TypeError(f"Guide '{cls.__name__}' template must be a relative path, got absolute")
+
+    module = sys.modules.get(cls.__module__)
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        raise TypeError(f"Guide '{cls.__name__}' cannot resolve module file for template validation")
+
+    resolved = (Path(module_file).resolve().parent / template).resolve()
+    if not resolved.is_file():
+        raise TypeError(f"Guide '{cls.__name__}' template not found: {resolved}")
+
+    cls._resolved_path = resolved
+
+    # Read and cache content at import time
+    content = resolved.read_text(encoding="utf-8")
+
+    # Validate no H1 headers (reserved for prompt section boundaries)
+    for line_num, line in enumerate(content.splitlines(), 1):
+        if line.startswith("# ") and not line.startswith("## "):
+            raise TypeError(
+                f"Guide '{cls.__name__}' template line {line_num} uses '# ' header which is reserved for prompt section boundaries — use '## ' or deeper"
+            )
+
+    cls._content = content
+
+
 class Guide:
     """Base class for reference material / methodology guides.
 
@@ -101,36 +135,7 @@ class Guide:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        _require_docstring(cls, kind="Guide")
-
-        template = cls.__dict__.get("template")
-        if not isinstance(template, str) or not template.strip():
-            raise TypeError(f"Guide '{cls.__name__}' must define 'template' as a ClassVar[str]")
-        if Path(template).is_absolute():
-            raise TypeError(f"Guide '{cls.__name__}' template must be a relative path, got absolute")
-
-        module = sys.modules.get(cls.__module__)
-        module_file = getattr(module, "__file__", None)
-        if not module_file:
-            raise TypeError(f"Guide '{cls.__name__}' cannot resolve module file for template validation")
-
-        resolved = (Path(module_file).resolve().parent / template).resolve()
-        if not resolved.is_file():
-            raise TypeError(f"Guide '{cls.__name__}' template not found: {resolved}")
-
-        cls._resolved_path = resolved
-
-        # Read and cache content at import time
-        content = resolved.read_text(encoding="utf-8")
-
-        # Validate no H1 headers (reserved for prompt section boundaries)
-        for line_num, line in enumerate(content.splitlines(), 1):
-            if line.startswith("# ") and not line.startswith("## "):
-                raise TypeError(
-                    f"Guide '{cls.__name__}' template line {line_num} uses '# ' header which is reserved for prompt section boundaries — use '## ' or deeper"
-                )
-
-        cls._content = content
+        _validate_guide(cls)
 
     @classmethod
     def render(cls) -> str:
