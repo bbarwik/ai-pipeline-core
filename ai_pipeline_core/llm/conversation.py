@@ -347,8 +347,18 @@ class Conversation(BaseModel, Generic[T]):
 
     @property
     def tool_call_records(self) -> tuple[ToolCallRecord, ...]:
-        """All tool call records from the tool loop (across all rounds)."""
+        """All tool call records from this Conversation's send() call (across all rounds)."""
         return self._tool_call_records
+
+    def tool_calls_for(self, tool_cls: type[Tool]) -> tuple[ToolCallRecord, ...]:
+        """Filter tool call records by tool class.
+
+        Returns only records from this Conversation's send() call where the tool
+        matches the given class. Use with the collection pattern across phases:
+
+            all = phase1.tool_calls_for(Inspect) + phase2.tool_calls_for(Inspect)
+        """
+        return tuple(r for r in self._tool_call_records if r.tool is tool_cls)
 
     def restore_content(self, text: str) -> str:
         """Restore shortened URLs/addresses in text using the substitutor from the last send.
@@ -724,7 +734,7 @@ class Conversation(BaseModel, Generic[T]):
             tool_choice=tool_choice,
             max_tool_rounds=max_tool_rounds,
         )
-        return self.model_copy(update={"messages": new_messages, "_tool_call_records": self._tool_call_records + records})  # type: ignore[return-value]
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records})  # type: ignore[return-value]
 
     async def send_structured(
         self,
@@ -755,7 +765,7 @@ class Conversation(BaseModel, Generic[T]):
             tool_choice=tool_choice,
             max_tool_rounds=max_tool_rounds,
         )
-        return self.model_copy(update={"messages": new_messages, "_tool_call_records": self._tool_call_records + records})  # type: ignore[return-value]
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records})  # type: ignore[return-value]
 
     @overload
     async def send_spec(

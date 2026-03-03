@@ -119,8 +119,8 @@ async def test_send_with_tools_auto_loop(monkeypatch):
         class Input(BaseModel):
             city: str = Field(description="City name")
 
-        async def execute(self, input: BaseModel) -> ToolOutput:
-            return ToolOutput(content=f"Sunny, 22°C in {input.city}")  # type: ignore[attr-defined]
+        async def execute(self, input: Input) -> ToolOutput:
+            return ToolOutput(content=f"Sunny, 22°C in {input.city}")
 
     # 2. Mock LLM: first call requests tool use, second returns final answer
     call_count = 0

@@ -46,10 +46,12 @@ async def _execute_single_tool(
         )
     except TimeoutError:
         logger.warning("Tool execution timed out: %s", tool_cls.__name__)
-        return None, ToolOutput(content=f"Error: Tool '{snake_name}' timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS}s")
+        output = ToolOutput(content=f"Error: Tool '{snake_name}' timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS}s")
+        return ToolCallRecord(tool=tool_cls, input=parsed_input, output=output, round=round_num), output
     except Exception as e:
         logger.warning("Tool execution failed for %s: %s", tool_cls.__name__, e)
-        return None, ToolOutput(content=f"Error: Tool '{snake_name}' failed: {e}")
+        output = ToolOutput(content=f"Error: Tool '{snake_name}' failed: {e}")
+        return ToolCallRecord(tool=tool_cls, input=parsed_input, output=output, round=round_num), output
 
     if not isinstance(result, ToolOutput):
         raise TypeError(

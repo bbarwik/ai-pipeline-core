@@ -30,10 +30,9 @@ class Calculator(Tool):
     class Input(BaseModel):
         expression: str = Field(description="Mathematical expression to evaluate, e.g. '2 + 3'")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
-        expr = input.expression  # type: ignore[attr-defined]
+    async def execute(self, input: Input) -> ToolOutput:
         try:
-            result = eval(expr, {"__builtins__": {}}, {})
+            result = eval(input.expression, {"__builtins__": {}}, {})
             return ToolOutput(content=str(result))
         except (SyntaxError, TypeError, ValueError, ZeroDivisionError, NameError, ArithmeticError) as e:
             return ToolOutput(content=f"Error: {e}")
@@ -45,17 +44,17 @@ class GetCapital(Tool):
     class Input(BaseModel):
         country: str = Field(description="Country name")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
+    async def execute(self, input: Input) -> ToolOutput:
         capitals = {
             "france": "Paris",
             "japan": "Tokyo",
             "brazil": "Brasília",
             "germany": "Berlin",
         }
-        country = input.country.lower()  # type: ignore[attr-defined]
+        country = input.country.lower()
         if country in capitals:
-            return ToolOutput(content=f"The capital of {input.country} is {capitals[country]}")  # type: ignore[attr-defined]
-        return ToolOutput(content=f"Unknown country: {input.country}")  # type: ignore[attr-defined]
+            return ToolOutput(content=f"The capital of {input.country} is {capitals[country]}")
+        return ToolOutput(content=f"Unknown country: {input.country}")
 
 
 class FailingTool(Tool):
@@ -64,8 +63,8 @@ class FailingTool(Tool):
     class Input(BaseModel):
         reason: str = Field(description="Reason for failure")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
-        raise RuntimeError(f"Intentional failure: {input.reason}")  # type: ignore[attr-defined]
+    async def execute(self, input: Input) -> ToolOutput:
+        raise RuntimeError(f"Intentional failure: {input.reason}")
 
 
 class WeatherLookup(Tool):
@@ -74,8 +73,8 @@ class WeatherLookup(Tool):
     class Input(BaseModel):
         city: str = Field(description="City to look up weather for")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
-        return ToolOutput(content=f"The weather in {input.city} is sunny, 22°C")  # type: ignore[attr-defined]
+    async def execute(self, input: Input) -> ToolOutput:
+        return ToolOutput(content=f"The weather in {input.city} is sunny, 22°C")
 
 
 # ── Integration Tests ────────────────────────────────────────────────────────

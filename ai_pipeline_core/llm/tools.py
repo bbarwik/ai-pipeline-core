@@ -98,7 +98,7 @@ class Tool:
         if not inspect.iscoroutinefunction(execute_method):
             raise TypeError(f"Tool '{name}'.execute must be async (async def execute)")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
+    async def execute(self, input: Any) -> ToolOutput:
         """Execute the tool with validated input and return the result."""
         raise NotImplementedError
 

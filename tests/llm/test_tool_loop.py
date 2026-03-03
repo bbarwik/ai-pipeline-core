@@ -23,8 +23,8 @@ class SearchTool(Tool):
     class Input(BaseModel):
         query: str = Field(description="Search query")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
-        return ToolOutput(content=f"Results for: {input.query}")  # type: ignore[attr-defined]
+    async def execute(self, input: Input) -> ToolOutput:
+        return ToolOutput(content=f"Results for: {input.query}")
 
 
 class FailingTool(Tool):
@@ -33,8 +33,8 @@ class FailingTool(Tool):
     class Input(BaseModel):
         reason: str = Field(description="Failure reason")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
-        raise RuntimeError(f"Intentional: {input.reason}")  # type: ignore[attr-defined]
+    async def execute(self, input: Input) -> ToolOutput:
+        raise RuntimeError(f"Intentional: {input.reason}")
 
 
 class BadReturnTool(Tool):
@@ -43,7 +43,7 @@ class BadReturnTool(Tool):
     class Input(BaseModel):
         x: int = Field(description="Some value")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
+    async def execute(self, input: Input) -> ToolOutput:
         return "not a ToolOutput"  # type: ignore[return-value]
 
 
@@ -53,10 +53,10 @@ class SlowTool(Tool):
     class Input(BaseModel):
         delay: float = Field(description="Delay in seconds")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
+    async def execute(self, input: Input) -> ToolOutput:
         import asyncio
 
-        await asyncio.sleep(input.delay)  # type: ignore[attr-defined]
+        await asyncio.sleep(input.delay)
         return ToolOutput(content="done")
 
 
@@ -102,13 +102,17 @@ async def test_execute_single_tool_validation_error() -> None:
 
 
 async def test_execute_single_tool_execution_raises() -> None:
-    """Tool execute() raising produces error ToolOutput with no record."""
+    """Tool execute() raising produces error ToolOutput WITH a record (input was valid)."""
     tool = FailingTool()
     tc = make_tool_call("c1", "failing_tool", '{"reason": "test failure"}')
     record, output = await _execute_single_tool(tool, tc, round_num=1)
-    assert record is None
+    assert record is not None
+    assert record.tool is FailingTool
+    assert record.round == 1
+    assert record.input.reason == "test failure"  # type: ignore[union-attr]
     assert "failed" in output.content
     assert "Intentional" in output.content
+    assert record.output is output
 
 
 async def test_execute_single_tool_wrong_return_type() -> None:
@@ -120,7 +124,7 @@ async def test_execute_single_tool_wrong_return_type() -> None:
 
 
 async def test_execute_single_tool_timeout() -> None:
-    """Tool exceeding timeout produces error ToolOutput."""
+    """Tool exceeding timeout produces error ToolOutput WITH a record (input was valid)."""
     import ai_pipeline_core.llm._tool_loop as tl
 
     original = tl.TOOL_EXECUTION_TIMEOUT_SECONDS
@@ -129,8 +133,11 @@ async def test_execute_single_tool_timeout() -> None:
         tool = SlowTool()
         tc = make_tool_call("c1", "slow", '{"delay": 10}')
         record, output = await _execute_single_tool(tool, tc, round_num=1)
-        assert record is None
+        assert record is not None
+        assert record.tool is SlowTool
+        assert record.input.delay == 10  # type: ignore[union-attr]
         assert "timed out" in output.content
+        assert record.output is output
     finally:
         tl.TOOL_EXECUTION_TIMEOUT_SECONDS = original
 
@@ -480,7 +487,7 @@ async def test_loop_substitutor_applied_to_tool_result() -> None:
         class Input(BaseModel):
             query: str = Field(description="Query")
 
-        async def execute(self, input: BaseModel) -> ToolOutput:
+        async def execute(self, input: Input) -> ToolOutput:
             return ToolOutput(content="Found at http://example.com")
 
     core_msgs: list[CoreMessage] = [CoreMessage(role=Role.USER, content="find url")]
@@ -582,3 +589,45 @@ async def test_loop_programming_error_propagates() -> None:
             substitutor=None,
             build_tool_result_message=_build_msg,
         )
+
+
+async def test_execution_failure_records_count_in_loop() -> None:
+    """Failed tool executions are counted in records when input was valid."""
+    call_count = 0
+
+    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return make_response(
+                content="",
+                tool_calls=(
+                    make_tool_call("c1", "search_tool", '{"query": "good"}'),
+                    make_tool_call("c2", "failing_tool", '{"reason": "bad"}'),
+                ),
+            )
+        return make_response(content="Done")
+
+    msgs, resp, records = await execute_tool_loop(
+        invoke_llm=invoke_llm,
+        tool_schemas=[
+            {"type": "function", "function": {"name": "search_tool"}},
+            {"type": "function", "function": {"name": "failing_tool"}},
+        ],
+        tool_lookup={"search_tool": SearchTool(), "failing_tool": FailingTool()},
+        tool_choice="auto",
+        max_tool_rounds=5,
+        purpose="test",
+        expected_cost=None,
+        core_messages=[CoreMessage(role=Role.USER, content="hi")],
+        context_count=0,
+        effective_options=None,
+        substitutor=None,
+        build_tool_result_message=_build_msg,
+    )
+    # Both calls should produce records — success and failure
+    assert len(records) == 2
+    success_record = next(r for r in records if r.tool is SearchTool)
+    failure_record = next(r for r in records if r.tool is FailingTool)
+    assert "Results for:" in success_record.output.content
+    assert "Error:" in failure_record.output.content

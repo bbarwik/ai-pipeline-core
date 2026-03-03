@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import CoreMessage, Role
 from ai_pipeline_core.llm.conversation import Conversation, ToolResultMessage
-from ai_pipeline_core.llm.tools import Tool, ToolOutput
+from ai_pipeline_core.llm.tools import Tool, ToolCallRecord, ToolOutput
 
 from .conftest import make_response, make_tool_call
 
@@ -22,7 +22,7 @@ class ToolA(Tool):
     class Input(BaseModel):
         x: str = Field(description="Value")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
+    async def execute(self, input: Input) -> ToolOutput:
         return ToolOutput(content="a")
 
 
@@ -32,7 +32,7 @@ class ToolB(Tool):
     class Input(BaseModel):
         y: str = Field(description="Value")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
+    async def execute(self, input: Input) -> ToolOutput:
         return ToolOutput(content="b")
 
 
@@ -133,7 +133,7 @@ async def test_duplicate_tool_name_detected() -> None:
         class Input(BaseModel):
             q: str = Field(description="Query")
 
-        async def execute(self, input: BaseModel) -> ToolOutput:
+        async def execute(self, input: Input) -> ToolOutput:
             return ToolOutput(content="a")
 
     class My_Search(Tool):
@@ -142,7 +142,7 @@ async def test_duplicate_tool_name_detected() -> None:
         class Input(BaseModel):
             q: str = Field(description="Query")
 
-        async def execute(self, input: BaseModel) -> ToolOutput:
+        async def execute(self, input: Input) -> ToolOutput:
             return ToolOutput(content="b")
 
     # Verify names collide
@@ -308,3 +308,93 @@ def test_replay_full_round_trip() -> None:
 
     assert isinstance(conv.messages[2], AssistantMessage)
     assert conv.messages[2].text == "It's sunny and 20°C."
+
+
+# ── tool_calls_for ──────────────────────────────────────────────────────────
+
+
+def _conv_with_records(*records: ToolCallRecord) -> Conversation:
+    """Create a Conversation with tool_call_records (Pydantic private fields need model_copy)."""
+    return Conversation(model="test").model_copy(update={"_tool_call_records": records})
+
+
+def test_tool_calls_for_filters_by_tool_class() -> None:
+    """tool_calls_for returns only records matching the given tool class."""
+    conv = _conv_with_records(
+        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="1"), output=ToolOutput(content="a1"), round=1),
+        ToolCallRecord(tool=ToolB, input=ToolB.Input(y="2"), output=ToolOutput(content="b1"), round=1),
+        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="3"), output=ToolOutput(content="a2"), round=2),
+    )
+
+    a_records = conv.tool_calls_for(ToolA)
+    assert len(a_records) == 2
+    assert all(r.tool is ToolA for r in a_records)
+
+    b_records = conv.tool_calls_for(ToolB)
+    assert len(b_records) == 1
+    assert b_records[0].tool is ToolB
+
+
+def test_tool_calls_for_empty_when_no_match() -> None:
+    """tool_calls_for returns empty tuple when no records match."""
+    conv = _conv_with_records(
+        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="1"), output=ToolOutput(content="a"), round=1),
+    )
+    assert conv.tool_calls_for(ToolB) == ()
+
+
+def test_tool_calls_for_returns_tuple() -> None:
+    """tool_calls_for returns immutable tuple, not list."""
+    conv = _conv_with_records(
+        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="1"), output=ToolOutput(content="a"), round=1),
+    )
+    result = conv.tool_calls_for(ToolA)
+    assert isinstance(result, tuple)
+
+
+# ── Record accumulation ─────────────────────────────────────────────────────
+
+
+def test_tool_call_records_not_accumulated_across_sends() -> None:
+    """Each send() call produces independent tool_call_records — no cross-send accumulation.
+
+    Phase 1 records must NOT appear in Phase 2's tool_call_records.
+    This enables the collection pattern: phase1.tool_call_records + phase2.tool_call_records.
+    """
+    phase1_records = (
+        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="a"), output=ToolOutput(content="r1"), round=1),
+    )
+    conv_after_phase1 = Conversation(model="test").model_copy(update={"_tool_call_records": phase1_records})
+
+    phase2_records = (
+        ToolCallRecord(tool=ToolB, input=ToolB.Input(y="b"), output=ToolOutput(content="r2"), round=1),
+    )
+    conv_after_phase2 = conv_after_phase1.model_copy(update={"_tool_call_records": phase2_records})
+
+    # Phase 1 has only its own records
+    assert len(conv_after_phase1.tool_call_records) == 1
+    assert conv_after_phase1.tool_call_records[0].tool is ToolA
+
+    # Phase 2 has only its own records — NOT phase1 + phase2
+    assert len(conv_after_phase2.tool_call_records) == 1
+    assert conv_after_phase2.tool_call_records[0].tool is ToolB
+
+
+def test_tool_calls_for_multi_phase_collection() -> None:
+    """Collection pattern across phases: no double-counting, no data loss.
+
+    Simulates the primary use case:
+        conv = await conv.send_spec(AnalysisSpec(), tools=[inspect])
+        critic_conv = await conv.send_spec(CriticSpec(), tools=[inspect])
+        all_calls = conv.tool_calls_for(Inspect) + critic_conv.tool_calls_for(Inspect)
+    """
+    conv_phase1 = _conv_with_records(
+        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="p1_1"), output=ToolOutput(content="r1"), round=1),
+        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="p1_2"), output=ToolOutput(content="r2"), round=2),
+    )
+    conv_phase2 = _conv_with_records(
+        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="p2_1"), output=ToolOutput(content="r3"), round=1),
+    )
+
+    all_calls = conv_phase1.tool_calls_for(ToolA) + conv_phase2.tool_calls_for(ToolA)
+    assert len(all_calls) == 3

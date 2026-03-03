@@ -16,8 +16,8 @@ class GetWeather(Tool):
         city: str = Field(description="City name")
         unit: str = Field(default="celsius", description="Temperature unit")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
-        return ToolOutput(content=f"Weather in {input.city}: 20°")  # type: ignore[attr-defined]
+    async def execute(self, input: Input) -> ToolOutput:
+        return ToolOutput(content=f"Weather in {input.city}: 20°")
 
 
 class CustomOutputTool(Tool):
@@ -29,7 +29,7 @@ class CustomOutputTool(Tool):
     class Output(ToolOutput):
         source: str = "web"
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
+    async def execute(self, input: Input) -> ToolOutput:
         return self.Output(content="result", source="cache")
 
 
@@ -49,7 +49,7 @@ def test_tool_definition_missing_docstring() -> None:
             class Input(BaseModel):
                 x: int = Field(description="x value")
 
-            async def execute(self, input: BaseModel) -> ToolOutput:
+            async def execute(self, input: Input) -> ToolOutput:
                 return ToolOutput(content="")
 
 
@@ -59,7 +59,7 @@ def test_tool_definition_missing_input() -> None:
         class BadTool(Tool):
             """Missing Input."""
 
-            async def execute(self, input: BaseModel) -> ToolOutput:
+            async def execute(self, input: BaseModel) -> ToolOutput:  # no Input class exists
                 return ToolOutput(content="")
 
 
@@ -78,7 +78,7 @@ def test_tool_definition_input_field_missing_description() -> None:
             class Input(BaseModel):
                 query: str  # no Field(description=...)
 
-            async def execute(self, input: BaseModel) -> ToolOutput:
+            async def execute(self, input: Input) -> ToolOutput:
                 return ToolOutput(content="")
 
 
@@ -91,7 +91,7 @@ def test_tool_definition_non_async_execute() -> None:
             class Input(BaseModel):
                 x: int = Field(description="x")
 
-            def execute(self, input: BaseModel) -> ToolOutput:  # type: ignore[override]
+            def execute(self, input: Input) -> ToolOutput:  # type: ignore[override]
                 return ToolOutput(content="")
 
 
@@ -145,7 +145,7 @@ def test_generate_tool_schema_strict_mode_nested() -> None:
         class Input(BaseModel):
             location: GetWeather.Input = Field(description="Location data")
 
-        async def execute(self, input: BaseModel) -> ToolOutput:
+        async def execute(self, input: Input) -> ToolOutput:
             return ToolOutput(content="")
 
     schema = generate_tool_schema(NestedTool())

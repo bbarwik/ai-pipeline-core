@@ -215,9 +215,9 @@ class GetWeather(Tool):
         city: str = Field(description="City name")
         unit: str = Field(default="celsius", description="Temperature unit")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
+    async def execute(self, input: Input) -> ToolOutput:
         # Call your API, database, or any async operation here
-        return ToolOutput(content=f"Sunny, 22°C in {input.city}")  # type: ignore[attr-defined]
+        return ToolOutput(content=f"Sunny, 22°C in {input.city}")
 
 # 2. Pass tools to send() — auto-loop handles everything
 conv = Conversation(model="gemini-3-flash")
