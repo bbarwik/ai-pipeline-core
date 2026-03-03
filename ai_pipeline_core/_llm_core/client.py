@@ -35,6 +35,7 @@ from .types import (
     ImageContent,
     ModelOptions,
     PDFContent,
+    RawToolCall,
     Role,
     TextContent,
     TokenUsage,
@@ -98,6 +99,36 @@ def _messages_to_api(messages: list[CoreMessage]) -> list[ChatCompletionMessageP
     """Convert CoreMessages to OpenAI API format."""
     result: list[ChatCompletionMessageParam] = []
     for msg in messages:
+        if msg.role == Role.TOOL:
+            result.append({
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id or "",
+                "content": msg.content if isinstance(msg.content, str) else "",
+            })
+            continue
+
+        if msg.tool_calls:
+            # Always process content to support multimodal/thinking blocks alongside tool calls.
+            # Some providers (Claude) include text alongside tool calls; others (OpenAI) have content=null.
+            parts = _content_to_api_parts(msg.content)
+            # Set None when parts are empty or only contain a blank text entry (OpenAI requires null)
+            has_content = any(p.get("text", "").strip() or p.get("type") != "text" for p in parts) if parts else False
+            content_value = parts if has_content else None
+            entry: dict[str, Any] = {
+                "role": "assistant",
+                "content": content_value,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function_name, "arguments": tc.arguments},
+                    }
+                    for tc in msg.tool_calls
+                ],
+            }
+            result.append(entry)  # type: ignore[arg-type]
+            continue
+
         parts = _content_to_api_parts(msg.content)
         if parts:  # Skip messages with no valid content
             result.append({"role": msg.role.value, "content": parts})  # type: ignore[arg-type]
@@ -290,6 +321,14 @@ def _build_model_response(
     elif "</think>" in (msg.content or ""):
         reasoning_content = (msg.content or "").split("</think>")[0].strip()
 
+    # Extract tool calls from response
+    raw_tool_calls: tuple[RawToolCall, ...] = ()
+    if msg_tool_calls := getattr(msg, "tool_calls", None):
+        raw_tool_calls = tuple(
+            RawToolCall(id=tc.id or f"call_{i}_{tc.function.name}", function_name=tc.function.name, arguments=tc.function.arguments or "{}")
+            for i, tc in enumerate(msg_tool_calls)
+        )
+
     thinking_blocks: tuple[dict[str, Any], ...] | None = None
     provider_specific_fields: dict[str, Any] | None = None
     if hasattr(msg, "thinking_blocks") and msg.thinking_blocks:
@@ -308,11 +347,12 @@ def _build_model_response(
         )
     cost = _extract_cost(response, header_cost=metadata.get("header_cost"))
 
-    if not content:
+    if not content and not raw_tool_calls:
         raise ValueError("Empty response content")
 
     parsed: Any = content
-    if response_format is not None:
+    # Skip structured parsing when tool calls are present (intermediate tool round)
+    if response_format is not None and not raw_tool_calls:
         parsed = response_format.model_validate_json(content)
 
     citations: tuple[Citation, ...] = ()
@@ -333,6 +373,7 @@ def _build_model_response(
         model=model,
         response_id=response.id or "",
         metadata=metadata,
+        tool_calls=raw_tool_calls,
         thinking_blocks=thinking_blocks,
         provider_specific_fields=provider_specific_fields,
     )
@@ -347,6 +388,8 @@ async def _generate_impl(
     purpose: str | None = None,
     expected_cost: float | None = None,
     context_count: int = 0,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, str] | None = None,
 ) -> ModelResponse[Any]:
     """Shared LLM generation with single retry loop. Handles both text and structured output."""
     if not messages:
@@ -382,6 +425,10 @@ async def _generate_impl(
         del completion_kwargs["stop"]
     if response_format is not None:
         completion_kwargs["response_format"] = response_format
+    if tools:
+        completion_kwargs["tools"] = tools
+    if tool_choice is not None:
+        completion_kwargs["tool_choice"] = tool_choice
     if cache_ttl and effective_context_count > 0:
         completion_kwargs["prompt_cache_key"] = _compute_cache_key(api_messages[:effective_context_count], model_options.system_prompt)
 
@@ -404,8 +451,8 @@ async def _generate_impl(
                         span_attrs["purpose"] = purpose
                     span.set_attributes(span_attrs)  # pyright: ignore[reportArgumentType]
 
-                    # Detect output degeneration (token repetition loops)
-                    if explanation := detect_output_degeneration(model_response.content):
+                    # Detect output degeneration (token repetition loops) — skip for tool call responses
+                    if not model_response.has_tool_calls and (explanation := detect_output_degeneration(model_response.content)):
                         raise OutputDegenerationError(
                             f"model={model}, tokens={model_response.usage.completion_tokens}, content_length={len(model_response.content)}: {explanation}"
                         )
@@ -448,6 +495,8 @@ async def generate(
     purpose: str | None = None,
     expected_cost: float | None = None,
     context_count: int = 0,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, str] | None = None,
 ) -> ModelResponse[str]:
     """Primitive LLM generation — no Document dependency.
 
@@ -460,6 +509,8 @@ async def generate(
         purpose=purpose,
         expected_cost=expected_cost,
         context_count=context_count,
+        tools=tools,
+        tool_choice=tool_choice,
     )
 
 
@@ -472,6 +523,8 @@ async def generate_structured(
     purpose: str | None = None,
     expected_cost: float | None = None,
     context_count: int = 0,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, str] | None = None,
 ) -> ModelResponse[T]:
     """Primitive structured LLM generation — no Document dependency.
 
@@ -485,4 +538,6 @@ async def generate_structured(
         purpose=purpose,
         expected_cost=expected_cost,
         context_count=context_count,
+        tools=tools,
+        tool_choice=tool_choice,
     )

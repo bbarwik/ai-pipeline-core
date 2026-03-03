@@ -641,7 +641,9 @@ type ModelName = (
     ]
     | str
 )
+MAX_TOOL_ROUNDS_DEFAULT = 10
 ConversationContent = str | Document | list[Document]
+AnyMessage = Document | ModelResponse[Any] | UserMessage | AssistantMessage | ToolResultMessage
 ```
 
 ### Classes
@@ -697,6 +699,29 @@ class ModelOptions(BaseModel):
         """Convert options to OpenAI API completion parameters."""
 
 
+class UserMessage:
+    """Internal wrapper for user string messages (not a Document)."""
+
+    # Fields
+    text: str
+
+
+class AssistantMessage:
+    """Internal wrapper for injected assistant messages (not from an LLM call)."""
+
+    # Fields
+    text: str
+
+
+class ToolResultMessage:
+    """Internal wrapper for tool execution results in conversation history."""
+
+    # Fields
+    tool_call_id: str
+    function_name: str
+    content: str
+
+
 class Conversation(BaseModel, Generic[T]):
     """Immutable conversation state for LLM interactions."""
 
@@ -704,7 +729,7 @@ class Conversation(BaseModel, Generic[T]):
     model_config = ConfigDict(frozen=True)
     model: str
     context: tuple[Document, ...] = ()
-    messages: tuple[_AnyMessage, ...] = ()
+    messages: tuple[AnyMessage, ...] = ()
     model_options: ModelOptions | None = None
     enable_substitutor: bool = True
     extract_result_tags: bool = False
@@ -731,18 +756,23 @@ class Conversation(BaseModel, Generic[T]):
     def reasoning_content(self) -> str:
         """Reasoning content from last send() call (if model supports it)."""
     @property
+    def tool_call_records(self) -> tuple[ToolCallRecord, ...]:
+        """All tool call records from the tool loop (across all rounds)."""
+    @property
     def usage(self) -> TokenUsage:
         """Token usage from last send() call."""
     @classmethod
     def validate_model_not_empty(cls, v: str) -> str:
         """Reject empty model name."""
-    def send(self, content: ConversationContent, *, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[None]':
+    def restore_content(self, text: str) -> str:
+        """Restore shortened URLs/addresses in text using the substitutor from the last send."""
+    def send(self, content: ConversationContent, *, tools: list[Tool] | None=None, tool_choice: Literal['auto', 'required', 'none'] | None=None, max_tool_rounds: int=MAX_TOOL_ROUNDS_DEFAULT, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[None]':
         """Send message, returns NEW Conversation with response."""
-    def send_spec(self, spec: PromptSpec[str], *, documents: Sequence[Document] | None=None, include_input_documents: bool=True, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[None]': ...
-    def send_spec(self, spec: PromptSpec[U], *, documents: Sequence[Document] | None=None, include_input_documents: bool=True, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[U]': ...
-    def send_spec(self, spec: PromptSpec[Any], *, documents: Sequence[Document] | None=None, include_input_documents: bool=True, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[Any]':
+    def send_spec(self, spec: PromptSpec[str], *, documents: Sequence[Document] | None=None, include_input_documents: bool=True, tools: list[Tool] | None=None, tool_choice: Literal['auto', 'required', 'none'] | None=None, max_tool_rounds: int=MAX_TOOL_ROUNDS_DEFAULT, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[None]': ...
+    def send_spec(self, spec: PromptSpec[U], *, documents: Sequence[Document] | None=None, include_input_documents: bool=True, tools: list[Tool] | None=None, tool_choice: Literal['auto', 'required', 'none'] | None=None, max_tool_rounds: int=MAX_TOOL_ROUNDS_DEFAULT, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[U]': ...
+    def send_spec(self, spec: PromptSpec[Any], *, documents: Sequence[Document] | None=None, include_input_documents: bool=True, tools: list[Tool] | None=None, tool_choice: Literal['auto', 'required', 'none'] | None=None, max_tool_rounds: int=MAX_TOOL_ROUNDS_DEFAULT, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[Any]':
         """Send a PromptSpec to the LLM."""
-    def send_structured(self, content: ConversationContent, response_format: type[U], *, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[U]':
+    def send_structured(self, content: ConversationContent, response_format: type[U], *, tools: list[Tool] | None=None, tool_choice: Literal['auto', 'required', 'none'] | None=None, max_tool_rounds: int=MAX_TOOL_ROUNDS_DEFAULT, purpose: str | None=None, expected_cost: float | None=None) -> 'Conversation[U]':
         """Send message expecting structured response, returns NEW Conversation[U] with .parsed."""
     def with_assistant_message(self, content: str) -> 'Conversation[T]':
         """Return NEW Conversation with an injected assistant turn in messages."""
@@ -758,6 +788,47 @@ class Conversation(BaseModel, Generic[T]):
         """Return NEW Conversation with updated model options."""
     def with_substitutor(self, enabled: bool=True) -> 'Conversation[T]':
         """Return NEW Conversation with content protection enabled/disabled."""
+
+
+class ToolOutput(BaseModel):
+    """Base for tool outputs. ``content`` is sent to the LLM as the tool result."""
+
+    # Fields
+    model_config = ConfigDict(frozen=True)
+    content: str
+
+
+class Tool:
+    """Base class for LLM tools with import-time validation."""
+
+    # Fields
+    Input: type[BaseModel]
+    Output: type[ToolOutput]
+
+    # Methods
+    def __init_subclass__(cls, **kwargs: Any) -> None: ...
+    def execute(self, input: BaseModel) -> ToolOutput:
+        """Execute the tool with validated input and return the result."""
+
+
+class ToolCallRecord:
+    """Record of a single tool call execution within the tool loop."""
+
+    # Fields
+    tool: type[Tool]
+    input: BaseModel
+    output: ToolOutput
+    round: int
+```
+
+### Functions
+
+```python
+def to_snake_case(name: str) -> str:
+    """Convert PascalCase to snake_case, handling consecutive capitals."""
+
+def generate_tool_schema(tool: Tool) -> dict[str, Any]:
+    """Generate OpenAI Chat Completions tool schema from a Tool instance."""
 ```
 
 
@@ -1044,17 +1115,30 @@ class DocumentRef(BaseModel):
     name: str  # Original document name
 
 
+class ToolCallEntry(BaseModel):
+    """Typed tool call entry for replay serialization."""
+
+    # Fields
+    model_config = ConfigDict(frozen=True)
+    id: str
+    function_name: str
+    arguments: str
+
+
 class HistoryEntry(BaseModel):
     """Single entry in a conversation's message history."""
 
     # Fields
     model_config = ConfigDict(frozen=True, populate_by_name=True)
-    type: Literal['user_text', 'assistant_text', 'response', 'document']
+    type: Literal['user_text', 'assistant_text', 'response', 'document', 'tool_result']
     text: str | None = None  # For user_text and assistant_text entries
-    content: str | None = None  # For response entries
+    content: str | None = None  # For response and tool_result entries
     doc_ref: str | None = Field(None, alias='$doc_ref')  # SHA256 for document entries
     class_name: str | None = None  # Document class for document entries
     name: str | None = None  # Document name for document entries
+    tool_call_id: str | None = None  # For tool_result entries
+    function_name: str | None = None  # For tool_result entries
+    tool_calls: list[ToolCallEntry] | None = None  # For response entries with tool calls
 
 
 class ConversationReplay(BaseModel):

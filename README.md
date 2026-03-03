@@ -19,6 +19,7 @@ This framework is the foundation of AI projects at [research.tech](https://resea
 - **Document Store**: Pluggable storage backends (ClickHouse production, local filesystem CLI/debug, in-memory testing) with automatic deduplication
 - **Conversation Class**: Immutable, stateful multi-turn LLM conversations with context caching, automatic URL/address shortening, and eager response restoration
 - **LLM Integration**: Unified interface to any model via LiteLLM proxy (OpenRouter compatible) with context caching (default 300s TTL)
+- **Tool Calling**: Define tools as typed Python classes with import-time validation, automatic schema generation, and a built-in auto-loop that executes tools and re-sends results until the LLM produces a final answer
 - **Structured Output**: Type-safe generation with Pydantic model validation via `Conversation.send_structured()`
 - **Workflow Orchestration**: Prefect-based flows and tasks with annotation-driven document types and decoration-time input/output validation
 - **Auto-Persistence**: `@pipeline_task` saves returned documents to `DocumentStore` automatically
@@ -199,6 +200,55 @@ print(conv.usage)              # Token usage with input/output counts
 print(conv.cost)               # Estimated cost
 print(conv.citations)          # Citation objects (for search models)
 ```
+
+### Tool Calling
+
+```python
+from pydantic import BaseModel, Field
+from ai_pipeline_core import Conversation, Tool, ToolOutput
+
+# 1. Define a tool — docstring becomes the LLM description
+class GetWeather(Tool):
+    """Get current weather for a city."""
+
+    class Input(BaseModel):
+        city: str = Field(description="City name")
+        unit: str = Field(default="celsius", description="Temperature unit")
+
+    async def execute(self, input: BaseModel) -> ToolOutput:
+        # Call your API, database, or any async operation here
+        return ToolOutput(content=f"Sunny, 22°C in {input.city}")  # type: ignore[attr-defined]
+
+# 2. Pass tools to send() — auto-loop handles everything
+conv = Conversation(model="gemini-3-flash")
+conv = await conv.send(
+    "What's the weather in Paris?",
+    tools=[GetWeather()],
+)
+print(conv.content)  # "It's sunny and 22°C in Paris!"
+
+# 3. Inspect what tools were called
+for record in conv.tool_call_records:
+    print(f"Tool: {record.tool.__name__}, Round: {record.round}")
+    print(f"Input: {record.input}")
+    print(f"Output: {record.output.content}")
+```
+
+**How the auto-loop works:** `send()` calls the LLM → if the LLM requests tool calls, the framework executes them in parallel → sends results back → repeats until the LLM produces a final text answer or `max_tool_rounds` is exhausted.
+
+**Tool definition rules (validated at import time):**
+- Must have a non-empty docstring (becomes the tool description for the LLM)
+- Must define an `Input` inner class (BaseModel with `Field(description=...)` on every field)
+- Must define an `async def execute(self, input) -> ToolOutput` method
+- Optional: define an `Output` inner class extending `ToolOutput` for typed metadata
+
+**Tool naming:** Class names are auto-converted to snake_case for the LLM (`GetWeather` → `get_weather`). Duplicate names after conversion raise `ValueError`.
+
+**Additional options:**
+- `tool_choice="required"` — force the LLM to call a tool on the first round
+- `tool_choice="none"` — prevent tool calls (useful for final summarization)
+- `max_tool_rounds=N` — limit the number of tool call rounds (default 10)
+- Tools work with both `send()` and `send_structured()` — structured output is produced on the final response
 
 ### Structured Output
 
@@ -450,6 +500,11 @@ results = await asyncio.gather(
 
 # Approximate token count for all context and messages
 print(conv.approximate_tokens_count)
+
+# Tool calling — LLM can call tools, framework auto-loops
+conv = await conv.send("Search for recent news", tools=[SearchTool()])
+print(conv.content)              # Final answer after tool execution
+print(conv.tool_call_records)    # Records of all tool calls made
 ```
 
 **`send_spec()`** — sends a `PromptSpec` to the LLM. Handles document placement, stop sequences, and auto-extraction of `<result>` tags. For structured specs (`PromptSpec[SomeModel]`), dispatches to `send_structured()` automatically.
@@ -1069,7 +1124,7 @@ print(settings.app_name)
 
 1. **Decorators**: Use `@pipeline_task` without parameters for most cases, `@pipeline_flow(estimated_minutes=N)` with annotations (always requires parentheses)
 2. **Logging**: Use `get_pipeline_logger(__name__)` -- never `print()` or `logging` module directly
-3. **LLM calls**: Use `Conversation` for all LLM interactions (multi-turn and single-shot)
+3. **LLM calls**: Use `Conversation` for all LLM interactions (multi-turn and single-shot). Use `tools=` for function calling
 4. **Options**: Omit `ModelOptions` unless specifically needed (defaults are production-optimized)
 5. **Documents**: Use `create_root()` for pipeline inputs (no provenance), `create()` or `derive()` for derived documents. Always subclass `Document`
 6. **Flow annotations**: Input/output types are in the function signature -- `list[InputDoc]` and `-> list[OutputDoc]`
@@ -1082,7 +1137,7 @@ Always import from the top-level package when possible:
 
 ```python
 # Top-level imports (preferred)
-from ai_pipeline_core import Document, pipeline_flow, pipeline_task, Conversation
+from ai_pipeline_core import Document, pipeline_flow, pipeline_task, Conversation, Tool, ToolOutput
 
 # Sub-package imports for symbols not at top level
 from ai_pipeline_core.deployment import CompletedRun, DeploymentResultData
@@ -1163,7 +1218,7 @@ ai-pipeline-core/
 |   |-- docs_generator/    # AI-focused documentation generator
 |   |-- document_store/    # Store protocol and backends (ClickHouse, local, memory)
 |   |-- documents/         # Document system (Document base class, attachments, context)
-|   |-- llm/               # Conversation class, URLSubstitutor, image processing, validation
+|   |-- llm/               # Conversation class, Tool base class, tool loop, URLSubstitutor, image processing
 |   |-- logging/           # Logging infrastructure
 |   |-- observability/     # Tracing, ClickHouse tracking, local debug traces, and ai-trace CLI
 |   |-- pipeline/          # Pipeline decorators, FlowOptions, and concurrency limits

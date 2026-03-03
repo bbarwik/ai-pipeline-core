@@ -50,6 +50,9 @@ from .llm import (
     ModelName,
     ModelOptions,
     TokenUsage,
+    Tool,
+    ToolCallRecord,
+    ToolOutput,
 )
 from .logging import (
     LoggingConfig,
@@ -98,6 +101,9 @@ __all__ = [
     "RunScope",
     "Settings",
     "TokenUsage",
+    "Tool",
+    "ToolCallRecord",
+    "ToolOutput",
     "TraceInfo",
     "TraceLevel",
     "disable_run_logger",

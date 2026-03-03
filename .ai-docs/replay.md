@@ -1,5 +1,5 @@
 # MODULE: replay
-# CLASSES: DocumentRef, HistoryEntry, ConversationReplay, TaskReplay, FlowReplay
+# CLASSES: DocumentRef, ToolCallEntry, HistoryEntry, ConversationReplay, TaskReplay, FlowReplay
 # DEPENDS: BaseModel
 # PURPOSE: First-class replay system for AI pipeline debugging.
 # VERSION: 0.12.4
@@ -25,18 +25,30 @@ and resolved from the local store at execution time."""
     name: str  # Original document name
 
 
+class ToolCallEntry(BaseModel):
+    """Typed tool call entry for replay serialization."""
+    model_config = ConfigDict(frozen=True)
+    id: str
+    function_name: str
+    arguments: str
+
+
 class HistoryEntry(BaseModel):
     """Single entry in a conversation's message history.
 
 Type determines which fields are populated:
-user_text/assistant_text use text, response uses content, document uses doc_ref."""
+user_text/assistant_text use text, response uses content (with optional tool_calls),
+tool_result uses tool_call_id/function_name/content, document uses doc_ref."""
     model_config = ConfigDict(frozen=True, populate_by_name=True)
-    type: Literal['user_text', 'assistant_text', 'response', 'document']
+    type: Literal['user_text', 'assistant_text', 'response', 'document', 'tool_result']
     text: str | None = None  # For user_text and assistant_text entries
-    content: str | None = None  # For response entries
+    content: str | None = None  # For response and tool_result entries
     doc_ref: str | None = Field(None, alias='$doc_ref')  # SHA256 for document entries
     class_name: str | None = None  # Document class for document entries
     name: str | None = None  # Document name for document entries
+    tool_call_id: str | None = None  # For tool_result entries
+    function_name: str | None = None  # For tool_result entries
+    tool_calls: list[ToolCallEntry] | None = None  # For response entries with tool calls
 
 
 class ConversationReplay(BaseModel):
@@ -402,6 +414,31 @@ def test_all_options(self, sample_text_doc: ReplayTextDocument) -> None:
     assert restored.extract_result_tags is True
     assert restored.model_options["reasoning_effort"] == "high"
     assert restored.model_options["temperature"] == 0.7
+```
+
+**Conversation parsed without model dump** (`tests/replay/test_cli_output.py:66`)
+
+```python
+def test_conversation_parsed_without_model_dump(self) -> None:
+    """Parsed objects without model_dump fall back to str()."""
+    result = _MockConversationResult(parsed="plain string")
+    data = _serialize_result(result)
+
+    assert data["parsed_type"] == "str"
+    assert data["parsed"] == "plain string"
+```
+
+**Creates output dir** (`tests/replay/test_cli_output.py:132`)
+
+```python
+def test_creates_output_dir(self, tmp_path: Path) -> None:
+    """Output directory is created if it doesn't exist."""
+    output_dir = tmp_path / "nested" / "replay_output"
+    assert not output_dir.exists()
+
+    _write_output(output_dir, 42)
+    assert output_dir.exists()
+    assert (output_dir / "output.yaml").exists()
 ```
 
 

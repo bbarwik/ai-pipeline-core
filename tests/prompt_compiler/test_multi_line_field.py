@@ -483,7 +483,7 @@ async def test_send_spec_adds_multi_line_fields_as_user_messages() -> None:
 
     sent_content: list[str] = []
 
-    async def fake_send(self, content, *, purpose=None, expected_cost=None):
+    async def fake_send(self, content, *, purpose=None, expected_cost=None, **kwargs):
         if isinstance(content, str):
             sent_content.append(content)
         return conv_after_send
@@ -519,7 +519,7 @@ async def test_send_spec_multi_line_fields_in_single_message() -> None:
     response = _make_model_response("done")
     messages_at_send: list[tuple[object, ...]] = []
 
-    async def fake_send(self, content, *, purpose=None, expected_cost=None):
+    async def fake_send(self, content, *, purpose=None, expected_cost=None, **kwargs):
         messages_at_send.append(self.messages)
         return Conversation[None](model="gpt-5", messages=(*self.messages, response))
 
@@ -556,7 +556,7 @@ async def test_send_spec_multi_line_with_documents() -> None:
     context_at_send: list[tuple[object, ...]] = []
     messages_at_send: list[tuple[object, ...]] = []
 
-    async def fake_send(self, content, *, purpose=None, expected_cost=None):
+    async def fake_send(self, content, *, purpose=None, expected_cost=None, **kwargs):
         context_at_send.append(self.context)
         messages_at_send.append(self.messages)
         return Conversation[None](model="gpt-5", messages=(*self.messages, response))
@@ -599,7 +599,7 @@ async def test_send_spec_follow_up_multi_line_in_messages() -> None:
     response = _make_model_response("done")
     messages_at_send: list[tuple[object, ...]] = []
 
-    async def fake_send(self, content, *, purpose=None, expected_cost=None):
+    async def fake_send(self, content, *, purpose=None, expected_cost=None, **kwargs):
         messages_at_send.append(self.messages)
         return Conversation[None](model="gpt-5", messages=(*self.messages, response))
 
@@ -620,13 +620,13 @@ async def test_send_spec_follow_up_multi_line_in_messages() -> None:
 
 def test_approximate_tokens_includes_multi_line_messages() -> None:
     """approximate_tokens_count accounts for multi-line field messages in the conversation."""
-    from ai_pipeline_core.llm.conversation import _UserMessage
+    from ai_pipeline_core.llm.conversation import UserMessage
 
     long_text = "x" * 4000  # ~1000 tokens at 4 chars/token
     xml_msg = f"<review>{long_text}</review>"
     conv = Conversation[None](
         model="gpt-5",
-        messages=(_UserMessage(xml_msg),),
+        messages=(UserMessage(xml_msg),),
     )
     # The token count should include the XML message
     assert conv.approximate_tokens_count >= 1000

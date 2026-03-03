@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from itertools import chain
-from typing import Any, Generic, cast, overload
+from typing import Any, Generic, Literal, cast, overload
 
 from lmnr import Laminar
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -31,10 +31,14 @@ from ai_pipeline_core.prompt_compiler.render import RESULT_CLOSE, _extract_resul
 from ai_pipeline_core.prompt_compiler.spec import PromptSpec
 
 from ._substitutor import URLSubstitutor
+from .tools import Tool, ToolCallRecord, generate_tool_schema, to_snake_case
 
 __all__ = [
+    "AssistantMessage",
     "Conversation",
     "ConversationContent",
+    "ToolResultMessage",
+    "UserMessage",
 ]
 
 # Instruction appended to system prompt when substitutor is active with patterns
@@ -52,6 +56,7 @@ logger = get_pipeline_logger(__name__)
 _SYSTEM_PROMPT_DOCUMENT_NAME = "system_prompt"
 
 _CHARS_PER_TOKEN = 4
+MAX_TOOL_ROUNDS_DEFAULT = 10
 
 T = TypeVar("T", default=None)
 U = TypeVar("U", bound=BaseModel)
@@ -179,27 +184,36 @@ def _build_attachment_parts(att: Any, model: str) -> list[ContentPart]:
 
 
 @dataclass(frozen=True, slots=True)
-class _UserMessage:
+class UserMessage:
     """Internal wrapper for user string messages (not a Document)."""
 
     text: str
 
 
 @dataclass(frozen=True, slots=True)
-class _AssistantMessage:
+class AssistantMessage:
     """Internal wrapper for injected assistant messages (not from an LLM call)."""
 
     text: str
 
 
+@dataclass(frozen=True, slots=True)
+class ToolResultMessage:
+    """Internal wrapper for tool execution results in conversation history."""
+
+    tool_call_id: str
+    function_name: str
+    content: str
+
+
 # Union of all types that can appear in messages tuple
-_AnyMessage = Document | ModelResponse[Any] | _UserMessage | _AssistantMessage
+AnyMessage = Document | ModelResponse[Any] | UserMessage | AssistantMessage | ToolResultMessage
 
 
-def _normalize_content(content: ConversationContent) -> tuple[Document | _UserMessage, ...]:
+def _normalize_content(content: ConversationContent) -> tuple[Document | UserMessage, ...]:
     """Normalize content to tuple of Documents or internal messages."""
     if isinstance(content, str):
-        return (_UserMessage(content),)
+        return (UserMessage(content),)
     if isinstance(content, Document):
         return (content,)
     return tuple(content)
@@ -231,12 +245,13 @@ class Conversation(BaseModel, Generic[T]):
 
     model: str
     context: tuple[Document, ...] = ()
-    messages: tuple[_AnyMessage, ...] = ()
+    messages: tuple[AnyMessage, ...] = ()
     model_options: ModelOptions | None = None
     enable_substitutor: bool = True
     extract_result_tags: bool = False
     include_date: bool = True
     current_date: str | None = None
+    _tool_call_records: tuple[ToolCallRecord, ...] = ()
 
     @model_validator(mode="before")
     @classmethod
@@ -330,18 +345,44 @@ class Conversation(BaseModel, Generic[T]):
         """Citations from last send() call (for search-enabled models)."""
         return tuple(r.citations) if (r := self._last_response) else ()
 
+    @property
+    def tool_call_records(self) -> tuple[ToolCallRecord, ...]:
+        """All tool call records from the tool loop (across all rounds)."""
+        return self._tool_call_records
+
+    def restore_content(self, text: str) -> str:
+        """Restore shortened URLs/addresses in text using the substitutor from the last send.
+
+        Use when extracting URLs from .parsed structured output fields, as .parsed may
+        contain shortened forms.
+        """
+        # Substitutor is ephemeral — not stored on Conversation. For restore_content
+        # to work, the caller needs the same conv that produced the response.
+        # Since we can't store the substitutor (not serializable), we reconstruct it.
+        if not self.enable_substitutor:
+            return text
+        substitutor = URLSubstitutor()
+        all_items = self.context + tuple(m for m in self.messages if isinstance(m, (Document, UserMessage, AssistantMessage, ToolResultMessage)))
+        substitutor.prepare(self._collect_text(all_items))
+        return substitutor.restore(text)
+
     # --- Core message conversion ---
 
-    def _to_core_messages(self, items: tuple[_AnyMessage, ...]) -> list[CoreMessage]:
-        """Convert Documents, UserMessages, AssistantMessages, and ModelResponses to CoreMessages."""
+    def _to_core_messages(self, items: tuple[AnyMessage, ...]) -> list[CoreMessage]:
+        """Convert Documents, UserMessages, AssistantMessages, ToolResultMessages, and ModelResponses to CoreMessages."""
         core_messages: list[CoreMessage] = []
 
         for item in items:
             if isinstance(item, ModelResponse):
-                core_messages.append(CoreMessage(role=Role.ASSISTANT, content=item.content))
-            elif isinstance(item, _AssistantMessage):
+                if item.has_tool_calls:
+                    core_messages.append(CoreMessage(role=Role.ASSISTANT, content=item.content or "", tool_calls=item.tool_calls))
+                else:
+                    core_messages.append(CoreMessage(role=Role.ASSISTANT, content=item.content))
+            elif isinstance(item, ToolResultMessage):
+                core_messages.append(CoreMessage(role=Role.TOOL, content=item.content, tool_call_id=item.tool_call_id, name=item.function_name))
+            elif isinstance(item, AssistantMessage):
                 core_messages.append(CoreMessage(role=Role.ASSISTANT, content=item.text))
-            elif isinstance(item, _UserMessage):
+            elif isinstance(item, UserMessage):
                 core_messages.append(CoreMessage(role=Role.USER, content=item.text))
             elif isinstance(item, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
                 if item.name == _SYSTEM_PROMPT_DOCUMENT_NAME:
@@ -357,13 +398,21 @@ class Conversation(BaseModel, Generic[T]):
         return core_messages
 
     @staticmethod
-    def _core_messages_to_span_input(messages: list[CoreMessage]) -> list[dict[str, str | list[dict[str, str]]]]:
+    def _core_messages_to_span_input(messages: list[CoreMessage]) -> list[dict[str, Any]]:
         """Convert CoreMessages to Laminar-compatible chat format, replacing binary content with placeholders."""
-        result: list[dict[str, str | list[dict[str, str]]]] = []
+        result: list[dict[str, Any]] = []
         for msg in messages:
             role = msg.role.value
-            if isinstance(msg.content, str):
-                result.append({"role": role, "content": msg.content})
+            if msg.role == Role.TOOL:
+                entry: dict[str, Any] = {"role": role, "content": msg.content if isinstance(msg.content, str) else ""}
+                if msg.tool_call_id:
+                    entry["tool_call_id"] = msg.tool_call_id
+                result.append(entry)
+            elif isinstance(msg.content, str):
+                entry = {"role": role, "content": msg.content}
+                if msg.tool_calls:
+                    entry["tool_calls"] = [{"id": tc.id, "function": tc.function_name, "arguments": tc.arguments} for tc in msg.tool_calls]
+                result.append(entry)
             elif isinstance(msg.content, tuple):
                 parts: list[dict[str, str]] = []
                 for part in msg.content:
@@ -381,12 +430,14 @@ class Conversation(BaseModel, Generic[T]):
     # --- Substitution ---
 
     @staticmethod
-    def _collect_text(items: tuple[_AnyMessage, ...]) -> list[str]:
+    def _collect_text(items: tuple[AnyMessage, ...]) -> list[str]:
         """Collect text content from documents and messages for substitutor preparation."""
         texts: list[str] = []
         for item in items:
-            if isinstance(item, (_UserMessage, _AssistantMessage)) or (isinstance(item, Document) and item.is_text):
+            if isinstance(item, (UserMessage, AssistantMessage)) or (isinstance(item, Document) and item.is_text):
                 texts.append(item.text)
+            elif isinstance(item, ToolResultMessage):
+                texts.append(item.content)
         return texts
 
     @staticmethod
@@ -395,7 +446,15 @@ class Conversation(BaseModel, Generic[T]):
         result: list[CoreMessage] = []
         for msg in core_messages:
             if isinstance(msg.content, str):
-                result.append(CoreMessage(role=msg.role, content=substitutor.substitute(msg.content)))
+                result.append(
+                    CoreMessage(
+                        role=msg.role,
+                        content=substitutor.substitute(msg.content),
+                        tool_calls=msg.tool_calls,
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
+                )
             elif isinstance(msg.content, tuple):
                 new_parts: list[ContentPart] = []
                 for part in msg.content:
@@ -403,7 +462,15 @@ class Conversation(BaseModel, Generic[T]):
                         new_parts.append(TextContent(text=substitutor.substitute(part.text)))
                     else:
                         new_parts.append(part)
-                result.append(CoreMessage(role=msg.role, content=tuple(new_parts)))
+                result.append(
+                    CoreMessage(
+                        role=msg.role,
+                        content=tuple(new_parts),
+                        tool_calls=msg.tool_calls,
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
+                )
             else:
                 result.append(msg)
         return result
@@ -469,14 +536,58 @@ class Conversation(BaseModel, Generic[T]):
                 effective = (effective or ModelOptions()).model_copy(update={"system_prompt": combined})  # nosemgrep: no-document-model-copy
         return effective
 
+    async def _invoke_llm(
+        self,
+        *,
+        core_messages: list[CoreMessage],
+        effective_options: ModelOptions | None,
+        context_count: int,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        response_format: type[BaseModel] | None = None,
+        purpose: str | None = None,
+        expected_cost: float | None = None,
+    ) -> ModelResponse[Any]:
+        """Single LLM call wrapper — used directly and by the tool loop."""
+        if response_format is not None:
+            return await core_generate_structured(
+                core_messages,
+                response_format,
+                model=self.model,
+                model_options=effective_options,
+                purpose=purpose,
+                expected_cost=expected_cost,
+                context_count=context_count,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+        return await core_generate(
+            core_messages,
+            model=self.model,
+            model_options=effective_options,
+            purpose=purpose,
+            expected_cost=expected_cost,
+            context_count=context_count,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+
     async def _execute_send(
         self,
         content: ConversationContent,
         response_format: type[BaseModel] | None,
         purpose: str | None,
         expected_cost: float | None,
-    ) -> tuple[tuple[_AnyMessage, ...], ModelResponse[Any]]:
-        """Common preparation, LLM call, and response restoration for send methods."""
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+    ) -> tuple[tuple[AnyMessage, ...], ModelResponse[Any], tuple[ToolCallRecord, ...]]:
+        """Common preparation, LLM call (or tool loop), and response restoration."""
+        from ._tool_loop import execute_tool_loop
+
+        if tool_choice is not None and not tools:
+            raise ValueError(f"tool_choice='{tool_choice}' requires tools= to be provided. Pass a list of Tool instances with tools=[...].")
+
         docs = _normalize_content(content)
         new_messages = self.messages + docs
 
@@ -484,7 +595,7 @@ class Conversation(BaseModel, Generic[T]):
         substitutor: URLSubstitutor | None = None
         if self.enable_substitutor:
             substitutor = URLSubstitutor()
-            all_items = self.context + tuple(m for m in new_messages if isinstance(m, (Document, _UserMessage, _AssistantMessage)))
+            all_items = self.context + tuple(m for m in new_messages if isinstance(m, (Document, UserMessage, AssistantMessage, ToolResultMessage)))
             substitutor.prepare(self._collect_text(all_items))
 
         # Build effective options — append current date and substitutor instructions to system prompt
@@ -499,6 +610,18 @@ class Conversation(BaseModel, Generic[T]):
         core_messages = context_core + messages_core
         context_count = len(context_core)
 
+        # Prepare tool schemas and lookup
+        tool_schemas: list[dict[str, Any]] | None = None
+        tool_lookup: dict[str, Tool] | None = None
+        if tools:
+            tool_schemas = [generate_tool_schema(t) for t in tools]
+            tool_lookup = {}
+            for t in tools:
+                name = to_snake_case(type(t).__name__)
+                if name in tool_lookup:
+                    raise ValueError(f"Duplicate tool name '{name}'. Tool names must be unique after snake_case conversion.")
+                tool_lookup[name] = t
+
         # Trace the full send operation — input captures pre-substitution content
         span_name = purpose or f"conversation.{'send_structured' if response_format else 'send'}"
         span_input = self._core_messages_to_span_input(core_messages)
@@ -506,28 +629,41 @@ class Conversation(BaseModel, Generic[T]):
             if substitutor:
                 core_messages = self._apply_substitution(core_messages, substitutor)
 
-            if response_format is not None:
-                response: ModelResponse[Any] = await core_generate_structured(
-                    core_messages,
-                    response_format,
-                    model=self.model,
-                    model_options=effective_options,
+            tool_records: tuple[ToolCallRecord, ...] = ()
+            accumulated_tool_messages: list[Any] = []
+
+            if tools and tool_schemas and tool_lookup:
+                # Tool loop — response_format is passed through so the LLM produces structured
+                # output on its final response (whether natural or forced).
+                accumulated_tool_messages, response, tool_records = await execute_tool_loop(
+                    invoke_llm=self._invoke_llm,
+                    tool_schemas=tool_schemas,
+                    tool_lookup=tool_lookup,
+                    tool_choice=tool_choice or "auto",
+                    max_tool_rounds=max_tool_rounds,
                     purpose=purpose,
                     expected_cost=expected_cost,
+                    core_messages=core_messages,
                     context_count=context_count,
+                    effective_options=effective_options,
+                    substitutor=substitutor,
+                    build_tool_result_message=lambda tid, fn, c: ToolResultMessage(tool_call_id=tid, function_name=fn, content=c),
+                    response_format=response_format,
                 )
             else:
-                response = await core_generate(
-                    core_messages,
-                    model=self.model,
-                    model_options=effective_options,
+                response = await self._invoke_llm(
+                    core_messages=core_messages,
+                    effective_options=effective_options,
+                    context_count=context_count,
+                    response_format=response_format,
                     purpose=purpose,
                     expected_cost=expected_cost,
-                    context_count=context_count,
                 )
 
             if substitutor:
                 response = self._restore_response(response, substitutor, response_format)
+                if accumulated_tool_messages:
+                    accumulated_tool_messages[-1] = response
 
             Laminar.set_span_output([response.content])
 
@@ -541,6 +677,8 @@ class Conversation(BaseModel, Generic[T]):
                 )
             if purpose:
                 span_attrs["purpose"] = purpose
+            if tool_records:
+                span_attrs["tool_call_count"] = len(tool_records)
             span.set_attributes(span_attrs)  # pyright: ignore[reportArgumentType]
 
             # Build and attach replay payload for trace-based replay
@@ -554,27 +692,48 @@ class Conversation(BaseModel, Generic[T]):
             except Exception:
                 logger.debug("Failed to build replay payload", exc_info=True)
 
-            return new_messages, response
+            # Build final messages tuple
+            if accumulated_tool_messages:
+                final_messages = new_messages + tuple(accumulated_tool_messages)
+            else:
+                final_messages = new_messages + (response,)
+
+            return final_messages, response, tool_records
 
     async def send(
         self,
         content: ConversationContent,
         *,
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[None]":
         """Send message, returns NEW Conversation with response.
 
         Document content is wrapped in <document> XML tags with id, name, description.
+        When tools are provided, runs an auto-loop: LLM → tool calls → execute → re-send.
         """
-        new_messages, response = await self._execute_send(content, None, purpose, expected_cost)
-        return self.model_copy(update={"messages": new_messages + (response,)})  # type: ignore[return-value]
+        new_messages, _response, records = await self._execute_send(
+            content,
+            None,
+            purpose,
+            expected_cost,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tool_rounds=max_tool_rounds,
+        )
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": self._tool_call_records + records})  # type: ignore[return-value]
 
     async def send_structured(
         self,
         content: ConversationContent,
         response_format: type[U],
         *,
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[U]":
@@ -583,9 +742,20 @@ class Conversation(BaseModel, Generic[T]):
         Quality degrades beyond ~2-3K output tokens or nesting >2 levels.
         Never use dict types in response_format — use lists of typed models.
         Split complex structures across multiple calls.
+
+        When tools are provided, response_format is passed on every tool-loop round.
+        Structured parsing occurs on the final response (when the LLM stops calling tools).
         """
-        new_messages, response = await self._execute_send(content, response_format, purpose, expected_cost)
-        return self.model_copy(update={"messages": new_messages + (response,)})  # type: ignore[return-value]
+        new_messages, _response, records = await self._execute_send(
+            content,
+            response_format,
+            purpose,
+            expected_cost,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tool_rounds=max_tool_rounds,
+        )
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": self._tool_call_records + records})  # type: ignore[return-value]
 
     @overload
     async def send_spec(
@@ -594,6 +764,9 @@ class Conversation(BaseModel, Generic[T]):
         *,
         documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[None]": ...
@@ -605,6 +778,9 @@ class Conversation(BaseModel, Generic[T]):
         *,
         documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[U]": ...
@@ -615,6 +791,9 @@ class Conversation(BaseModel, Generic[T]):
         *,
         documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[Any]":
@@ -667,7 +846,7 @@ class Conversation(BaseModel, Generic[T]):
         ml_messages = render_multi_line_messages(spec)
         if ml_messages:
             combined = "\n".join(xml_block for _, xml_block in ml_messages)
-            conv = conv.model_copy(update={"messages": conv.messages + (_UserMessage(combined),)})
+            conv = conv.model_copy(update={"messages": conv.messages + (UserMessage(combined),)})
 
         prompt_text = render_text(spec, documents=documents, include_input_documents=effective_include_docs)
         trace_purpose = purpose or spec.__class__.__name__
@@ -677,11 +856,21 @@ class Conversation(BaseModel, Generic[T]):
             return await conv.send_structured(
                 prompt_text,
                 response_format=cast(type[BaseModel], spec._output_type),
+                tools=tools,
+                tool_choice=tool_choice,
+                max_tool_rounds=max_tool_rounds,
                 purpose=trace_purpose,
                 expected_cost=expected_cost,
             )
 
-        result = await conv.send(prompt_text, purpose=trace_purpose, expected_cost=expected_cost)
+        result = await conv.send(
+            prompt_text,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tool_rounds=max_tool_rounds,
+            purpose=trace_purpose,
+            expected_cost=expected_cost,
+        )
 
         if spec.output_structure is not None:
             return result.model_copy(update={"extract_result_tags": True})
@@ -700,7 +889,7 @@ class Conversation(BaseModel, Generic[T]):
 
     def with_assistant_message(self, content: str) -> "Conversation[T]":
         """Return NEW Conversation with an injected assistant turn in messages."""
-        return self.model_copy(update={"messages": self.messages + (_AssistantMessage(content),)})
+        return self.model_copy(update={"messages": self.messages + (AssistantMessage(content),)})
 
     def with_context(self, *docs: Document) -> "Conversation[T]":
         """Return NEW Conversation with documents added to the cacheable context prefix.
@@ -740,7 +929,9 @@ class Conversation(BaseModel, Generic[T]):
                 total += len(item.content) // _CHARS_PER_TOKEN
                 if reasoning := item.reasoning_content:
                     total += len(reasoning) // _CHARS_PER_TOKEN
-            elif isinstance(item, (_UserMessage, _AssistantMessage)):
+            elif isinstance(item, ToolResultMessage):
+                total += len(item.content) // _CHARS_PER_TOKEN
+            elif isinstance(item, (UserMessage, AssistantMessage)):
                 total += len(item.text) // _CHARS_PER_TOKEN
             elif isinstance(item, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
                 if item.is_text:

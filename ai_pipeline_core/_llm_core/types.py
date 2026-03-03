@@ -7,11 +7,12 @@ observability) that need LLM access but cannot depend on Documents.
 All types are frozen Pydantic models for immutability and JSON serialization.
 """
 
+import json
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, Literal, cast
 
-from pydantic import Base64Bytes, BaseModel, ConfigDict, field_validator
+from pydantic import Base64Bytes, BaseModel, ConfigDict, field_validator, model_validator
 
 # Token count per image/PDF (per CLAUDE.md §3.6)
 TOKENS_PER_IMAGE = 1080
@@ -47,6 +48,29 @@ class Role(StrEnum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+    TOOL = "tool"
+
+
+class RawToolCall(BaseModel):
+    """A single tool call from an LLM response.
+
+    Represents the raw tool call data from the API. The arguments field is always
+    a JSON string — some providers (Gemini via LiteLLM) return a dict which is
+    coerced to a JSON string automatically.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    function_name: str
+    arguments: str
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def _coerce_arguments(cls, v: Any) -> str:
+        if isinstance(v, dict):
+            return json.dumps(v)
+        return v
 
 
 class TextContent(BaseModel):
@@ -94,12 +118,31 @@ class CoreMessage(BaseModel):
     - str: Plain text (converted to TextContent internally)
     - ContentPart: Single content part (text, image, or PDF)
     - tuple[ContentPart, ...]: Multiple content parts (multimodal message)
+
+    Tool-related fields:
+    - tool_calls: present on ASSISTANT messages that request tool execution
+    - tool_call_id + name: present on TOOL messages carrying tool results
     """
 
     model_config = ConfigDict(frozen=True)
 
     role: Role
     content: str | ContentPart | tuple[ContentPart, ...]
+    tool_calls: tuple[RawToolCall, ...] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_tool_fields(self) -> "CoreMessage":
+        if self.tool_calls and self.role != Role.ASSISTANT:
+            raise ValueError("tool_calls is only valid on ASSISTANT messages")
+        if self.tool_call_id is not None and self.role != Role.TOOL:
+            raise ValueError("tool_call_id is only valid on TOOL messages")
+        if self.role == Role.TOOL and self.tool_call_id is None:
+            raise ValueError("TOOL messages require tool_call_id")
+        if self.role == Role.TOOL and not isinstance(self.content, str):
+            raise ValueError("TOOL messages must have str content")
+        return self
 
 
 class TokenUsage(BaseModel):

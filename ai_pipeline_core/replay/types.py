@@ -17,6 +17,7 @@ __all__ = [
     "FlowReplay",
     "HistoryEntry",
     "TaskReplay",
+    "ToolCallEntry",
     "_infer_store_base",
 ]
 
@@ -52,21 +53,35 @@ class DocumentRef(BaseModel):
     name: str  # Original document name
 
 
+class ToolCallEntry(BaseModel):
+    """Typed tool call entry for replay serialization."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    function_name: str
+    arguments: str
+
+
 class HistoryEntry(BaseModel):
     """Single entry in a conversation's message history.
 
     Type determines which fields are populated:
-    user_text/assistant_text use text, response uses content, document uses doc_ref.
+    user_text/assistant_text use text, response uses content (with optional tool_calls),
+    tool_result uses tool_call_id/function_name/content, document uses doc_ref.
     """
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
 
-    type: Literal["user_text", "assistant_text", "response", "document"]
+    type: Literal["user_text", "assistant_text", "response", "document", "tool_result"]
     text: str | None = None  # For user_text and assistant_text entries
-    content: str | None = None  # For response entries
+    content: str | None = None  # For response and tool_result entries
     doc_ref: str | None = Field(None, alias="$doc_ref")  # SHA256 for document entries
     class_name: str | None = None  # Document class for document entries
     name: str | None = None  # Document name for document entries
+    tool_call_id: str | None = None  # For tool_result entries
+    function_name: str | None = None  # For tool_result entries
+    tool_calls: list[ToolCallEntry] | None = None  # For response entries with tool calls
 
 
 class ConversationReplay(BaseModel):

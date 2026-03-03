@@ -261,25 +261,15 @@ async def run_pipeline(
 
 
 # ---------------------------------------------------------------------------
-# Pub/Sub emulator fixtures — testcontainers is optional (dev dependency)
+# Pub/Sub emulator fixtures
 # ---------------------------------------------------------------------------
 
 from google.api_core.exceptions import GoogleAPICallError
 from google.cloud.pubsub_v1 import PublisherClient, SubscriberClient
+from testcontainers.core.container import DockerContainer
+from testcontainers.core.waiting_utils import wait_for_logs
 
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
-
-DockerContainer: type | None = None
-wait_for_logs: Any = None
-
-_testcontainers_available = False
-try:
-    from testcontainers.core.container import DockerContainer
-    from testcontainers.core.waiting_utils import wait_for_logs
-
-    _testcontainers_available = True
-except ImportError:
-    pass
 
 
 # Data types used by test files (always importable, no external deps)
@@ -388,82 +378,82 @@ def assert_seq_monotonic(events: list[CollectedEvent]) -> None:
         assert events[i].seq > events[i - 1].seq, f"seq not monotonic: events[{i - 1}].seq={events[i - 1].seq} >= events[{i}].seq={events[i].seq}"
 
 
-# Emulator fixtures — only registered when testcontainers is available
+# Emulator fixtures
 
 EMULATOR_PORT = 8085
 EMULATOR_PROJECT = "test-project"
 
-if _testcontainers_available:
-    assert DockerContainer is not None
-    assert wait_for_logs is not None
 
-    class PubSubEmulatorContainer(DockerContainer):  # pyright: ignore[reportUntypedBaseClass]
-        """GCP Pub/Sub emulator via google/cloud-sdk."""
+class PubSubEmulatorContainer(DockerContainer):
+    """GCP Pub/Sub emulator via google/cloud-sdk."""
 
-        def __init__(self) -> None:
-            super().__init__("google/cloud-sdk:emulators")
-            self.with_exposed_ports(EMULATOR_PORT)
-            self.with_command(f"gcloud beta emulators pubsub start --host-port=0.0.0.0:{EMULATOR_PORT}")
+    def __init__(self) -> None:
+        super().__init__("google/cloud-sdk:emulators")
+        self.with_exposed_ports(EMULATOR_PORT)
+        self.with_command(f"gcloud beta emulators pubsub start --host-port=0.0.0.0:{EMULATOR_PORT}")
 
-    @pytest.fixture(scope="session")
-    def pubsub_emulator() -> Generator[str, None, None]:
-        """Start Pub/Sub emulator container for the test session."""
-        container = PubSubEmulatorContainer()
-        container.start()
-        wait_for_logs(container, "Server started", timeout=30)
-        host = container.get_container_host_ip()
-        port = container.get_exposed_port(EMULATOR_PORT)
-        emulator_host = f"{host}:{port}"
-        os.environ["PUBSUB_EMULATOR_HOST"] = emulator_host
 
-        # Warm up: ensure emulator is responsive
-        client = PublisherClient()
-        warmup_topic = client.create_topic(name=client.topic_path(EMULATOR_PROJECT, "warmup"))
-        client.delete_topic(topic=warmup_topic.name)
+@pytest.fixture(scope="session")
+def pubsub_emulator() -> Generator[str, None, None]:
+    """Start Pub/Sub emulator container for the test session."""
+    container = PubSubEmulatorContainer()
+    container.start()
+    wait_for_logs(container, "Server started", timeout=30)
+    host = container.get_container_host_ip()
+    port = container.get_exposed_port(EMULATOR_PORT)
+    emulator_host = f"{host}:{port}"
+    os.environ["PUBSUB_EMULATOR_HOST"] = emulator_host
 
-        yield emulator_host
+    # Warm up: ensure emulator is responsive
+    client = PublisherClient()
+    warmup_topic = client.create_topic(name=client.topic_path(EMULATOR_PROJECT, "warmup"))
+    client.delete_topic(topic=warmup_topic.name)
 
-        del os.environ["PUBSUB_EMULATOR_HOST"]
-        container.stop()
+    yield emulator_host
 
-    @pytest.fixture
-    def pubsub_topic(pubsub_emulator: str) -> Generator[PubSubTestResources, None, None]:
-        """Create a unique topic + subscription per test, clean up after."""
-        pub_client = PublisherClient()
-        sub_client = SubscriberClient()
+    del os.environ["PUBSUB_EMULATOR_HOST"]
+    container.stop()
 
-        topic_id = f"test-events-{uuid4().hex[:8]}"
-        topic_path = pub_client.topic_path(EMULATOR_PROJECT, topic_id)
-        sub_id = f"test-sub-{uuid4().hex[:8]}"
-        sub_path = sub_client.subscription_path(EMULATOR_PROJECT, sub_id)
 
-        pub_client.create_topic(name=topic_path)
-        sub_client.create_subscription(name=sub_path, topic=topic_path)
+@pytest.fixture
+def pubsub_topic(pubsub_emulator: str) -> Generator[PubSubTestResources, None, None]:
+    """Create a unique topic + subscription per test, clean up after."""
+    pub_client = PublisherClient()
+    sub_client = SubscriberClient()
 
-        yield PubSubTestResources(
-            project_id=EMULATOR_PROJECT,
-            topic_path=topic_path,
-            subscription_path=sub_path,
-            publisher_client=pub_client,
-            subscriber_client=sub_client,
-        )
+    topic_id = f"test-events-{uuid4().hex[:8]}"
+    topic_path = pub_client.topic_path(EMULATOR_PROJECT, topic_id)
+    sub_id = f"test-sub-{uuid4().hex[:8]}"
+    sub_path = sub_client.subscription_path(EMULATOR_PROJECT, sub_id)
 
-        try:
-            sub_client.delete_subscription(subscription=sub_path)
-        except (OSError, GoogleAPICallError):
-            pass
-        try:
-            pub_client.delete_topic(topic=topic_path)
-        except (OSError, GoogleAPICallError):
-            pass
+    pub_client.create_topic(name=topic_path)
+    sub_client.create_subscription(name=sub_path, topic=topic_path)
 
-    @pytest.fixture
-    def real_publisher(pubsub_topic: PubSubTestResources) -> PublisherWithStore:
-        """Create a PubSubPublisher pointed at the emulator topic."""
-        topic_id = pubsub_topic.topic_path.split("/")[-1]
-        publisher = PubSubPublisher(
-            project_id=pubsub_topic.project_id,
-            topic_id=topic_id,
-            service_type="test-service",
-        )
-        return PublisherWithStore(publisher=publisher)
+    yield PubSubTestResources(
+        project_id=EMULATOR_PROJECT,
+        topic_path=topic_path,
+        subscription_path=sub_path,
+        publisher_client=pub_client,
+        subscriber_client=sub_client,
+    )
+
+    try:
+        sub_client.delete_subscription(subscription=sub_path)
+    except (OSError, GoogleAPICallError):
+        pass
+    try:
+        pub_client.delete_topic(topic=topic_path)
+    except (OSError, GoogleAPICallError):
+        pass
+
+
+@pytest.fixture
+def real_publisher(pubsub_topic: PubSubTestResources) -> PublisherWithStore:
+    """Create a PubSubPublisher pointed at the emulator topic."""
+    topic_id = pubsub_topic.topic_path.split("/")[-1]
+    publisher = PubSubPublisher(
+        project_id=pubsub_topic.project_id,
+        topic_id=topic_id,
+        service_type="test-service",
+    )
+    return PublisherWithStore(publisher=publisher)

@@ -18,5 +18,6 @@
     "reportAssignmentType": "warning",
     "reportUnnecessaryTypeIgnoreComment": false,
     "reportUntypedFunctionDecorator": false,
-    "reportUntypedClassDecorator": false
+    "reportUntypedClassDecorator": false,
+    "reportUntypedBaseClass": false
 }

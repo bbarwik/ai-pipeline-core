@@ -12,7 +12,8 @@ from pydantic import BaseModel
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import ModelOptions
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.llm.conversation import _AssistantMessage, _UserMessage
+from ai_pipeline_core.llm.conversation import AssistantMessage, ConversationContent, ToolResultMessage, UserMessage
+from ai_pipeline_core.replay.types import ToolCallEntry
 
 __all__ = ["build_conversation_replay_payload", "serialize_kwargs", "serialize_prior_messages"]
 
@@ -56,19 +57,30 @@ def serialize_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
 def serialize_prior_messages(messages: tuple[Any, ...]) -> list[dict[str, Any]]:
     """Serialize conversation message history for replay payload.
 
-    _UserMessage -> {"type": "user_text", "text": ...}
-    _AssistantMessage -> {"type": "assistant_text", "text": ...}
-    ModelResponse -> {"type": "response", "content": ...}
+    UserMessage -> {"type": "user_text", "text": ...}
+    AssistantMessage -> {"type": "assistant_text", "text": ...}
+    ModelResponse -> {"type": "response", "content": ...} (with optional tool_calls)
+    ToolResultMessage -> {"type": "tool_result", "tool_call_id": ..., "function_name": ..., "content": ...}
     Document -> {"type": "document", "$doc_ref": ..., "class_name": ..., "name": ...}
     """
     result: list[dict[str, Any]] = []
     for msg in messages:
-        if isinstance(msg, _UserMessage):
+        if isinstance(msg, UserMessage):
             result.append({"type": "user_text", "text": msg.text})
-        elif isinstance(msg, _AssistantMessage):
+        elif isinstance(msg, AssistantMessage):
             result.append({"type": "assistant_text", "text": msg.text})
+        elif isinstance(msg, ToolResultMessage):
+            result.append({
+                "type": "tool_result",
+                "tool_call_id": msg.tool_call_id,
+                "function_name": msg.function_name,
+                "content": msg.content,
+            })
         elif isinstance(msg, ModelResponse):
-            result.append({"type": "response", "content": msg.content})
+            entry: dict[str, Any] = {"type": "response", "content": msg.content}
+            if msg.has_tool_calls:
+                entry["tool_calls"] = [ToolCallEntry(id=tc.id, function_name=tc.function_name, arguments=tc.arguments).model_dump() for tc in msg.tool_calls]
+            result.append(entry)
         elif isinstance(msg, Document):
             result.append({
                 "type": "document",
@@ -77,10 +89,6 @@ def serialize_prior_messages(messages: tuple[Any, ...]) -> list[dict[str, Any]]:
                 "name": msg.name,
             })
     return result
-
-
-# ConversationContent is str | Document | list[Document]
-type ConversationContent = str | Document | list[Document]
 
 
 def build_conversation_replay_payload(

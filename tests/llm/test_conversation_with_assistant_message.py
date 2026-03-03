@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ai_pipeline_core._llm_core.types import CoreMessage, Role
-from ai_pipeline_core.llm.conversation import Conversation, _AssistantMessage
+from ai_pipeline_core.llm.conversation import Conversation, AssistantMessage
 from tests.support.helpers import ConcreteDocument, create_test_model_response
 
 
@@ -40,11 +40,11 @@ class TestWithAssistantMessage:
         assert len(new_conv.messages) == 1
 
     def test_message_is_assistant_message_type(self):
-        """The appended message is an _AssistantMessage."""
+        """The appended message is an AssistantMessage."""
         conv = Conversation(model="test-model")
         new_conv = conv.with_assistant_message("analysis result")
 
-        assert isinstance(new_conv.messages[0], _AssistantMessage)
+        assert isinstance(new_conv.messages[0], AssistantMessage)
         assert new_conv.messages[0].text == "analysis result"
 
     def test_preserves_existing_state(self):
@@ -74,7 +74,7 @@ class TestWithAssistantMessage:
         assert new_conv.messages[0].text == ""
 
     def test_converts_to_assistant_role_core_message(self):
-        """_to_core_messages converts _AssistantMessage to CoreMessage with ASSISTANT role."""
+        """_to_core_messages converts AssistantMessage to CoreMessage with ASSISTANT role."""
         conv = Conversation(model="test-model")
         conv = conv.with_assistant_message("injected response")
 

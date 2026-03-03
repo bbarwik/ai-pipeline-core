@@ -10,9 +10,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ai_pipeline_core._llm_core.types import ModelOptions
+from ai_pipeline_core._llm_core.model_response import ModelResponse
+from ai_pipeline_core._llm_core.types import ModelOptions, RawToolCall, TokenUsage
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.llm.conversation import Conversation, _UserMessage
+from ai_pipeline_core.llm.conversation import Conversation, ToolResultMessage, UserMessage
 from ai_pipeline_core.logging import get_pipeline_logger
 
 from ._deserialize import _import_by_path, resolve_task_kwargs
@@ -33,10 +34,28 @@ def _replay_history(conv: Conversation, payload: ConversationReplay, store_base:
     """Reconstruct conversation history from replay payload entries."""
     for entry in payload.history:
         if entry.type == "user_text":
-            conv = conv.model_copy(update={"messages": (*conv.messages, _UserMessage(entry.text or ""))})
+            conv = conv.model_copy(update={"messages": (*conv.messages, UserMessage(entry.text or ""))})
         elif entry.type in {"response", "assistant_text"}:
-            text = entry.content if entry.type == "response" else entry.text
-            conv = conv.with_assistant_message(text or "")
+            # Reconstruct ModelResponse with tool_calls when present (preserves tool round history)
+            if entry.type == "response" and entry.tool_calls:
+                resp = ModelResponse(
+                    content=entry.content or "",
+                    parsed=entry.content or "",
+                    model="",
+                    usage=TokenUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                    tool_calls=tuple(RawToolCall(id=tc.id, function_name=tc.function_name, arguments=tc.arguments) for tc in entry.tool_calls),
+                )
+                conv = conv.model_copy(update={"messages": (*conv.messages, resp)})
+            else:
+                text = entry.content if entry.type == "response" else entry.text
+                conv = conv.with_assistant_message(text or "")
+        elif entry.type == "tool_result":
+            tool_msg = ToolResultMessage(
+                tool_call_id=entry.tool_call_id or "",
+                function_name=entry.function_name or "",
+                content=entry.content or "",
+            )
+            conv = conv.model_copy(update={"messages": (*conv.messages, tool_msg)})
         elif entry.type == "document" and entry.doc_ref:
             ref = DocumentRef.model_validate({
                 "$doc_ref": entry.doc_ref,

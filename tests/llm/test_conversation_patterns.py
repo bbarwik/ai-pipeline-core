@@ -1,13 +1,16 @@
-"""AI-doc examples for Conversation caching, forking, and document serialization."""
+"""AI-doc examples for Conversation: tools, caching, forking, and document serialization."""
 
 import asyncio
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import BaseModel, Field
 
-from ai_pipeline_core._llm_core.types import CoreMessage, Role
+from ai_pipeline_core._llm_core.model_response import ModelResponse
+from ai_pipeline_core._llm_core.types import CoreMessage, RawToolCall, Role, TokenUsage
 from ai_pipeline_core.llm.conversation import Conversation
+from ai_pipeline_core.llm.tools import Tool, ToolOutput
 from tests.support.helpers import ConcreteDocument, create_test_model_response
 
 
@@ -102,3 +105,54 @@ def test_document_wrapped_in_xml_tags():
     assert "<content>" in content
     assert "Final findings here." in content
     assert "</document>" in content
+
+
+@pytest.mark.ai_docs
+@pytest.mark.asyncio
+async def test_send_with_tools_auto_loop(monkeypatch):
+    """Tools enable the LLM to call functions. Conversation.send() auto-loops: call LLM → execute tools → re-send results until LLM produces a final answer."""
+
+    # 1. Define a tool — docstring becomes the LLM tool description
+    class GetWeather(Tool):
+        """Get current weather for a city."""
+
+        class Input(BaseModel):
+            city: str = Field(description="City name")
+
+        async def execute(self, input: BaseModel) -> ToolOutput:
+            return ToolOutput(content=f"Sunny, 22°C in {input.city}")  # type: ignore[attr-defined]
+
+    # 2. Mock LLM: first call requests tool use, second returns final answer
+    call_count = 0
+
+    async def fake_generate(messages: list[CoreMessage], **kwargs: Any) -> Any:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # LLM decides to call the get_weather tool
+            return ModelResponse(
+                content="Let me check the weather.",
+                parsed="Let me check the weather.",
+                model="test-model",
+                usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+                tool_calls=(RawToolCall(id="call_1", function_name="get_weather", arguments='{"city": "Paris"}'),),
+            )
+        # LLM uses tool result to produce final answer
+        return create_test_model_response(content="It's sunny and 22°C in Paris!")
+
+    monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
+
+    # 3. Send with tools — auto-loop handles tool execution transparently
+    with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
+        conv = Conversation(model="test-model", enable_substitutor=False)
+        result = await conv.send("What's the weather in Paris?", tools=[GetWeather()])
+
+    # 4. Final response text from the LLM
+    assert result.content == "It's sunny and 22°C in Paris!"
+
+    # 5. Tool call records track every tool invocation across all rounds
+    assert len(result.tool_call_records) == 1
+    record = result.tool_call_records[0]
+    assert record.tool is GetWeather
+    assert record.round == 1
+    assert "Sunny, 22°C in Paris" in record.output.content

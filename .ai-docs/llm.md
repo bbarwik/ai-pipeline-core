@@ -1,5 +1,5 @@
 # MODULE: llm
-# CLASSES: Citation, TokenUsage, ModelOptions, Conversation
+# CLASSES: Citation, TokenUsage, ModelOptions, UserMessage, AssistantMessage, ToolResultMessage, Conversation, ToolOutput, Tool, ToolCallRecord
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
 # VERSION: 0.12.4
@@ -8,7 +8,7 @@
 ## Imports
 
 ```python
-from ai_pipeline_core import Citation, Conversation, ConversationContent, ModelName, ModelOptions, TokenUsage
+from ai_pipeline_core import Citation, Conversation, ConversationContent, ModelName, ModelOptions, TokenUsage, Tool, ToolCallRecord, ToolOutput
 ```
 
 ## Types & Constants
@@ -32,7 +32,11 @@ type ModelName = (
     | str
 )
 
+MAX_TOOL_ROUNDS_DEFAULT = 10
+
 ConversationContent = str | Document | list[Document]
+
+AnyMessage = Document | ModelResponse[Any] | UserMessage | AssistantMessage | ToolResultMessage
 
 ```
 
@@ -121,6 +125,26 @@ Non-obvious behaviors:
         return kwargs
 
 
+@dataclass(frozen=True, slots=True)
+class UserMessage:
+    """Internal wrapper for user string messages (not a Document)."""
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class AssistantMessage:
+    """Internal wrapper for injected assistant messages (not from an LLM call)."""
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultMessage:
+    """Internal wrapper for tool execution results in conversation history."""
+    tool_call_id: str
+    function_name: str
+    content: str
+
+
 class Conversation(BaseModel, Generic[T]):
     """Immutable conversation state for LLM interactions.
 
@@ -144,7 +168,7 @@ Attachment rendering in LLM context:
     model_config = ConfigDict(frozen=True)
     model: str
     context: tuple[Document, ...] = ()
-    messages: tuple[_AnyMessage, ...] = ()
+    messages: tuple[AnyMessage, ...] = ()
     model_options: ModelOptions | None = None
     enable_substitutor: bool = True
     extract_result_tags: bool = False
@@ -160,7 +184,9 @@ Attachment rendering in LLM context:
                 total += len(item.content) // _CHARS_PER_TOKEN
                 if reasoning := item.reasoning_content:
                     total += len(reasoning) // _CHARS_PER_TOKEN
-            elif isinstance(item, (_UserMessage, _AssistantMessage)):
+            elif isinstance(item, ToolResultMessage):
+                total += len(item.content) // _CHARS_PER_TOKEN
+            elif isinstance(item, (UserMessage, AssistantMessage)):
                 total += len(item.text) // _CHARS_PER_TOKEN
             elif isinstance(item, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
                 if item.is_text:
@@ -212,6 +238,11 @@ Attachment rendering in LLM context:
         return r.reasoning_content if (r := self._last_response) else ""
 
     @property
+    def tool_call_records(self) -> tuple[ToolCallRecord, ...]:
+        """All tool call records from the tool loop (across all rounds)."""
+        return self._tool_call_records
+
+    @property
     def usage(self) -> TokenUsage:
         """Token usage from last send() call."""
         return r.usage if (r := self._last_response) else TokenUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
@@ -224,19 +255,47 @@ Attachment rendering in LLM context:
             raise ValueError("model must be non-empty")
         return v
 
+    def restore_content(self, text: str) -> str:
+        """Restore shortened URLs/addresses in text using the substitutor from the last send.
+
+        Use when extracting URLs from .parsed structured output fields, as .parsed may
+        contain shortened forms.
+        """
+        # Substitutor is ephemeral — not stored on Conversation. For restore_content
+        # to work, the caller needs the same conv that produced the response.
+        # Since we can't store the substitutor (not serializable), we reconstruct it.
+        if not self.enable_substitutor:
+            return text
+        substitutor = URLSubstitutor()
+        all_items = self.context + tuple(m for m in self.messages if isinstance(m, (Document, UserMessage, AssistantMessage, ToolResultMessage)))
+        substitutor.prepare(self._collect_text(all_items))
+        return substitutor.restore(text)
+
     async def send(
         self,
         content: ConversationContent,
         *,
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[None]":
         """Send message, returns NEW Conversation with response.
 
         Document content is wrapped in <document> XML tags with id, name, description.
+        When tools are provided, runs an auto-loop: LLM → tool calls → execute → re-send.
         """
-        new_messages, response = await self._execute_send(content, None, purpose, expected_cost)
-        return self.model_copy(update={"messages": new_messages + (response,)})  # type: ignore[return-value]
+        new_messages, _response, records = await self._execute_send(
+            content,
+            None,
+            purpose,
+            expected_cost,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tool_rounds=max_tool_rounds,
+        )
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": self._tool_call_records + records})  # type: ignore[return-value]
 
     @overload
     async def send_spec(
@@ -245,6 +304,9 @@ Attachment rendering in LLM context:
         *,
         documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[None]": ...
@@ -256,6 +318,9 @@ Attachment rendering in LLM context:
         *,
         documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[U]": ...
@@ -266,6 +331,9 @@ Attachment rendering in LLM context:
         *,
         documents: Sequence[Document] | None = None,
         include_input_documents: bool = True,
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[Any]":
@@ -318,7 +386,7 @@ Attachment rendering in LLM context:
         ml_messages = render_multi_line_messages(spec)
         if ml_messages:
             combined = "\n".join(xml_block for _, xml_block in ml_messages)
-            conv = conv.model_copy(update={"messages": conv.messages + (_UserMessage(combined),)})
+            conv = conv.model_copy(update={"messages": conv.messages + (UserMessage(combined),)})
 
         prompt_text = render_text(spec, documents=documents, include_input_documents=effective_include_docs)
         trace_purpose = purpose or spec.__class__.__name__
@@ -328,11 +396,21 @@ Attachment rendering in LLM context:
             return await conv.send_structured(
                 prompt_text,
                 response_format=cast(type[BaseModel], spec._output_type),
+                tools=tools,
+                tool_choice=tool_choice,
+                max_tool_rounds=max_tool_rounds,
                 purpose=trace_purpose,
                 expected_cost=expected_cost,
             )
 
-        result = await conv.send(prompt_text, purpose=trace_purpose, expected_cost=expected_cost)
+        result = await conv.send(
+            prompt_text,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tool_rounds=max_tool_rounds,
+            purpose=trace_purpose,
+            expected_cost=expected_cost,
+        )
 
         if spec.output_structure is not None:
             return result.model_copy(update={"extract_result_tags": True})
@@ -344,6 +422,9 @@ Attachment rendering in LLM context:
         content: ConversationContent,
         response_format: type[U],
         *,
+        tools: list[Tool] | None = None,
+        tool_choice: Literal["auto", "required", "none"] | None = None,
+        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> "Conversation[U]":
@@ -352,13 +433,24 @@ Attachment rendering in LLM context:
         Quality degrades beyond ~2-3K output tokens or nesting >2 levels.
         Never use dict types in response_format — use lists of typed models.
         Split complex structures across multiple calls.
+
+        When tools are provided, response_format is passed on every tool-loop round.
+        Structured parsing occurs on the final response (when the LLM stops calling tools).
         """
-        new_messages, response = await self._execute_send(content, response_format, purpose, expected_cost)
-        return self.model_copy(update={"messages": new_messages + (response,)})  # type: ignore[return-value]
+        new_messages, _response, records = await self._execute_send(
+            content,
+            response_format,
+            purpose,
+            expected_cost,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tool_rounds=max_tool_rounds,
+        )
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": self._tool_call_records + records})  # type: ignore[return-value]
 
     def with_assistant_message(self, content: str) -> "Conversation[T]":
         """Return NEW Conversation with an injected assistant turn in messages."""
-        return self.model_copy(update={"messages": self.messages + (_AssistantMessage(content),)})
+        return self.model_copy(update={"messages": self.messages + (AssistantMessage(content),)})
 
     def with_context(self, *docs: Document) -> "Conversation[T]":
         """Return NEW Conversation with documents added to the cacheable context prefix.
@@ -396,11 +488,122 @@ Attachment rendering in LLM context:
         return self.model_copy(update={"enable_substitutor": enabled})
 
 
+class ToolOutput(BaseModel):
+    """Base for tool outputs. ``content`` is sent to the LLM as the tool result.
+
+Subclass to add metadata fields accessible to the caller but not sent to the LLM."""
+    model_config = ConfigDict(frozen=True)
+    content: str
+
+
+class Tool:
+    """Base class for LLM tools with import-time validation.
+
+Subclasses must define:
+- A non-empty docstring (becomes the LLM tool description)
+- An ``Input`` inner class (BaseModel with Field(description=...) on every field)
+- An ``async def execute(self, input: Input) -> ToolOutput`` method
+
+Optionally define an ``Output`` inner class extending ToolOutput for typed metadata.
+
+Tools are regular classes — use ``__init__`` for runtime state (API clients,
+lookup tables, other Conversations). ``execute()`` is called once per tool
+invocation by the tool loop."""
+    Input: type[BaseModel]
+    Output: type[ToolOutput]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        name = cls.__name__
+
+        if not cls.__doc__ or not cls.__doc__.strip():
+            raise TypeError(f"Tool '{name}' must define a non-empty docstring. The docstring becomes the LLM tool description.")
+
+        if "Input" not in cls.__dict__:
+            raise TypeError(
+                f"Tool '{name}' must define an 'Input' inner class (BaseModel). Example: class Input(BaseModel): query: str = Field(description='...')"
+            )
+        input_cls = cls.__dict__["Input"]
+        if not isinstance(input_cls, type) or not issubclass(input_cls, BaseModel):
+            raise TypeError(f"Tool '{name}'.Input must be a BaseModel subclass")
+
+        # Validate all Input fields have descriptions
+        for field_name, field_info in input_cls.model_fields.items():
+            if not isinstance(field_info, FieldInfo) or field_info.description is None:
+                raise TypeError(
+                    f"Tool '{name}'.Input field '{field_name}' must use Field(description='...'). All Input fields require descriptions for the LLM."
+                )
+
+        # Validate Output if defined
+        if "Output" in cls.__dict__:
+            output_cls = cls.__dict__["Output"]
+            if not isinstance(output_cls, type) or not issubclass(output_cls, ToolOutput):
+                raise TypeError(f"Tool '{name}'.Output must extend ToolOutput")
+        else:
+            cls.Output = ToolOutput
+
+        # Validate execute method
+        if "execute" not in cls.__dict__:
+            raise TypeError(f"Tool '{name}' must define an 'async def execute(self, input: Input) -> ToolOutput' method")
+        execute_method = cls.__dict__["execute"]
+        if not inspect.iscoroutinefunction(execute_method):
+            raise TypeError(f"Tool '{name}'.execute must be async (async def execute)")
+
+    async def execute(self, input: BaseModel) -> ToolOutput:
+        """Execute the tool with validated input and return the result."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallRecord:
+    """Record of a single tool call execution within the tool loop."""
+    tool: type[Tool]
+    input: BaseModel
+    output: ToolOutput
+    round: int
+
+
+```
+
+## Functions
+
+```python
+def to_snake_case(name: str) -> str:
+    """Convert PascalCase to snake_case, handling consecutive capitals.
+
+    >>> to_snake_case("HTTPClient")
+    'http_client'
+    >>> to_snake_case("GetWeather")
+    'get_weather'
+    """
+    return _SNAKE_RE.sub("_", name).lower()
+
+def generate_tool_schema(tool: Tool) -> dict[str, Any]:
+    """Generate OpenAI Chat Completions tool schema from a Tool instance.
+
+    Example::
+
+        schema = generate_tool_schema(my_tool_instance)
+        # {"type": "function", "function": {"name": "...", "description": "...", ...}}
+    """
+    tool_cls = type(tool)
+    schema = tool_cls.Input.model_json_schema()
+    _make_strict_schema(schema)
+    return {
+        "type": "function",
+        "function": {
+            "name": to_snake_case(tool_cls.__name__),
+            "description": dedent(tool_cls.__doc__ or "").strip(),
+            "parameters": schema,
+            "strict": True,
+        },
+    }
+
 ```
 
 ## Examples
 
-**Warmup then parallel forks** (`tests/llm/test_conversation_patterns.py:25`)
+**Warmup then parallel forks** (`tests/llm/test_conversation_patterns.py:28`)
 
 ```python
 @pytest.mark.asyncio
@@ -438,7 +641,7 @@ async def test_warmup_then_parallel_forks(monkeypatch):
         assert any("Answer: Acknowledge the context." in m.content for m in assistant_msgs if isinstance(m.content, str))
 ```
 
-**Context is cached prefix messages are dynamic suffix** (`tests/llm/test_conversation_patterns.py:61`)
+**Context is cached prefix messages are dynamic suffix** (`tests/llm/test_conversation_patterns.py:64`)
 
 ```python
 @pytest.mark.asyncio
@@ -464,7 +667,7 @@ async def test_context_is_cached_prefix_messages_are_dynamic_suffix(monkeypatch)
     assert captured_kwargs[0]["context_count"] == 1
 ```
 
-**Document wrapped in xml tags** (`tests/llm/test_conversation_patterns.py:84`)
+**Document wrapped in xml tags** (`tests/llm/test_conversation_patterns.py:87`)
 
 ```python
 def test_document_wrapped_in_xml_tags():
@@ -490,6 +693,59 @@ def test_document_wrapped_in_xml_tags():
     assert "</document>" in content
 ```
 
+**Send with tools auto loop** (`tests/llm/test_conversation_patterns.py:112`)
+
+```python
+@pytest.mark.asyncio
+async def test_send_with_tools_auto_loop(monkeypatch):
+    """Tools enable the LLM to call functions. Conversation.send() auto-loops: call LLM → execute tools → re-send results until LLM produces a final answer."""
+
+    # 1. Define a tool — docstring becomes the LLM tool description
+    class GetWeather(Tool):
+        """Get current weather for a city."""
+
+        class Input(BaseModel):
+            city: str = Field(description="City name")
+
+        async def execute(self, input: BaseModel) -> ToolOutput:
+            return ToolOutput(content=f"Sunny, 22°C in {input.city}")  # type: ignore[attr-defined]
+
+    # 2. Mock LLM: first call requests tool use, second returns final answer
+    call_count = 0
+
+    async def fake_generate(messages: list[CoreMessage], **kwargs: Any) -> Any:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # LLM decides to call the get_weather tool
+            return ModelResponse(
+                content="Let me check the weather.",
+                parsed="Let me check the weather.",
+                model="test-model",
+                usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+                tool_calls=(RawToolCall(id="call_1", function_name="get_weather", arguments='{"city": "Paris"}'),),
+            )
+        # LLM uses tool result to produce final answer
+        return create_test_model_response(content="It's sunny and 22°C in Paris!")
+
+    monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
+
+    # 3. Send with tools — auto-loop handles tool execution transparently
+    with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
+        conv = Conversation(model="test-model", enable_substitutor=False)
+        result = await conv.send("What's the weather in Paris?", tools=[GetWeather()])
+
+    # 4. Final response text from the LLM
+    assert result.content == "It's sunny and 22°C in Paris!"
+
+    # 5. Tool call records track every tool invocation across all rounds
+    assert len(result.tool_call_records) == 1
+    record = result.tool_call_records[0]
+    assert record.tool is GetWeather
+    assert record.round == 1
+    assert "Sunny, 22°C in Paris" in record.output.content
+```
+
 **Citation has slots** (`tests/llm/test_verified_issues.py:296`)
 
 ```python
@@ -498,119 +754,154 @@ def test_citation_has_slots(self):
     assert hasattr(Citation, "__slots__"), "Citation should have slots=True"
 ```
 
-**Citations empty by default** (`tests/llm/test_model_response.py:157`)
+**Generate tool schema all fields required** (`tests/llm/test_tools.py:159`)
 
 ```python
-def test_citations_empty_by_default(self):
-    """Test citations returns empty tuple by default."""
-    response = create_test_model_response(content="No citations")
-    assert response.citations == ()
+def test_generate_tool_schema_all_fields_required() -> None:
+    """Strict mode ensures all fields are in required list."""
+    schema = generate_tool_schema(GetWeather())
+    params = schema["function"]["parameters"]
+    assert set(params["required"]) == {"city", "unit"}
 ```
 
-**Citations preserved** (`tests/llm/test_model_response.py:162`)
+**Generate tool schema basic** (`tests/llm/test_tools.py:125`)
 
 ```python
-def test_citations_preserved(self):
-    """Test citations are preserved when set."""
-    citations = (
-        Citation(title="Page 1", url="https://example.com", start_index=0, end_index=10),
-        Citation(title="Page 2", url="https://other.com", start_index=20, end_index=30),
-    )
-    response = ModelResponse[str](
-        content="Test content",
-        parsed="Test content",
-        reasoning_content="",
-        citations=citations,
-        usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
-        cost=None,
-        model="test",
-        response_id="test-id",
-        metadata={},
-    )
-
-    assert len(response.citations) == 2
-    assert response.citations[0].title == "Page 1"
-    assert response.citations[1].url == "https://other.com"
+def test_generate_tool_schema_basic() -> None:
+    schema = generate_tool_schema(GetWeather())
+    assert schema["type"] == "function"
+    func = schema["function"]
+    assert func["name"] == "get_weather"
+    assert "Get the current weather" in func["description"]
+    assert func["strict"] is True
+    params = func["parameters"]
+    assert params["type"] == "object"
+    assert "city" in params["properties"]
+    assert "unit" in params["properties"]
+    assert params["additionalProperties"] is False
 ```
 
-**Citations serialization** (`tests/llm/test_model_response.py:184`)
+**Tool call record frozen** (`tests/llm/test_tools.py:199`)
 
 ```python
-def test_citations_serialization(self):
-    """Test citations serialize correctly."""
-    citations = (Citation(title="Test", url="https://test.com", start_index=0, end_index=5),)
-    response = ModelResponse[str](
-        content="Test",
-        parsed="Test",
-        citations=citations,
-        usage=TokenUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
-        model="test",
-        response_id="id",
+def test_tool_call_record_frozen() -> None:
+    record = ToolCallRecord(
+        tool=GetWeather,
+        input=GetWeather.Input(city="Paris"),
+        output=ToolOutput(content="sunny"),
+        round=1,
     )
-
-    json_str = response.model_dump_json()
-    restored = ModelResponse.model_validate_json(json_str)
-
-    # Citations are serialized as dicts
-    assert len(restored.citations) == 1
-    # After deserialization, citations are dicts (not Citation dataclass)
-    citation = restored.citations[0]
-    if isinstance(citation, dict):
-        assert citation["title"] == "Test"
-        assert citation["url"] == "https://test.com"
-    else:
-        assert citation.title == "Test"
-        assert citation.url == "https://test.com"
+    assert record.tool is GetWeather
+    assert record.round == 1
 ```
 
-**Model copy update** (`tests/llm/test_model_options.py:102`)
+**Tool with custom output** (`tests/llm/test_tools.py:117`)
 
 ```python
-def test_model_copy_update(self):
-    """Test that frozen ModelOptions can be updated via model_copy."""
-    options = ModelOptions(timeout=300)
-    updated = options.model_copy(update={"timeout": 500})
-    assert updated.timeout == 500
-    assert options.timeout == 300  # original unchanged
+def test_tool_with_custom_output() -> None:
+    """Tool with custom Output extending ToolOutput is valid."""
+    assert issubclass(CustomOutputTool.Output, ToolOutput)
+```
+
+**Generate tool schema strict mode nested** (`tests/llm/test_tools.py:139`)
+
+```python
+def test_generate_tool_schema_strict_mode_nested() -> None:
+    """Strict mode recursively adds additionalProperties: false."""
+
+    class NestedTool(Tool):
+        """Tool with nested schema."""
+
+        class Input(BaseModel):
+            location: GetWeather.Input = Field(description="Location data")
+
+        async def execute(self, input: BaseModel) -> ToolOutput:
+            return ToolOutput(content="")
+
+    schema = generate_tool_schema(NestedTool())
+    params = schema["function"]["parameters"]
+    # Nested model must produce $defs with strict mode applied
+    assert "$defs" in params, "Nested model should produce $defs"
+    for definition in params["$defs"].values():
+        assert definition.get("additionalProperties") is False
 ```
 
 
 ## Error Examples
 
-**Immutability** (`tests/llm/test_model_options.py:96`)
+**Tool definition input not basemodel** (`tests/llm/test_tools.py:66`)
 
 ```python
-def test_immutability(self):
-    """Test that ModelOptions is frozen (immutable)."""
-    options = ModelOptions()
-    with pytest.raises(ValidationError):
-        options.timeout = 500  # type: ignore[misc]
+def test_tool_definition_input_not_basemodel() -> None:
+    with pytest.raises(TypeError, match="Input must be a BaseModel subclass"):
+        # Dynamic class creation avoids static type checker flagging the intentionally invalid override
+        type("BadTool", (Tool,), {"__doc__": "Bad input.", "Input": type("Input", (), {})})
 ```
 
-**With model validates empty** (`tests/llm/test_conversation_with_model.py:33`)
+**Tool definition invalid output class** (`tests/llm/test_tools.py:108`)
 
 ```python
-def test_with_model_validates_empty(self):
-    """with_model() rejects empty model name via field validator."""
-    import pytest
+def test_tool_definition_invalid_output_class() -> None:
+    class BadOutput(BaseModel):
+        content: str
 
-    conv = Conversation(model="gemini-3-flash")
-    with pytest.raises(Exception):
-        conv.with_model("")
+    with pytest.raises(TypeError, match="Output must extend ToolOutput"):
+        # Dynamic class creation avoids static type checker flagging the intentionally invalid override
+        type("BadTool", (Tool,), {"__doc__": "Bad output.", "Input": GetWeather.Input, "Output": BadOutput})
 ```
 
-**Can be caught as exception** (`tests/llm/test_degeneration.py:497`)
+**Tool definition missing docstring** (`tests/llm/test_tools.py:45`)
 
 ```python
-def test_can_be_caught_as_exception(self):
-    with pytest.raises(Exception):
-        raise OutputDegenerationError("test degeneration")
+def test_tool_definition_missing_docstring() -> None:
+    with pytest.raises(TypeError, match="must define a non-empty docstring"):
+
+        class BadTool(Tool):
+            class Input(BaseModel):
+                x: int = Field(description="x value")
+
+            async def execute(self, input: BaseModel) -> ToolOutput:
+                return ToolOutput(content="")
 ```
 
-**Can be caught as llm error** (`tests/llm/test_degeneration.py:493`)
+**Tool definition missing execute** (`tests/llm/test_tools.py:98`)
 
 ```python
-def test_can_be_caught_as_llm_error(self):
-    with pytest.raises(LLMError):
-        raise OutputDegenerationError("test degeneration")
+def test_tool_definition_missing_execute() -> None:
+    with pytest.raises(TypeError, match="must define an 'async def execute"):
+
+        class BadTool(Tool):
+            """No execute."""
+
+            class Input(BaseModel):
+                x: int = Field(description="x")
+```
+
+**Tool definition missing input** (`tests/llm/test_tools.py:56`)
+
+```python
+def test_tool_definition_missing_input() -> None:
+    with pytest.raises(TypeError, match="must define an 'Input' inner class"):
+
+        class BadTool(Tool):
+            """Missing Input."""
+
+            async def execute(self, input: BaseModel) -> ToolOutput:
+                return ToolOutput(content="")
+```
+
+**Tool definition input field missing description** (`tests/llm/test_tools.py:72`)
+
+```python
+def test_tool_definition_input_field_missing_description() -> None:
+    with pytest.raises(TypeError, match="must use Field\\(description="):
+
+        class BadTool(Tool):
+            """Missing field description."""
+
+            class Input(BaseModel):
+                query: str  # no Field(description=...)
+
+            async def execute(self, input: BaseModel) -> ToolOutput:
+                return ToolOutput(content="")
 ```

@@ -116,7 +116,7 @@ async def test_send_spec_xml_auto_extracts_result() -> None:
 
     conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
 
-    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
 
     with (
@@ -137,7 +137,7 @@ async def test_send_spec_plain_preserves_raw_response() -> None:
 
     conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
 
-    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
 
     with (
@@ -161,7 +161,7 @@ async def test_send_spec_logs_missing_documents(caplog: pytest.LogCaptureFixture
     response = _make_model_response("response")
     conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
 
-    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
 
     with (
@@ -182,7 +182,7 @@ async def test_send_spec_no_warning_when_documents_provided(caplog: pytest.LogCa
     response = _make_model_response("response")
     conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
 
-    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
 
     with (
@@ -213,7 +213,7 @@ async def test_send_spec_follow_up_no_warning_for_missing_docs(caplog: pytest.Lo
     response = _make_model_response("follow-up response")
     conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
 
-    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
 
     with (
@@ -253,7 +253,7 @@ async def test_send_spec_follow_up_documents_in_messages() -> None:
         calls["with_context"] += 1
         return original_with_context(self, *docs)
 
-    async def fake_send(self, prompt_text, *, purpose, expected_cost=None):
+    async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
 
     with (

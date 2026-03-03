@@ -1,6 +1,6 @@
 """Tests for replay capture: serialize_kwargs and serialize_prior_messages."""
 
-from ai_pipeline_core.llm.conversation import _AssistantMessage, _UserMessage
+from ai_pipeline_core.llm.conversation import AssistantMessage, UserMessage
 from ai_pipeline_core.replay._capture import serialize_kwargs, serialize_prior_messages
 from tests.support.helpers import create_test_model_response
 
@@ -84,8 +84,8 @@ def test_serialize_kwargs_mixed_list() -> None:
 
 
 def test_serialize_prior_messages_user_text() -> None:
-    """_UserMessage is serialized with type 'user_text'."""
-    messages = (_UserMessage("hello world"),)
+    """UserMessage is serialized with type 'user_text'."""
+    messages = (UserMessage("hello world"),)
     result = serialize_prior_messages(messages)
 
     assert len(result) == 1
@@ -93,8 +93,8 @@ def test_serialize_prior_messages_user_text() -> None:
 
 
 def test_serialize_prior_messages_assistant_text() -> None:
-    """_AssistantMessage is serialized with type 'assistant_text'."""
-    messages = (_AssistantMessage("note"),)
+    """AssistantMessage is serialized with type 'assistant_text'."""
+    messages = (AssistantMessage("note"),)
     result = serialize_prior_messages(messages)
 
     assert len(result) == 1
@@ -132,11 +132,11 @@ def test_serialize_prior_messages_multi_turn() -> None:
     response_2 = create_test_model_response(content="second reply")
 
     messages = (
-        _UserMessage("turn one"),
+        UserMessage("turn one"),
         response_1,
         doc,
-        _AssistantMessage("injected"),
-        _UserMessage("turn three"),
+        AssistantMessage("injected"),
+        UserMessage("turn three"),
         response_2,
     )
     result = serialize_prior_messages(messages)

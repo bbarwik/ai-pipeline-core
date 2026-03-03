@@ -10,7 +10,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
-from .types import TokenUsage
+from .types import RawToolCall, TokenUsage
 
 T = TypeVar("T")
 """Type parameter for response output. str for unstructured, BaseModel subclass for structured."""
@@ -73,12 +73,21 @@ class ModelResponse(BaseModel, Generic[T]):
     metadata: Mapping[str, Any] = Field(default_factory=dict)
     """Additional metadata (timing, model options, etc.)."""
 
+    # Tool calling
+    tool_calls: tuple[RawToolCall, ...] = ()
+    """Tool calls requested by the model. Empty tuple when no tools were called."""
+
     # Provider-specific fields for multi-turn reasoning
     thinking_blocks: tuple[dict[str, Any], ...] | None = None
     """Structured thinking blocks from the model (if available)."""
 
     provider_specific_fields: Mapping[str, Any] | None = None
     """Provider-specific fields like Gemini thought_signatures for multi-turn."""
+
+    @property
+    def has_tool_calls(self) -> bool:
+        """Whether the model requested tool calls in this response."""
+        return len(self.tool_calls) > 0
 
     @field_serializer("parsed", when_used="always")
     def serialize_parsed(self, value: T) -> Any:

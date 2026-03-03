@@ -153,7 +153,7 @@ ignore = [
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "RUF069", "TID251"]
+"tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "RUF069", "TID251", "A002"]
 "examples/**/*.py" = ["D", "DOC", "PLC0415", "S", "ARG", "T20", "RUF029", "C901", "PLR0914", "PLR0915"]
 "dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
 ".vulture_whitelist.py" = ["B018", "E402", "F401", "D", "PLC2701"]
@@ -176,7 +176,9 @@ convention = "google"
 "ai_pipeline_core/_llm_core/client.py" = ["PLR0911", "C901", "PLR0912", "PLR0915", "PLR0914", "PLR1702", "RUF005", "PLC2801", "UP047", "BLE001"]
 "ai_pipeline_core/_llm_core/model_response.py" = ["UP046", "PLR6301", "PERF403", "BLE001"]
 "ai_pipeline_core/llm/__init__.py" = ["TID252"]
-"ai_pipeline_core/llm/conversation.py" = ["RUF005", "PERF401", "FBT002", "UP035", "UP046", "PLC0415", "PLC2801", "PLR6301", "C901", "PLR0912", "TID252", "BLE001"]
+"ai_pipeline_core/llm/tools.py" = ["A002"]  # execute(self, input) — intentional API matching OpenAI tool convention
+"ai_pipeline_core/llm/_tool_loop.py" = ["BLE001"]  # tools are user code that can throw any exception
+"ai_pipeline_core/llm/conversation.py" = ["RUF005", "PERF401", "FBT002", "UP035", "UP046", "PLC0415", "PLC2801", "PLR6301", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "TID252", "BLE001"]
 "ai_pipeline_core/llm/_substitutor.py" = ["BLE001", "C901", "PLR0911", "PLR0912", "PLR0914"]
 "ai_pipeline_core/deployment/_resolve.py" = ["PLC0415", "C901", "PLR0915", "BLE001"]
 "ai_pipeline_core/_llm_core/_validation.py" = ["BLE001"]
