@@ -18,7 +18,7 @@ if "prefect" in sys.modules and get_current_settings().cloud.enable_orchestratio
 
 from . import llm
 from .deployment import DeploymentResult, PipelineDeployment, progress
-from .deployment.remote import RemoteDeployment, run_remote_deployment
+from .deployment.remote import RemoteDeployment
 from .document_store import DocumentReader, get_document_store
 from .documents import (
     Attachment,
@@ -28,12 +28,9 @@ from .documents import (
     RunScope,
     ensure_extension,
     find_document,
-    get_run_context,
     is_document_sha256,
     replace_extension,
-    reset_run_context,
     sanitize_url,
-    set_run_context,
 )
 from .exceptions import (
     DocumentNameError,
@@ -111,7 +108,6 @@ __all__ = [
     "find_document",
     "get_document_store",
     "get_pipeline_logger",
-    "get_run_context",
     "is_document_sha256",
     "llm",
     "pipeline_concurrency",
@@ -122,12 +118,9 @@ __all__ = [
     "render_preview",
     "render_text",
     "replace_extension",
-    "reset_run_context",
-    "run_remote_deployment",
     "safe_gather",
     "safe_gather_indexed",
     "sanitize_url",
-    "set_run_context",
     "set_trace_cost",
     "setup_logging",
     "trace",

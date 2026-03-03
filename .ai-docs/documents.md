@@ -1,5 +1,5 @@
 # MODULE: documents
-# CLASSES: Attachment, Document, RunContext, TaskDocumentContext
+# CLASSES: Attachment, Document, RunContext
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Document system for AI pipeline flows.
 # VERSION: 0.12.4
@@ -8,8 +8,7 @@
 ## Imports
 
 ```python
-from ai_pipeline_core import Attachment, Document, DocumentSha256, RunContext, RunScope, ensure_extension, find_document, get_run_context, is_document_sha256, replace_extension, reset_run_context, sanitize_url, set_run_context
-from ai_pipeline_core.documents import TaskDocumentContext
+from ai_pipeline_core import Attachment, Document, DocumentSha256, RunContext, RunScope, ensure_extension, find_document, is_document_sha256, replace_extension, sanitize_url
 ```
 
 ## Types & Constants
@@ -62,56 +61,10 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
             raise ValueError(f"Attachment is not text: {self.name}")
         return self.content.decode("utf-8")
 
-    @field_validator("content", mode="before")
-    @classmethod
-    def validate_content(cls, v: Any) -> bytes:
-        """Convert content to bytes.
-
-        Handles:
-        1. bytes — passed through directly
-        2. str with data URI prefix — base64-decoded to bytes
-        3. str (plain text) — UTF-8 encoded to bytes
-        """
-        if isinstance(v, bytes):
-            return v
-        if isinstance(v, str):
-            # Data URIs are produced by serialize_content() for binary content only (failed UTF-8 decode).
-            # Text starting with "data:<mime>;base64," would be misinterpreted, accepted by design.
-            if _DATA_URI_PATTERN.match(v):
-                _, payload = v.split(",", 1)
-                return base64.b64decode(payload, validate=True)
-            return v.encode("utf-8")
-        raise ValueError(f"Invalid content type: {type(v)}")
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, v: str) -> str:
-        """Reject path traversal, reserved suffixes, whitespace issues."""
-        if v.endswith(".description.md"):
-            raise DocumentNameError(f"Attachment names cannot end with .description.md: {v}")
-        if v.endswith(".sources.json"):
-            raise DocumentNameError(f"Attachment names cannot end with .sources.json: {v}")
-        if v.endswith(".attachments.json"):
-            raise DocumentNameError(f"Attachment names cannot end with .attachments.json: {v}")
-        if ".." in v or "\\" in v or "/" in v:
-            raise DocumentNameError(f"Invalid attachment name - contains path traversal characters: {v}")
-        if not v or v.startswith(" ") or v.endswith(" "):
-            raise DocumentNameError(f"Invalid attachment name format: {v}")
-        return v
-
     @cached_property
     def mime_type(self) -> str:
         """Detected MIME type from content and filename. Cached."""
         return detect_mime_type(self.content, self.name)
-
-    @field_serializer("content")
-    def serialize_content(self, v: bytes) -> str:
-        """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
-        try:
-            return v.decode("utf-8")
-        except UnicodeDecodeError:
-            b64 = base64.b64encode(v).decode("ascii")
-            return f"data:{self.mime_type};base64,{b64}"
 
 
 class Document(BaseModel, Generic[TContent]):
@@ -353,97 +306,6 @@ Attachments:
             return None
         return values
 
-    @field_validator("content", mode="before")
-    @classmethod
-    def validate_content(cls, v: Any, info: ValidationInfo) -> bytes:
-        """Convert content to bytes. Enforces MAX_CONTENT_SIZE.
-
-        Handles:
-        1. bytes — passed through directly
-        2. str with data URI prefix — base64-decoded to bytes
-        3. str (plain text) — UTF-8 encoded to bytes
-        4. dict/list/BaseModel — serialized via _convert_content
-        """
-        if isinstance(v, bytes):
-            pass
-        elif isinstance(v, str):
-            # Data URIs are produced by serialize_content() for binary content only (failed UTF-8 decode).
-            # Text content starting with "data:<mime>;base64," would be misinterpreted here, but this is
-            # accepted by design — real documents never start with a bare data URI on the first byte.
-            if _DATA_URI_PATTERN.match(v):
-                _, payload = v.split(",", 1)
-                v = base64.b64decode(payload, validate=True)
-            else:
-                v = v.encode("utf-8")
-        else:
-            name = info.data.get("name", "") if hasattr(info, "data") else ""
-            v = _convert_content(name, v)
-        if len(v) > cls.MAX_CONTENT_SIZE:
-            raise DocumentSizeError(f"Document size ({len(v)} bytes) exceeds maximum allowed size ({cls.MAX_CONTENT_SIZE} bytes)")
-        return v
-
-    @field_validator("derived_from")
-    @classmethod
-    def validate_derived_from(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        """derived_from must be document SHA256 hashes or URLs."""
-        for src in v:
-            if not is_document_sha256(src) and "://" not in src:
-                raise ValueError(f"derived_from entry must be a document SHA256 hash or a URL (containing '://'), got: {src!r}")
-        return v
-
-    @classmethod
-    def validate_file_name(cls, name: str) -> None:
-        """Validate filename against FILES enum. Override only for custom validation beyond FILES."""
-        allowed = cls.get_expected_files()
-        if not allowed:
-            return
-
-        if name not in allowed:
-            allowed_str = ", ".join(sorted(allowed))
-            files_enum = getattr(cls, "FILES", None)
-            hint = ""
-            if files_enum is not None:
-                members = [f"{cls.__name__}.FILES.{m.name}" for m in files_enum]
-                if len(members) == 1:
-                    hint = f"\nFIX: Use name={members[0]} in create()/create_root()/derive()."
-                else:
-                    hint = f"\nFIX: Use one of: {', '.join(members)}"
-            raise DocumentNameError(f"Invalid filename '{name}' for {cls.__name__}. Allowed: {allowed_str}{hint}")
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, v: str) -> str:
-        """Reject path traversal, whitespace issues, reserved suffixes. Must match FILES enum if defined."""
-        if ".." in v or "\\" in v or "/" in v:
-            raise DocumentNameError(f"Invalid filename - contains path traversal characters: {v}")
-
-        if not v or v.startswith(" ") or v.endswith(" "):
-            raise DocumentNameError(f"Invalid filename format: {v}")
-
-        if v.endswith(".meta.json"):
-            raise DocumentNameError(f"Document names cannot end with .meta.json (reserved): {v}")
-
-        # Detect double extensions like .md.md, .json.json, .yaml.yaml
-        dot_pos = v.rfind(".")
-        if dot_pos > 0:
-            ext = v[dot_pos:]
-            prefix = v[:dot_pos]
-            if prefix.endswith(ext):
-                raise DocumentNameError(f"Double extension detected in '{v}' — use ensure_extension() to prevent this")
-
-        cls.validate_file_name(v)
-
-        return v
-
-    @field_validator("triggered_by")
-    @classmethod
-    def validate_triggered_by(cls, v: tuple[DocumentSha256, ...]) -> tuple[DocumentSha256, ...]:
-        """triggered_by must be valid document SHA256 hashes."""
-        for trigger in v:
-            if not is_document_sha256(trigger):
-                raise ValueError(f"triggered_by entry must be a document SHA256 hash, got: {trigger}")
-        return v
-
     def __copy__(self) -> Self:
         """Blocked: copy.copy() is not supported for Documents."""
         raise TypeError("Document copying is not supported. Use derive() for content transformations or create() for new documents.")
@@ -684,15 +546,6 @@ Attachments:
             attachments=data.get("attachments"),
         )
 
-    @field_serializer("content")
-    def serialize_content(self, v: bytes) -> str:
-        """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
-        try:
-            return v.decode("utf-8")
-        except UnicodeDecodeError:
-            b64 = base64.b64encode(v).decode("ascii")
-            return f"data:{self.mime_type};base64,{b64}"
-
     @final
     def serialize_model(self) -> dict[str, Any]:
         """Serialize to JSON-compatible dict for storage/transmission. Roundtrips with from_dict().
@@ -723,114 +576,12 @@ Attachments:
         """Full SHA256 identity hash (name + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
         return compute_document_sha256(self)
 
-    @model_validator(mode="after")
-    def validate_no_provenance_overlap(self) -> Self:
-        """Reject documents where the same SHA256 appears in both derived_from and triggered_by."""
-        derived_sha256s = {src for src in self.derived_from if is_document_sha256(src)}
-        if derived_sha256s:
-            overlap = derived_sha256s & set(self.triggered_by)
-            if overlap:
-                sample = next(iter(overlap))
-                raise ValueError(
-                    f"SHA256 hash {sample[:12]}... appears in both derived_from and triggered_by. "
-                    f"A document reference must be either derived_from (content provenance) "
-                    f"or triggered_by (causal provenance), not both."
-                )
-        return self
-
-    @model_validator(mode="after")
-    def validate_total_size(self) -> Self:
-        """Validate that total document size (content + attachments) is within limits."""
-        total = self.size
-        if total > self.MAX_CONTENT_SIZE:
-            raise DocumentSizeError(f"Total document size ({total} bytes) including attachments exceeds maximum allowed size ({self.MAX_CONTENT_SIZE} bytes)")
-        return self
-
 
 @dataclass(frozen=True, slots=True)
 class RunContext:
     """Immutable context for a pipeline run, carried via ContextVar."""
     run_scope: RunScope
     execution_id: UUID | None = None
-
-
-@dataclass
-class TaskDocumentContext:
-    """Tracks documents created within a single pipeline task or flow execution.
-
-Used by @pipeline_task and @pipeline_flow decorators to:
-- Validate that all derived_from/triggered_by SHA256 references point to pre-existing documents
-- Detect same-task interdependencies (doc B referencing doc A created in the same task)
-- Warn about documents with no provenance (no derived_from and no triggered_by)
-- Detect documents created but not returned (orphaned)
-- Deduplicate returned documents by SHA256"""
-    created: set[DocumentSha256] = field(default_factory=set)
-
-    @staticmethod
-    def deduplicate(documents: list[Document]) -> list[Document]:
-        """Deduplicate documents by SHA256, preserving first occurrence order."""
-        seen: dict[DocumentSha256, Document] = {}
-        for doc in documents:
-            if doc.sha256 not in seen:
-                seen[doc.sha256] = doc
-        return list(seen.values())
-
-    def finalize(self, returned_docs: list[Document]) -> list[DocumentSha256]:
-        """Detect orphaned documents -- created but not returned.
-
-        Returns list of orphaned document SHA256 hashes.
-        """
-        returned_sha256s = {doc.sha256 for doc in returned_docs}
-        return sorted(self.created - returned_sha256s)
-
-    def register_created(self, doc: Document) -> None:
-        """Register a document as created in this task/flow context."""
-        self.created.add(doc.sha256)
-
-    def validate_provenance(
-        self,
-        documents: list[Document],
-        existing_sha256s: set[DocumentSha256],
-    ) -> list[str]:
-        """Validate provenance (derived_from and triggered_by) for returned documents.
-
-        Checks:
-        1. All SHA256 derived_from references exist in the store (existing_sha256s).
-        2. All triggered_by references exist in the store (existing_sha256s).
-        3. No same-task interdependencies: a returned document must not reference
-           (via derived_from or triggered_by SHA256) another document created in this same context.
-        4. Documents with no derived_from AND no triggered_by get a warning (no provenance).
-
-        Only SHA256-formatted entries in derived_from are validated; URLs and other reference
-        strings are skipped. Initial pipeline inputs (documents with no provenance)
-        are acceptable and warned about for awareness.
-
-        Returns a list of warning messages (empty if everything is valid).
-        """
-        warnings: list[str] = []
-
-        for doc in documents:
-            # Check derived_from
-            for src in doc.derived_from:
-                if not is_document_sha256(src):
-                    continue
-                if src in self.created:
-                    warnings.append(f"Document '{doc.name}' references derived_from {src[:12]}... created in the same task (same-task interdependency)")
-                elif src not in existing_sha256s:
-                    warnings.append(f"Document '{doc.name}' references derived_from {src[:12]}... which does not exist in the store")
-
-            # Check triggered_by
-            for trigger in doc.triggered_by:
-                if trigger in self.created:
-                    warnings.append(f"Document '{doc.name}' references triggered_by {trigger[:12]}... created in the same task (same-task interdependency)")
-                elif trigger not in existing_sha256s:
-                    warnings.append(f"Document '{doc.name}' references triggered_by {trigger[:12]}... which does not exist in the store")
-
-            # Warn about no provenance
-            if not doc.derived_from and not doc.triggered_by:
-                warnings.append(f"Document '{doc.name}' has no derived_from and no triggered_by (no provenance)")
-
-        return warnings
 
 
 ```
@@ -913,18 +664,6 @@ def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
     available = sorted({type(d).__name__ for d in documents})
     raise DocumentValidationError(f"No document of type '{doc_type.__name__}' found. Available types: {', '.join(available) or 'none'}")
 
-def get_run_context() -> RunContext | None:
-    """Get the current run context, or None if not set."""
-    return _run_context.get()
-
-def set_run_context(ctx: RunContext) -> Token[RunContext | None]:
-    """Set the run context. Returns a token for restoring the previous value."""
-    return _run_context.set(ctx)
-
-def reset_run_context(token: Token[RunContext | None]) -> None:
-    """Reset the run context to its previous value using a token from set_run_context."""
-    _run_context.reset(token)
-
 ```
 
 ## Examples
@@ -978,15 +717,6 @@ def test_document_mime_type(self):
     """Document.mime_type returns detected MIME type."""
     doc = ConcreteTestDocument.create_root(name="data.json", content={"key": "value"}, reason="test input")
     assert doc.mime_type == "application/json"
-```
-
-**Document no detected mime type** (`tests/documents/test_document_core.py:934`)
-
-```python
-def test_document_no_detected_mime_type(self):
-    """Document has no detected_mime_type attribute (renamed to mime_type)."""
-    doc = ConcreteTestDocument.create_root(name="test.txt", content="hello", reason="test input")
-    assert not hasattr(doc, "detected_mime_type")
 ```
 
 
@@ -1050,13 +780,4 @@ def test_content_plus_attachments_exceeding_limit_rejected(self):
             content=b"A" * 30,  # 30 bytes
             attachments=(Attachment(name="a.txt", content=b"B" * 25),),  # total 55 > 50
         )
-```
-
-**Model copy clears attachments** (`tests/documents/test_document_attachments.py:162`)
-
-```python
-def test_model_copy_clears_attachments(self):
-    doc = SampleFlowDoc(name="test.txt", content=b"Hello")
-    with pytest.raises(TypeError, match=r"model_copy.*not supported"):
-        doc.model_copy(update={"attachments": ()})
 ```

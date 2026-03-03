@@ -7,7 +7,7 @@ Pass 2: For task kwargs, validate dict values against function type hints (BaseM
 import importlib
 import typing
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -57,7 +57,7 @@ def resolve_doc_refs(data: Any, store_base: Path) -> Any:
     but no $doc_ref create ephemeral Documents without store access.
     """
     if isinstance(data, dict):
-        d: dict[str, Any] = data
+        d = cast(dict[str, Any], data)
         if "$doc_ref" in d:
             ref = DocumentRef.model_validate(d)
             return resolve_document_ref(ref, store_base)
@@ -65,7 +65,7 @@ def resolve_doc_refs(data: Any, store_base: Path) -> Any:
             return _create_inline_document(d)
         return {k: resolve_doc_refs(v, store_base) for k, v in d.items()}
     if isinstance(data, list):
-        return [resolve_doc_refs(item, store_base) for item in list(data)]
+        return [resolve_doc_refs(item, store_base) for item in cast(list[Any], data)]
     return data
 
 

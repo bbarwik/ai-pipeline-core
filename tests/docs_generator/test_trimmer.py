@@ -108,4 +108,4 @@ def test_measure_empty():
 
 
 def test_max_guide_size_constant():
-    assert MAX_GUIDE_SIZE == 51_200
+    assert MAX_GUIDE_SIZE == 40_960

@@ -67,11 +67,11 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         """Build a result for partial pipeline runs (--start/--end that don't reach the last step)."""
     def build_result(run_id: str, documents: list[Document], options: TOptions) -> TResult:
         """Extract typed result from pipeline documents loaded from DocumentStore."""
-    def run(self, run_id: str, documents: Sequence[Document], options: TOptions, publisher: ResultPublisher | None=None, start_step: int=1, end_step: int | None=None, task_result_store: TaskResultStore | None=None, parent_execution_id: UUID | None=None, parent_span_id: str | None=None) -> TResult:
+    def run(self, run_id: str, documents: Sequence[Document], options: TOptions, publisher: _ResultPublisher | None=None, start_step: int=1, end_step: int | None=None, task_result_store: TaskResultStore | None=None, parent_execution_id: UUID | None=None, parent_span_id: str | None=None) -> TResult:
         """Execute flows with resume, per-flow uploads, and step control."""
     def run_cli(self, initializer: Callable[[TOptions], tuple[str, list[Document]]] | None=None, trace_name: str | None=None, cli_mixin: type[BaseSettings] | None=None) -> None:
         """Execute pipeline from CLI with positional working_directory and --start/--end/--no-trace flags."""
-    def run_local(self, run_id: str, documents: Sequence[Document], options: TOptions, publisher: ResultPublisher | None=None, output_dir: Path | None=None) -> TResult:
+    def run_local(self, run_id: str, documents: Sequence[Document], options: TOptions, publisher: _ResultPublisher | None=None, output_dir: Path | None=None) -> TResult:
         """Run locally with Prefect test harness and in-memory document store."""
 
 
@@ -178,106 +178,6 @@ class OutputDocument(BaseModel):
     content: str | None = None
     attachments: tuple[OutputAttachment, ...] = ()
     model_config = ConfigDict(frozen=True)
-
-
-class StartedEvent:
-    """Pipeline execution started."""
-
-    # Fields
-    run_id: str
-    flow_run_id: str
-    run_scope: str
-
-
-class ProgressEvent:
-    """Flow-level or intra-flow progress."""
-
-    # Fields
-    run_id: str
-    flow_run_id: str
-    flow_name: str
-    step: int
-    total_steps: int
-    progress: float
-    step_progress: float
-    status: FlowStatus
-    message: str
-
-
-class CompletedEvent:
-    """Pipeline completed successfully."""
-
-    # Fields
-    run_id: str
-    flow_run_id: str
-    result: dict[str, Any]
-    chain_context: dict[str, Any]
-    actual_cost: float
-
-
-class FailedEvent:
-    """Pipeline execution failed."""
-
-    # Fields
-    run_id: str
-    flow_run_id: str
-    error_code: ErrorCode
-    error_message: str
-
-
-class ResultPublisher(Protocol):
-    """Publishes pipeline lifecycle events to external consumers."""
-
-    # Methods
-    def close(self) -> None:
-        """Release resources held by the publisher."""
-    def publish_completed(self, event: CompletedEvent) -> None:
-        """Publish a pipeline completed event."""
-    def publish_failed(self, event: FailedEvent) -> None:
-        """Publish a pipeline failed event."""
-    def publish_heartbeat(self, run_id: str) -> None:
-        """Publish a heartbeat signal."""
-    def publish_progress(self, event: ProgressEvent) -> None:
-        """Publish a flow progress event."""
-    def publish_started(self, event: StartedEvent) -> None:
-        """Publish a pipeline started event."""
-
-
-class NoopPublisher:
-    """Discards all lifecycle events. Default publisher for CLI and run_local."""
-
-    # Methods
-    def close(self) -> None:
-        """No resources to release."""
-    def publish_completed(self, event: CompletedEvent) -> None:
-        """Accept and discard a completed event."""
-    def publish_failed(self, event: FailedEvent) -> None:
-        """Accept and discard a failed event."""
-    def publish_heartbeat(self, run_id: str) -> None:
-        """Accept and discard a heartbeat."""
-    def publish_progress(self, event: ProgressEvent) -> None:
-        """Accept and discard a progress event."""
-    def publish_started(self, event: StartedEvent) -> None:
-        """Accept and discard a started event."""
-
-
-class MemoryPublisher:
-    """Records all lifecycle events in-memory for test assertions."""
-
-    # Methods
-    def __init__(self) -> None: ...
-    def close(self) -> None:
-        """No resources to release."""
-    def publish_completed(self, event: CompletedEvent) -> None:
-        """Record a completed event."""
-    def publish_failed(self, event: FailedEvent) -> None:
-        """Record a failed event."""
-    def publish_heartbeat(self, run_id: str) -> None:
-        """Record a heartbeat."""
-    def publish_progress(self, event: ProgressEvent) -> None:
-        """Record a progress event."""
-    def publish_started(self, event: StartedEvent) -> None:
-        """Record a started event."""
 ```
 
 ### Functions
@@ -285,9 +185,6 @@ class MemoryPublisher:
 ```python
 async def progress_update(fraction: float, message: str='') -> None:
     """Report intra-flow progress (0.0-1.0). No-op without context."""
-
-async def run_remote_deployment(deployment_name: str, parameters: dict[str, Any], on_progress: ProgressCallback | None=None, run_id: str | None=None) -> Any:
-    """Run a remote Prefect deployment with optional progress callback."""
 ```
 
 
@@ -397,16 +294,8 @@ class Attachment(BaseModel):
     @property
     def text(self) -> str:
         """Content decoded as UTF-8. Raises ValueError if not text."""
-    @classmethod
-    def validate_content(cls, v: Any) -> bytes:
-        """Convert content to bytes."""
-    @classmethod
-    def validate_name(cls, v: str) -> str:
-        """Reject path traversal, reserved suffixes, whitespace issues."""
     def mime_type(self) -> str:
         """Detected MIME type from content and filename. Cached."""
-    def serialize_content(self, v: bytes) -> str:
-        """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
 
 
 class Document(BaseModel, Generic[TContent]):
@@ -468,21 +357,6 @@ class Document(BaseModel, Generic[TContent]):
     @classmethod
     def get_expected_files(cls) -> list[str] | None:
         """Return allowed filenames from FILES enum, or None if unrestricted."""
-    @classmethod
-    def validate_content(cls, v: Any, info: ValidationInfo) -> bytes:
-        """Convert content to bytes. Enforces MAX_CONTENT_SIZE."""
-    @classmethod
-    def validate_derived_from(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        """derived_from must be document SHA256 hashes or URLs."""
-    @classmethod
-    def validate_file_name(cls, name: str) -> None:
-        """Validate filename against FILES enum. Override only for custom validation beyond FILES."""
-    @classmethod
-    def validate_name(cls, v: str) -> str:
-        """Reject path traversal, whitespace issues, reserved suffixes. Must match FILES enum if defined."""
-    @classmethod
-    def validate_triggered_by(cls, v: tuple[DocumentSha256, ...]) -> tuple[DocumentSha256, ...]:
-        """triggered_by must be valid document SHA256 hashes."""
     def __copy__(self) -> Self:
         """Blocked: copy.copy() is not supported for Documents."""
     def __deepcopy__(self, _memo: dict[int, Any] | None=None) -> Self:
@@ -517,16 +391,10 @@ class Document(BaseModel, Generic[TContent]):
         """Content parsed against the declared generic type parameter. Cached."""
     def retype(self, new_type: type[TDocument], *, preserve_provenance: bool, update: dict[str, Any] | None=None) -> TDocument:
         """Convert to a different Document subclass."""
-    def serialize_content(self, v: bytes) -> str:
-        """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
     def serialize_model(self) -> dict[str, Any]:
         """Serialize to JSON-compatible dict for storage/transmission. Roundtrips with from_dict()."""
     def sha256(self) -> DocumentSha256:
         """Full SHA256 identity hash (name + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
-    def validate_no_provenance_overlap(self) -> Self:
-        """Reject documents where the same SHA256 appears in both derived_from and triggered_by."""
-    def validate_total_size(self) -> Self:
-        """Validate that total document size (content + attachments) is within limits."""
 
 
 class RunContext:
@@ -535,23 +403,6 @@ class RunContext:
     # Fields
     run_scope: RunScope
     execution_id: UUID | None = None
-
-
-class TaskDocumentContext:
-    """Tracks documents created within a single pipeline task or flow execution."""
-
-    # Fields
-    created: set[DocumentSha256] = field(default_factory=set)
-
-    # Methods
-    def deduplicate(documents: list[Document]) -> list[Document]:
-        """Deduplicate documents by SHA256, preserving first occurrence order."""
-    def finalize(self, returned_docs: list[Document]) -> list[DocumentSha256]:
-        """Detect orphaned documents -- created but not returned."""
-    def register_created(self, doc: Document) -> None:
-        """Register a document as created in this task/flow context."""
-    def validate_provenance(self, documents: list[Document], existing_sha256s: set[DocumentSha256]) -> list[str]:
-        """Validate provenance (derived_from and triggered_by) for returned documents."""
 ```
 
 ### Functions
@@ -571,15 +422,6 @@ def replace_extension(name: str, ext: str) -> str:
 
 def find_document(documents: Sequence[Any], doc_type: type[T]) -> T:
     """Find a document of the given type in a sequence."""
-
-def get_run_context() -> RunContext | None:
-    """Get the current run context, or None if not set."""
-
-def set_run_context(ctx: RunContext) -> Token[RunContext | None]:
-    """Set the run context. Returns a token for restoring the previous value."""
-
-def reset_run_context(token: Token[RunContext | None]) -> None:
-    """Reset the run context to its previous value using a token from set_run_context."""
 ```
 
 

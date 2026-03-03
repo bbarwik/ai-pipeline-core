@@ -14,14 +14,14 @@ from ai_pipeline_core import (
     pipeline_flow,
 )
 from ai_pipeline_core.deployment._types import (
-    CompletedEvent,
+    _CompletedEvent,
     ErrorCode,
-    FailedEvent,
-    MemoryPublisher,
-    NoopPublisher,
-    ProgressEvent,
-    ResultPublisher,
-    StartedEvent,
+    _FailedEvent,
+    _MemoryPublisher,
+    _NoopPublisher,
+    _ProgressEvent,
+    _ResultPublisher,
+    _StartedEvent,
 )
 from ai_pipeline_core.deployment.base import _create_publisher, _create_task_result_store
 from ai_pipeline_core.document_store._protocol import set_document_store
@@ -84,28 +84,28 @@ class TestCreatePublisher:
     """Test _create_publisher factory function."""
 
     def test_returns_noop_when_pubsub_not_configured(self):
-        """No pubsub_project_id → NoopPublisher."""
+        """No pubsub_project_id → _NoopPublisher."""
         mock_settings = MagicMock()
         mock_settings.pubsub_project_id = ""
         mock_settings.pubsub_topic_id = ""
         publisher = _create_publisher(mock_settings, "research")
-        assert isinstance(publisher, NoopPublisher)
+        assert isinstance(publisher, _NoopPublisher)
 
     def test_returns_noop_when_topic_id_missing(self):
-        """pubsub_project_id set but pubsub_topic_id empty → NoopPublisher."""
+        """pubsub_project_id set but pubsub_topic_id empty → _NoopPublisher."""
         mock_settings = MagicMock()
         mock_settings.pubsub_project_id = "my-project"
         mock_settings.pubsub_topic_id = ""
         publisher = _create_publisher(mock_settings, "research")
-        assert isinstance(publisher, NoopPublisher)
+        assert isinstance(publisher, _NoopPublisher)
 
     def test_returns_noop_when_service_type_empty(self):
-        """Empty service_type → NoopPublisher regardless of other config."""
+        """Empty service_type → _NoopPublisher regardless of other config."""
         mock_settings = MagicMock()
         mock_settings.pubsub_project_id = "my-project"
         mock_settings.pubsub_topic_id = "events"
         publisher = _create_publisher(mock_settings, "")
-        assert isinstance(publisher, NoopPublisher)
+        assert isinstance(publisher, _NoopPublisher)
 
     def test_creates_pubsub_publisher_when_configured(self):
         """Full Pub/Sub config → PubSubPublisher (no ClickHouse required)."""
@@ -114,7 +114,7 @@ class TestCreatePublisher:
         mock_settings.pubsub_topic_id = "events"
 
         with patch("ai_pipeline_core.deployment._pubsub.PubSubPublisher") as mock_pub_cls:
-            mock_pub_cls.return_value = MagicMock(spec=ResultPublisher)
+            mock_pub_cls.return_value = MagicMock(spec=_ResultPublisher)
             _create_publisher(mock_settings, "research")
             mock_pub_cls.assert_called_once_with(
                 project_id="my-project",
@@ -167,8 +167,8 @@ class TestRunPublisherIntegration:
     """Test that run() publishes lifecycle events via the publisher."""
 
     async def test_publishes_started_event(self):
-        """run() must publish StartedEvent before executing flows."""
-        pub = MemoryPublisher()
+        """run() must publish _StartedEvent before executing flows."""
+        pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
         try:
@@ -179,13 +179,13 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        started_events = [e for e in pub.events if isinstance(e, StartedEvent)]
+        started_events = [e for e in pub.events if isinstance(e, _StartedEvent)]
         assert len(started_events) == 1
         assert started_events[0].run_id == "run-1"
 
     async def test_publishes_completed_event(self):
-        """run() must publish CompletedEvent after successful execution."""
-        pub = MemoryPublisher()
+        """run() must publish _CompletedEvent after successful execution."""
+        pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
         try:
@@ -196,7 +196,7 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        completed_events = [e for e in pub.events if isinstance(e, CompletedEvent)]
+        completed_events = [e for e in pub.events if isinstance(e, _CompletedEvent)]
         assert len(completed_events) == 1
         assert completed_events[0].run_id == "run-1"
         assert "version" in completed_events[0].chain_context
@@ -204,7 +204,7 @@ class TestRunPublisherIntegration:
 
     async def test_publishes_progress_events(self):
         """run() must publish ProgressEvents at STARTED and COMPLETED transitions."""
-        pub = MemoryPublisher()
+        pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
         try:
@@ -215,15 +215,15 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        progress_events = [e for e in pub.events if isinstance(e, ProgressEvent)]
+        progress_events = [e for e in pub.events if isinstance(e, _ProgressEvent)]
         assert len(progress_events) >= 2
         statuses = [e.status for e in progress_events]
         assert "started" in statuses
         assert "completed" in statuses
 
     async def test_publishes_failed_event_on_error(self):
-        """run() must publish FailedEvent when a flow raises."""
-        pub = MemoryPublisher()
+        """run() must publish _FailedEvent when a flow raises."""
+        pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
         try:
@@ -235,7 +235,7 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        failed_events = [e for e in pub.events if isinstance(e, FailedEvent)]
+        failed_events = [e for e in pub.events if isinstance(e, _FailedEvent)]
         assert len(failed_events) == 1
         assert failed_events[0].run_id == "run-1"
         assert failed_events[0].error_code == ErrorCode.UNKNOWN
@@ -243,7 +243,7 @@ class TestRunPublisherIntegration:
 
     async def test_event_ordering(self):
         """Events follow order: started → progress(started) → progress(completed) → completed."""
-        pub = MemoryPublisher()
+        pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
         try:
@@ -255,12 +255,12 @@ class TestRunPublisherIntegration:
             set_document_store(None)
 
         event_types = [type(e).__name__ for e in pub.events]
-        assert event_types[0] == "StartedEvent"
-        assert event_types[-1] == "CompletedEvent"
+        assert event_types[0] == "_StartedEvent"
+        assert event_types[-1] == "_CompletedEvent"
 
     async def test_heartbeat_runs_during_execution(self):
         """Heartbeat task is created and cancelled during run()."""
-        pub = MemoryPublisher()
+        pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
 
@@ -278,8 +278,8 @@ class TestRunPublisherIntegration:
         # but the heartbeat task should have been created and cleaned up without errors
 
     async def test_chain_context_structure(self):
-        """CompletedEvent chain_context has correct structure."""
-        pub = MemoryPublisher()
+        """_CompletedEvent chain_context has correct structure."""
+        pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
         try:
@@ -290,7 +290,7 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        completed = [e for e in pub.events if isinstance(e, CompletedEvent)][0]
+        completed = [e for e in pub.events if isinstance(e, _CompletedEvent)][0]
         ctx = completed.chain_context
         assert ctx["version"] == 1
         assert "run_scope" in ctx
@@ -298,13 +298,13 @@ class TestRunPublisherIntegration:
         assert isinstance(ctx["output_document_refs"], list)
 
     async def test_noop_publisher_is_default(self):
-        """run() with publisher=None defaults to NoopPublisher (no crash)."""
+        """run() with publisher=None defaults to _NoopPublisher (no crash)."""
         store = MemoryDocumentStore()
         set_document_store(store)
         try:
             deployment = _WiringDeployment()
             doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
-            # No publisher argument → defaults to NoopPublisher
+            # No publisher argument → defaults to _NoopPublisher
             result = await deployment.run("run-1", [doc], FlowOptions())
             assert result.success
         finally:
@@ -312,7 +312,7 @@ class TestRunPublisherIntegration:
             set_document_store(None)
 
     async def test_cancelled_error_publishes_failed(self):
-        """CancelledError in flow publishes FailedEvent with CANCELLED error code."""
+        """CancelledError in flow publishes _FailedEvent with CANCELLED error code."""
         import asyncio
 
         @pipeline_flow()
@@ -326,7 +326,7 @@ class TestRunPublisherIntegration:
             def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> _WiringResult:
                 return _WiringResult(success=False)
 
-        pub = MemoryPublisher()
+        pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
         try:
@@ -338,6 +338,6 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        failed_events = [e for e in pub.events if isinstance(e, FailedEvent)]
+        failed_events = [e for e in pub.events if isinstance(e, _FailedEvent)]
         assert len(failed_events) == 1
         assert failed_events[0].error_code == ErrorCode.CANCELLED

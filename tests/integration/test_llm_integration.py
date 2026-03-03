@@ -184,7 +184,7 @@ class TestLLMIntegration:
         """
         conv = Conversation(
             model="gemini-3-flash",
-            model_options=ModelOptions(max_completion_tokens=100, reasoning_effort="low"),
+            model_options=ModelOptions(max_completion_tokens=300, reasoning_effort="low"),
         )
 
         # First message

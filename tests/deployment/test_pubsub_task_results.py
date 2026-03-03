@@ -106,7 +106,7 @@ class TestTaskResults:
         run() writes to task_result_store BEFORE publisher.publish_completed(). So when
         _publish_critical fails on the completed event, the result is already in the
         store. The exception propagates to run()'s except block, which publishes a
-        FailedEvent. The consumer sees 'failed', but the result is recoverable from
+        _FailedEvent. The consumer sees 'failed', but the result is recoverable from
         the result store — enabling reconciliation.
 
         Call sequence:

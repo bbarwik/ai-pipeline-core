@@ -290,8 +290,8 @@ def pipeline_task(  # noqa: UP047
                 logger.debug("Failed to track task IO", exc_info=True)
 
             # Document auto-save
-            if get_run_context() is not None and get_document_store() is not None:
-                ctx = TaskDocumentContext(created=task_ctx.created)
+            if _get_run_context() is not None and get_document_store() is not None:
+                ctx = _TaskDocumentContext(created=task_ctx.created)
                 docs = _extract_documents(result)
                 await _persist_documents(docs, fname, ctx)
 
@@ -506,11 +506,11 @@ def pipeline_flow(
             _set_span_attrs(description, expected_cost)
 
             # Set RunContext for nested tasks (only if not already set by deployment)
-            existing_ctx = get_run_context()
+            existing_ctx = _get_run_context()
             run_token = None
             if existing_ctx is None:
                 run_scope = RunScope(f"{run_id}/{name or fname}")
-                run_token = set_run_context(RunContext(run_scope=run_scope))
+                run_token = _set_run_context(RunContext(run_scope=run_scope))
 
             # Set up task context for document lifecycle tracking
             task_ctx = TaskContext(scope_kind="flow")
@@ -520,7 +520,7 @@ def pipeline_flow(
             finally:
                 reset_task_context(task_token)
                 if run_token is not None:
-                    reset_run_context(run_token)
+                    _reset_run_context(run_token)
 
             if trace_cost is not None and trace_cost > 0:
                 set_trace_cost(trace_cost)
@@ -534,8 +534,8 @@ def pipeline_flow(
                 logger.debug("Failed to track flow IO", exc_info=True)
 
             # Document auto-save
-            if get_run_context() is not None and get_document_store() is not None:
-                ctx = TaskDocumentContext(created=task_ctx.created)
+            if _get_run_context() is not None and get_document_store() is not None:
+                ctx = _TaskDocumentContext(created=task_ctx.created)
                 await _persist_documents(result, fname, ctx)
 
             # Replay payload capture
@@ -749,7 +749,7 @@ def test_name_with_dashes_and_underscores(self):
     assert "my-limit_v2" in result
 ```
 
-**Pipeline flow deduplicates returned documents** (`tests/pipeline/test_flow_storage.py:125`)
+**Pipeline flow deduplicates returned documents** (`tests/pipeline/test_flow_storage.py:124`)
 
 ```python
 @pytest.mark.asyncio
@@ -773,14 +773,13 @@ async def test_pipeline_flow_deduplicates_returned_documents(prefect_test_fixtur
 @pytest.mark.asyncio
 async def test_pipeline_flow_preserves_existing_run_context(prefect_test_fixture, memory_store, run_context):
     """Test that pipeline_flow does not override RunContext set by deployment."""
-    from ai_pipeline_core.documents import get_run_context
 
     captured_ctx = None
 
     @pipeline_flow()
     async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         nonlocal captured_ctx
-        captured_ctx = get_run_context()
+        captured_ctx = _get_run_context()
         return []
 
     await test_flow("my-project", [], FlowOptions())
@@ -790,7 +789,7 @@ async def test_pipeline_flow_preserves_existing_run_context(prefect_test_fixture
     assert captured_ctx.run_scope == "test-project"
 ```
 
-**Pipeline flow returns documents with store configured** (`tests/pipeline/test_flow_storage.py:39`)
+**Pipeline flow returns documents with store configured** (`tests/pipeline/test_flow_storage.py:40`)
 
 ```python
 @pytest.mark.asyncio
@@ -809,7 +808,7 @@ async def test_pipeline_flow_returns_documents_with_store_configured(prefect_tes
     assert isinstance(result[0], StorageOutputDoc)
 ```
 
-**Pipeline flow saves returned documents** (`tests/pipeline/test_flow_storage.py:109`)
+**Pipeline flow saves returned documents** (`tests/pipeline/test_flow_storage.py:108`)
 
 ```python
 @pytest.mark.asyncio
@@ -828,20 +827,19 @@ async def test_pipeline_flow_saves_returned_documents(prefect_test_fixture, memo
     assert loaded[0].name == "output.txt"
 ```
 
-**Pipeline flow sets run context when missing** (`tests/pipeline/test_flow_storage.py:70`)
+**Pipeline flow sets run context when missing** (`tests/pipeline/test_flow_storage.py:71`)
 
 ```python
 @pytest.mark.asyncio
 async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture, memory_store):
     """Test that pipeline_flow sets RunContext if none exists."""
-    from ai_pipeline_core.documents import get_run_context
 
     captured_ctx = None
 
     @pipeline_flow()
     async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         nonlocal captured_ctx
-        captured_ctx = get_run_context()
+        captured_ctx = _get_run_context()
         return []
 
     await test_flow("my-project", [], FlowOptions())
@@ -884,7 +882,7 @@ def test_invalid_name_pattern(self):
         _validate_concurrency_limits("TestDeploy", {"bad name!": PipelineLimit(10)})
 ```
 
-**Pipeline task then trace raises error** (`tests/pipeline/test_decorators.py:832`)
+**Pipeline task then trace raises error** (`tests/pipeline/test_decorators.py:833`)
 
 ```python
 def test_pipeline_task_then_trace_raises_error(self):
@@ -898,7 +896,7 @@ def test_pipeline_task_then_trace_raises_error(self):
             pass
 ```
 
-**Pipeline flow then trace raises error** (`tests/pipeline/test_decorators.py:854`)
+**Pipeline flow then trace raises error** (`tests/pipeline/test_decorators.py:855`)
 
 ```python
 def test_pipeline_flow_then_trace_raises_error(self):
@@ -914,7 +912,7 @@ def test_pipeline_flow_then_trace_raises_error(self):
             return list([OutputDocument(name="output.txt", content=b"output")])
 ```
 
-**Sync function with pipeline task raises error** (`tests/pipeline/test_decorators.py:778`)
+**Sync function with pipeline task raises error** (`tests/pipeline/test_decorators.py:779`)
 
 ```python
 def test_sync_function_with_pipeline_task_raises_error(self):
@@ -927,7 +925,7 @@ def test_sync_function_with_pipeline_task_raises_error(self):
             return x * 2
 ```
 
-**Sync function with pipeline task with params raises error** (`tests/pipeline/test_decorators.py:787`)
+**Sync function with pipeline task with params raises error** (`tests/pipeline/test_decorators.py:788`)
 
 ```python
 def test_sync_function_with_pipeline_task_with_params_raises_error(self):
@@ -940,7 +938,7 @@ def test_sync_function_with_pipeline_task_with_params_raises_error(self):
             return x * 2
 ```
 
-**Trace then pipeline task raises error** (`tests/pipeline/test_decorators.py:822`)
+**Trace then pipeline task raises error** (`tests/pipeline/test_decorators.py:823`)
 
 ```python
 def test_trace_then_pipeline_task_raises_error(self):

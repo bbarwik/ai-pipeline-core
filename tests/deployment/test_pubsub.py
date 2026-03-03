@@ -17,11 +17,11 @@ from ai_pipeline_core.deployment._pubsub import (
     TimestampSequencer,
 )
 from ai_pipeline_core.deployment._types import (
-    CompletedEvent,
+    _CompletedEvent,
     ErrorCode,
-    FailedEvent,
-    ProgressEvent,
-    StartedEvent,
+    _FailedEvent,
+    _ProgressEvent,
+    _StartedEvent,
 )
 from ai_pipeline_core.deployment.base import _classify_error
 from ai_pipeline_core.deployment.contract import FlowStatus
@@ -152,7 +152,7 @@ class TestPubSubPublisher:
     async def test_publish_started_is_critical(self):
         """publish_started uses critical publish path."""
         pub, mock_client = _make_pubsub_publisher()
-        event = StartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
+        event = _StartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
 
         mock_future = asyncio.Future()
         mock_future.set_result("msg-id")
@@ -166,7 +166,7 @@ class TestPubSubPublisher:
     async def test_publish_progress_is_noncritical(self):
         """publish_progress uses non-critical publish path."""
         pub, mock_client = _make_pubsub_publisher()
-        event = ProgressEvent(
+        event = _ProgressEvent(
             run_id="run-1",
             flow_run_id="fr-1",
             flow_name="extract",
@@ -218,7 +218,7 @@ class TestPubSubPublisher:
         pub, mock_client = _make_pubsub_publisher()
 
         huge_result = {"data": "x" * (MAX_PUBSUB_MESSAGE_BYTES + 1)}
-        event = CompletedEvent(
+        event = _CompletedEvent(
             run_id="run-1",
             flow_run_id="fr-1",
             result=huge_result,
@@ -234,7 +234,7 @@ class TestPubSubPublisher:
     async def test_publish_failed_is_critical(self):
         """publish_failed uses critical publish path."""
         pub, mock_client = _make_pubsub_publisher()
-        event = FailedEvent(
+        event = _FailedEvent(
             run_id="run-1",
             flow_run_id="fr-1",
             error_code=ErrorCode.PIPELINE_ERROR,
@@ -282,7 +282,7 @@ class TestPubSubPublisher:
         success_future.set_result("msg-id")
         mock_client.publish.side_effect = [fail_future, success_future]
 
-        event = StartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
+        event = _StartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
 
         with patch("ai_pipeline_core.deployment._pubsub.asyncio.sleep", new_callable=AsyncMock):
             await pub.publish_started(event)
@@ -301,7 +301,7 @@ class TestPubSubPublisher:
 
         mock_client.publish.side_effect = make_fail_future
 
-        event = StartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
+        event = _StartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
 
         with patch("ai_pipeline_core.deployment._pubsub.asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(RuntimeError, match=f"failed after {CRITICAL_MAX_RETRIES} attempts"):

@@ -14,7 +14,7 @@ import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from opentelemetry import trace as otel_trace
@@ -132,7 +132,7 @@ def _load_payload(path: Path) -> ConversationReplay | TaskReplay | FlowReplay:
     if not isinstance(raw, dict):
         raise TypeError(f"Expected a YAML mapping in {path}, got {type(raw).__name__}")
 
-    data: dict[str, Any] = raw
+    data = cast(dict[str, Any], raw)
     payload_type = data.get("payload_type")
     if payload_type not in _PAYLOAD_CLASSES:
         valid = ", ".join(sorted(_PAYLOAD_CLASSES))
@@ -179,12 +179,18 @@ def _format_result(result: Any) -> str:
         return "\n".join(lines)
 
     if isinstance(result, Document):
-        doc: Document[Any] = result
+        doc = cast("Document[Any]", result)
         return f"[Document: {type(doc).__name__}] {doc.name} ({len(doc.content)} bytes)"
 
     if isinstance(result, list):
-        results: list[Any] = result
-        items = [f"  {type(d).__name__}: {d.name}" if isinstance(d, Document) else f"  {d!r}" for d in results]
+        results = cast(list[Any], result)
+        items: list[str] = []
+        for d in results:
+            if isinstance(d, Document):
+                typed_d = cast("Document[Any]", d)
+                items.append(f"  {type(typed_d).__name__}: {typed_d.name}")
+            else:
+                items.append(f"  {d!r}")
         return f"[{len(results)} result(s)]\n" + "\n".join(items)
 
     return repr(result)
@@ -207,7 +213,7 @@ def _serialize_result(result: Any) -> dict[str, Any]:
         return output
 
     if isinstance(result, Document):
-        doc: Document[Any] = result
+        doc = cast("Document[Any]", result)
         output["type"] = "document"
         output["class_name"] = type(doc).__name__
         output["name"] = doc.name
@@ -216,15 +222,17 @@ def _serialize_result(result: Any) -> dict[str, Any]:
         return output
 
     if isinstance(result, list):
-        results: list[Any] = result
+        results = cast(list[Any], result)
         output["type"] = "document_list"
         output["count"] = len(results)
-        output["documents"] = [
-            {"class_name": type(d).__name__, "name": d.name, "content_bytes": len(d.content), "sha256": d.sha256}
-            if isinstance(d, Document)
-            else {"value": repr(d)}
-            for d in results
-        ]
+        docs_list: list[dict[str, Any]] = []
+        for d in results:
+            if isinstance(d, Document):
+                typed_d = cast("Document[Any]", d)
+                docs_list.append({"class_name": type(typed_d).__name__, "name": typed_d.name, "content_bytes": len(typed_d.content), "sha256": typed_d.sha256})
+            else:
+                docs_list.append({"value": repr(d)})
+        output["documents"] = docs_list
         return output
 
     output["type"] = "unknown"
@@ -360,10 +368,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
         task_args: dict[str, Any] = payload.arguments
         print(f"Arguments: {len(task_args)}")
         for key, value in task_args.items():
+            preview = str(value)[:80]
             if isinstance(value, dict) and "$doc_ref" in value:
                 print(f"  {key}: [doc_ref {value['$doc_ref'][:12]}...]")
             else:
-                preview = str(value)[:80]
                 print(f"  {key}: {preview}")
 
     else:

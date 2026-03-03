@@ -228,7 +228,7 @@ class TestDeploymentPath:
 # ===================================================================
 
 
-_REMOTE_RUN = "ai_pipeline_core.deployment.remote.run_remote_deployment"
+_REMOTE_RUN = "ai_pipeline_core.deployment.remote._run_remote_deployment"
 
 
 class TestRunBasic:
@@ -1107,13 +1107,13 @@ class TestParentLineagePropagation:
         """When RunContext has execution_id, it appears in parameters as parent_execution_id."""
         from uuid import uuid4
 
-        from ai_pipeline_core.documents._context import RunScope, RunContext, set_run_context, reset_run_context
+        from ai_pipeline_core.documents._context import RunScope, RunContext, _set_run_context, _reset_run_context
 
         class Lineage(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
             trace_level: ClassVar[TraceLevel] = "off"
 
         parent_uid = uuid4()
-        token = set_run_context(RunContext(run_scope=RunScope("test"), execution_id=parent_uid))
+        token = _set_run_context(RunContext(run_scope=RunScope("test"), execution_id=parent_uid))
         try:
             with patch(_REMOTE_RUN) as mock_run:
                 mock_run.return_value = SimpleResult(success=True)
@@ -1121,18 +1121,18 @@ class TestParentLineagePropagation:
             params = mock_run.call_args[0][1]
             assert params["parent_execution_id"] == str(parent_uid)
         finally:
-            reset_run_context(token)
+            _reset_run_context(token)
 
     async def test_execute_passes_parent_span_id_from_otel(self):
         """When an OTel span is active, its span_id appears in parameters as parent_span_id."""
         from uuid import uuid4
 
-        from ai_pipeline_core.documents._context import RunScope, RunContext, set_run_context, reset_run_context
+        from ai_pipeline_core.documents._context import RunScope, RunContext, _set_run_context, _reset_run_context
 
         class Lineage2(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
             trace_level: ClassVar[TraceLevel] = "off"
 
-        token = set_run_context(RunContext(run_scope=RunScope("test"), execution_id=uuid4()))
+        token = _set_run_context(RunContext(run_scope=RunScope("test"), execution_id=uuid4()))
         try:
             mock_span_ctx = MagicMock()
             mock_span_ctx.span_id = 0xABCDEF0123456789
@@ -1148,16 +1148,16 @@ class TestParentLineagePropagation:
             params = mock_run.call_args[0][1]
             assert params["parent_span_id"] == format(0xABCDEF0123456789, "016x")
         finally:
-            reset_run_context(token)
+            _reset_run_context(token)
 
     async def test_execute_omits_parent_when_no_run_context(self):
         """Without RunContext, parent_execution_id is None in parameters."""
-        from ai_pipeline_core.documents._context import get_run_context
+        from ai_pipeline_core.documents._context import _get_run_context
 
         class Lineage3(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
             trace_level: ClassVar[TraceLevel] = "off"
 
-        assert get_run_context() is None
+        assert _get_run_context() is None
         with patch(_REMOTE_RUN) as mock_run:
             mock_run.return_value = SimpleResult(success=True)
             await Lineage3().run("proj", [], FlowOptions())

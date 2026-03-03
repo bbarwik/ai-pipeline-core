@@ -10,7 +10,7 @@ import pytest
 
 from ai_pipeline_core.deployment._cli import _init_debug_tracing
 from ai_pipeline_core.deployment.base import _classify_error, _create_publisher, _build_summary_generator
-from ai_pipeline_core.deployment._types import ErrorCode, NoopPublisher
+from ai_pipeline_core.deployment._types import ErrorCode, _NoopPublisher
 from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
 from ai_pipeline_core.settings import Settings
 
@@ -52,12 +52,12 @@ class TestCreatePublisher:
     def test_noop_when_no_pubsub(self):
         s = Settings(pubsub_project_id="", pubsub_topic_id="")
         publisher = _create_publisher(s, "research")
-        assert isinstance(publisher, NoopPublisher)
+        assert isinstance(publisher, _NoopPublisher)
 
     def test_noop_when_no_service_type(self):
         s = Settings(pubsub_project_id="proj", pubsub_topic_id="topic")
         publisher = _create_publisher(s, "")
-        assert isinstance(publisher, NoopPublisher)
+        assert isinstance(publisher, _NoopPublisher)
 
     def test_pubsub_without_clickhouse_creates_publisher(self):
         """Pub/Sub no longer requires ClickHouse — PubSubPublisher is pure event transport."""

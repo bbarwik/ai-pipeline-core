@@ -35,11 +35,11 @@ from ai_pipeline_core.documents import Document, DocumentSha256, RunScope
 from ai_pipeline_core.documents._context import (
     RunContext,
     TaskContext,
-    TaskDocumentContext,
-    get_run_context,
-    reset_run_context,
+    _get_run_context,
+    _reset_run_context,
+    _set_run_context,
+    _TaskDocumentContext,
     reset_task_context,
-    set_run_context,
     set_task_context,
 )
 from ai_pipeline_core.documents.utils import is_document_sha256
@@ -147,14 +147,14 @@ def _set_span_attrs(description: str | None, expected_cost: float | None) -> Non
 async def _persist_documents(
     documents: list[Document],
     label: str,
-    ctx: "TaskDocumentContext",
+    ctx: "_TaskDocumentContext",
 ) -> None:
     """Validate provenance, deduplicate, and save documents to the store.
 
     Silently skips if no store or no run context is configured.
     Logs warnings on persistence failure (graceful degradation).
     """
-    run_ctx = get_run_context()
+    run_ctx = _get_run_context()
     store = get_document_store()
     if run_ctx is None or store is None:
         return
@@ -187,7 +187,7 @@ async def _persist_documents(
             logger.warning("[%s] Orphaned document %s — created but not returned", label, orphan[:12])
 
         # Deduplicate and save
-        deduped = TaskDocumentContext.deduplicate(documents)
+        deduped = _TaskDocumentContext.deduplicate(documents)
         await store.save_batch(deduped, run_ctx.run_scope)
     except Exception:
         logger.warning("Failed to persist documents from '%s'", label, exc_info=True)
@@ -223,13 +223,14 @@ def _attach_flow_replay_payload(
 ) -> None:
     """Build and attach a FlowReplay payload to the current Laminar span."""
     try:
-        doc_refs = [{"$doc_ref": doc.sha256, "class_name": type(doc).__name__, "name": doc.name} for doc in documents if isinstance(doc, Document)]
+        typed_docs = cast(list["Document[Any]"], [d for d in documents if isinstance(d, Document)])
+        doc_refs = [{"$doc_ref": doc.sha256, "class_name": type(doc).__name__, "name": doc.name} for doc in typed_docs]
 
         options_dict: dict[str, Any] = {}
         if isinstance(flow_options, BaseModel):
-            options_dict = dict(flow_options.model_dump(mode="json"))
+            options_dict = flow_options.model_dump(mode="json")
         elif isinstance(flow_options, dict):
-            options_dict = dict(flow_options)
+            options_dict = cast(dict[str, Any], flow_options)
 
         replay_payload = {
             "version": 1,
@@ -468,8 +469,8 @@ def pipeline_task(  # noqa: UP047
                 logger.debug("Failed to track task IO", exc_info=True)
 
             # Document auto-save
-            if get_run_context() is not None and get_document_store() is not None:
-                ctx = TaskDocumentContext(created=task_ctx.created)
+            if _get_run_context() is not None and get_document_store() is not None:
+                ctx = _TaskDocumentContext(created=task_ctx.created)
                 docs = _extract_documents(result)
                 await _persist_documents(docs, fname, ctx)
 
@@ -688,11 +689,11 @@ def pipeline_flow(
             _set_span_attrs(description, expected_cost)
 
             # Set RunContext for nested tasks (only if not already set by deployment)
-            existing_ctx = get_run_context()
+            existing_ctx = _get_run_context()
             run_token = None
             if existing_ctx is None:
                 run_scope = RunScope(f"{run_id}/{name or fname}")
-                run_token = set_run_context(RunContext(run_scope=run_scope))
+                run_token = _set_run_context(RunContext(run_scope=run_scope))
 
             # Set up task context for document lifecycle tracking
             task_ctx = TaskContext(scope_kind="flow")
@@ -702,7 +703,7 @@ def pipeline_flow(
             finally:
                 reset_task_context(task_token)
                 if run_token is not None:
-                    reset_run_context(run_token)
+                    _reset_run_context(run_token)
 
             if trace_cost is not None and trace_cost > 0:
                 set_trace_cost(trace_cost)
@@ -716,8 +717,8 @@ def pipeline_flow(
                 logger.debug("Failed to track flow IO", exc_info=True)
 
             # Document auto-save
-            if get_run_context() is not None and get_document_store() is not None:
-                ctx = TaskDocumentContext(created=task_ctx.created)
+            if _get_run_context() is not None and get_document_store() is not None:
+                ctx = _TaskDocumentContext(created=task_ctx.created)
                 await _persist_documents(result, fname, ctx)
 
             # Replay payload capture

@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from ai_pipeline_core.document_store._protocol import set_document_store
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents import RunContext, get_run_context, reset_run_context, set_run_context
+from ai_pipeline_core.documents import RunContext
+from ai_pipeline_core.documents._context import _get_run_context, _reset_run_context, _set_run_context
 from ai_pipeline_core.pipeline import (
     pipeline_flow,
     pipeline_task,
@@ -222,7 +223,7 @@ class TestDocumentAutoSave:
     async def test_documents_saved_to_store(self):
         store = MemoryDocumentStore()
         set_document_store(store)
-        token = set_run_context(RunContext(run_scope="test/flow"))
+        token = _set_run_context(RunContext(run_scope="test/flow"))
         try:
 
             @pipeline_task
@@ -236,12 +237,12 @@ class TestDocumentAutoSave:
             assert len(loaded) == 1
             assert loaded[0].name == "out.txt"
         finally:
-            reset_run_context(token)
+            _reset_run_context(token)
             set_document_store(None)
 
     async def test_no_store_skips_save(self):
         set_document_store(None)
-        token = set_run_context(RunContext(run_scope="test/flow"))
+        token = _set_run_context(RunContext(run_scope="test/flow"))
         try:
 
             @pipeline_task
@@ -251,7 +252,7 @@ class TestDocumentAutoSave:
             result = await my_task()
             assert len(result) == 1  # task still works
         finally:
-            reset_run_context(token)
+            _reset_run_context(token)
 
     async def test_no_run_context_skips_save(self):
         store = MemoryDocumentStore()
@@ -272,7 +273,7 @@ class TestDocumentAutoSave:
     async def test_single_document_return_saved(self):
         store = MemoryDocumentStore()
         set_document_store(store)
-        token = set_run_context(RunContext(run_scope="test/flow"))
+        token = _set_run_context(RunContext(run_scope="test/flow"))
         try:
 
             @pipeline_task
@@ -283,7 +284,7 @@ class TestDocumentAutoSave:
             loaded = await store.load("test/flow", [OutputDocument])
             assert len(loaded) == 1
         finally:
-            reset_run_context(token)
+            _reset_run_context(token)
             set_document_store(None)
 
 
@@ -298,7 +299,7 @@ class TestFlowRunContext:
 
         @pipeline_flow()
         async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            ctx = get_run_context()
+            ctx = _get_run_context()
             assert ctx is not None
             captured_scope.append(ctx.run_scope)
             return []
@@ -312,17 +313,17 @@ class TestFlowRunContext:
             return []
 
         await my_flow("myproject", [], FlowOptions())
-        assert get_run_context() is None
+        assert _get_run_context() is None
 
     async def test_nested_flow_preserves_outer_context(self):
         """When outer RunContext exists (set by deployment), flow defers to it."""
-        outer_token = set_run_context(RunContext(run_scope="outer/scope"))
+        outer_token = _set_run_context(RunContext(run_scope="outer/scope"))
         try:
             captured: list[str] = []
 
             @pipeline_flow()
             async def inner_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-                ctx = get_run_context()
+                ctx = _get_run_context()
                 assert ctx is not None
                 captured.append(ctx.run_scope)
                 return []
@@ -331,10 +332,10 @@ class TestFlowRunContext:
             # Flow should see the outer (deployment-level) context
             assert captured == ["outer/scope"]
             # Outer context must still be intact
-            assert get_run_context() is not None
-            assert get_run_context().run_scope == "outer/scope"  # type: ignore[union-attr]
+            assert _get_run_context() is not None
+            assert _get_run_context().run_scope == "outer/scope"  # type: ignore[union-attr]
         finally:
-            reset_run_context(outer_token)
+            _reset_run_context(outer_token)
 
     async def test_run_scope_uses_name_override(self):
         """When name= is provided, run_scope should use it instead of function name."""
@@ -342,7 +343,7 @@ class TestFlowRunContext:
 
         @pipeline_flow(name="custom_name")
         async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            ctx = get_run_context()
+            ctx = _get_run_context()
             assert ctx is not None
             captured_scope.append(ctx.run_scope)
             return []
@@ -360,7 +361,7 @@ class TestFlowRunContext:
         with pytest.raises(RuntimeError, match="boom"):
             await failing_flow("proj", [], FlowOptions())
 
-        assert get_run_context() is None
+        assert _get_run_context() is None
 
 
 # --------------------------------------------------------------------------- #
@@ -377,7 +378,7 @@ class TestPersistenceGracefulDegradation:
         broken_store.save_batch = AsyncMock(side_effect=RuntimeError("store broken"))
         broken_store.check_existing = AsyncMock(return_value=set())
         set_document_store(broken_store)
-        token = set_run_context(RunContext(run_scope="test/flow"))
+        token = _set_run_context(RunContext(run_scope="test/flow"))
         try:
 
             @pipeline_task
@@ -388,7 +389,7 @@ class TestPersistenceGracefulDegradation:
             result = await my_task()
             assert len(result) == 1
         finally:
-            reset_run_context(token)
+            _reset_run_context(token)
             set_document_store(None)
 
 

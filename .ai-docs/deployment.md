@@ -1,6 +1,6 @@
 # MODULE: deployment
-# CLASSES: DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment, OutputDocument, StartedEvent, ProgressEvent, CompletedEvent, FailedEvent, ResultPublisher, NoopPublisher, MemoryPublisher
-# DEPENDS: BaseModel, Generic, Protocol, StrEnum
+# CLASSES: DeploymentResult, PipelineDeployment, RunState, FlowStatus, PendingRun, ProgressRun, DeploymentResultData, CompletedRun, FailedRun, RemoteDeployment, OutputDocument
+# DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
 # VERSION: 0.12.4
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
@@ -8,8 +8,8 @@
 ## Imports
 
 ```python
-from ai_pipeline_core import DeploymentResult, PipelineDeployment, RemoteDeployment, run_remote_deployment
-from ai_pipeline_core.deployment import CompletedEvent, CompletedRun, DeploymentResultData, FailedEvent, FailedRun, FlowStatus, MemoryPublisher, NoopPublisher, OutputDocument, PendingRun, ProgressCallback, ProgressEvent, ProgressRun, ResultPublisher, RunResponse, RunState, StartedEvent, progress_update
+from ai_pipeline_core import DeploymentResult, PipelineDeployment, RemoteDeployment
+from ai_pipeline_core.deployment import CompletedRun, DeploymentResultData, FailedRun, FlowStatus, OutputDocument, PendingRun, ProgressCallback, ProgressRun, RunResponse, RunState, progress_update
 ```
 
 ## Types & Constants
@@ -21,6 +21,40 @@ RunResponse = Annotated[
 ]
 
 ProgressCallback = Callable[[float, str], Awaitable[None]]
+
+```
+
+## Internal Types
+
+```python
+# Protocol — implement in concrete class
+@runtime_checkable
+class _ResultPublisher(Protocol):
+    """Publishes pipeline lifecycle events to external consumers."""
+    async def publish_started(self, event: _StartedEvent) -> None:
+        """Publish a pipeline started event."""
+        ...
+
+    async def publish_progress(self, event: _ProgressEvent) -> None:
+        """Publish a flow progress event."""
+        ...
+
+    async def publish_heartbeat(self, run_id: str) -> None:
+        """Publish a heartbeat signal."""
+        ...
+
+    async def publish_completed(self, event: _CompletedEvent) -> None:
+        """Publish a pipeline completed event."""
+        ...
+
+    async def publish_failed(self, event: _FailedEvent) -> None:
+        """Publish a pipeline failed event."""
+        ...
+
+    async def close(self) -> None:
+        """Release resources held by the publisher."""
+        ...
+
 
 ```
 
@@ -193,7 +227,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         run_id: str,
         documents: Sequence[Document],
         options: TOptions,
-        publisher: ResultPublisher | None = None,
+        publisher: _ResultPublisher | None = None,
         start_step: int = 1,
         end_step: int | None = None,
         task_result_store: TaskResultStore | None = None,
@@ -207,7 +241,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         validate_run_id(run_id)
 
         if publisher is None:
-            publisher = NoopPublisher()
+            publisher = _NoopPublisher()
         store = get_document_store()
         total_steps = len(self.flows)
 
@@ -265,10 +299,10 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         failed_published = False
         heartbeat_task: asyncio.Task[None] | None = None
         limits_token = _set_limits_state(_LimitsState(limits=self.concurrency_limits, status=_SharedStatus()))
-        run_token = set_run_context(RunContext(run_scope=run_scope, execution_id=run_uuid))
+        run_token = _set_run_context(RunContext(run_scope=run_scope, execution_id=run_uuid))
         try:
             # Publish task.started event (inside try so failures still hit finally cleanup)
-            await publisher.publish_started(StartedEvent(run_id=run_id, flow_run_id=flow_run_id, run_scope=str(run_scope)))
+            await publisher.publish_started(_StartedEvent(run_id=run_id, flow_run_id=flow_run_id, run_scope=str(run_scope)))
 
             # Start heartbeat background task
             heartbeat_task = asyncio.create_task(_heartbeat_loop(publisher, run_id))
@@ -457,7 +491,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
             # Publish task.completed event
             await publisher.publish_completed(
-                CompletedEvent(
+                _CompletedEvent(
                     run_id=run_id,
                     flow_run_id=flow_run_id,
                     result=result.model_dump(),
@@ -474,7 +508,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 failed_published = True
                 try:
                     await publisher.publish_failed(
-                        FailedEvent(
+                        _FailedEvent(
                             run_id=run_id,
                             flow_run_id=flow_run_id,
                             error_code=_classify_error(exc),
@@ -489,7 +523,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat_task
-            reset_run_context(run_token)
+            _reset_run_context(run_token)
             _reset_limits_state(limits_token)
             store = get_document_store()
             if store:
@@ -530,7 +564,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         run_id: str,
         documents: Sequence[Document],
         options: TOptions,
-        publisher: ResultPublisher | None = None,
+        publisher: _ResultPublisher | None = None,
         output_dir: Path | None = None,
     ) -> TResult:
         """Run locally with Prefect test harness and in-memory document store.
@@ -539,7 +573,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             run_id: Pipeline run identifier.
             documents: Initial input documents.
             options: Flow options.
-            publisher: Optional lifecycle event publisher (defaults to NoopPublisher).
+            publisher: Optional lifecycle event publisher (defaults to _NoopPublisher).
             output_dir: Optional directory for writing result.json.
 
         Returns:
@@ -741,127 +775,6 @@ class OutputDocument(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
-@dataclass(frozen=True, slots=True)
-class StartedEvent:
-    """Pipeline execution started."""
-    run_id: str
-    flow_run_id: str
-    run_scope: str
-
-
-@dataclass(frozen=True, slots=True)
-class ProgressEvent:
-    """Flow-level or intra-flow progress."""
-    run_id: str
-    flow_run_id: str
-    flow_name: str
-    step: int
-    total_steps: int
-    progress: float
-    step_progress: float
-    status: FlowStatus
-    message: str
-
-
-@dataclass(frozen=True, slots=True)
-class CompletedEvent:
-    """Pipeline completed successfully."""
-    run_id: str
-    flow_run_id: str
-    result: dict[str, Any]
-    chain_context: dict[str, Any]
-    actual_cost: float
-
-
-@dataclass(frozen=True, slots=True)
-class FailedEvent:
-    """Pipeline execution failed."""
-    run_id: str
-    flow_run_id: str
-    error_code: ErrorCode
-    error_message: str
-
-
-# Protocol — implement in concrete class
-@runtime_checkable
-class ResultPublisher(Protocol):
-    """Publishes pipeline lifecycle events to external consumers."""
-    async def close(self) -> None:
-        """Release resources held by the publisher."""
-        ...
-
-    async def publish_completed(self, event: CompletedEvent) -> None:
-        """Publish a pipeline completed event."""
-        ...
-
-    async def publish_failed(self, event: FailedEvent) -> None:
-        """Publish a pipeline failed event."""
-        ...
-
-    async def publish_heartbeat(self, run_id: str) -> None:
-        """Publish a heartbeat signal."""
-        ...
-
-    async def publish_progress(self, event: ProgressEvent) -> None:
-        """Publish a flow progress event."""
-        ...
-
-    async def publish_started(self, event: StartedEvent) -> None:
-        """Publish a pipeline started event."""
-        ...
-
-
-class NoopPublisher:
-    """Discards all lifecycle events. Default publisher for CLI and run_local."""
-    async def close(self) -> None:
-        """No resources to release."""
-
-    async def publish_completed(self, event: CompletedEvent) -> None:
-        """Accept and discard a completed event."""
-
-    async def publish_failed(self, event: FailedEvent) -> None:
-        """Accept and discard a failed event."""
-
-    async def publish_heartbeat(self, run_id: str) -> None:
-        """Accept and discard a heartbeat."""
-
-    async def publish_progress(self, event: ProgressEvent) -> None:
-        """Accept and discard a progress event."""
-
-    async def publish_started(self, event: StartedEvent) -> None:
-        """Accept and discard a started event."""
-
-
-class MemoryPublisher:
-    """Records all lifecycle events in-memory for test assertions."""
-    def __init__(self) -> None:
-        self.events: list[StartedEvent | ProgressEvent | CompletedEvent | FailedEvent] = []
-        self.heartbeats: list[str] = []
-
-    async def close(self) -> None:
-        """No resources to release."""
-
-    async def publish_completed(self, event: CompletedEvent) -> None:
-        """Record a completed event."""
-        self.events.append(event)
-
-    async def publish_failed(self, event: FailedEvent) -> None:
-        """Record a failed event."""
-        self.events.append(event)
-
-    async def publish_heartbeat(self, run_id: str) -> None:
-        """Record a heartbeat."""
-        self.heartbeats.append(run_id)
-
-    async def publish_progress(self, event: ProgressEvent) -> None:
-        """Record a progress event."""
-        self.events.append(event)
-
-    async def publish_started(self, event: StartedEvent) -> None:
-        """Record a started event."""
-        self.events.append(event)
-
-
 ```
 
 ## Functions
@@ -870,7 +783,7 @@ class MemoryPublisher:
 async def progress_update(fraction: float, message: str = "") -> None:
     """Report intra-flow progress (0.0-1.0). No-op without context.
 
-    Publishes a ProgressEvent via the publisher and updates Prefect flow run
+    Publishes a _ProgressEvent via the publisher and updates Prefect flow run
     labels (if flow_run_id available) so poll consumers see progress and
     staleness detection stays current.
     """
@@ -884,7 +797,7 @@ async def progress_update(fraction: float, message: str = "") -> None:
 
     # Fire-and-forget progress event publish to avoid blocking flow execution
     if ctx.publisher is not None:
-        event = ProgressEvent(
+        event = _ProgressEvent(
             run_id=ctx.run_id,
             flow_run_id=ctx.flow_run_id,
             flow_name=ctx.flow_name,
@@ -908,56 +821,6 @@ async def progress_update(fraction: float, message: str = "") -> None:
         step_progress=step_progress,
         message=message,
     )
-
-async def run_remote_deployment(
-    deployment_name: str,
-    parameters: dict[str, Any],
-    on_progress: ProgressCallback | None = None,
-    run_id: str | None = None,
-) -> Any:
-    """Run a remote Prefect deployment with optional progress callback.
-
-    Creates the remote flow run immediately (timeout=0) then polls its state,
-    invoking on_progress(fraction, message) on each poll cycle if provided.
-
-    When run_id is provided, it is passed to the polling function to enable
-    ClickHouse fallback for result retrieval.
-    """
-
-    async def _create_and_poll(client: PrefectClient, as_subflow: bool) -> Any:
-        fr: FlowRun = await run_deployment(  # type: ignore[assignment]
-            client=client,
-            name=deployment_name,
-            parameters=parameters,
-            as_subflow=as_subflow,
-            timeout=0,
-        )
-        return await _poll_remote_flow_run(client, cast(UUID, fr.id), deployment_name, on_progress=on_progress, run_id=run_id)
-
-    async with get_client() as client:
-        try:
-            await client.read_deployment_by_name(name=deployment_name)
-            return await _create_and_poll(client, True)  # noqa: FBT003
-        except ObjectNotFound:
-            pass
-
-    if not settings.prefect_api_url:
-        raise ValueError(f"{deployment_name} not found, PREFECT_API_URL not set")
-
-    async with PrefectClient(
-        api=settings.prefect_api_url,
-        api_key=settings.prefect_api_key,
-        auth_string=settings.prefect_api_auth_string,
-    ) as client:
-        try:
-            await client.read_deployment_by_name(name=deployment_name)
-            ctx = AsyncClientContext.model_construct(client=client, _httpx_settings=None, _context_stack=0)
-            with ctx:
-                return await _create_and_poll(client, False)  # noqa: FBT003
-        except ObjectNotFound:
-            pass
-
-    raise ValueError(f"{deployment_name} deployment not found")
 
 ```
 
@@ -1086,30 +949,45 @@ def test_deployment_result_data(self):
     assert "success" in dumped
 ```
 
-**Satisfies protocol** (`tests/deployment/test_publishers.py:58`)
+**Subclass specific trace names** (`tests/deployment/test_remote_deployment.py:419`)
 
 ```python
-def test_satisfies_protocol(self):
-    """NoopPublisher must be a valid ResultPublisher."""
-    assert isinstance(NoopPublisher(), ResultPublisher)
+def test_subclass_specific_trace_names(self):
+    class PipelineA(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        pass
+
+    class PipelineB(RemoteDeployment[BetaDoc, FlowOptions, SimpleResult]):
+        pass
+
+    assert PipelineA._execute is not PipelineB._execute
 ```
 
-**Satisfies protocol** (`tests/deployment/test_publishers.py:86`)
+**Three args returned by helper** (`tests/deployment/test_remote_deployment.py:97`)
 
 ```python
-def test_satisfies_protocol(self):
-    """MemoryPublisher must be a valid ResultPublisher."""
-    assert isinstance(MemoryPublisher(), ResultPublisher)
+def test_three_args_returned_by_helper(self):
+    class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        trace_level: ClassVar[TraceLevel] = "off"
+
+    args = extract_generic_params(Foo, RemoteDeployment)
+    assert len(args) == 3
+    assert args[0] is AlphaDoc
+    assert args[1] is FlowOptions
+    assert args[2] is SimpleResult
 ```
 
-**Starts empty** (`tests/deployment/test_publishers.py:90`)
+**Three params from remote deployment** (`tests/deployment/test_remote_deployment.py:590`)
 
 ```python
-def test_starts_empty(self):
-    """New MemoryPublisher has no events or heartbeats."""
-    pub = MemoryPublisher()
-    assert pub.events == []
-    assert pub.heartbeats == []
+def test_three_params_from_remote_deployment(self):
+    class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        trace_level: ClassVar[TraceLevel] = "off"
+
+    result = extract_generic_params(Foo, RemoteDeployment)
+    assert len(result) == 3
+    assert result[0] is AlphaDoc
+    assert result[1] is FlowOptions
+    assert result[2] is SimpleResult
 ```
 
 
@@ -1141,30 +1019,6 @@ async def test_remote_deployment_rejects_invalid_base_run_id(self):
     doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
     with pytest.raises(ValueError, match="contains invalid characters"):
         await Wired().run("invalid run id with spaces", [doc], FlowOptions())
-```
-
-**Publishes failed event on error** (`tests/deployment/test_publisher_wiring.py:224`)
-
-```python
-async def test_publishes_failed_event_on_error(self):
-    """run() must publish FailedEvent when a flow raises."""
-    pub = MemoryPublisher()
-    store = MemoryDocumentStore()
-    set_document_store(store)
-    try:
-        deployment = _FailingDeployment()
-        doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
-        with pytest.raises(RuntimeError, match="deliberate failure"):
-            await deployment.run("run-1", [doc], FlowOptions(), publisher=pub)
-    finally:
-        store.shutdown()
-        set_document_store(None)
-
-    failed_events = [e for e in pub.events if isinstance(e, FailedEvent)]
-    assert len(failed_events) == 1
-    assert failed_events[0].run_id == "run-1"
-    assert failed_events[0].error_code == ErrorCode.UNKNOWN
-    assert "deliberate failure" in failed_events[0].error_message
 ```
 
 **Rejects int** (`tests/deployment/test_remote_deployment.py:153`)
@@ -1207,5 +1061,15 @@ def test_rejects_non_document_in_union(self):
     with pytest.raises(TypeError, match="Document subclass"):
 
         class Bad(RemoteDeployment[AlphaDoc | str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
+            trace_level: ClassVar[TraceLevel] = "off"
+```
+
+**Rejects non document type** (`tests/deployment/test_remote_deployment.py:141`)
+
+```python
+def test_rejects_non_document_type(self):
+    with pytest.raises(TypeError, match="Document subclass"):
+
+        class Bad(RemoteDeployment[str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
             trace_level: ClassVar[TraceLevel] = "off"
 ```

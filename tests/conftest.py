@@ -7,7 +7,8 @@ import pytest
 
 from ai_pipeline_core.document_store._protocol import set_document_store
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-from ai_pipeline_core.documents import RunContext, reset_run_context, set_run_context
+from ai_pipeline_core.documents import RunContext
+from ai_pipeline_core.documents._context import _reset_run_context, _set_run_context
 from prefect.logging import disable_run_logger
 from prefect.testing.utilities import prefect_test_harness
 
@@ -68,6 +69,6 @@ def run_context():
     Automatically resets the ContextVar after the test.
     """
     ctx = RunContext(run_scope="test-run-scope")
-    token = set_run_context(ctx)
+    token = _set_run_context(ctx)
     yield ctx
-    reset_run_context(token)
+    _reset_run_context(token)

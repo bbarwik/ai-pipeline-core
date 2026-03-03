@@ -6,12 +6,12 @@ Non-critical events (progress, heartbeat) use single-attempt fire-and-forget.
 """
 
 import asyncio
-import concurrent.futures
 import json
 import time
 import uuid
+from concurrent.futures import Future
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from google.cloud.pubsub_v1 import PublisherClient  # pyright: ignore[reportMissingTypeStubs]
 
@@ -19,11 +19,11 @@ from ai_pipeline_core.exceptions import PipelineCoreError
 from ai_pipeline_core.logging import get_pipeline_logger
 
 from ._types import (
-    CompletedEvent,
     EventType,
-    FailedEvent,
-    ProgressEvent,
-    StartedEvent,
+    _CompletedEvent,
+    _FailedEvent,
+    _ProgressEvent,
+    _StartedEvent,
 )
 
 logger = get_pipeline_logger(__name__)
@@ -109,9 +109,9 @@ class PubSubPublisher:
         last_error: Exception | None = None
         for attempt in range(CRITICAL_MAX_RETRIES):
             try:
-                future: concurrent.futures.Future[str] = self._client.publish(self._topic_path, data, **attributes)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+                future = cast(Future[str], self._client.publish(self._topic_path, data, **attributes))  # pyright: ignore[reportUnknownMemberType] — google-cloud-pubsub stubs incomplete
                 await asyncio.wait_for(
-                    asyncio.wrap_future(future),  # pyright: ignore[reportUnknownArgumentType]
+                    asyncio.wrap_future(future),
                     timeout=CRITICAL_TIMEOUT_SECONDS,
                 )
                 return
@@ -126,7 +126,7 @@ class PubSubPublisher:
     async def _publish_noncritical(self, data: bytes, attributes: dict[str, str]) -> None:
         """Single-attempt publish for non-critical events."""
         try:
-            future: concurrent.futures.Future[str] = self._client.publish(self._topic_path, data, **attributes)
+            future = cast(Future[str], self._client.publish(self._topic_path, data, **attributes))  # pyright: ignore[reportUnknownMemberType] — google-cloud-pubsub stubs incomplete
             await asyncio.wait_for(
                 asyncio.wrap_future(future),
                 timeout=NONCRITICAL_TIMEOUT_SECONDS,
@@ -142,7 +142,7 @@ class PubSubPublisher:
             "run_id": run_id,
         }
 
-    async def publish_started(self, event: StartedEvent) -> None:
+    async def publish_started(self, event: _StartedEvent) -> None:
         """Publish task.started event (critical)."""
         data = self._build_envelope(
             EventType.STARTED,
@@ -151,7 +151,7 @@ class PubSubPublisher:
         )
         await self._publish(data, self._make_attributes(EventType.STARTED, event.run_id), critical=True)
 
-    async def publish_progress(self, event: ProgressEvent) -> None:
+    async def publish_progress(self, event: _ProgressEvent) -> None:
         """Publish task.progress event (non-critical)."""
         data = self._build_envelope(
             EventType.PROGRESS,
@@ -180,7 +180,7 @@ class PubSubPublisher:
         )
         await self._publish(data, self._make_attributes(EventType.HEARTBEAT, run_id), critical=False)
 
-    async def publish_completed(self, event: CompletedEvent) -> None:
+    async def publish_completed(self, event: _CompletedEvent) -> None:
         """Publish task.completed event (critical)."""
         data = self._build_envelope(
             EventType.COMPLETED,
@@ -198,7 +198,7 @@ class PubSubPublisher:
 
         await self._publish(data, self._make_attributes(EventType.COMPLETED, event.run_id), critical=True)
 
-    async def publish_failed(self, event: FailedEvent) -> None:
+    async def publish_failed(self, event: _FailedEvent) -> None:
         """Publish task.failed event (critical)."""
         data = self._build_envelope(
             EventType.FAILED,

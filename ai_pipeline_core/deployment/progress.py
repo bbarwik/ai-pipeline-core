@@ -11,7 +11,7 @@ from prefect import get_client
 
 from ai_pipeline_core.logging import get_pipeline_logger
 
-from ._types import ProgressEvent, ResultPublisher
+from ._types import _ProgressEvent, _ResultPublisher
 from .contract import FlowStatus
 
 logger = get_pipeline_logger(__name__)
@@ -43,7 +43,7 @@ class _ProgressContext:
     total_minutes: float
     completed_minutes: float
     current_flow_minutes: float
-    publisher: ResultPublisher | None = None
+    publisher: _ResultPublisher | None = None
 
 
 _context: ContextVar[_ProgressContext | None] = ContextVar("progress_context", default=None)
@@ -119,7 +119,7 @@ async def _emit_progress(
 async def progress_update(fraction: float, message: str = "") -> None:
     """Report intra-flow progress (0.0-1.0). No-op without context.
 
-    Publishes a ProgressEvent via the publisher and updates Prefect flow run
+    Publishes a _ProgressEvent via the publisher and updates Prefect flow run
     labels (if flow_run_id available) so poll consumers see progress and
     staleness detection stays current.
     """
@@ -133,7 +133,7 @@ async def progress_update(fraction: float, message: str = "") -> None:
 
     # Fire-and-forget progress event publish to avoid blocking flow execution
     if ctx.publisher is not None:
-        event = ProgressEvent(
+        event = _ProgressEvent(
             run_id=ctx.run_id,
             flow_run_id=ctx.flow_run_id,
             flow_name=ctx.flow_name,
@@ -169,7 +169,7 @@ def _flow_context(
     total_steps: int,
     flow_minutes: tuple[float, ...],
     completed_minutes: float,
-    publisher: ResultPublisher | None = None,
+    publisher: _ResultPublisher | None = None,
 ) -> Generator[None, None, None]:
     """Set up progress context for a flow. Framework internal use."""
     current_flow_minutes = flow_minutes[step - 1] if step <= len(flow_minutes) else 1.0

@@ -21,14 +21,14 @@ __all__ = [
     "RunContext",
     "RunScope",
     "TaskContext",
-    "TaskDocumentContext",
+    "_TaskDocumentContext",
+    "_get_run_context",
+    "_reset_run_context",
+    "_set_run_context",
     "_suppress_document_registration",
-    "get_run_context",
     "get_task_context",
     "is_registration_suppressed",
-    "reset_run_context",
     "reset_task_context",
-    "set_run_context",
     "set_task_context",
 ]
 
@@ -53,18 +53,18 @@ class RunContext:
 _run_context: ContextVar[RunContext | None] = ContextVar("_run_context", default=None)
 
 
-def get_run_context() -> RunContext | None:
+def _get_run_context() -> RunContext | None:
     """Get the current run context, or None if not set."""
     return _run_context.get()
 
 
-def set_run_context(ctx: RunContext) -> Token[RunContext | None]:
+def _set_run_context(ctx: RunContext) -> Token[RunContext | None]:
     """Set the run context. Returns a token for restoring the previous value."""
     return _run_context.set(ctx)
 
 
-def reset_run_context(token: Token[RunContext | None]) -> None:
-    """Reset the run context to its previous value using a token from set_run_context."""
+def _reset_run_context(token: Token[RunContext | None]) -> None:
+    """Reset the run context to its previous value using a token from _set_run_context."""
     _run_context.reset(token)
 
 
@@ -123,7 +123,7 @@ from ai_pipeline_core.documents.utils import is_document_sha256  # noqa: E402
 
 
 @dataclass
-class TaskDocumentContext:
+class _TaskDocumentContext:
     """Tracks documents created within a single pipeline task or flow execution.
 
     Used by @pipeline_task and @pipeline_flow decorators to:

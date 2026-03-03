@@ -6,7 +6,8 @@ from ai_pipeline_core import pipeline_flow
 from ai_pipeline_core.document_store._protocol import set_document_store
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents import RunContext, reset_run_context, set_run_context
+from ai_pipeline_core.documents import RunContext
+from ai_pipeline_core.documents._context import _get_run_context, _reset_run_context, _set_run_context
 from ai_pipeline_core.pipeline.options import FlowOptions
 
 
@@ -30,9 +31,9 @@ def memory_store():
 @pytest.fixture
 def run_context():
     """Set up and tear down a RunContext for testing."""
-    token = set_run_context(RunContext(run_scope="test-project"))
+    token = _set_run_context(RunContext(run_scope="test-project"))
     yield
-    reset_run_context(token)
+    _reset_run_context(token)
 
 
 @pytest.mark.asyncio
@@ -69,14 +70,13 @@ async def test_pipeline_flow_works_without_store(prefect_test_fixture):
 @pytest.mark.asyncio
 async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture, memory_store):
     """Test that pipeline_flow sets RunContext if none exists."""
-    from ai_pipeline_core.documents import get_run_context
 
     captured_ctx = None
 
     @pipeline_flow()
     async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         nonlocal captured_ctx
-        captured_ctx = get_run_context()
+        captured_ctx = _get_run_context()
         return []
 
     await test_flow("my-project", [], FlowOptions())
@@ -88,14 +88,13 @@ async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture,
 @pytest.mark.asyncio
 async def test_pipeline_flow_preserves_existing_run_context(prefect_test_fixture, memory_store, run_context):
     """Test that pipeline_flow does not override RunContext set by deployment."""
-    from ai_pipeline_core.documents import get_run_context
 
     captured_ctx = None
 
     @pipeline_flow()
     async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
         nonlocal captured_ctx
-        captured_ctx = get_run_context()
+        captured_ctx = _get_run_context()
         return []
 
     await test_flow("my-project", [], FlowOptions())

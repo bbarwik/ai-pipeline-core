@@ -34,7 +34,7 @@ class ErrorCode(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class StartedEvent:
+class _StartedEvent:
     """Pipeline execution started."""
 
     run_id: str
@@ -43,7 +43,7 @@ class StartedEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class ProgressEvent:
+class _ProgressEvent:
     """Flow-level or intra-flow progress."""
 
     run_id: str
@@ -58,7 +58,7 @@ class ProgressEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class CompletedEvent:
+class _CompletedEvent:
     """Pipeline completed successfully."""
 
     run_id: str
@@ -69,7 +69,7 @@ class CompletedEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class FailedEvent:
+class _FailedEvent:
     """Pipeline execution failed."""
 
     run_id: str
@@ -80,14 +80,14 @@ class FailedEvent:
 
 # Protocol
 @runtime_checkable
-class ResultPublisher(Protocol):
+class _ResultPublisher(Protocol):
     """Publishes pipeline lifecycle events to external consumers."""
 
-    async def publish_started(self, event: StartedEvent) -> None:
+    async def publish_started(self, event: _StartedEvent) -> None:
         """Publish a pipeline started event."""
         ...
 
-    async def publish_progress(self, event: ProgressEvent) -> None:
+    async def publish_progress(self, event: _ProgressEvent) -> None:
         """Publish a flow progress event."""
         ...
 
@@ -95,11 +95,11 @@ class ResultPublisher(Protocol):
         """Publish a heartbeat signal."""
         ...
 
-    async def publish_completed(self, event: CompletedEvent) -> None:
+    async def publish_completed(self, event: _CompletedEvent) -> None:
         """Publish a pipeline completed event."""
         ...
 
-    async def publish_failed(self, event: FailedEvent) -> None:
+    async def publish_failed(self, event: _FailedEvent) -> None:
         """Publish a pipeline failed event."""
         ...
 
@@ -136,40 +136,40 @@ class TaskResultStore(Protocol):
         ...
 
 
-class NoopPublisher:
+class _NoopPublisher:
     """Discards all lifecycle events. Default publisher for CLI and run_local."""
 
-    async def publish_started(self, event: StartedEvent) -> None:
+    async def publish_started(self, event: _StartedEvent) -> None:
         """Accept and discard a started event."""
 
-    async def publish_progress(self, event: ProgressEvent) -> None:
+    async def publish_progress(self, event: _ProgressEvent) -> None:
         """Accept and discard a progress event."""
 
     async def publish_heartbeat(self, run_id: str) -> None:
         """Accept and discard a heartbeat."""
 
-    async def publish_completed(self, event: CompletedEvent) -> None:
+    async def publish_completed(self, event: _CompletedEvent) -> None:
         """Accept and discard a completed event."""
 
-    async def publish_failed(self, event: FailedEvent) -> None:
+    async def publish_failed(self, event: _FailedEvent) -> None:
         """Accept and discard a failed event."""
 
     async def close(self) -> None:
         """No resources to release."""
 
 
-class MemoryPublisher:
+class _MemoryPublisher:
     """Records all lifecycle events in-memory for test assertions."""
 
     def __init__(self) -> None:
-        self.events: list[StartedEvent | ProgressEvent | CompletedEvent | FailedEvent] = []
+        self.events: list[_StartedEvent | _ProgressEvent | _CompletedEvent | _FailedEvent] = []
         self.heartbeats: list[str] = []
 
-    async def publish_started(self, event: StartedEvent) -> None:
+    async def publish_started(self, event: _StartedEvent) -> None:
         """Record a started event."""
         self.events.append(event)
 
-    async def publish_progress(self, event: ProgressEvent) -> None:
+    async def publish_progress(self, event: _ProgressEvent) -> None:
         """Record a progress event."""
         self.events.append(event)
 
@@ -177,11 +177,11 @@ class MemoryPublisher:
         """Record a heartbeat."""
         self.heartbeats.append(run_id)
 
-    async def publish_completed(self, event: CompletedEvent) -> None:
+    async def publish_completed(self, event: _CompletedEvent) -> None:
         """Record a completed event."""
         self.events.append(event)
 
-    async def publish_failed(self, event: FailedEvent) -> None:
+    async def publish_failed(self, event: _FailedEvent) -> None:
         """Record a failed event."""
         self.events.append(event)
 
@@ -190,15 +190,15 @@ class MemoryPublisher:
 
 
 __all__ = [
-    "CompletedEvent",
     "ErrorCode",
     "EventType",
-    "FailedEvent",
-    "MemoryPublisher",
-    "NoopPublisher",
-    "ProgressEvent",
-    "ResultPublisher",
-    "StartedEvent",
     "TaskResultRecord",
     "TaskResultStore",
+    "_CompletedEvent",
+    "_FailedEvent",
+    "_MemoryPublisher",
+    "_NoopPublisher",
+    "_ProgressEvent",
+    "_ResultPublisher",
+    "_StartedEvent",
 ]

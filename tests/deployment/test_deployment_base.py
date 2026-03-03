@@ -571,13 +571,13 @@ class TestRunContextIncludesExecutionId:
     async def test_run_context_has_execution_id(self):
         from ai_pipeline_core.document_store._memory import MemoryDocumentStore
         from ai_pipeline_core.document_store._protocol import set_document_store
-        from ai_pipeline_core.documents._context import get_run_context
+        from ai_pipeline_core.documents._context import _get_run_context
 
         captured_ctx = []
 
         @pipeline_flow()
         async def ctx_flow(run_id: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
-            captured_ctx.append(get_run_context())
+            captured_ctx.append(_get_run_context())
             return [OutputDoc(name="out.txt", content=b"ok")]
 
         class CtxDeployment(PipelineDeployment[FlowOptions, ValidResult]):

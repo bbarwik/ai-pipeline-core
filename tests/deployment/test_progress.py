@@ -7,8 +7,8 @@ from uuid import UUID
 
 import pytest
 
-from ai_pipeline_core.deployment._types import MemoryPublisher
-from ai_pipeline_core.deployment._types import ProgressEvent
+from ai_pipeline_core.deployment._types import _MemoryPublisher
+from ai_pipeline_core.deployment._types import _ProgressEvent
 from ai_pipeline_core.deployment.contract import FlowStatus
 from ai_pipeline_core.deployment.progress import _ProgressContext, _flow_context, progress_update
 from ai_pipeline_core.documents import Document
@@ -327,13 +327,13 @@ class TestInvalidFlowRunId:
 
 
 class TestPublisherIntegration:
-    """Test that update() publishes ProgressEvent via the publisher."""
+    """Test that update() publishes _ProgressEvent via the publisher."""
 
     async def test_publishes_progress_event(self):
-        """update() must fire-and-forget a ProgressEvent via publisher."""
+        """update() must fire-and-forget a _ProgressEvent via publisher."""
         import asyncio
 
-        pub = MemoryPublisher()
+        pub = _MemoryPublisher()
         with _flow_context(
             "test-run",
             str(UUID(int=1)),
@@ -354,7 +354,7 @@ class TestPublisherIntegration:
 
         assert len(pub.events) == 1
         event = pub.events[0]
-        assert isinstance(event, ProgressEvent)
+        assert isinstance(event, _ProgressEvent)
         assert event.run_id == "test-run"
         assert event.flow_name == "analysis"
         assert event.step == 2
@@ -365,7 +365,7 @@ class TestPublisherIntegration:
         """Publisher failure must not crash the flow or prevent label update."""
         import asyncio
 
-        failing_pub = AsyncMock(spec=MemoryPublisher)
+        failing_pub = AsyncMock(spec=_MemoryPublisher)
         failing_pub.publish_progress.side_effect = RuntimeError("pub error")
 
         mock_client = AsyncMock()
@@ -412,10 +412,10 @@ class TestPublisherIntegration:
         mock_client.update_flow_run_labels.assert_called_once()
 
     async def test_publish_event_has_correct_overall_progress(self):
-        """ProgressEvent overall progress is computed from step weights."""
+        """_ProgressEvent overall progress is computed from step weights."""
         import asyncio
 
-        pub = MemoryPublisher()
+        pub = _MemoryPublisher()
         # Step 2 of 3, minutes (10, 20, 30), 10 completed, fraction 0.5
         # Expected overall: (10 + 20*0.5) / 60 = 20/60 = 0.3333
         with _flow_context(

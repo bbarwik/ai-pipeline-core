@@ -28,7 +28,7 @@ from ai_pipeline_core.deployment._helpers import (
 from ai_pipeline_core.deployment._resolve import AttachmentInput, DocumentInput
 from ai_pipeline_core.deployment._task_results import ClickHouseTaskResultStore
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._context import get_run_context
+from ai_pipeline_core.documents._context import _get_run_context
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._span_data import ATTR_INPUT_DOC_SHA256S, ATTR_OUTPUT_DOC_SHA256S
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
@@ -41,7 +41,6 @@ logger = get_pipeline_logger(__name__)
 __all__ = [
     "ProgressCallback",
     "RemoteDeployment",
-    "run_remote_deployment",
 ]
 
 TDoc = TypeVar("TDoc", bound=Document)
@@ -177,7 +176,7 @@ async def _read_from_task_results(run_id: str) -> dict[str, Any] | None:
         return None
 
 
-async def run_remote_deployment(
+async def _run_remote_deployment(
     deployment_name: str,
     parameters: dict[str, Any],
     on_progress: ProgressCallback | None = None,
@@ -330,13 +329,13 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         validate_run_id(derived_run_id)
 
         # Extract parent lineage from RunContext and current OTel span
-        run_ctx = get_run_context()
+        run_ctx = _get_run_context()
         parent_exec_id = str(run_ctx.execution_id) if run_ctx and run_ctx.execution_id else None
         parent_span_hex: str | None = None
         try:
             current_span = otel_trace.get_current_span()
             span_ctx = current_span.get_span_context() if current_span else None
-            if span_ctx and isinstance(span_ctx.span_id, int) and span_ctx.span_id:
+            if span_ctx and span_ctx.span_id:
                 parent_span_hex = format(span_ctx.span_id, "016x")
         except Exception:
             logger.debug("Failed to extract parent span context for lineage tracking")
@@ -349,7 +348,7 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
             "parent_span_id": parent_span_hex,
         }
 
-        result = await run_remote_deployment(
+        result = await _run_remote_deployment(
             self.deployment_path,
             parameters,
             on_progress=on_progress,

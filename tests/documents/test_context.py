@@ -1,13 +1,13 @@
-"""Tests for RunContext and TaskDocumentContext."""
+"""Tests for RunContext and _TaskDocumentContext."""
 
 import pytest
 
 from ai_pipeline_core.documents import Document, RunScope
 from ai_pipeline_core.documents._context import (
     RunContext,
-    TaskDocumentContext,
-    get_run_context,
-    set_run_context,
+    _TaskDocumentContext,
+    _get_run_context,
+    _set_run_context,
 )
 
 
@@ -43,13 +43,13 @@ class TestRunContext:
             ctx.run_scope = "changed"  # type: ignore[misc]
 
     def test_get_returns_none_by_default(self):
-        assert get_run_context() is None
+        assert _get_run_context() is None
 
     def test_set_and_get(self):
         ctx = RunContext(run_scope=RunScope("my-run"))
-        token = set_run_context(ctx)
+        token = _set_run_context(ctx)
         try:
-            assert get_run_context() is ctx
+            assert _get_run_context() is ctx
         finally:
             from ai_pipeline_core.documents._context import _run_context
 
@@ -58,16 +58,16 @@ class TestRunContext:
     def test_token_restores_previous(self):
         ctx1 = RunContext(run_scope=RunScope("first"))
         ctx2 = RunContext(run_scope=RunScope("second"))
-        token1 = set_run_context(ctx1)
-        token2 = set_run_context(ctx2)
-        assert get_run_context() is ctx2
+        token1 = _set_run_context(ctx1)
+        token2 = _set_run_context(ctx2)
+        assert _get_run_context() is ctx2
 
         from ai_pipeline_core.documents._context import _run_context
 
         _run_context.reset(token2)
-        assert get_run_context() is ctx1
+        assert _get_run_context() is ctx1
         _run_context.reset(token1)
-        assert get_run_context() is None
+        assert _get_run_context() is None
 
     def test_execution_id_defaults_to_none(self):
         ctx = RunContext(run_scope=RunScope("test"))
@@ -81,18 +81,18 @@ class TestRunContext:
         assert ctx.execution_id == uid
 
 
-# ===== TaskDocumentContext.register_created =====
+# ===== _TaskDocumentContext.register_created =====
 
 
 class TestRegistration:
     def test_register_created(self):
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         doc = _make_doc("a.txt")
         ctx.register_created(doc)
         assert doc.sha256 in ctx.created
 
     def test_register_multiple(self):
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         doc_a = _make_doc("a.txt", "aaa")
         doc_b = _make_doc("b.txt", "bbb")
         ctx.register_created(doc_a)
@@ -108,7 +108,7 @@ class TestValidateProvenance:
         """derived_from reference exists in the store — no warning."""
         parent = _make_doc("parent.txt", "parent")
         doc = _make_doc("a.txt", "aaa", derived_from=(parent.sha256,))
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s={parent.sha256})
         assert warnings == []
 
@@ -116,7 +116,7 @@ class TestValidateProvenance:
         """Document references a SHA256 that doesn't exist in the store."""
         phantom = _make_doc("phantom.txt", "ghost")
         doc = _make_doc("a.txt", "aaa", derived_from=(phantom.sha256,))
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s=set())
         assert len(warnings) == 1
         assert "does not exist" in warnings[0]
@@ -124,7 +124,7 @@ class TestValidateProvenance:
     def test_accepts_url_derived_from(self):
         """URLs in derived_from are accepted and not validated as SHA256."""
         doc = _make_doc("a.txt", "aaa", derived_from=("https://example.com",))
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s=set())
         assert all("does not exist" not in w for w in warnings)
 
@@ -139,7 +139,7 @@ class TestValidateProvenance:
         """Document references a triggered_by SHA256 that doesn't exist."""
         phantom = _make_doc("phantom.txt", "ghost")
         doc = _make_doc("a.txt", "aaa", triggered_by=(phantom.sha256,))
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s=set())
         assert len(warnings) == 1
         assert "triggered_by" in warnings[0]
@@ -149,7 +149,7 @@ class TestValidateProvenance:
         """triggered_by reference exists in the store — no warning."""
         parent = _make_doc("parent.txt", "parent")
         doc = _make_doc("a.txt", "aaa", triggered_by=(parent.sha256,))
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s={parent.sha256})
         assert warnings == []
 
@@ -157,7 +157,7 @@ class TestValidateProvenance:
         """derived_from SHA256 created in the same task produces a warning."""
         doc_a = _make_doc("a.txt", "aaa")
         doc_b = _make_doc("b.txt", "bbb", derived_from=(doc_a.sha256,))
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         ctx.register_created(doc_a)
         ctx.register_created(doc_b)
         warnings = ctx.validate_provenance([doc_b], existing_sha256s=set())
@@ -168,7 +168,7 @@ class TestValidateProvenance:
         """triggered_by SHA256 created in the same task produces a warning."""
         doc_a = _make_doc("a.txt", "aaa")
         doc_b = _make_doc("b.txt", "bbb", triggered_by=(doc_a.sha256,))
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         ctx.register_created(doc_a)
         ctx.register_created(doc_b)
         warnings = ctx.validate_provenance([doc_b], existing_sha256s=set())
@@ -179,7 +179,7 @@ class TestValidateProvenance:
     def test_no_provenance_warning(self):
         """Document with no derived_from and no triggered_by gets a warning."""
         doc = _make_doc("a.txt", "aaa")
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s=set())
         assert len(warnings) == 1
         assert "no provenance" in warnings[0]
@@ -187,7 +187,7 @@ class TestValidateProvenance:
     def test_url_derived_from_no_provenance_warning(self):
         """Document with URL derived_from has provenance — no warning."""
         doc = _make_doc("a.txt", "aaa", derived_from=("https://example.com",))
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         warnings = ctx.validate_provenance([doc], existing_sha256s=set())
         assert warnings == []
 
@@ -196,7 +196,7 @@ class TestValidateProvenance:
         parent = _make_doc("parent.txt", "parent")
         valid = _make_doc("valid.txt", "valid", derived_from=(parent.sha256,))
         orphan = _make_doc("orphan.txt", "orphan")  # no provenance
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         warnings = ctx.validate_provenance([valid, orphan], existing_sha256s={parent.sha256})
         assert len(warnings) == 1
         assert "no provenance" in warnings[0]
@@ -207,16 +207,16 @@ class TestValidateProvenance:
 
 class TestDeduplicate:
     def test_empty_list(self):
-        assert TaskDocumentContext.deduplicate([]) == []
+        assert _TaskDocumentContext.deduplicate([]) == []
 
     def test_no_duplicates(self):
         docs = [_make_doc("a.txt", "aaa"), _make_doc("b.txt", "bbb")]
-        result = TaskDocumentContext.deduplicate(docs)
+        result = _TaskDocumentContext.deduplicate(docs)
         assert len(result) == 2
 
     def test_removes_duplicates(self):
         doc = _make_doc("a.txt", "aaa")
-        result = TaskDocumentContext.deduplicate([doc, doc])
+        result = _TaskDocumentContext.deduplicate([doc, doc])
         assert len(result) == 1
         assert result[0].name == "a.txt"
 
@@ -224,14 +224,14 @@ class TestDeduplicate:
         doc_a = _make_doc("a.txt", "aaa")
         doc_b = _make_doc("b.txt", "bbb")
         doc_c = _make_doc("c.txt", "ccc")
-        result = TaskDocumentContext.deduplicate([doc_c, doc_a, doc_b, doc_a, doc_c])
+        result = _TaskDocumentContext.deduplicate([doc_c, doc_a, doc_b, doc_a, doc_c])
         assert [d.name for d in result] == ["c.txt", "a.txt", "b.txt"]
 
     def test_same_content_different_names(self):
         """Documents with identical content but different names have the same SHA256."""
         doc1 = _make_doc("first.txt", "same content")
         doc2 = _make_doc("first.txt", "same content")
-        result = TaskDocumentContext.deduplicate([doc1, doc2])
+        result = _TaskDocumentContext.deduplicate([doc1, doc2])
         assert len(result) == 1
 
 
@@ -240,7 +240,7 @@ class TestDeduplicate:
 
 class TestFinalize:
     def test_no_orphans_when_all_returned(self):
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         doc_a = _make_doc("a.txt", "aaa")
         doc_b = _make_doc("b.txt", "bbb")
         ctx.register_created(doc_a)
@@ -249,7 +249,7 @@ class TestFinalize:
         assert orphans == []
 
     def test_detects_orphaned_documents(self):
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         doc_a = _make_doc("a.txt", "aaa")
         doc_b = _make_doc("b.txt", "bbb")
         ctx.register_created(doc_a)
@@ -259,7 +259,7 @@ class TestFinalize:
         assert orphans[0] == doc_b.sha256
 
     def test_all_orphaned(self):
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         doc = _make_doc("a.txt", "aaa")
         ctx.register_created(doc)
         orphans = ctx.finalize([])
@@ -267,12 +267,12 @@ class TestFinalize:
         assert orphans[0] == doc.sha256
 
     def test_empty_context_no_orphans(self):
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         orphans = ctx.finalize([])
         assert orphans == []
 
     def test_returns_sorted_sha256s(self):
-        ctx = TaskDocumentContext()
+        ctx = _TaskDocumentContext()
         docs = [_make_doc(f"{i}.txt", f"content-{i}") for i in range(5)]
         for d in docs:
             ctx.register_created(d)

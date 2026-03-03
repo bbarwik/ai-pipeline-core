@@ -10,7 +10,7 @@ import pytest
 from google.api_core.exceptions import GoogleAPICallError
 
 from ai_pipeline_core import FlowOptions
-from ai_pipeline_core.deployment._types import EventType, NoopPublisher
+from ai_pipeline_core.deployment._types import EventType, _NoopPublisher
 from ai_pipeline_core.deployment.contract import FlowStatus
 
 from .conftest import (
@@ -60,8 +60,8 @@ class TestResumedFlowCachedStatus:
         deployment = TwoFlowDeployment()
         doc = make_input_doc()
 
-        # First run: use NoopPublisher (we don't care about its events)
-        await run_pipeline(deployment, NoopPublisher(), pubsub_memory_store, docs=[doc])
+        # First run: use _NoopPublisher (we don't care about its events)
+        await run_pipeline(deployment, _NoopPublisher(), pubsub_memory_store, docs=[doc])
         assert len(_flow_executions) == 2  # both flows executed
 
         # Create a fresh topic + subscription for the second run
@@ -128,8 +128,8 @@ class TestResumedPipelineLifecycle:
         deployment = SingleFlowDeployment()
         doc = make_input_doc()
 
-        # First run: use NoopPublisher
-        await run_pipeline(deployment, NoopPublisher(), pubsub_memory_store, docs=[doc])
+        # First run: use _NoopPublisher
+        await run_pipeline(deployment, _NoopPublisher(), pubsub_memory_store, docs=[doc])
         assert len(_flow_executions) == 1
 
         # Create fresh topic for second run
@@ -198,7 +198,7 @@ class TestPartialResumeMix:
 
         # Pre-save FlowCompletion records for flow_a and flow_b (same pattern as test_resume_logic.py)
         # First, run a full pipeline to populate the store with documents and completions
-        await run_pipeline(deployment, NoopPublisher(), pubsub_memory_store, docs=[doc])
+        await run_pipeline(deployment, _NoopPublisher(), pubsub_memory_store, docs=[doc])
         assert set(_flow_executions) == {"flow_a", "flow_b", "flow_c"}
 
         # Delete flow_c's completion record so it re-executes on second run

@@ -50,17 +50,17 @@ class SamplePipeline(PipelineDeployment[FlowOptions, SampleResult]):
         return SampleResult(success=True, report="done")
 
 
-# --- run_remote_deployment tests ---
+# --- _run_remote_deployment tests ---
 
 
 class TestRunRemoteDeployment:
-    """Test run_remote_deployment function error handling."""
+    """Test _run_remote_deployment function error handling."""
 
     async def test_not_found_no_api_url(self):
         """Test error when deployment not found and PREFECT_API_URL is not set."""
         from prefect.exceptions import ObjectNotFound
 
-        from ai_pipeline_core.deployment.remote import run_remote_deployment
+        from ai_pipeline_core.deployment.remote import _run_remote_deployment
 
         with patch("ai_pipeline_core.deployment.remote.get_client") as mock_get_client:
             mock_client = AsyncMock()
@@ -73,13 +73,13 @@ class TestRunRemoteDeployment:
                 mock_settings.prefect_api_url = None
 
                 with pytest.raises(ValueError, match="not set"):
-                    await run_remote_deployment("test-deployment", {"param": "value"})
+                    await _run_remote_deployment("test-deployment", {"param": "value"})
 
     async def test_not_found_anywhere(self):
         """Test error when deployment not found on local or remote Prefect."""
         from prefect.exceptions import ObjectNotFound
 
-        from ai_pipeline_core.deployment.remote import run_remote_deployment
+        from ai_pipeline_core.deployment.remote import _run_remote_deployment
 
         with patch("ai_pipeline_core.deployment.remote.get_client") as mock_get_client:
             mock_client = AsyncMock()
@@ -101,7 +101,7 @@ class TestRunRemoteDeployment:
                     mock_settings.prefect_api_auth_string = "auth"
 
                     with pytest.raises(ValueError, match="not found"):
-                        await run_remote_deployment("test-deployment", {"param": "value"})
+                        await _run_remote_deployment("test-deployment", {"param": "value"})
 
 
 # --- Utility function tests ---

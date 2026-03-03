@@ -48,7 +48,7 @@ class Attachment(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def validate_name(cls, v: str) -> str:
+    def _validate_name(cls, v: str) -> str:
         """Reject path traversal, reserved suffixes, whitespace issues."""
         if v.endswith(".description.md"):
             raise DocumentNameError(f"Attachment names cannot end with .description.md: {v}")
@@ -64,7 +64,7 @@ class Attachment(BaseModel):
 
     @field_validator("content", mode="before")
     @classmethod
-    def validate_content(cls, v: Any) -> bytes:
+    def _validate_content(cls, v: Any) -> bytes:
         """Convert content to bytes.
 
         Handles:
@@ -84,7 +84,7 @@ class Attachment(BaseModel):
         raise ValueError(f"Invalid content type: {type(v)}")
 
     @field_serializer("content")
-    def serialize_content(self, v: bytes) -> str:
+    def _serialize_content(self, v: bytes) -> str:
         """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
         try:
             return v.decode("utf-8")

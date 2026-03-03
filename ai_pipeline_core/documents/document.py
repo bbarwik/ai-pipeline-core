@@ -444,7 +444,7 @@ class Document(BaseModel, Generic[TContent]):
         return values
 
     @classmethod
-    def validate_file_name(cls, name: str) -> None:
+    def _validate_file_name(cls, name: str) -> None:
         """Validate filename against FILES enum. Override only for custom validation beyond FILES."""
         allowed = cls.get_expected_files()
         if not allowed:
@@ -464,7 +464,7 @@ class Document(BaseModel, Generic[TContent]):
 
     @field_validator("name")
     @classmethod
-    def validate_name(cls, v: str) -> str:
+    def _validate_name(cls, v: str) -> str:
         """Reject path traversal, whitespace issues, reserved suffixes. Must match FILES enum if defined."""
         if ".." in v or "\\" in v or "/" in v:
             raise DocumentNameError(f"Invalid filename - contains path traversal characters: {v}")
@@ -483,13 +483,13 @@ class Document(BaseModel, Generic[TContent]):
             if prefix.endswith(ext):
                 raise DocumentNameError(f"Double extension detected in '{v}' — use ensure_extension() to prevent this")
 
-        cls.validate_file_name(v)
+        cls._validate_file_name(v)
 
         return v
 
     @field_validator("content", mode="before")
     @classmethod
-    def validate_content(cls, v: Any, info: ValidationInfo) -> bytes:
+    def _validate_content(cls, v: Any, info: ValidationInfo) -> bytes:
         """Convert content to bytes. Enforces MAX_CONTENT_SIZE.
 
         Handles:
@@ -518,7 +518,7 @@ class Document(BaseModel, Generic[TContent]):
 
     @field_validator("derived_from")
     @classmethod
-    def validate_derived_from(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+    def _validate_derived_from(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         """derived_from must be document SHA256 hashes or URLs."""
         for src in v:
             if not is_document_sha256(src) and "://" not in src:
@@ -527,7 +527,7 @@ class Document(BaseModel, Generic[TContent]):
 
     @field_validator("triggered_by")
     @classmethod
-    def validate_triggered_by(cls, v: tuple[DocumentSha256, ...]) -> tuple[DocumentSha256, ...]:
+    def _validate_triggered_by(cls, v: tuple[DocumentSha256, ...]) -> tuple[DocumentSha256, ...]:
         """triggered_by must be valid document SHA256 hashes."""
         for trigger in v:
             if not is_document_sha256(trigger):
@@ -535,7 +535,7 @@ class Document(BaseModel, Generic[TContent]):
         return v
 
     @model_validator(mode="after")
-    def validate_no_provenance_overlap(self) -> Self:
+    def _validate_no_provenance_overlap(self) -> Self:
         """Reject documents where the same SHA256 appears in both derived_from and triggered_by."""
         derived_sha256s = {src for src in self.derived_from if is_document_sha256(src)}
         if derived_sha256s:
@@ -550,7 +550,7 @@ class Document(BaseModel, Generic[TContent]):
         return self
 
     @model_validator(mode="after")
-    def validate_total_size(self) -> Self:
+    def _validate_total_size(self) -> Self:
         """Validate that total document size (content + attachments) is within limits."""
         total = self.size
         if total > self.MAX_CONTENT_SIZE:
@@ -558,7 +558,7 @@ class Document(BaseModel, Generic[TContent]):
         return self
 
     @field_serializer("content")
-    def serialize_content(self, v: bytes) -> str:
+    def _serialize_content(self, v: bytes) -> str:
         """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
         try:
             return v.decode("utf-8")

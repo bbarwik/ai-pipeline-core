@@ -9,7 +9,7 @@ so ai-replay can resolve them.
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -76,14 +76,15 @@ def _collect_doc_refs(trace_path: Path) -> dict[str, tuple[str, str]]:
 def _extract_doc_refs(value: Any, refs: dict[str, tuple[str, str]]) -> None:
     """Walk parsed YAML, collecting {sha256: (class_name, name)} from $doc_ref dicts."""
     if isinstance(value, dict):
-        if "$doc_ref" in value:
-            sha = value["$doc_ref"]
-            refs[sha] = (value.get("class_name", "Document"), value.get("name", "unknown"))
+        d = cast(dict[str, Any], value)
+        if "$doc_ref" in d:
+            sha: str = d["$doc_ref"]
+            refs[sha] = (str(d.get("class_name", "Document")), str(d.get("name", "unknown")))
         else:
-            for v in value.values():
+            for v in d.values():
                 _extract_doc_refs(v, refs)
     elif isinstance(value, list):
-        for item in value:
+        for item in cast(list[Any], value):
             _extract_doc_refs(item, refs)
 
 

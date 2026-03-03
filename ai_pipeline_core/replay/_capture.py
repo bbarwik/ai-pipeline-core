@@ -4,8 +4,9 @@ Converts runtime Python objects (Documents, BaseModels, Enums) into
 JSON-serializable dicts suitable for YAML replay payloads.
 """
 
+from collections.abc import Sequence
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -25,21 +26,20 @@ def _serialize_value(value: Any) -> Any:
     Documents, BaseModels, and Enums are properly serialized.
     """
     if isinstance(value, Document):
+        doc = cast("Document[Any]", value)
         return {
-            "$doc_ref": value.sha256,
-            "class_name": type(value).__name__,
-            "name": value.name,
+            "$doc_ref": doc.sha256,
+            "class_name": type(doc).__name__,
+            "name": doc.name,
         }
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, (list, tuple)):
-        items: list[Any] = list(value)
-        return [_serialize_value(item) for item in items]
+        return [_serialize_value(item) for item in cast("Sequence[Any]", value)]
     if isinstance(value, dict):
-        entries: dict[str, Any] = dict(value)
-        return {key: _serialize_value(val) for key, val in entries.items()}
+        return {key: _serialize_value(val) for key, val in cast(dict[str, Any], value).items()}
     return value
 
 
@@ -82,11 +82,12 @@ def serialize_prior_messages(messages: tuple[Any, ...]) -> list[dict[str, Any]]:
                 entry["tool_calls"] = [ToolCallEntry(id=tc.id, function_name=tc.function_name, arguments=tc.arguments).model_dump() for tc in msg.tool_calls]
             result.append(entry)
         elif isinstance(msg, Document):
+            doc = cast("Document[Any]", msg)
             result.append({
                 "type": "document",
-                "$doc_ref": msg.sha256,
-                "class_name": msg.__class__.__name__,
-                "name": msg.name,
+                "$doc_ref": doc.sha256,
+                "class_name": doc.__class__.__name__,
+                "name": doc.name,
             })
     return result
 

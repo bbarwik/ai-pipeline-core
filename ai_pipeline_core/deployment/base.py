@@ -31,7 +31,8 @@ from pydantic_settings import BaseSettings
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.document_store._protocol import create_document_store, get_document_store, set_document_store
 from ai_pipeline_core.document_store._summary_worker import SummaryGenerator
-from ai_pipeline_core.documents import Document, DocumentSha256, RunContext, RunScope, reset_run_context, set_run_context
+from ai_pipeline_core.documents import Document, DocumentSha256, RunContext, RunScope
+from ai_pipeline_core.documents._context import _reset_run_context, _set_run_context
 from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._initialization import ensure_tracking_processor, get_clickhouse_backend, get_pipeline_processors
@@ -57,14 +58,14 @@ from ._helpers import (
 )
 from ._resolve import DocumentInput, OutputDocument, build_output_document, resolve_document_inputs
 from ._types import (
-    CompletedEvent,
     ErrorCode,
-    FailedEvent,
-    NoopPublisher,
-    ProgressEvent,
-    ResultPublisher,
-    StartedEvent,
     TaskResultStore,
+    _CompletedEvent,
+    _FailedEvent,
+    _NoopPublisher,
+    _ProgressEvent,
+    _ResultPublisher,
+    _StartedEvent,
 )
 from .contract import FlowStatus
 from .progress import _flow_context, _safe_uuid
@@ -87,14 +88,14 @@ def _classify_error(exc: BaseException) -> ErrorCode:
     return ErrorCode.UNKNOWN
 
 
-def _create_publisher(settings_obj: Settings, service_type: str) -> ResultPublisher:
+def _create_publisher(settings_obj: Settings, service_type: str) -> _ResultPublisher:
     """Create publisher based on environment and deployment configuration.
 
     Returns PubSubPublisher when Pub/Sub is configured and service_type is set,
-    NoopPublisher otherwise.
+    _NoopPublisher otherwise.
     """
     if not service_type:
-        return NoopPublisher()
+        return _NoopPublisher()
     if settings_obj.pubsub_project_id and settings_obj.pubsub_topic_id:
         from ._pubsub import PubSubPublisher
 
@@ -103,7 +104,7 @@ def _create_publisher(settings_obj: Settings, service_type: str) -> ResultPublis
             topic_id=settings_obj.pubsub_topic_id,
             service_type=service_type,
         )
-    return NoopPublisher()
+    return _NoopPublisher()
 
 
 def _create_task_result_store(settings_obj: Settings) -> TaskResultStore | None:
@@ -221,7 +222,7 @@ async def _load_documents_by_sha256s(
     return result
 
 
-async def _heartbeat_loop(publisher: ResultPublisher, run_id: str) -> None:
+async def _heartbeat_loop(publisher: _ResultPublisher, run_id: str) -> None:
     """Publish heartbeat signals at regular intervals until cancelled."""
     while True:
         await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
@@ -293,7 +294,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
     # Sets CloudEvents ``source`` attribute (e.g. ``ai-{service_type}-worker``).
-    # Does not affect topic routing. Requires PUBSUB_PROJECT_ID + PUBSUB_TOPIC_ID. Empty = NoopPublisher.
+    # Does not affect topic routing. Requires PUBSUB_PROJECT_ID + PUBSUB_TOPIC_ID. Empty = _NoopPublisher.
     pubsub_service_type: ClassVar[str] = ""
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
@@ -422,13 +423,13 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         status: FlowStatus,
         step_progress: float,
         message: str,
-    ) -> ProgressEvent:
-        """Build a ProgressEvent with computed overall progress."""
+    ) -> _ProgressEvent:
+        """Build a _ProgressEvent with computed overall progress."""
         total_mins = sum(flow_minutes) or 1
         completed_mins = sum(flow_minutes[: max(step - 1, 0)])
         current_flow_mins = flow_minutes[step - 1] if step - 1 < len(flow_minutes) else 1
         progress = round(max(0.0, min(1.0, (completed_mins + current_flow_mins * step_progress) / total_mins)), 4)
-        return ProgressEvent(
+        return _ProgressEvent(
             run_id=run_id,
             flow_run_id=flow_run_id,
             flow_name=flow_name,
@@ -446,7 +447,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         run_id: str,
         documents: Sequence[Document],
         options: TOptions,
-        publisher: ResultPublisher | None = None,
+        publisher: _ResultPublisher | None = None,
         start_step: int = 1,
         end_step: int | None = None,
         task_result_store: TaskResultStore | None = None,
@@ -460,7 +461,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         validate_run_id(run_id)
 
         if publisher is None:
-            publisher = NoopPublisher()
+            publisher = _NoopPublisher()
         store = get_document_store()
         total_steps = len(self.flows)
 
@@ -518,10 +519,10 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         failed_published = False
         heartbeat_task: asyncio.Task[None] | None = None
         limits_token = _set_limits_state(_LimitsState(limits=self.concurrency_limits, status=_SharedStatus()))
-        run_token = set_run_context(RunContext(run_scope=run_scope, execution_id=run_uuid))
+        run_token = _set_run_context(RunContext(run_scope=run_scope, execution_id=run_uuid))
         try:
             # Publish task.started event (inside try so failures still hit finally cleanup)
-            await publisher.publish_started(StartedEvent(run_id=run_id, flow_run_id=flow_run_id, run_scope=str(run_scope)))
+            await publisher.publish_started(_StartedEvent(run_id=run_id, flow_run_id=flow_run_id, run_scope=str(run_scope)))
 
             # Start heartbeat background task
             heartbeat_task = asyncio.create_task(_heartbeat_loop(publisher, run_id))
@@ -710,7 +711,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
             # Publish task.completed event
             await publisher.publish_completed(
-                CompletedEvent(
+                _CompletedEvent(
                     run_id=run_id,
                     flow_run_id=flow_run_id,
                     result=result.model_dump(),
@@ -727,7 +728,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 failed_published = True
                 try:
                     await publisher.publish_failed(
-                        FailedEvent(
+                        _FailedEvent(
                             run_id=run_id,
                             flow_run_id=flow_run_id,
                             error_code=_classify_error(exc),
@@ -742,7 +743,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat_task
-            reset_run_context(run_token)
+            _reset_run_context(run_token)
             _reset_limits_state(limits_token)
             store = get_document_store()
             if store:
@@ -771,7 +772,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         run_id: str,
         documents: Sequence[Document],
         options: TOptions,
-        publisher: ResultPublisher | None = None,
+        publisher: _ResultPublisher | None = None,
         output_dir: Path | None = None,
     ) -> TResult:
         """Run locally with Prefect test harness and in-memory document store.
@@ -780,7 +781,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             run_id: Pipeline run identifier.
             documents: Initial input documents.
             options: Flow options.
-            publisher: Optional lifecycle event publisher (defaults to NoopPublisher).
+            publisher: Optional lifecycle event publisher (defaults to _NoopPublisher).
             output_dir: Optional directory for writing result.json.
 
         Returns:
