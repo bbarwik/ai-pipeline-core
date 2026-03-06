@@ -1,63 +1,19 @@
 # MODULE: pipeline
-# CLASSES: TaskLike, FlowLike, LimitKind, PipelineLimit, FlowOptions
-# DEPENDS: BaseSettings, Protocol, StrEnum
-# PURPOSE: Pipeline framework primitives — decorators, flow options, and concurrency limits.
-# VERSION: 0.12.4
+# CLASSES: LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
+# DEPENDS: BaseSettings, StrEnum
+# PURPOSE: Pipeline framework primitives.
+# VERSION: 0.13.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import FlowOptions, LimitKind, PipelineLimit, pipeline_concurrency, pipeline_flow, pipeline_task, safe_gather, safe_gather_indexed
-from ai_pipeline_core.pipeline import FlowLike, TaskLike
-```
-
-## Types & Constants
-
-```python
-type RetryConditionCallable = Callable[[Any, Any, Any], bool]
-
-type StateHookCallable = Callable[[Any, Any, Any], None]
-
-type TaskRunNameValueOrCallable = str | Callable[[], str]
-
+from ai_pipeline_core import FlowOptions, LimitKind, PipelineFlow, PipelineLimit, PipelineTask, TaskBatch, TaskHandle, as_task_completed, collect_tasks, pipeline_concurrency, pipeline_test_context, run_tasks_until, safe_gather, safe_gather_indexed
 ```
 
 ## Public API
 
 ```python
-# Protocol — implement in concrete class
-class TaskLike(Protocol[R_co]):
-    """Protocol for type-safe Prefect task representation."""
-    submit: Callable[..., Any]
-    map: Callable[..., Any]
-    name: str | None
-    estimated_minutes: int
-
-    def __call__(self, *args: Any, **kwargs: Any) -> Coroutine[Any, Any, R_co]: ...
-
-    def __getattr__(self, name: str) -> Any: ...
-
-
-# Protocol — implement in concrete class
-class FlowLike(Protocol[FO_contra]):
-    """Protocol for decorated flow objects returned by @pipeline_flow."""
-    name: str | None
-    input_document_types: list[type[Document]]
-    output_document_types: list[type[Document]]
-    estimated_minutes: int
-    stub: bool
-
-    def __call__(
-        self,
-        run_id: str,
-        documents: Sequence[Document],
-        flow_options: FO_contra,
-    ) -> Coroutine[Any, Any, list[Document]]: ...
-
-    def __getattr__(self, name: str) -> Any: ...
-
-
 # Enum
 class LimitKind(StrEnum):
     """Kind of concurrency/rate limit.
@@ -109,483 +65,176 @@ env vars (MODE, HOST, PORT, etc.)."""
     model_config = SettingsConfigDict(frozen=True, extra='forbid')
 
 
+class PipelineFlow:
+    """Base class for pipeline flows.
+
+Flows are the unit of resume, progress tracking, and document hand-off in a deployment.
+Define ``run`` as an **instance method** (not @classmethod) because flows can carry
+per-instance configuration passed via ``build_flows()``::
+
+    class TranslateFlow(PipelineFlow):
+        target_language: str = "en"
+
+        async def run(self, run_id: str, documents: list[SourceDoc], options: FlowOptions) -> list[TranslatedDoc]:
+            return await TranslateTask.run(documents, language=self.target_language)
+
+The deployment creates flow instances with constructor kwargs::
+
+    def build_flows(self, options):
+        return [TranslateFlow(target_language="fr"), TranslateFlow(target_language="de")]
+
+Each instance runs independently with its own parameters, resume record, and progress.
+Constructor kwargs are captured for replay serialization via ``get_params()``.
+
+Signature must be exactly ``(self, run_id: str, documents: list[DocType], options: FlowOptions)``
+and is validated at class definition time by ``__init_subclass__``."""
+    name: ClassVar[str]
+    estimated_minutes: ClassVar[float] = 1.0
+    input_document_types: ClassVar[list[type[Document]]] = []
+    output_document_types: ClassVar[list[type[Document]]] = []
+    task_graph: ClassVar[list[tuple[str, str]]] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Constructor for per-flow instance configuration."""
+        cls = type(self)
+        known_params: set[str] = set()
+        for klass in cls.__mro__:
+            known_params.update(name for name in getattr(klass, "__annotations__", {}) if not name.startswith("_"))
+            known_params.update(
+                name
+                for name, value in vars(klass).items()
+                if not name.startswith("_") and not callable(value) and not isinstance(value, (classmethod, staticmethod, property))
+            )
+        unknown = sorted(key for key in kwargs if key not in known_params)
+        if unknown:
+            allowed = ", ".join(sorted(known_params)) or "(none)"
+            raise TypeError(f"PipelineFlow '{cls.__name__}' got unknown init parameter(s): {', '.join(unknown)}. Allowed parameters: {allowed}.")
+        self._params: dict[str, Any] = dict(kwargs)
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    @classmethod
+    def expected_tasks(cls) -> list[str]:
+        """Return expected task names extracted from run() AST."""
+        return [name for name, _mode in cls.task_graph]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if cls is PipelineFlow:
+            return
+
+        cls._validate_class_config()
+        run_fn, hints, params = cls._validate_run_signature()
+        input_types, output_types = cls._extract_document_types(hints, params)
+        cls.input_document_types = input_types
+        cls.output_document_types = output_types
+        cls.task_graph = cls._parse_task_graph(run_fn)
+
+    def get_params(self) -> dict[str, Any]:
+        """Return constructor params for flow plan serialization."""
+        return dict(getattr(self, "_params", {}))
+
+    async def run(self, run_id: str, documents: Any, options: Any) -> Sequence[Document]:
+        """Execute the flow. Must be overridden by subclasses (enforced at class definition time by ``__init_subclass__``)."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class TaskHandle:
+    """Handle for an executing pipeline task."""
+    task_class: type[Any] | None
+    input_arguments: Mapping[str, Any]
+
+    @property
+    def done(self) -> bool:
+        """Whether the underlying task has finished."""
+        return self._task.done()
+
+    def __await__(self):
+        return self._task.__await__()
+
+    def cancel(self) -> None:
+        """Cancel the underlying task."""
+        self._task.cancel()
+
+    async def result(self) -> T:
+        """Await the underlying task result."""
+        return await self._task
+
+
+@dataclass(frozen=True, slots=True)
+class TaskBatch:
+    """Collected task results and handles that did not complete successfully."""
+    completed: list[list[Document]]
+    incomplete: list[TaskHandle[list[Document]]]
+
+
+class PipelineTask:
+    """Base class for pipeline tasks.
+
+Tasks are stateless units of work. Define ``run`` as a **@classmethod** because tasks
+carry no per-invocation instance state — all inputs arrive as arguments, all outputs
+are returned documents. The framework wraps ``run`` with tracing, retries, persistence,
+and event emission automatically.
+
+Minimal example::
+
+    class SummarizeTask(PipelineTask):
+        @classmethod
+        async def run(cls, documents: list[ArticleDocument]) -> list[SummaryDocument]:
+            conv = Conversation(model="gemini-3-flash").with_context(documents[0])
+            conv = await conv.send("Summarize this article.")
+            return [SummaryDocument.derive(from_documents=(documents[0],), name="summary.md", content=conv.content)]
+
+Calling ``await SummarizeTask.run([doc])`` dispatches the full lifecycle. Calling without
+``await`` returns a ``TaskHandle`` for parallel execution via ``collect_tasks``."""
+    name: ClassVar[str]
+    estimated_minutes: ClassVar[float] = 1.0
+    retries: ClassVar[int] = 0
+    retry_delay_seconds: ClassVar[int] = 20
+    timeout_seconds: ClassVar[int | None] = None
+    cacheable: ClassVar[bool] = False
+    trace_level: ClassVar[TraceLevel] = 'always'
+    trace_ignore_input: ClassVar[bool] = False
+    trace_ignore_output: ClassVar[bool] = False
+    trace_ignore_inputs: ClassVar[tuple[str, ...]] = ()
+    trace_input_formatter: ClassVar[Callable[..., str] | None] = None
+    trace_output_formatter: ClassVar[Callable[..., str] | None] = None
+    expected_cost: ClassVar[float | None] = None
+    trace_trim_documents: ClassVar[bool] = True
+    trace_cost: ClassVar[float | None] = None
+    input_document_types: ClassVar[list[type[Document]]] = []
+    output_document_types: ClassVar[list[type[Document]]] = []
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if cls is PipelineTask:
+            return
+
+        cls._validate_class_config()
+        cls._trace_decorator = cls._build_trace_decorator()
+
+        own_run = cls.__dict__.get("run")
+        if own_run is None:
+            inherited_spec = getattr(cls, "_run_spec", None)
+            if inherited_spec is None:
+                raise TypeError(f"PipelineTask '{cls.__name__}' must define @classmethod async def run(cls, ...) or inherit a validated run() implementation.")
+            cls.input_document_types = list(inherited_spec.input_document_types)
+            cls.output_document_types = list(inherited_spec.output_document_types)
+            return
+
+        spec = cls._validate_run_signature(own_run)
+        cls._run_spec = spec
+        cls.input_document_types = list(spec.input_document_types)
+        cls.output_document_types = list(spec.output_document_types)
+        cls.run = classmethod(cls._build_run_wrapper(spec))
+
+
 ```
 
 ## Functions
 
 ```python
-def pipeline_task(  # noqa: UP047
-    __fn: Callable[..., Coroutine[Any, Any, R_co]] | None = None,
-    /,
-    *,
-    # tracing
-    trace_level: TraceLevel = "always",
-    trace_ignore_input: bool = False,
-    trace_ignore_output: bool = False,
-    trace_ignore_inputs: list[str] | None = None,
-    trace_input_formatter: Callable[..., str] | None = None,
-    trace_output_formatter: Callable[..., str] | None = None,
-    trace_cost: float | None = None,
-    expected_cost: float | None = None,
-    trace_trim_documents: bool = True,
-    # document lifecycle
-    estimated_minutes: int = 1,
-    # prefect passthrough
-    name: str | None = None,
-    description: str | None = None,
-    tags: Iterable[str] | None = None,
-    version: str | None = None,
-    cache_policy: CachePolicy | type[NotSet] = NotSet,
-    cache_key_fn: Callable[[TaskRunContext, dict[str, Any]], str | None] | None = None,
-    cache_expiration: datetime.timedelta | None = None,
-    task_run_name: TaskRunNameValueOrCallable | None = None,
-    retries: int | None = None,
-    retry_delay_seconds: int | float | list[float] | Callable[[int], list[float]] | None = None,
-    retry_jitter_factor: float | None = None,
-    persist_result: bool | None = None,
-    result_storage: ResultStorage | str | None = None,
-    result_serializer: ResultSerializer | str | None = None,
-    result_storage_key: str | None = None,
-    cache_result_in_memory: bool = True,
-    timeout_seconds: int | float | None = None,
-    log_prints: bool | None = False,
-    refresh_cache: bool | None = None,
-    on_completion: list[StateHookCallable] | None = None,
-    on_failure: list[StateHookCallable] | None = None,
-    retry_condition_fn: RetryConditionCallable | None = None,
-    viz_return_value: bool | None = None,
-    asset_deps: list[str | Asset] | None = None,
-) -> TaskLike[R_co] | Callable[[Callable[..., Coroutine[Any, Any, R_co]]], TaskLike[R_co]]:
-    """Decorate an async function as a traced Prefect task with document auto-save.
-
-    After the wrapped function returns, if documents are found in the result
-    and a DocumentStore + RunContext are available, documents are validated
-    for provenance, deduplicated by SHA256, and saved to the store.
-
-    Input parameter types are validated at decoration time: str, int, float,
-    bool, None, UUID, Path, Enum, Document, frozen BaseModel, FlowOptions,
-    and containers (list, tuple, dict[str, ...], Union) of these types.
-
-    The return type annotation is validated at decoration time.
-    Allowed return types::
-
-        -> MyDocument                           # single Document
-        -> list[DocA]  /  list[DocA | DocB]     # list of Documents
-        -> tuple[DocA, DocB]                    # tuple of Documents
-        -> tuple[list[DocA], list[DocB]]        # tuple of lists
-        -> tuple[DocA, ...]                     # variable-length tuple
-        -> None                                 # side-effect tasks
-        -> DocA | None                          # optional Document
-
-    For non-document functions, use plain ``async def`` with ``@trace`` instead.
-
-    Documents created inside the task must be **returned** to be auto-saved.
-    Created-but-unreturned documents trigger orphan warnings and are not persisted.
-
-    Document is the universal container for pipeline data. Any structured data
-    (Pydantic models, dicts, lists) can be wrapped via Document.create():
-    ``MyDoc.create(name='output.json', content=model, derived_from=(input.sha256,))``
-    and retrieved via ``doc.parse(MyModel)``. There is no need for custom return
-    types or ``persist=False`` — wrap everything in a Document.
-
-    Args:
-        __fn: Function to decorate (when used without parentheses).
-        trace_level: When to trace ("always", "debug", "off").
-        trace_ignore_input: Don't trace input arguments.
-        trace_ignore_output: Don't trace return value.
-        trace_ignore_inputs: List of parameter names to exclude from tracing.
-        trace_input_formatter: Custom formatter for input tracing.
-        trace_output_formatter: Custom formatter for output tracing.
-        trace_cost: Optional cost value to track in metadata.
-        expected_cost: Optional expected cost budget for this task.
-        trace_trim_documents: Trim document content in traces (default True).
-        estimated_minutes: Estimated duration for progress tracking (must be > 0).
-        name: Task name (defaults to function name).
-        description: Human-readable task description.
-        tags: Tags for organization and filtering.
-        version: Task version string.
-        cache_policy: Caching policy for task results.
-        cache_key_fn: Custom cache key generation.
-        cache_expiration: How long to cache results.
-        task_run_name: Dynamic or static run name.
-        retries: Number of retry attempts (default 0).
-        retry_delay_seconds: Delay between retries.
-        retry_jitter_factor: Random jitter for retry delays.
-        persist_result: Whether to persist results.
-        result_storage: Where to store results.
-        result_serializer: How to serialize results.
-        result_storage_key: Custom storage key.
-        cache_result_in_memory: Keep results in memory.
-        timeout_seconds: Task execution timeout.
-        log_prints: Capture print() statements.
-        refresh_cache: Force cache refresh.
-        on_completion: Hooks for successful completion.
-        on_failure: Hooks for task failure.
-        retry_condition_fn: Custom retry condition.
-        viz_return_value: Include return value in visualization.
-        asset_deps: Upstream asset dependencies.
-    """
-    if estimated_minutes < 1:
-        raise ValueError(f"estimated_minutes must be >= 1, got {estimated_minutes}")
-
-    task_decorator: Callable[..., Any] = _prefect_task
-
-    def _apply(fn: Callable[..., Coroutine[Any, Any, R_co]]) -> TaskLike[R_co]:
-        fname = callable_name(fn, "task")
-
-        if not inspect.iscoroutinefunction(fn):
-            raise TypeError(f"@pipeline_task target '{fname}' must be 'async def'")
-
-        if is_already_traced(fn):
-            raise TypeError(
-                f"@pipeline_task target '{fname}' is already decorated "
-                f"with @trace. Remove the @trace decorator - @pipeline_task includes "
-                f"tracing automatically."
-            )
-
-        # Validate input and return type annotations
-        hints = resolve_type_hints(fn)
-        validate_input_types(fn, hints)
-        if "return" not in hints:
-            raise TypeError(
-                f"@pipeline_task '{fname}': missing return type annotation. "
-                f"Pipeline tasks must return Document types "
-                f"(Document, list[Document], tuple[Document, ...], or None). "
-                f"Add a return type annotation."
-            )
-        bad_types = find_non_document_leaves(hints["return"])
-        if bad_types:
-            bad_names = ", ".join(getattr(t, "__name__", str(t)) for t in bad_types)
-            raise TypeError(
-                f"@pipeline_task '{fname}': return type contains non-Document types: {bad_names}. "
-                f"Pipeline tasks must return Document, list[Document], "
-                f"tuple[Document, ...], or None.\n"
-                f"FIX: Wrap your result in a Document:\n"
-                f"  return MyDocument.create(name='output.json', content=my_data, derived_from=(...))\n"
-                f"Document.create() auto-serializes str, bytes, dict, list, and BaseModel.\n"
-                f"For non-document functions, use plain async def with @trace instead of @pipeline_task."
-            )
-        if contains_bare_document(hints["return"]):
-            raise TypeError(f"@pipeline_task '{fname}' uses bare 'Document' class in return type. Use specific Document subclasses (e.g., MyDocument) instead.")
-
-        @wraps(fn)
-        async def _wrapper(*args: Any, **kwargs: Any) -> R_co:
-            _set_span_attrs(description, expected_cost)
-
-            # Set up task context for document lifecycle tracking
-            task_ctx = TaskContext()
-            task_token = set_task_context(task_ctx)
-            try:
-                result = await fn(*args, **kwargs)
-            finally:
-                reset_task_context(task_token)
-
-            if trace_cost is not None and trace_cost > 0:
-                set_trace_cost(trace_cost)
-
-            # Track task I/O
-            try:
-                track_task_io(args, kwargs, result)
-            except Exception:
-                logger.debug("Failed to track task IO", exc_info=True)
-
-            # Document auto-save
-            if _get_run_context() is not None and get_document_store() is not None:
-                ctx = _TaskDocumentContext(created=task_ctx.created)
-                docs = _extract_documents(result)
-                await _persist_documents(docs, fname, ctx)
-
-            # Replay payload capture
-            _attach_task_replay_payload(fn, args, kwargs, fname)
-
-            return result
-
-        traced_fn = trace(
-            level=trace_level,
-            name=name or fname,
-            ignore_input=trace_ignore_input,
-            ignore_output=trace_ignore_output,
-            ignore_inputs=trace_ignore_inputs,
-            input_formatter=trace_input_formatter,
-            output_formatter=trace_output_formatter,
-            trim_documents=trace_trim_documents,
-        )(_wrapper)
-
-        task_obj = cast(
-            TaskLike[R_co],
-            task_decorator(
-                name=name or fname,
-                description=description,
-                tags=tags,
-                version=version,
-                cache_policy=cache_policy,
-                cache_key_fn=cache_key_fn,
-                cache_expiration=cache_expiration,
-                task_run_name=task_run_name or name or fname,
-                retries=0 if retries is None else retries,
-                retry_delay_seconds=retry_delay_seconds,
-                retry_jitter_factor=retry_jitter_factor,
-                persist_result=persist_result,
-                result_storage=result_storage,
-                result_serializer=result_serializer,
-                result_storage_key=result_storage_key,
-                cache_result_in_memory=cache_result_in_memory,
-                timeout_seconds=timeout_seconds,
-                log_prints=log_prints,
-                refresh_cache=refresh_cache,
-                on_completion=on_completion,
-                on_failure=on_failure,
-                retry_condition_fn=retry_condition_fn,
-                viz_return_value=viz_return_value,
-                asset_deps=asset_deps,
-            )(traced_fn),
-        )
-        task_obj.estimated_minutes = estimated_minutes
-        return task_obj
-
-    return _apply(__fn) if __fn else _apply
-
-def pipeline_flow(
-    *,
-    # tracing
-    trace_level: TraceLevel = "always",
-    trace_ignore_input: bool = False,
-    trace_ignore_output: bool = False,
-    trace_ignore_inputs: list[str] | None = None,
-    trace_input_formatter: Callable[..., str] | None = None,
-    trace_output_formatter: Callable[..., str] | None = None,
-    trace_cost: float | None = None,
-    expected_cost: float | None = None,
-    trace_trim_documents: bool = True,
-    # document type specification
-    estimated_minutes: int = 1,
-    stub: bool = False,
-    # prefect passthrough
-    name: str | None = None,
-    version: str | None = None,
-    flow_run_name: Callable[[], str] | str | None = None,
-    retries: int | None = None,
-    retry_delay_seconds: int | float | None = None,
-    task_runner: TaskRunner[PrefectFuture[Any]] | None = None,
-    description: str | None = None,
-    timeout_seconds: int | float | None = None,
-    validate_parameters: bool = True,
-    persist_result: bool | None = None,
-    result_storage: ResultStorage | str | None = None,
-    result_serializer: ResultSerializer | str | None = None,
-    cache_result_in_memory: bool = True,
-    log_prints: bool | None = None,
-    on_completion: list[FlowStateHook[Any, Any]] | None = None,
-    on_failure: list[FlowStateHook[Any, Any]] | None = None,
-    on_cancellation: list[FlowStateHook[Any, Any]] | None = None,
-    on_crashed: list[FlowStateHook[Any, Any]] | None = None,
-    on_running: list[FlowStateHook[Any, Any]] | None = None,
-) -> Callable[[Callable[..., Coroutine[Any, Any, Sequence[Document]]]], FlowLike[Any]]:
-    """Decorate an async function as a traced Prefect flow with annotation-driven document types.
-
-    Extracts input/output document types from the function's type annotations
-    at decoration time and attaches them as ``input_document_types`` and
-    ``output_document_types`` attributes on the returned flow object.
-
-    Required function signature::
-
-        @pipeline_flow(estimated_minutes=30)
-        async def my_flow(
-            run_id: str,
-            documents: list[DocA | DocB],
-            flow_options: FlowOptions,
-        ) -> list[OutputDoc]:
-            ...
-
-    Args:
-        estimated_minutes: Weight for progress bar calculation only (must be >= 1).
-            Does not affect execution timeout or scheduling.
-        stub: Mark flow as a stub for deployment introspection — the flow is
-            registered but skipped during execution when stub=True.
-
-    Returns:
-        Decorator that produces a FlowLike object with ``input_document_types``,
-        ``output_document_types``, and ``estimated_minutes`` attributes.
-
-    Raises:
-        TypeError: If the function is not async, has wrong parameter count/types,
-            missing return annotation, or output types overlap input types.
-        ValueError: If estimated_minutes < 1.
-    """
-    if estimated_minutes < 1:
-        raise ValueError(f"estimated_minutes must be >= 1, got {estimated_minutes}")
-
-    flow_decorator: Callable[..., Any] = _prefect_flow
-
-    def _apply(fn: Callable[..., Coroutine[Any, Any, Sequence[Document]]]) -> FlowLike[Any]:
-        fname = callable_name(fn, "flow")
-
-        if not inspect.iscoroutinefunction(fn):
-            raise TypeError(f"@pipeline_flow '{fname}' must be declared with 'async def'")
-
-        if is_already_traced(fn):
-            raise TypeError(
-                f"@pipeline_flow target '{fname}' is already decorated "
-                f"with @trace. Remove the @trace decorator - @pipeline_flow includes "
-                f"tracing automatically."
-            )
-
-        sig = inspect.signature(fn)
-        params = list(sig.parameters.values())
-        if len(params) != 3:
-            raise TypeError(
-                f"@pipeline_flow '{fname}' must have exactly 3 parameters (run_id: str, documents: list[...], flow_options: FlowOptions), got {len(params)}"
-            )
-
-        # Resolve and validate type annotations
-        hints = resolve_type_hints(fn)
-        validate_input_types(fn, hints)
-
-        # Validate first parameter is str
-        if params[0].name in hints and hints[params[0].name] is not str:
-            raise TypeError(f"@pipeline_flow '{fname}': first parameter '{params[0].name}' must be annotated as 'str'")
-
-        # Validate first parameter is named 'run_id' or '_run_id'
-        first_param_name = next(iter(sig.parameters.keys()))
-        if first_param_name not in {"run_id", "_run_id"}:
-            raise TypeError(f"@pipeline_flow '{fname}': first parameter must be named 'run_id' or '_run_id', got '{first_param_name}'")
-
-        # Validate third parameter is FlowOptions or subclass
-        if params[2].name in hints:
-            p2_type = hints[params[2].name]
-            if not (isinstance(p2_type, type) and issubclass(p2_type, FlowOptions)):
-                raise TypeError(f"@pipeline_flow '{fname}': third parameter '{params[2].name}' must be FlowOptions or subclass, got {p2_type}")
-
-        # Extract input types from documents parameter annotation
-        resolved_input_types: list[type[Document]]
-        if params[1].name in hints:
-            input_annotation = hints[params[1].name]
-            if contains_bare_document(input_annotation):
-                raise TypeError(
-                    f"@pipeline_flow '{fname}' uses bare 'Document' class in input annotation. "
-                    f"Use specific Document subclasses (e.g., list[MyDocument]) instead."
-                )
-            resolved_input_types = parse_document_types_from_annotation(input_annotation)
-        else:
-            resolved_input_types = []
-
-        # Extract output types from return annotation
-        resolved_output_types: list[type[Document]]
-        if "return" in hints:
-            return_annotation = hints["return"]
-            if contains_bare_document(return_annotation):
-                raise TypeError(
-                    f"@pipeline_flow '{fname}' uses bare 'Document' class in return annotation. "
-                    f"Use specific Document subclasses (e.g., list[MyDocument]) instead."
-                )
-            resolved_output_types = parse_document_types_from_annotation(return_annotation)
-        else:
-            resolved_output_types = []
-
-        # Validate return annotation contains Document subclasses
-        if "return" in hints and not resolved_output_types:
-            raise TypeError(
-                f"@pipeline_flow '{fname}': return annotation does not contain "
-                f"Document subclasses. Flows must return list[SomeDocument]. "
-                f"Got: {hints['return']}."
-            )
-
-        # Output types must not overlap input types (skip for base Document used in generic flows)
-        if resolved_output_types and resolved_input_types:
-            overlap = set(resolved_output_types) & set(resolved_input_types) - {Document}
-            if overlap:
-                names = ", ".join(t.__name__ for t in overlap)
-                raise TypeError(f"@pipeline_flow '{fname}': output types [{names}] cannot also be input types")
-
-        @wraps(fn)
-        async def _wrapper(
-            run_id: str,
-            documents: list[Document],
-            flow_options: Any,
-        ) -> list[Document]:
-            _set_span_attrs(description, expected_cost)
-
-            # Set RunContext for nested tasks (only if not already set by deployment)
-            existing_ctx = _get_run_context()
-            run_token = None
-            if existing_ctx is None:
-                run_scope = RunScope(f"{run_id}/{name or fname}")
-                run_token = _set_run_context(RunContext(run_scope=run_scope))
-
-            # Set up task context for document lifecycle tracking
-            task_ctx = TaskContext(scope_kind="flow")
-            task_token = set_task_context(task_ctx)
-            try:
-                result = await fn(run_id, documents, flow_options)
-            finally:
-                reset_task_context(task_token)
-                if run_token is not None:
-                    _reset_run_context(run_token)
-
-            if trace_cost is not None and trace_cost > 0:
-                set_trace_cost(trace_cost)
-            if not isinstance(result, list):
-                raise TypeError(f"Flow '{fname}' must return list[Document], got {type(result).__name__}")
-
-            # Track flow I/O
-            try:
-                track_flow_io(documents, result)
-            except Exception:
-                logger.debug("Failed to track flow IO", exc_info=True)
-
-            # Document auto-save
-            if _get_run_context() is not None and get_document_store() is not None:
-                ctx = _TaskDocumentContext(created=task_ctx.created)
-                await _persist_documents(result, fname, ctx)
-
-            # Replay payload capture
-            _attach_flow_replay_payload(fn, run_id, documents, flow_options, fname)
-
-            return result
-
-        traced = trace(
-            level=trace_level,
-            name=name or fname,
-            ignore_input=trace_ignore_input,
-            ignore_output=trace_ignore_output,
-            ignore_inputs=trace_ignore_inputs,
-            input_formatter=trace_input_formatter,
-            output_formatter=trace_output_formatter,
-            trim_documents=trace_trim_documents,
-        )(_wrapper)
-
-        flow_obj = cast(
-            FlowLike[Any],
-            flow_decorator(
-                name=name or fname,
-                version=version,
-                flow_run_name=flow_run_name or name or fname,
-                retries=0 if retries is None else retries,
-                retry_delay_seconds=retry_delay_seconds,
-                task_runner=task_runner,
-                description=description,
-                timeout_seconds=timeout_seconds,
-                validate_parameters=validate_parameters,
-                persist_result=persist_result,
-                result_storage=result_storage,
-                result_serializer=result_serializer,
-                cache_result_in_memory=cache_result_in_memory,
-                log_prints=log_prints,
-                on_completion=on_completion,
-                on_failure=on_failure,
-                on_cancellation=on_cancellation,
-                on_crashed=on_crashed,
-                on_running=on_running,
-            )(traced),
-        )
-        flow_obj.input_document_types = resolved_input_types
-        flow_obj.output_document_types = resolved_output_types
-        flow_obj.estimated_minutes = estimated_minutes
-        flow_obj.stub = stub
-        return flow_obj
-
-    return _apply
-
 async def safe_gather[T](
     *coroutines: Coroutine[Any, Any, T],
     label: str = "",
@@ -701,44 +350,100 @@ async def pipeline_concurrency(
         state.status.prefect_available = False
         yield
 
+@contextmanager
+def pipeline_test_context(
+    run_id: str = "test-run",
+    store: DocumentStore | None = None,
+    publisher: ResultPublisher | None = None,
+) -> Generator[ExecutionContext, None, None]:
+    """Set up an execution + task context for tests without full deployment wiring.
+
+    Yields:
+        The active execution context for the test scope.
+    """
+    owns_store = store is None
+    active_store = store or MemoryDocumentStore()
+    ctx = ExecutionContext(
+        run_id=run_id,
+        run_scope=RunScope(f"{run_id}/test"),
+        execution_id=None,
+        store=active_store,
+        publisher=publisher or _NoopPublisher(),
+        summary_generator=None,
+        limits=MappingProxyType({}),
+        limits_status=_SharedStatus(),
+    )
+    ctx_token = set_execution_context(ctx)
+    task_token = set_task_context(TaskContext(scope_kind="test", task_class_name="pipeline_test_context"))
+    try:
+        yield ctx
+    finally:
+        reset_task_context(task_token)
+        reset_execution_context(ctx_token)
+        if owns_store:
+            active_store.shutdown()
+
+async def collect_tasks(
+    *handles: TaskAwaitableGroup,
+    deadline_seconds: float | None = None,
+) -> TaskBatch:
+    """Await task handles with an optional deadline and split completed/incomplete."""
+    ordered_handles = _normalize_handles(handles)
+    if not ordered_handles:
+        return TaskBatch(completed=[], incomplete=[])
+
+    completed: list[list[Document]] = []
+    incomplete: list[TaskHandle[list[Document]]] = []
+    by_task: dict[asyncio.Task[list[Document]], TaskHandle[list[Document]]] = {handle._task: handle for handle in ordered_handles}
+    pending: set[asyncio.Task[list[Document]]] = set(by_task.keys())
+    deadline_at = (time.monotonic() + deadline_seconds) if deadline_seconds is not None else None
+
+    while pending:
+        timeout: float | None = None
+        if deadline_at is not None:
+            timeout = max(0.0, deadline_at - time.monotonic())
+            if timeout <= 0.0:
+                break
+        done, pending = await asyncio.wait(pending, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        if not done:
+            break
+        for finished in done:
+            handle = by_task[finished]
+            outcome = (await asyncio.gather(handle.result(), return_exceptions=True))[0]
+            if isinstance(outcome, BaseException):
+                incomplete.append(handle)
+                continue
+            completed.append(outcome)
+
+    incomplete.extend(by_task[still_pending] for still_pending in pending)
+    return TaskBatch(completed=completed, incomplete=incomplete)
+
+async def as_task_completed(*handles: TaskAwaitableGroup) -> AsyncIterator[TaskHandle[list[Document]]]:
+    """Yield task handles in completion order."""
+    ordered_handles = _normalize_handles(handles)
+    if not ordered_handles:
+        return
+
+    by_task: dict[asyncio.Task[list[Document]], TaskHandle[list[Document]]] = {handle._task: handle for handle in ordered_handles}
+    pending: set[asyncio.Task[list[Document]]] = set(by_task.keys())
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for finished in done:
+            yield by_task[finished]
+
+async def run_tasks_until(
+    task_cls: type[Any],
+    argument_groups: Sequence[tuple[tuple[Any, ...], dict[str, Any]]],
+    *,
+    deadline_seconds: float | None = None,
+) -> TaskBatch:
+    """Launch ``task_cls.run(*args, **kwargs)`` for each argument group and collect the handles."""
+    handles = [task_cls.run(*args, **kwargs) for args, kwargs in argument_groups]
+    return await collect_tasks(handles, deadline_seconds=deadline_seconds)
+
 ```
 
 ## Examples
-
-**Pipeline task allowed input types** (`tests/pipeline/test_input_type_validation_ai_docs.py:22`)
-
-```python
-def test_pipeline_task_allowed_input_types() -> None:
-    """@pipeline_task validates input types at decoration time."""
-
-    class Priority(Enum):
-        HIGH = "high"
-
-    class FrozenConfig(BaseModel):
-        model_config = {"frozen": True}
-        value: str = "x"
-
-    @pipeline_task
-    async def accepted(
-        text: str,
-        count: int,
-        ratio: float,
-        flag: bool,
-        uid: UUID,
-        file_path: Path,
-        priority: Priority,
-        doc: _InputDoc,
-        config: FrozenConfig,
-        options: FlowOptions,
-        items: list[str],
-        pair: tuple[str, int],
-        mapping: dict[str, int],
-        optional: str | None = None,
-    ) -> _OutputDoc:
-        return _OutputDoc(name="out.txt", content=b"ok")
-
-    assert callable(accepted)
-```
 
 **Name with dashes and underscores** (`tests/pipeline/test_limits.py:155`)
 
@@ -749,126 +454,107 @@ def test_name_with_dashes_and_underscores(self):
     assert "my-limit_v2" in result
 ```
 
-**Pipeline flow deduplicates returned documents** (`tests/pipeline/test_flow_storage.py:124`)
+**Collect tasks empty returns empty batch** (`tests/pipeline/test_task_constraints.py:93`)
 
 ```python
 @pytest.mark.asyncio
-async def test_pipeline_flow_deduplicates_returned_documents(prefect_test_fixture, memory_store: MemoryDocumentStore, run_context):
-    """Test that @pipeline_flow deduplicates returned documents by SHA256."""
-    doc = StorageOutputDoc(name="output.txt", content=b"test output")
-
-    @pipeline_flow()
-    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
-        return [doc, doc]  # Same document twice
-
-    await test_flow("test-project", [], FlowOptions())
-
-    loaded = await memory_store.load("test-project", [StorageOutputDoc])
-    assert len(loaded) == 1
+async def test_collect_tasks_empty_returns_empty_batch() -> None:
+    """collect_tasks with no handles returns empty batch."""
+    batch = await collect_tasks()
+    assert batch.completed == []
+    assert batch.incomplete == []
 ```
 
-**Pipeline flow preserves existing run context** (`tests/pipeline/test_flow_storage.py:89`)
+**Pipeline test context sets and restores** (`tests/pipeline/test_execution_context.py:94`)
+
+```python
+def test_pipeline_test_context_sets_and_restores() -> None:
+    before = get_execution_context()
+    with pipeline_test_context(run_id="ctx-test") as ctx:
+        assert get_execution_context() is ctx
+        assert ctx.run_id == "ctx-test"
+        assert ctx.store is not None
+    assert get_execution_context() is before
+```
+
+**Pipeline test context with custom publisher** (`tests/pipeline/test_execution_context.py:103`)
+
+```python
+def test_pipeline_test_context_with_custom_publisher() -> None:
+    pub = _NoopPublisher()
+    with pipeline_test_context(publisher=pub) as ctx:
+        assert ctx.publisher is pub
+```
+
+**As task completed yields handles** (`tests/pipeline/test_parallel_primitives.py:154`)
 
 ```python
 @pytest.mark.asyncio
-async def test_pipeline_flow_preserves_existing_run_context(prefect_test_fixture, memory_store, run_context):
-    """Test that pipeline_flow does not override RunContext set by deployment."""
+async def test_as_task_completed_yields_handles() -> None:
+    with pipeline_test_context() as ctx:
+        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
+        try:
+            h1 = _FastTask.run([_make_doc("1")])
+            h2 = _FastTask.run([_make_doc("2")])
+            yielded = [handle async for handle in as_task_completed(h1, h2)]
+        finally:
+            reset_execution_context(token)
 
-    captured_ctx = None
-
-    @pipeline_flow()
-    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
-        nonlocal captured_ctx
-        captured_ctx = _get_run_context()
-        return []
-
-    await test_flow("my-project", [], FlowOptions())
-
-    assert captured_ctx is not None
-    # Should use the deployment-level context, not create a new one
-    assert captured_ctx.run_scope == "test-project"
+    assert len(yielded) == 2
+    assert all(isinstance(handle, TaskHandle) for handle in yielded)
 ```
 
-**Pipeline flow returns documents with store configured** (`tests/pipeline/test_flow_storage.py:40`)
+**As task completed yields results** (`tests/pipeline/test_flow_resume.py:26`)
 
 ```python
 @pytest.mark.asyncio
-async def test_pipeline_flow_returns_documents_with_store_configured(prefect_test_fixture, memory_store, run_context):
-    """Test that pipeline_flow returns documents correctly when a store is configured."""
+async def test_as_task_completed_yields_results() -> None:
+    first = InputDoc.create_root(name="1.txt", content="a", reason="test input")
+    second = InputDoc.create_root(name="2.txt", content="b", reason="test input")
 
-    @pipeline_flow()
-    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
-        return [StorageOutputDoc(name="output.txt", content=b"test output")]
+    names: list[str] = []
+    with pipeline_test_context():
+        async for handle in as_task_completed(EchoTask.run([first]), EchoTask.run([second])):
+            docs = await handle.result()
+            names.extend(doc.name for doc in docs)
 
-    input_docs = [StorageInputDoc(name="input.txt", content=b"test input")]
-
-    result = await test_flow("test-project", input_docs, FlowOptions())
-
-    assert len(result) == 1
-    assert isinstance(result[0], StorageOutputDoc)
+    assert set(names) == {"out_1.txt", "out_2.txt"}
 ```
 
-**Pipeline flow saves returned documents** (`tests/pipeline/test_flow_storage.py:108`)
+**Collect tasks accepts list** (`tests/pipeline/test_parallel_primitives.py:140`)
 
 ```python
 @pytest.mark.asyncio
-async def test_pipeline_flow_saves_returned_documents(prefect_test_fixture, memory_store: MemoryDocumentStore, run_context):
-    """Test that @pipeline_flow saves returned documents to the store."""
+async def test_collect_tasks_accepts_list() -> None:
+    with pipeline_test_context() as ctx:
+        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
+        try:
+            handles = [_FastTask.run([_make_doc("x")]) for _ in range(3)]
+            batch = await collect_tasks(handles)
+        finally:
+            reset_execution_context(token)
 
-    @pipeline_flow()
-    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
-        return [StorageOutputDoc(name="output.txt", content=b"test output")]
-
-    input_docs = [StorageInputDoc(name="input.txt", content=b"test input")]
-    await test_flow("test-project", input_docs, FlowOptions())
-
-    loaded = await memory_store.load("test-project", [StorageOutputDoc])
-    assert len(loaded) == 1
-    assert loaded[0].name == "output.txt"
+    assert len(batch.completed) == 3
+    assert batch.incomplete == []
 ```
 
-**Pipeline flow sets run context when missing** (`tests/pipeline/test_flow_storage.py:71`)
+**Collect tasks all complete** (`tests/pipeline/test_parallel_primitives.py:91`)
 
 ```python
 @pytest.mark.asyncio
-async def test_pipeline_flow_sets_run_context_when_missing(prefect_test_fixture, memory_store):
-    """Test that pipeline_flow sets RunContext if none exists."""
+async def test_collect_tasks_all_complete() -> None:
+    with pipeline_test_context() as ctx:
+        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
+        try:
+            h1 = _FastTask.run([_make_doc("a")])
+            h2 = _FastTask.run([_make_doc("b")])
+            batch = await collect_tasks(h1, h2)
+        finally:
+            reset_execution_context(token)
 
-    captured_ctx = None
-
-    @pipeline_flow()
-    async def test_flow(run_id: str, documents: list[StorageInputDoc], flow_options: FlowOptions) -> list[StorageOutputDoc]:
-        nonlocal captured_ctx
-        captured_ctx = _get_run_context()
-        return []
-
-    await test_flow("my-project", [], FlowOptions())
-
-    assert captured_ctx is not None
-    assert captured_ctx.run_scope == "my-project/test_flow"
-```
-
-**Pipeline flow with documents** (`tests/pipeline/test_wrapper_compatibility.py:54`)
-
-```python
-def test_pipeline_flow_with_documents():
-    """Test that pipeline_flow creates a proper flow for document processing."""
-    from ai_pipeline_core.documents import Document
-    from ai_pipeline_core.pipeline import FlowOptions
-
-    class InputDoc(Document):
-        pass
-
-    class OutputDoc(Document):
-        pass
-
-    @pipeline_flow()
-    async def my_doc_flow(run_id: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
-        return [OutputDoc.create_root(name="output.txt", content=b"output", reason="test input")]
-
-    # Check it's a Prefect Flow
-    assert hasattr(my_doc_flow, "__wrapped__")
-    assert hasattr(my_doc_flow, "serve")
+    assert isinstance(batch, TaskBatch)
+    assert len(batch.completed) == 2
+    assert batch.incomplete == []
 ```
 
 
@@ -882,72 +568,88 @@ def test_invalid_name_pattern(self):
         _validate_concurrency_limits("TestDeploy", {"bad name!": PipelineLimit(10)})
 ```
 
-**Pipeline task then trace raises error** (`tests/pipeline/test_decorators.py:833`)
+**Base flow options rejects extra** (`tests/pipeline/test_options.py:29`)
 
 ```python
-def test_pipeline_task_then_trace_raises_error(self):
-    from ai_pipeline_core import trace
-
-    with pytest.raises(TypeError, match=r"already decorated with @pipeline_task"):
-
-        @trace
-        @pipeline_task
-        async def my_task() -> None:  # pyright: ignore[reportUnusedFunction]
-            pass
+def test_base_flow_options_rejects_extra(self):
+    """Test that base FlowOptions rejects extra fields (extra='forbid')."""
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        FlowOptions(unknown_field="value")
 ```
 
-**Pipeline flow then trace raises error** (`tests/pipeline/test_decorators.py:855`)
+**Flow options is frozen** (`tests/pipeline/test_options.py:34`)
 
 ```python
-def test_pipeline_flow_then_trace_raises_error(self):
-    from ai_pipeline_core import trace
+def test_flow_options_is_frozen(self):
+    """Test that FlowOptions instances are immutable."""
 
-    with pytest.raises(TypeError, match=r"already decorated with @pipeline"):
+    class SimpleOptions(FlowOptions):
+        core_model: str = "default"
 
-        @trace
-        @pipeline_flow()
-        async def my_flow(  # pyright: ignore[reportUnusedFunction]
-            run_id: str, documents: list[InputDocument], flow_options: FlowOptions
-        ) -> list[OutputDocument]:
-            return list([OutputDocument(name="output.txt", content=b"output")])
+    options = SimpleOptions()
+    with pytest.raises(ValidationError):
+        options.core_model = "new-model"
 ```
 
-**Sync function with pipeline task raises error** (`tests/pipeline/test_decorators.py:779`)
+**Inherited flow options maintains frozen** (`tests/pipeline/test_options.py:111`)
 
 ```python
-def test_sync_function_with_pipeline_task_raises_error(self):
-    from typing import Any, cast
+def test_inherited_flow_options_maintains_frozen(self):
+    """Test that inherited classes maintain frozen configuration."""
 
-    with pytest.raises(TypeError, match="must be 'async def'"):
+    class CustomFlowOptions(FlowOptions):
+        custom_field: str = "default"
 
-        @cast(Any, pipeline_task)
-        def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-            return x * 2
+    options = CustomFlowOptions()
+    with pytest.raises(ValidationError):
+        options.custom_field = "new_value"
 ```
 
-**Sync function with pipeline task with params raises error** (`tests/pipeline/test_decorators.py:788`)
+**Invalid kind type** (`tests/pipeline/test_limits.py:144`)
 
 ```python
-def test_sync_function_with_pipeline_task_with_params_raises_error(self):
-    from typing import Any, cast
-
-    with pytest.raises(TypeError, match="must be 'async def'"):
-
-        @cast(Any, pipeline_task(retries=3, trace_level="debug"))
-        def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-            return x * 2
+def test_invalid_kind_type(self):
+    """Test that kind must be LimitKind enum instance."""
+    # Create a PipelineLimit-like object with wrong kind type
+    limit = PipelineLimit.__new__(PipelineLimit)
+    object.__setattr__(limit, "limit", 10)
+    object.__setattr__(limit, "kind", "concurrent")  # str, not LimitKind
+    object.__setattr__(limit, "timeout", 600)
+    with pytest.raises(TypeError, match="kind must be LimitKind"):
+        _validate_concurrency_limits("TestDeploy", {"test": limit})
 ```
 
-**Trace then pipeline task raises error** (`tests/pipeline/test_decorators.py:823`)
+**Limit must be positive** (`tests/pipeline/test_limits.py:64`)
 
 ```python
-def test_trace_then_pipeline_task_raises_error(self):
-    from ai_pipeline_core import trace
+def test_limit_must_be_positive(self):
+    with pytest.raises(ValueError, match="limit must be >= 1"):
+        PipelineLimit(limit=0)
+    with pytest.raises(ValueError, match="limit must be >= 1"):
+        PipelineLimit(limit=-5)
+```
 
-    with pytest.raises(TypeError, match=r"already decorated.*with @trace"):
+**Missing build flows raises** (`tests/pipeline/test_static_validation.py:789`)
 
-        @pipeline_task
-        @trace
-        async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-            return x * 2
+```python
+def test_missing_build_flows_raises(self):
+    """Deployment without build_flows raises TypeError."""
+    with pytest.raises(TypeError, match="must implement build_flows"):
+
+        class NoFlows(PipelineDeployment[FlowOptions, SampleResult]):
+            @staticmethod
+            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+                return SampleResult(success=True)
+```
+
+**Missing build result raises** (`tests/pipeline/test_static_validation.py:781`)
+
+```python
+def test_missing_build_result_raises(self):
+    """Deployment without build_result raises TypeError."""
+    with pytest.raises(TypeError, match=r"must implement.*build_result"):
+
+        class NoBuild(PipelineDeployment[FlowOptions, SampleResult]):
+            def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+                return [AlphaToBetaFlow()]
 ```

@@ -9,7 +9,14 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from ai_pipeline_core.documents import Attachment, Document
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.pipeline.options import FlowOptions
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
 
 
 # ---------------------------------------------------------------------------

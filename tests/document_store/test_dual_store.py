@@ -7,6 +7,7 @@ from ai_pipeline_core.document_store._models import DocumentNode, walk_provenanc
 from ai_pipeline_core.document_store._dual_store import DualDocumentStore
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents._hashing import compute_document_sha256
 from ai_pipeline_core.documents import RunScope
 
@@ -17,7 +18,8 @@ class DualReportDoc(Document):
 
 @pytest.fixture(autouse=True)
 def _reset_store():
-    yield
+    with _suppress_document_registration():
+        yield
     set_document_store(None)
 
 
@@ -94,7 +96,7 @@ class TestSecondaryFailure:
     @pytest.mark.asyncio
     async def test_secondary_save_failure_does_not_propagate(self):
         class FailingSave(MemoryDocumentStore):
-            async def save(self, document: Document, run_scope: str) -> None:
+            async def save(self, document: Document, run_scope: RunScope, *, created_by_task: str = "") -> None:
                 raise RuntimeError("disk full")
 
         primary = MemoryDocumentStore()
@@ -106,7 +108,7 @@ class TestSecondaryFailure:
     @pytest.mark.asyncio
     async def test_secondary_save_batch_failure_does_not_propagate(self):
         class FailingBatch(MemoryDocumentStore):
-            async def save_batch(self, documents: list[Document], run_scope: str) -> None:
+            async def save_batch(self, documents: list[Document], run_scope: RunScope, *, created_by_task: str = "") -> None:
                 raise RuntimeError("disk full")
 
         primary = MemoryDocumentStore()
@@ -152,7 +154,7 @@ class TestPrimaryFailure:
     @pytest.mark.asyncio
     async def test_primary_save_failure_propagates(self):
         class FailingSave(MemoryDocumentStore):
-            async def save(self, document: Document, run_scope: str) -> None:
+            async def save(self, document: Document, run_scope: RunScope, *, created_by_task: str = "") -> None:
                 raise RuntimeError("primary down")
 
         secondary = MemoryDocumentStore()
@@ -286,7 +288,8 @@ class TestLoadNodesBySha256sDelegation:
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
         parent = _make("parent.md", "parent content")
-        child = DualReportDoc.create(name="child.md", content="child", derived_from=(parent.sha256,))
+        with _suppress_document_registration():
+            child = DualReportDoc.create(name="child.md", content="child", derived_from=(parent.sha256,))
         await dual.save(parent, RunScope("run1"))
         await dual.save(child, RunScope("run1"))
         graph = await walk_provenance(child.sha256, dual.load_nodes_by_sha256s)
@@ -334,7 +337,8 @@ class TestFindBySourceDelegation:
     async def test_delegates_to_primary(self):
         primary, secondary = MemoryDocumentStore(), MemoryDocumentStore()
         dual = DualDocumentStore(primary=primary, secondary=secondary)
-        doc = DualReportDoc(name="a.md", content=b"content", derived_from=("https://example.com/src-1",))
+        with _suppress_document_registration():
+            doc = DualReportDoc(name="a.md", content=b"content", derived_from=("https://example.com/src-1",))
         await primary.save(doc, RunScope("run1"))
         result = await dual.find_by_source(["https://example.com/src-1"], DualReportDoc)
         assert "https://example.com/src-1" in result

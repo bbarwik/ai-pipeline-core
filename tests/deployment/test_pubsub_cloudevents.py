@@ -9,7 +9,6 @@ and handle non-primitive type serialization via json.dumps(default=str).
 
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import ClassVar
 from uuid import UUID
 
 import pytest
@@ -19,16 +18,16 @@ from ai_pipeline_core import (
     Document,
     FlowOptions,
     PipelineDeployment,
-    pipeline_flow,
 )
 from ai_pipeline_core.deployment._types import EventType
+from ai_pipeline_core.pipeline import PipelineFlow
 
 from .conftest import (
-    PubSubTestResources,
-    PublisherWithStore,
+    PubsubTestResources,
     PubsubInputDoc,
     PubsubOutputDoc,
-    TwoFlowDeployment,
+    PublisherWithStore,
+    TwoStageDeployment,
     assert_seq_monotonic,
     assert_valid_cloudevent,
     make_input_doc,
@@ -38,8 +37,8 @@ from .conftest import (
 
 pytestmark = pytest.mark.pubsub
 
-# 2-flow success: 1 started + 4 progress (STARTED/COMPLETED x 2 flows) + 1 completed = 6
-TWO_FLOW_SUCCESS_EVENT_COUNT = 6
+# 2-flow success: 1 run.started + 2*(flow.started + task.started + task.completed + progress.STARTED + progress.COMPLETED + flow.completed) + 1 run.completed
+TWO_FLOW_SUCCESS_EVENT_COUNT = 14
 
 
 class TestCloudEventsFormat:
@@ -48,28 +47,28 @@ class TestCloudEventsFormat:
     async def test_all_events_have_valid_cloudevents_fields(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store,
     ):
         """Every event has required CloudEvents 1.0 fields."""
-        deployment = TwoFlowDeployment()
+        deployment = TwoStageDeployment()
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ce-fields-test")
 
-        events = pull_events(pubsub_topic, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
+        events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
         for event in events:
             assert_valid_cloudevent(event)
 
     async def test_message_attributes_match_envelope(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store,
     ):
         """Pub/Sub message attributes match corresponding CloudEvents envelope fields."""
-        deployment = TwoFlowDeployment()
+        deployment = TwoStageDeployment()
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ce-attrs-test")
 
-        events = pull_events(pubsub_topic, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
+        events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
         for event in events:
             assert event.service_type == "test-service", f"service_type attribute should be 'test-service', got '{event.service_type}'"
             assert event.event_type == event.envelope["type"], (
@@ -80,14 +79,14 @@ class TestCloudEventsFormat:
     async def test_event_ids_are_unique_uuids(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store,
     ):
         """All CloudEvents id fields are unique valid UUIDs."""
-        deployment = TwoFlowDeployment()
+        deployment = TwoStageDeployment()
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ce-ids-test")
 
-        events = pull_events(pubsub_topic, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
+        events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
         ids = set()
         for event in events:
             event_id = event.envelope["id"]
@@ -101,32 +100,32 @@ class TestCloudEventsFormat:
     async def test_seq_is_monotonically_increasing(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store,
     ):
         """All events have strictly increasing seq values when sorted by seq."""
-        deployment = TwoFlowDeployment()
+        deployment = TwoStageDeployment()
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ce-seq-test")
 
-        events = pull_events(pubsub_topic, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
+        events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
         assert_seq_monotonic(events)
 
     async def test_timestamps_are_parseable_iso8601(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store,
     ):
         """All event timestamps are valid ISO 8601 and fall within the test execution window."""
         margin = timedelta(seconds=30)
         test_start = datetime.now(UTC) - margin
 
-        deployment = TwoFlowDeployment()
+        deployment = TwoStageDeployment()
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ce-time-test")
 
         test_end = datetime.now(UTC) + margin
 
-        events = pull_events(pubsub_topic, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
+        events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
         for event in events:
             time_str = event.envelope["time"]
             parsed = datetime.fromisoformat(time_str)
@@ -152,20 +151,26 @@ class _SerializationResult(DeploymentResult):
     priority: _Priority = _Priority.HIGH
 
 
-@pipeline_flow(estimated_minutes=1)
-async def _serialization_flow(
-    run_id: str,
-    documents: list[PubsubInputDoc],
-    flow_options: FlowOptions,
-) -> list[PubsubOutputDoc]:
+class _SerializationFlow(PipelineFlow):
     """Single flow for serialization test."""
-    return [PubsubOutputDoc.create_root(name="ser_out.json", content={"serialized": True}, reason="test")]
+
+    name = "serialization_flow"
+    estimated_minutes = 1
+
+    async def run(
+        self,
+        run_id: str,
+        documents: list[PubsubInputDoc],
+        options: FlowOptions,
+    ) -> list[PubsubOutputDoc]:
+        return [PubsubOutputDoc.derive(from_documents=(documents[0],), name="ser_out.json", content={"serialized": True})]
 
 
 class _SerializationDeployment(PipelineDeployment[FlowOptions, _SerializationResult]):
     """Deployment returning a result with non-primitive types."""
 
-    flows: ClassVar = [_serialization_flow]
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [_SerializationFlow()]
 
     @staticmethod
     def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> _SerializationResult:
@@ -178,19 +183,19 @@ class TestNonPrimitiveTypeSerialization:
     async def test_default_str_serialization_of_nonprimitive_types(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store,
     ):
         """datetime, UUID, and Enum fields in DeploymentResult are stringified in the completed event."""
-        # Single-flow: 1 started + 2 progress (STARTED/COMPLETED) + 1 completed = 4
-        expected_count = 4
+        # Single-flow: 1 run.started + (flow.started + progress.STARTED + progress.COMPLETED + flow.completed) + 1 run.completed = 6
+        expected_count = 6
 
         deployment = _SerializationDeployment()
         doc = make_input_doc()
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ser-test", docs=[doc])
 
-        events = pull_events(pubsub_topic, expected_count=expected_count)
-        completed_events = [e for e in events if e.event_type == EventType.COMPLETED]
+        events = pull_events(pubsub_test_resources, expected_count=expected_count)
+        completed_events = [e for e in events if e.event_type == EventType.RUN_COMPLETED]
         assert len(completed_events) == 1
 
         result = completed_events[0].data["result"]

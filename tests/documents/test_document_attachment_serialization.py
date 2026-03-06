@@ -2,12 +2,21 @@
 
 import base64
 
+import pytest
+
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents.attachment import Attachment
 
 
 class SerFlowDoc(Document):
     """Concrete Document for serialization tests."""
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
 
 
 # --- Binary fixtures ---

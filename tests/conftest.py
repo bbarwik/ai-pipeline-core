@@ -1,6 +1,8 @@
 """Common test fixtures for pipeline projects."""
 
 import logging
+import shutil
+import subprocess
 import warnings
 
 import pytest
@@ -72,3 +74,33 @@ def run_context():
     token = _set_run_context(ctx)
     yield ctx
     _reset_run_context(token)
+
+
+# ---------------------------------------------------------------------------
+# Infrastructure availability detection
+# ---------------------------------------------------------------------------
+
+DOCKER_INFO_TIMEOUT_SECONDS = 10
+
+
+@pytest.fixture(scope="session")
+def docker_available() -> bool:
+    """Check once per session whether Docker daemon is reachable."""
+    if not shutil.which("docker"):
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=DOCKER_INFO_TIMEOUT_SECONDS,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+@pytest.fixture(scope="session")
+def require_docker(docker_available: bool) -> None:
+    """Skip the entire test session/module if Docker is not available."""
+    if not docker_available:
+        pytest.skip("Docker not available — install Docker or start the daemon")

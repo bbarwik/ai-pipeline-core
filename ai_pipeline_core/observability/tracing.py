@@ -339,7 +339,7 @@ def trace(  # noqa: UP047
             Wrapped function with LMNR observability.
 
         Raises:
-            TypeError: If function is already decorated with @pipeline_task or @pipeline_flow.
+            TypeError: If function is already wrapped by pipeline runtime tracing.
         """
         if hasattr(f, "__is_traced__") and f.__is_traced__:  # type: ignore[attr-defined]
             is_prefect_task = hasattr(f, "fn") and hasattr(f, "submit") and hasattr(f, "map")
@@ -347,8 +347,8 @@ def trace(  # noqa: UP047
             if is_prefect_task or is_prefect_flow:
                 fname = getattr(f, "__name__", "function")
                 raise TypeError(
-                    f"Function '{fname}' is already decorated with @pipeline_task or "
-                    f"@pipeline_flow. Remove the @trace decorator - pipeline decorators "
+                    f"Function '{fname}' is already traced by PipelineTask/PipelineFlow runtime. "
+                    f"Remove the @trace decorator - pipeline runtime "
                     f"include tracing automatically."
                 )
 
@@ -407,7 +407,7 @@ def set_trace_cost(cost: float | str) -> None:
     """Set cost attributes for the current trace span.
 
     Only positive values are set; zero or negative values are ignored.
-    Only works within a traced context (@trace, @pipeline_task, @pipeline_flow).
+    Only works within a traced context (@trace or pipeline task/flow runtime).
     WARNING: Do not use for LLM conversation costs — those are tracked automatically
     via ModelResponse. Using this for LLM costs causes double-counting.
     Use only for non-LLM costs (e.g. external API calls, search services).

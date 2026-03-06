@@ -1,0 +1,117 @@
+"""AI-doc style example for PipelineTask input type validation.
+
+Demonstrates which input types are accepted and rejected by PipelineTask.run().
+"""
+
+import enum
+
+import pytest
+from pydantic import BaseModel
+
+from ai_pipeline_core import Document
+from ai_pipeline_core.pipeline import PipelineTask
+
+
+class GoodInput(Document):
+    pass
+
+
+class GoodOutput(Document):
+    pass
+
+
+class Priority(enum.StrEnum):
+    HIGH = "high"
+    LOW = "low"
+
+
+class FrozenConfig(BaseModel, frozen=True):
+    label: str
+    max_items: int = 10
+
+
+# --- Accepted input types ---
+
+
+def test_document_list_input() -> None:
+    class T(PipelineTask):
+        @classmethod
+        async def run(cls, documents: list[GoodInput]) -> list[GoodOutput]:
+            _ = (cls, documents)
+            return []
+
+    assert GoodInput in T.input_document_types
+
+
+def test_scalar_str_input() -> None:
+    class T(PipelineTask):
+        @classmethod
+        async def run(cls, source: GoodInput, label: str) -> list[GoodOutput]:
+            _ = (cls, source, label)
+            return []
+
+
+def test_scalar_int_input() -> None:
+    class T(PipelineTask):
+        @classmethod
+        async def run(cls, source: GoodInput, count: int) -> list[GoodOutput]:
+            _ = (cls, source, count)
+            return []
+
+
+def test_scalar_float_input() -> None:
+    class T(PipelineTask):
+        @classmethod
+        async def run(cls, source: GoodInput, threshold: float) -> list[GoodOutput]:
+            _ = (cls, source, threshold)
+            return []
+
+
+def test_scalar_bool_input() -> None:
+    class T(PipelineTask):
+        @classmethod
+        async def run(cls, source: GoodInput, verbose: bool) -> list[GoodOutput]:
+            _ = (cls, source, verbose)
+            return []
+
+
+def test_enum_input() -> None:
+    class T(PipelineTask):
+        @classmethod
+        async def run(cls, source: GoodInput, priority: Priority) -> list[GoodOutput]:
+            _ = (cls, source, priority)
+            return []
+
+
+def test_frozen_basemodel_input() -> None:
+    class T(PipelineTask):
+        @classmethod
+        async def run(cls, source: GoodInput, config: FrozenConfig) -> list[GoodOutput]:
+            _ = (cls, source, config)
+            return []
+
+
+# --- Rejected input types ---
+
+
+def test_rejects_set_container() -> None:
+    with pytest.raises(TypeError, match="unsupported input annotation"):
+
+        class T(PipelineTask):
+            @classmethod
+            async def run(cls, documents: set[GoodInput]) -> list[GoodOutput]:
+                _ = (cls, documents)
+                return []
+
+
+def test_rejects_mutable_basemodel() -> None:
+    class MutableConfig(BaseModel):
+        label: str
+
+    with pytest.raises(TypeError, match="unsupported input annotation"):
+
+        class T(PipelineTask):
+            @classmethod
+            async def run(cls, config: MutableConfig) -> list[GoodOutput]:
+                _ = (cls, config)
+                return []

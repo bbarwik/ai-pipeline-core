@@ -29,6 +29,7 @@ from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.documents import DocumentSha256, RunScope
 from ai_pipeline_core.settings import settings
+from ai_pipeline_core.pipeline import pipeline_test_context
 
 pytestmark = pytest.mark.clickhouse
 
@@ -44,7 +45,7 @@ class CHDocB(Document):
 
 
 @pytest.fixture(scope="module")
-def clickhouse_container():
+def clickhouse_container(require_docker):
     """Start a ClickHouse container for the test module."""
     with ClickHouseContainer() as container:
         yield container
@@ -61,6 +62,13 @@ def store(clickhouse_container: ClickHouseContainer) -> ClickHouseDocumentStore:
         password=clickhouse_container.password,
         secure=False,
     )
+
+
+@pytest.fixture(autouse=True)
+def _pipeline_context():
+    """Provide pipeline task context so Document creation works in tests."""
+    with pipeline_test_context():
+        yield
 
 
 def _make(cls: type[Document], name: str, content: str = "test content", **kwargs: object) -> Document:

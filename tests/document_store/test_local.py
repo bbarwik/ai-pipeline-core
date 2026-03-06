@@ -1,6 +1,10 @@
 """Tests for LocalDocumentStore."""
 
 import json
+import os
+import subprocess
+import sys
+import textwrap
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,6 +16,7 @@ from ai_pipeline_core.document_store._protocol import DocumentStore, create_docu
 from ai_pipeline_core.document_store._models import DocumentNode, walk_provenance
 from ai_pipeline_core.document_store._local import LocalDocumentStore, _safe_filename, _atomic_write_text
 from ai_pipeline_core.documents import Attachment, Document
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents._hashing import compute_document_sha256
 from ai_pipeline_core.documents import DocumentSha256, RunScope
 
@@ -30,6 +35,12 @@ def _reset_store():
     set_document_store(None)
 
 
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> LocalDocumentStore:
     return LocalDocumentStore(base_path=tmp_path)
@@ -45,6 +56,48 @@ class TestProtocolCompliance:
     def test_satisfies_document_store_protocol(self, tmp_path: Path):
         store = LocalDocumentStore(base_path=tmp_path)
         assert isinstance(store, DocumentStore)
+
+
+class TestShortLivedLoops:
+    def test_save_and_load_exit_cleanly_under_asyncio_run(self, tmp_path: Path) -> None:
+        code = textwrap.dedent(
+            f"""
+            import asyncio
+            from pathlib import Path
+
+            from ai_pipeline_core.document_store._local import LocalDocumentStore
+            from ai_pipeline_core.documents import Document, RunScope
+            from ai_pipeline_core.documents._context import _suppress_document_registration
+
+
+            class SmokeDoc(Document):
+                pass
+
+
+            async def main() -> None:
+                store = LocalDocumentStore(base_path=Path({str(tmp_path)!r}))
+                with _suppress_document_registration():
+                    doc = SmokeDoc(name="source.txt", content=b"hello replay")
+                await store.save(doc, RunScope("run1"))
+                loaded = await store.load(RunScope("run1"), [SmokeDoc])
+                assert len(loaded) == 1
+                assert loaded[0].content == b"hello replay"
+
+
+            asyncio.run(main())
+            """
+        )
+        env = dict(os.environ)
+        env["LMNR_DISABLE_TRACING"] = "true"
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 class TestSaveLoadRoundTrip:

@@ -15,6 +15,7 @@ from ai_pipeline_core.deployment._resolve import (
     resolve_document_inputs,
 )
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents.attachment import Attachment
 
 
@@ -24,6 +25,12 @@ class ResolveDoc(Document):
 
 class OtherDoc(Document):
     pass
+
+
+@pytest.fixture(autouse=True)
+def suppress_doc_registration():
+    with _suppress_document_registration():
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +194,22 @@ class TestResolveDocumentInputs:
         with pytest.raises(ValueError, match="No input document types"):
             await resolve_document_inputs(inputs, [ResolveDoc], start_step_input_types=[])
 
+    async def test_rejects_provenance_fields_for_root_inputs(self):
+        """Deployment input documents are root documents and cannot have provenance."""
+        with pytest.raises(ValueError, match="root documents"):
+            await resolve_document_inputs(
+                [
+                    DocumentInput(
+                        class_name="ResolveDoc",
+                        name="a.txt",
+                        content="hello",
+                        derived_from=("https://example.com",),
+                    )
+                ],
+                [ResolveDoc],
+                start_step_input_types=[ResolveDoc],
+            )
+
 
 # ---------------------------------------------------------------------------
 # build_output_document
@@ -263,18 +286,3 @@ class TestResolveUrlDocumentNameDerivation:
         inputs = [DocumentInput(url="https://example.com/", class_name="ResolveDoc")]
         with pytest.raises(ValueError, match="Cannot derive document name"):
             await resolve_document_inputs(inputs, [ResolveDoc])
-
-
-class TestDocumentInputWithProvenance:
-    async def test_inline_with_derived_from(self):
-        inputs = [
-            DocumentInput(
-                content="hello",
-                name="file.txt",
-                class_name="ResolveDoc",
-                derived_from=("https://source.com",),
-            )
-        ]
-        result = await resolve_document_inputs(inputs, [ResolveDoc])
-        assert len(result) == 1
-        assert "https://source.com" in result[0].derived_from

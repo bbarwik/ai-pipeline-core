@@ -322,15 +322,20 @@ async def resolve_document_inputs(
                 att_list = await asyncio.gather(*[_resolve_attachment(a) for a in doc_input.attachments])
                 attachments = tuple(att_list)
 
+            if doc_input.derived_from or doc_input.triggered_by:
+                raise ValueError(
+                    "Deployment input documents are root documents and cannot set derived_from/triggered_by. "
+                    "Remove provenance fields from DocumentInput. PipelineTask outputs should set provenance via derive()/create()."
+                )
+
             if doc_input.content is not None:
-                # Inline document — content is str (plain text or data URI), validator converts to bytes
-                return doc_type(
+                content = doc_input.content
+                return doc_type.create_root(
                     name=doc_input.name,
-                    content=doc_input.content,  # pyright: ignore[reportArgumentType]
+                    content=content,
                     description=doc_input.description or None,
-                    derived_from=doc_input.derived_from or None,
-                    triggered_by=tuple(DocumentSha256(t) for t in doc_input.triggered_by) if doc_input.triggered_by else None,
                     attachments=attachments or None,
+                    reason="deployment input (inline content)",
                 )
 
             # URL document
@@ -340,13 +345,12 @@ async def resolve_document_inputs(
             if not name:
                 raise ValueError(f"Cannot derive document name from URL: {doc_input.url}")
 
-            return doc_type(
+            return doc_type.create_root(
                 name=name,
                 content=content_bytes,
                 description=doc_input.description or None,
-                derived_from=doc_input.derived_from or None,
-                triggered_by=tuple(DocumentSha256(t) for t in doc_input.triggered_by) if doc_input.triggered_by else None,
                 attachments=attachments or None,
+                reason=f"deployment input (url source: {doc_input.url})",
             )
 
         results = await asyncio.gather(*[_resolve_one(inp) for inp in inputs], return_exceptions=True)

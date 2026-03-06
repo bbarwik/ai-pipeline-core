@@ -2,7 +2,7 @@
 # CLASSES: Citation, TokenUsage, ModelOptions, UserMessage, AssistantMessage, ToolResultMessage, Conversation, ToolOutput, Tool, ToolCallRecord
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.12.4
+# VERSION: 0.13.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -23,6 +23,7 @@ type ModelName = (
         "gemini-3-flash",
         "gpt-5-mini",
         "grok-4.1-fast",
+        "gemini-3.1-flash-lite",
         # Search models
         "gemini-3-flash-search",
         "gpt-5-mini-search",
@@ -239,7 +240,7 @@ Attachment rendering in LLM context:
 
     @property
     def tool_call_records(self) -> tuple[ToolCallRecord, ...]:
-        """All tool call records from the tool loop (across all rounds)."""
+        """All tool call records from this Conversation's send() call (across all rounds)."""
         return self._tool_call_records
 
     @property
@@ -254,22 +255,6 @@ Attachment rendering in LLM context:
         if not v:
             raise ValueError("model must be non-empty")
         return v
-
-    def restore_content(self, text: str) -> str:
-        """Restore shortened URLs/addresses in text using the substitutor from the last send.
-
-        Use when extracting URLs from .parsed structured output fields, as .parsed may
-        contain shortened forms.
-        """
-        # Substitutor is ephemeral — not stored on Conversation. For restore_content
-        # to work, the caller needs the same conv that produced the response.
-        # Since we can't store the substitutor (not serializable), we reconstruct it.
-        if not self.enable_substitutor:
-            return text
-        substitutor = URLSubstitutor()
-        all_items = self.context + tuple(m for m in self.messages if isinstance(m, (Document, UserMessage, AssistantMessage, ToolResultMessage)))
-        substitutor.prepare(self._collect_text(all_items))
-        return substitutor.restore(text)
 
     async def send(
         self,
@@ -295,7 +280,7 @@ Attachment rendering in LLM context:
             tool_choice=tool_choice,
             max_tool_rounds=max_tool_rounds,
         )
-        return self.model_copy(update={"messages": new_messages, "_tool_call_records": self._tool_call_records + records})  # type: ignore[return-value]
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records})  # type: ignore[return-value]
 
     @overload
     async def send_spec(
@@ -446,7 +431,17 @@ Attachment rendering in LLM context:
             tool_choice=tool_choice,
             max_tool_rounds=max_tool_rounds,
         )
-        return self.model_copy(update={"messages": new_messages, "_tool_call_records": self._tool_call_records + records})  # type: ignore[return-value]
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records})  # type: ignore[return-value]
+
+    def tool_calls_for(self, tool_cls: type[Tool]) -> tuple[ToolCallRecord, ...]:
+        """Filter tool call records by tool class.
+
+        Returns only records from this Conversation's send() call where the tool
+        matches the given class. Use with the collection pattern across phases:
+
+            all = phase1.tool_calls_for(Inspect) + phase2.tool_calls_for(Inspect)
+        """
+        return tuple(r for r in self._tool_call_records if r.tool is tool_cls)
 
     def with_assistant_message(self, content: str) -> "Conversation[T]":
         """Return NEW Conversation with an injected assistant turn in messages."""
@@ -529,7 +524,7 @@ invocation by the tool loop."""
 
         # Validate all Input fields have descriptions
         for field_name, field_info in input_cls.model_fields.items():
-            if not isinstance(field_info, FieldInfo) or field_info.description is None:
+            if field_info.description is None:
                 raise TypeError(
                     f"Tool '{name}'.Input field '{field_name}' must use Field(description='...'). All Input fields require descriptions for the LLM."
                 )
@@ -549,7 +544,7 @@ invocation by the tool loop."""
         if not inspect.iscoroutinefunction(execute_method):
             raise TypeError(f"Tool '{name}'.execute must be async (async def execute)")
 
-    async def execute(self, input: BaseModel) -> ToolOutput:
+    async def execute(self, input: Any) -> ToolOutput:
         """Execute the tool with validated input and return the result."""
         raise NotImplementedError
 
@@ -707,8 +702,8 @@ async def test_send_with_tools_auto_loop(monkeypatch):
         class Input(BaseModel):
             city: str = Field(description="City name")
 
-        async def execute(self, input: BaseModel) -> ToolOutput:
-            return ToolOutput(content=f"Sunny, 22°C in {input.city}")  # type: ignore[attr-defined]
+        async def execute(self, input: Input) -> ToolOutput:
+            return ToolOutput(content=f"Sunny, 22°C in {input.city}")
 
     # 2. Mock LLM: first call requests tool use, second returns final answer
     call_count = 0
@@ -746,7 +741,7 @@ async def test_send_with_tools_auto_loop(monkeypatch):
     assert "Sunny, 22°C in Paris" in record.output.content
 ```
 
-**Citation has slots** (`tests/llm/test_verified_issues.py:296`)
+**Citation has slots** (`tests/llm/test_regressions.py:280`)
 
 ```python
 def test_citation_has_slots(self):
@@ -795,35 +790,27 @@ def test_tool_call_record_frozen() -> None:
     assert record.round == 1
 ```
 
-**Tool with custom output** (`tests/llm/test_tools.py:117`)
+**Tool calls for empty when no match** (`tests/llm/test_conversation_tools.py:338`)
 
 ```python
-def test_tool_with_custom_output() -> None:
-    """Tool with custom Output extending ToolOutput is valid."""
-    assert issubclass(CustomOutputTool.Output, ToolOutput)
+def test_tool_calls_for_empty_when_no_match() -> None:
+    """tool_calls_for returns empty tuple when no records match."""
+    conv = _conv_with_records(
+        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="1"), output=ToolOutput(content="a"), round=1),
+    )
+    assert conv.tool_calls_for(ToolB) == ()
 ```
 
-**Generate tool schema strict mode nested** (`tests/llm/test_tools.py:139`)
+**Tool calls for returns tuple** (`tests/llm/test_conversation_tools.py:346`)
 
 ```python
-def test_generate_tool_schema_strict_mode_nested() -> None:
-    """Strict mode recursively adds additionalProperties: false."""
-
-    class NestedTool(Tool):
-        """Tool with nested schema."""
-
-        class Input(BaseModel):
-            location: GetWeather.Input = Field(description="Location data")
-
-        async def execute(self, input: BaseModel) -> ToolOutput:
-            return ToolOutput(content="")
-
-    schema = generate_tool_schema(NestedTool())
-    params = schema["function"]["parameters"]
-    # Nested model must produce $defs with strict mode applied
-    assert "$defs" in params, "Nested model should produce $defs"
-    for definition in params["$defs"].values():
-        assert definition.get("additionalProperties") is False
+def test_tool_calls_for_returns_tuple() -> None:
+    """tool_calls_for returns immutable tuple, not list."""
+    conv = _conv_with_records(
+        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="1"), output=ToolOutput(content="a"), round=1),
+    )
+    result = conv.tool_calls_for(ToolA)
+    assert isinstance(result, tuple)
 ```
 
 
@@ -860,7 +847,7 @@ def test_tool_definition_missing_docstring() -> None:
             class Input(BaseModel):
                 x: int = Field(description="x value")
 
-            async def execute(self, input: BaseModel) -> ToolOutput:
+            async def execute(self, input: Input) -> ToolOutput:
                 return ToolOutput(content="")
 ```
 
@@ -886,7 +873,7 @@ def test_tool_definition_missing_input() -> None:
         class BadTool(Tool):
             """Missing Input."""
 
-            async def execute(self, input: BaseModel) -> ToolOutput:
+            async def execute(self, input: BaseModel) -> ToolOutput:  # no Input class exists
                 return ToolOutput(content="")
 ```
 
@@ -902,6 +889,6 @@ def test_tool_definition_input_field_missing_description() -> None:
             class Input(BaseModel):
                 query: str  # no Field(description=...)
 
-            async def execute(self, input: BaseModel) -> ToolOutput:
+            async def execute(self, input: Input) -> ToolOutput:
                 return ToolOutput(content="")
 ```

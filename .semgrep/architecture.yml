@@ -1,22 +1,4 @@
 rules:
-  - id: pipeline-task-must-be-async
-    pattern: |
-      @pipeline_task
-      def $F(...):
-          ...
-    message: "@pipeline_task functions must be async — use 'async def' instead of 'def'"
-    severity: ERROR
-    languages: [python]
-
-  - id: pipeline-task-retries-must-be-async
-    pattern: |
-      @pipeline_task(...)
-      def $F(...):
-          ...
-    message: "@pipeline_task functions must be async — use 'async def' instead of 'def'"
-    severity: ERROR
-    languages: [python]
-
   - id: no-mutable-module-globals
     patterns:
       - pattern-either:

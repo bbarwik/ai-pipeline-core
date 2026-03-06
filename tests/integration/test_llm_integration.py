@@ -61,10 +61,11 @@ class TestLLMIntegration:
     @pytest.mark.asyncio
     async def test_document_in_context(self):
         """Test using a document as context."""
-        doc = ConcreteDocument(
+        doc = ConcreteDocument.create_root(
             name="info.txt",
             content=b"The capital of France is Paris.",
             description="Geographic information",
+            reason="integration test input",
         )
 
         conv = Conversation(
@@ -96,9 +97,10 @@ class TestLLMIntegration:
     @pytest.mark.asyncio
     async def test_system_prompt(self):
         """Test using system prompt."""
-        system_doc = ConcreteDocument(
+        system_doc = ConcreteDocument.create_root(
             name="system_prompt",
             content=b"You are a pirate. Always respond like a pirate.",
+            reason="integration test input",
         )
 
         conv = Conversation(
@@ -206,9 +208,10 @@ class TestLLMIntegration:
             model_options=ModelOptions(max_completion_tokens=300, reasoning_effort="low"),
         )
 
-        doc = ConcreteDocument(
+        doc = ConcreteDocument.create_root(
             name="data.txt",
             content=b"The answer is 42.",
+            reason="integration test input",
         )
 
         conv_with_doc = conv.with_document(doc)
@@ -252,10 +255,11 @@ class TestLLMIntegration:
         all_items = urls + addresses
 
         content = "Items to sort:\n" + "\n".join(f"- {item}" for item in all_items)
-        doc = ConcreteDocument(
+        doc = ConcreteDocument.create_root(
             name="items_list.txt",
             content=content.encode(),
             description="URLs and crypto addresses to sort alphabetically",
+            reason="integration test input",
         )
 
         conv = Conversation(
@@ -305,10 +309,11 @@ class TestLLMIntegration:
         all_items = urls + addresses
 
         content = "Blockchain items:\n" + "\n".join(f"- {item}" for item in all_items)
-        doc = ConcreteDocument(
+        doc = ConcreteDocument.create_root(
             name="blockchain_items.txt",
             content=content.encode(),
             description="Blockchain URLs and addresses",
+            reason="integration test input",
         )
 
         conv = Conversation(

@@ -13,18 +13,17 @@ import pytest
 from google.api_core.exceptions import GoogleAPICallError
 
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
-
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 
 from .conftest import (
     CollectedEvent,
-    PubSubTestResources,
+    PubsubTestResources,
     PubsubFinalDoc,
     PubsubMiddleDoc,
     PubsubOutputDoc,
     PublisherWithStore,
-    ThreeFlowDeployment,
-    TwoFlowDeployment,
+    ThreeStageDeployment,
+    TwoStageDeployment,
     make_input_doc,
     pull_events,
     run_pipeline,
@@ -32,22 +31,24 @@ from .conftest import (
 
 pytestmark = pytest.mark.pubsub
 
-# 2-flow success: 1 started + 4 progress (2 per flow: STARTED+COMPLETED) + 1 completed
-TWO_FLOW_EVENT_COUNT = 6
+# 2-flow success: 1 run.started + 2*(flow.started + task.started + task.completed + progress.STARTED + progress.COMPLETED + flow.completed) + 1 run.completed
+TWO_FLOW_EVENT_COUNT = 14
 
-# 2-flow full resume: 1 started + 2 CACHED progress + 1 completed
-TWO_FLOW_RESUME_EVENT_COUNT = 4
+# 2-flow full resume: 1 run.started + 2*(flow.skipped + progress.CACHED) + 1 run.completed
+TWO_FLOW_RESUME_EVENT_COUNT = 6
 
-# 3-flow success: 1 started + 6 progress + 1 completed
-THREE_FLOW_EVENT_COUNT = 8
+# 3-flow success: 1 run.started + 3*(flow.started + task.started + task.completed + progress.STARTED + progress.COMPLETED + flow.completed) + 1 run.completed
+THREE_FLOW_EVENT_COUNT = 20
 
-# 3-flow full resume: 1 started + 3 CACHED progress + 1 completed
-THREE_FLOW_RESUME_EVENT_COUNT = 5
+# 3-flow full resume: 1 run.started + 3*(flow.skipped + progress.CACHED) + 1 run.completed
+THREE_FLOW_RESUME_EVENT_COUNT = 8
 
 
 def _get_completed_event(events: list[CollectedEvent]) -> CollectedEvent:
-    """Return the task.completed event (highest seq)."""
-    completed = [e for e in events if e.event_type == "task.completed"]
+    """Return the run.completed event (highest seq)."""
+    from ai_pipeline_core.deployment._types import EventType
+
+    completed = [e for e in events if e.event_type == EventType.RUN_COMPLETED]
     assert len(completed) == 1, f"Expected 1 completed event, got {len(completed)}"
     return completed[0]
 
@@ -59,7 +60,7 @@ def _chain_context(event: CollectedEvent) -> dict[str, Any]:
     return ctx
 
 
-def _make_second_publisher(pubsub_topic: PubSubTestResources) -> tuple[PubSubTestResources, PublisherWithStore]:
+def _make_second_publisher(pubsub_test_resources: PubsubTestResources) -> tuple[PubsubTestResources, PublisherWithStore]:
     """Create a second topic+subscription and publisher for collecting only a second run's events."""
     from google.cloud.pubsub_v1 import PublisherClient, SubscriberClient
 
@@ -67,15 +68,15 @@ def _make_second_publisher(pubsub_topic: PubSubTestResources) -> tuple[PubSubTes
     sub_client = SubscriberClient()
 
     topic_id = f"test-events-{uuid4().hex[:8]}"
-    topic_path = pub_client.topic_path(pubsub_topic.project_id, topic_id)
+    topic_path = pub_client.topic_path(pubsub_test_resources.project_id, topic_id)
     sub_id = f"test-sub-{uuid4().hex[:8]}"
-    sub_path = sub_client.subscription_path(pubsub_topic.project_id, sub_id)
+    sub_path = sub_client.subscription_path(pubsub_test_resources.project_id, sub_id)
 
     pub_client.create_topic(name=topic_path)
     sub_client.create_subscription(name=sub_path, topic=topic_path)
 
-    resources = PubSubTestResources(
-        project_id=pubsub_topic.project_id,
+    resources = PubsubTestResources(
+        project_id=pubsub_test_resources.project_id,
         topic_path=topic_path,
         subscription_path=sub_path,
         publisher_client=pub_client,
@@ -83,7 +84,7 @@ def _make_second_publisher(pubsub_topic: PubSubTestResources) -> tuple[PubSubTes
     )
 
     publisher = PubSubPublisher(
-        project_id=pubsub_topic.project_id,
+        project_id=pubsub_test_resources.project_id,
         topic_id=topic_id,
         service_type="test-service",
     )
@@ -97,14 +98,14 @@ class TestChainContext:
     async def test_chain_context_contains_required_fields(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store: MemoryDocumentStore,
     ):
         """Completed event chain_context has version, run_scope, and output_document_refs."""
-        deployment = TwoFlowDeployment()
+        deployment = TwoStageDeployment()
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store)
 
-        events = pull_events(pubsub_topic, expected_count=TWO_FLOW_EVENT_COUNT)
+        events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_EVENT_COUNT)
         completed = _get_completed_event(events)
         ctx = _chain_context(completed)
 
@@ -116,14 +117,14 @@ class TestChainContext:
     async def test_output_document_refs_point_to_last_flow_outputs(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store: MemoryDocumentStore,
     ):
         """output_document_refs contains SHA256s of last flow's outputs (PubsubOutputDoc), not intermediate docs."""
-        deployment = TwoFlowDeployment()
+        deployment = TwoStageDeployment()
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store)
 
-        events = pull_events(pubsub_topic, expected_count=TWO_FLOW_EVENT_COUNT)
+        events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_EVENT_COUNT)
         ctx = _chain_context(_get_completed_event(events))
         output_refs = ctx["output_document_refs"]
 
@@ -145,14 +146,14 @@ class TestChainContext:
     async def test_chain_context_document_refs_exist_in_store(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store: MemoryDocumentStore,
     ):
         """Every SHA256 in output_document_refs exists in the document store."""
-        deployment = TwoFlowDeployment()
+        deployment = TwoStageDeployment()
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store)
 
-        events = pull_events(pubsub_topic, expected_count=TWO_FLOW_EVENT_COUNT)
+        events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_EVENT_COUNT)
         ctx = _chain_context(_get_completed_event(events))
         output_refs = ctx["output_document_refs"]
 
@@ -165,22 +166,22 @@ class TestChainContext:
     async def test_chain_context_correct_after_full_resume(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store: MemoryDocumentStore,
     ):
         """After full resume (all flows cached), chain_context matches first run's last flow outputs."""
-        deployment = TwoFlowDeployment()
+        deployment = TwoStageDeployment()
         input_doc = make_input_doc()
 
         # First run — all flows execute
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, docs=[input_doc])
-        first_events = pull_events(pubsub_topic, expected_count=TWO_FLOW_EVENT_COUNT)
+        first_events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_EVENT_COUNT)
         first_ctx = _chain_context(_get_completed_event(first_events))
         first_refs = first_ctx["output_document_refs"]
         first_run_scope = first_ctx["run_scope"]
 
         # Second run — same store (has flow completions), new topic/publisher for clean event collection
-        second_resources, second_pub = _make_second_publisher(pubsub_topic)
+        second_resources, second_pub = _make_second_publisher(pubsub_test_resources)
         try:
             await run_pipeline(deployment, second_pub.publisher, pubsub_memory_store, docs=[input_doc])
             second_events = pull_events(second_resources, expected_count=TWO_FLOW_RESUME_EVENT_COUNT)
@@ -204,19 +205,19 @@ class TestChainContext:
     async def test_chain_context_correct_after_full_resume_3flow(
         self,
         real_publisher: PublisherWithStore,
-        pubsub_topic: PubSubTestResources,
+        pubsub_test_resources: PubsubTestResources,
         pubsub_memory_store: MemoryDocumentStore,
     ):
         """After full resume on 3-flow pipeline (all cached), output_document_refs points to flow C's outputs."""
-        deployment = ThreeFlowDeployment()
+        deployment = ThreeStageDeployment()
         input_doc = make_input_doc()
 
         # First run — all 3 flows execute
         await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, docs=[input_doc])
-        pull_events(pubsub_topic, expected_count=THREE_FLOW_EVENT_COUNT)
+        pull_events(pubsub_test_resources, expected_count=THREE_FLOW_EVENT_COUNT)
 
         # Second run — all 3 flows cached, new topic for clean collection
-        second_resources, second_pub = _make_second_publisher(pubsub_topic)
+        second_resources, second_pub = _make_second_publisher(pubsub_test_resources)
         try:
             await run_pipeline(deployment, second_pub.publisher, pubsub_memory_store, docs=[input_doc])
             second_events = pull_events(second_resources, expected_count=THREE_FLOW_RESUME_EVENT_COUNT)

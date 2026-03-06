@@ -2,7 +2,10 @@
 
 from enum import StrEnum
 
+import pytest
+
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._context import _suppress_document_registration
 
 
 class AllowedInputFiles(StrEnum):
@@ -22,6 +25,12 @@ class InputDocument(Document):
 
     def get_type(self) -> str:
         return "input"
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
 
 
 def test_files_enum_type_safety():
@@ -55,8 +64,6 @@ def test_files_enum_type_safety():
 
 def test_files_enum_validation():
     """Test that FILES validation still works."""
-    import pytest
-
     from ai_pipeline_core.exceptions import DocumentNameError
 
     # Valid names should work

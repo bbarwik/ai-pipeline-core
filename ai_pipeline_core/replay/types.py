@@ -128,7 +128,7 @@ class ConversationReplay(BaseModel):
 
 
 class TaskReplay(BaseModel):
-    """Replay payload for a @pipeline_task call.
+    """Replay payload for a PipelineTask invocation.
 
     Auto-captured in each span directory as ``task.yaml``.
     """
@@ -137,7 +137,7 @@ class TaskReplay(BaseModel):
 
     version: int = 1
     payload_type: Literal["pipeline_task"] = "pipeline_task"
-    function_path: str  # "module:qualname" path to the task function
+    function_path: str  # "module:qualname" path to a PipelineTask class or task function
     arguments: dict[str, Any] = {}  # Documents as $doc_ref, BaseModels as dicts, primitives as-is
     original: dict[str, Any] = {}  # Cost/tokens from original execution, for comparison
 
@@ -157,14 +157,14 @@ class TaskReplay(BaseModel):
         return cls.model_validate(data)
 
     async def execute(self, store_base: Path) -> Any:
-        """Resolve document references and re-execute the task function."""
+        """Resolve document references and re-execute the task."""
         from ._execute import execute_task
 
         return await execute_task(self, store_base)
 
 
 class FlowReplay(BaseModel):
-    """Replay payload for a @pipeline_flow call.
+    """Replay payload for a PipelineFlow call.
 
     Auto-captured in each span directory as ``flow.yaml``.
     """
@@ -177,6 +177,7 @@ class FlowReplay(BaseModel):
     run_id: str  # Unique run identifier for document store scoping
     documents: tuple[DocumentRef, ...] = ()  # Input documents referenced by SHA256
     flow_options: dict[str, Any] = {}  # FlowOptions fields (filtered to known fields at execution)
+    flow_params: dict[str, Any] = {}  # PipelineFlow constructor kwargs for replay
     original: dict[str, Any] = {}  # Cost/tokens from original execution, for comparison
 
     def to_yaml(self) -> str:

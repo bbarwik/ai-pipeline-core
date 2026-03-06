@@ -1096,7 +1096,7 @@ class TestRunTraced:
 
 
 # ===================================================================
-# Bug 9: Parent lineage propagation in _execute
+# Parent lineage propagation in _execute
 # ===================================================================
 
 

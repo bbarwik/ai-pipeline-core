@@ -2,7 +2,7 @@
 # CLASSES: DocumentRef, ToolCallEntry, HistoryEntry, ConversationReplay, TaskReplay, FlowReplay
 # DEPENDS: BaseModel
 # PURPOSE: First-class replay system for AI pipeline debugging.
-# VERSION: 0.12.4
+# VERSION: 0.13.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -92,13 +92,13 @@ Auto-captured in each span directory as ``conversation.yaml``."""
 
 
 class TaskReplay(BaseModel):
-    """Replay payload for a @pipeline_task call.
+    """Replay payload for a PipelineTask invocation.
 
 Auto-captured in each span directory as ``task.yaml``."""
     model_config = ConfigDict(frozen=True, populate_by_name=True)
     version: int = 1
     payload_type: Literal['pipeline_task'] = 'pipeline_task'
-    function_path: str  # "module:qualname" path to the task function
+    function_path: str  # "module:qualname" path to a PipelineTask class or task function
     arguments: dict[str, Any] = {}  # Documents as $doc_ref, BaseModels as dicts, primitives as-is
     original: dict[str, Any] = {}  # Cost/tokens from original execution, for comparison
 
@@ -109,7 +109,7 @@ Auto-captured in each span directory as ``task.yaml``."""
         return cls.model_validate(data)
 
     async def execute(self, store_base: Path) -> Any:
-        """Resolve document references and re-execute the task function."""
+        """Resolve document references and re-execute the task."""
         from ._execute import execute_task
 
         return await execute_task(self, store_base)
@@ -125,7 +125,7 @@ Auto-captured in each span directory as ``task.yaml``."""
 
 
 class FlowReplay(BaseModel):
-    """Replay payload for a @pipeline_flow call.
+    """Replay payload for a PipelineFlow call.
 
 Auto-captured in each span directory as ``flow.yaml``."""
     model_config = ConfigDict(frozen=True, populate_by_name=True)
@@ -135,6 +135,7 @@ Auto-captured in each span directory as ``flow.yaml``."""
     run_id: str  # Unique run identifier for document store scoping
     documents: tuple[DocumentRef, ...] = ()  # Input documents referenced by SHA256
     flow_options: dict[str, Any] = {}  # FlowOptions fields (filtered to known fields at execution)
+    flow_params: dict[str, Any] = {}  # PipelineFlow constructor kwargs for replay
     original: dict[str, Any] = {}  # Cost/tokens from original execution, for comparison
 
     @classmethod
@@ -325,6 +326,18 @@ def test__infer_store_base_from_trace_tree(tmp_path: Path) -> None:
     assert result == store_dir
 ```
 
+**Flow replay empty flow params default** (`tests/replay/test_e2e_mocked.py:44`)
+
+```python
+def test_flow_replay_empty_flow_params_default() -> None:
+    """FlowReplay with no flow_params defaults to empty dict (backward compatible)."""
+    replay = FlowReplay(function_path="app.flows:MyFlow", run_id="run-1")
+    assert replay.flow_params == {}
+    yaml_text = replay.to_yaml()
+    restored = FlowReplay.from_yaml(yaml_text)
+    assert restored.flow_params == {}
+```
+
 **Empty documents** (`tests/replay/test_payload_roundtrip.py:167`)
 
 ```python
@@ -361,6 +374,28 @@ def test_empty_history(self) -> None:
     assert restored.history == ()
 ```
 
+**Flow replay yaml round trip** (`tests/replay/test_e2e_mocked.py:25`)
+
+```python
+def test_flow_replay_yaml_round_trip() -> None:
+    """FlowReplay survives to_yaml() → from_yaml() with all fields including flow_params."""
+    original = FlowReplay(
+        function_path="app.flows:MyFlow",
+        run_id="run-1",
+        documents=({"$doc_ref": "DEF456", "class_name": "InputDoc", "name": "data.txt"},),
+        flow_options={"custom_field": "value"},
+        flow_params={"model_name": "gpt-5", "temperature": 0.7},
+    )
+    yaml_text = original.to_yaml()
+    restored = FlowReplay.from_yaml(yaml_text)
+    assert restored.function_path == original.function_path
+    assert restored.run_id == original.run_id
+    assert restored.flow_options == original.flow_options
+    assert restored.flow_params == {"model_name": "gpt-5", "temperature": 0.7}
+    assert restored.payload_type == "pipeline_flow"
+    assert restored.to_yaml() == yaml_text
+```
+
 **Primitives only** (`tests/replay/test_payload_roundtrip.py:123`)
 
 ```python
@@ -383,66 +418,22 @@ def test_primitives_only(self) -> None:
     assert restored.arguments["enabled"] is True
 ```
 
-**All options** (`tests/replay/test_payload_roundtrip.py:69`)
-
-```python
-def test_all_options(self, sample_text_doc: ReplayTextDocument) -> None:
-    payload = ConversationReplay(
-        model="gemini-3-pro",
-        prompt="Deep analysis.",
-        context=[],
-        history=[],
-        model_options={
-            "reasoning_effort": "high",
-            "cache_ttl": "300s",
-            "retries": 3,
-            "retry_delay_seconds": 2.0,
-            "timeout": 120,
-            "service_tier": "default",
-            "search_context_size": "medium",
-            "temperature": 0.7,
-            "max_completion_tokens": 4096,
-        },
-        enable_substitutor=False,
-        extract_result_tags=True,
-        purpose="verification",
-    )
-    yaml_text = payload.to_yaml()
-    restored = ConversationReplay.from_yaml(yaml_text)
-    assert restored == payload
-    assert restored.enable_substitutor is False
-    assert restored.extract_result_tags is True
-    assert restored.model_options["reasoning_effort"] == "high"
-    assert restored.model_options["temperature"] == 0.7
-```
-
-**Conversation parsed without model dump** (`tests/replay/test_cli_output.py:66`)
-
-```python
-def test_conversation_parsed_without_model_dump(self) -> None:
-    """Parsed objects without model_dump fall back to str()."""
-    result = _MockConversationResult(parsed="plain string")
-    data = _serialize_result(result)
-
-    assert data["parsed_type"] == "str"
-    assert data["parsed"] == "plain string"
-```
-
-**Creates output dir** (`tests/replay/test_cli_output.py:132`)
-
-```python
-def test_creates_output_dir(self, tmp_path: Path) -> None:
-    """Output directory is created if it doesn't exist."""
-    output_dir = tmp_path / "nested" / "replay_output"
-    assert not output_dir.exists()
-
-    _write_output(output_dir, 42)
-    assert output_dir.exists()
-    assert (output_dir / "output.yaml").exists()
-```
-
 
 ## Error Examples
+
+**Fixed tuple replay rejects length mismatch** (`tests/replay/test_deserialize.py:213`)
+
+```python
+def test_fixed_tuple_replay_rejects_length_mismatch() -> None:
+    """Fixed-length tuple deserialization must reject mismatched lengths."""
+    function_path = f"{__name__}:_fixed_tuple_target"
+    with pytest.raises(ValueError, match="expects 2 items but replay data has 3"):
+        resolve_task_kwargs(
+            function_path,
+            {"pair": [1, 2, 3]},
+            Path("/nonexistent"),
+        )
+```
 
 **Missing trace raises** (`tests/replay/test_resolution.py:163`)
 

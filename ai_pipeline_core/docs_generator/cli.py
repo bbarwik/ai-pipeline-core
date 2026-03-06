@@ -207,27 +207,12 @@ def _resolve_paths(args: argparse.Namespace) -> tuple[Path, Path, Path, Path]:
 
 
 def _run_generate(source_dir: Path, tests_dir: Path, output_dir: Path, repo_root: Path) -> int:
-    """Generate all module guides and README.md.
-
-    Writes to both the repo-level output_dir (.ai-docs/) and a copy inside the
-    package directory (ai_pipeline_core/.ai-docs/) so guides are included in pip
-    packages and can be referenced in error messages at runtime.
-    """
+    """Generate all module guides and README.md."""
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Secondary output inside the package (included in wheel builds).
-    # Only created when source_dir exists (skipped for nonexistent/test paths).
-    package_docs_dir: Path | None = None
-    if source_dir.is_dir():
-        package_docs_dir = source_dir / ".ai-docs"
-        package_docs_dir.mkdir(parents=True, exist_ok=True)
 
     # Clean stale files
     for existing in output_dir.glob("*.md"):
         existing.unlink()
-    if package_docs_dir:
-        for existing in package_docs_dir.glob("*.md"):
-            existing.unlink()
 
     version = _read_version(repo_root)
     table = build_symbol_table(source_dir)
@@ -258,8 +243,6 @@ def _run_generate(source_dir: Path, tests_dir: Path, output_dir: Path, repo_root
 
         guide_path = output_dir / f"{module_name}.md"
         guide_path.write_text(content)
-        if package_docs_dir:
-            (package_docs_dir / f"{module_name}.md").write_text(content)
         size = len(content.encode("utf-8"))
         generated.append((module_name, size))
         guide_data_map[module_name] = data
@@ -269,13 +252,20 @@ def _run_generate(source_dir: Path, tests_dir: Path, output_dir: Path, repo_root
     readme_content = _render_readme(generated, guide_data_map, module_descriptions, version)
     readme_content = _consolidate_code_blocks(readme_content)
     readme_content = _normalize_whitespace(readme_content)
+    generated.append((README_FILENAME, len(readme_content.encode("utf-8"))))
     (output_dir / README_FILENAME).write_text(readme_content)
-    if package_docs_dir:
-        (package_docs_dir / README_FILENAME).write_text(readme_content)
-    print(f"  wrote {README_FILENAME} ({len(readme_content):,} bytes)")
+    print(f"  wrote {README_FILENAME} ({generated[-1][1]:,} bytes)")
 
     total = sum(size for _, size in generated)
     print(f"\nGenerated {len(generated)} guides ({total:,} bytes total)")
+
+    if generated[-1][1] > README_ERROR_SIZE:
+        print(
+            f"FAIL: {README_FILENAME} is {generated[-1][1]:,} bytes (max {README_ERROR_SIZE // 1024}KB). "
+            f"Reduce public API surface: move helpers to _ prefixed functions, consolidate types.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -284,17 +274,6 @@ def _run_check(source_dir: Path, output_dir: Path) -> int:
     if not output_dir.is_dir():
         print("FAIL: .ai-docs/ directory does not exist. Run 'generate' first.", file=sys.stderr)
         return 1
-
-    # README-specific size check (100KB hard error)
-    readme = output_dir / README_FILENAME
-    if readme.exists():
-        readme_size = len(readme.read_bytes())
-        if readme_size > README_ERROR_SIZE:
-            print(
-                f"FAIL: {README_FILENAME} is {readme_size:,} bytes (max {README_ERROR_SIZE // 1024}KB)",
-                file=sys.stderr,
-            )
-            return 1
 
     result = validate_all(output_dir, source_dir, excluded_modules=EXCLUDED_MODULES)
 

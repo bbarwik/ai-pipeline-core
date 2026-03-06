@@ -1,27 +1,34 @@
-"""Event types and protocols for pipeline lifecycle publishing."""
+"""Event types and publisher protocols for pipeline lifecycle publishing."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from ai_pipeline_core.deployment.contract import FlowStatus
+from ai_pipeline_core.deployment._contract import FlowStatus
 
 
 # Enum
 class EventType(StrEnum):
     """Pipeline lifecycle event types for Pub/Sub publishing."""
 
-    STARTED = "task.started"
-    PROGRESS = "task.progress"
-    HEARTBEAT = "task.heartbeat"
-    COMPLETED = "task.completed"
-    FAILED = "task.failed"
+    RUN_STARTED = "run.started"
+    RUN_COMPLETED = "run.completed"
+    RUN_FAILED = "run.failed"
+    RUN_HEARTBEAT = "run.heartbeat"
+    FLOW_STARTED = "flow.started"
+    FLOW_COMPLETED = "flow.completed"
+    FLOW_FAILED = "flow.failed"
+    FLOW_SKIPPED = "flow.skipped"
+    TASK_STARTED = "task.started"
+    TASK_COMPLETED = "task.completed"
+    TASK_FAILED = "task.failed"
+    PROGRESS = "progress"
 
 
 # Enum
 class ErrorCode(StrEnum):
-    """Classifies pipeline failure reason for task.failed events."""
+    """Classifies pipeline failure reason for run.failed events."""
 
     BUDGET_EXCEEDED = "budget_exceeded"
     DURATION_EXCEEDED = "duration_exceeded"
@@ -34,16 +41,30 @@ class ErrorCode(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class _StartedEvent:
+class DocumentRef:
+    """Lightweight document reference for event payloads."""
+
+    sha256: str
+    class_name: str
+    name: str
+    summary: str = ""
+    publicly_visible: bool = False
+    derived_from: tuple[str, ...] = ()
+    triggered_by: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RunStartedEvent:
     """Pipeline execution started."""
 
     run_id: str
     flow_run_id: str
     run_scope: str
+    flow_plan: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
-class _ProgressEvent:
+class ProgressEvent:
     """Flow-level or intra-flow progress."""
 
     run_id: str
@@ -58,7 +79,7 @@ class _ProgressEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class _CompletedEvent:
+class RunCompletedEvent:
     """Pipeline completed successfully."""
 
     run_id: str
@@ -69,7 +90,7 @@ class _CompletedEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class _FailedEvent:
+class RunFailedEvent:
     """Pipeline execution failed."""
 
     run_id: str
@@ -78,29 +99,152 @@ class _FailedEvent:
     error_message: str
 
 
+@dataclass(frozen=True, slots=True)
+class FlowStartedEvent:
+    """Flow execution started."""
+
+    run_id: str
+    flow_name: str
+    flow_class: str
+    step: int
+    total_steps: int
+    expected_tasks: list[str] = field(default_factory=list)
+    flow_params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class FlowCompletedEvent:
+    """Flow execution completed."""
+
+    run_id: str
+    flow_name: str
+    flow_class: str
+    step: int
+    total_steps: int
+    duration_ms: int
+    output_documents: list[DocumentRef] = field(default_factory=list)
+    progress: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class FlowFailedEvent:
+    """Flow execution failed."""
+
+    run_id: str
+    flow_name: str
+    flow_class: str
+    step: int
+    total_steps: int
+    error_message: str
+
+
+@dataclass(frozen=True, slots=True)
+class FlowSkippedEvent:
+    """Flow skipped because it was resumed or intentionally bypassed."""
+
+    run_id: str
+    flow_name: str
+    step: int
+    total_steps: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class TaskStartedEvent:
+    """Task execution started."""
+
+    run_id: str
+    flow_name: str
+    step: int
+    task_name: str
+    task_class: str
+    task_invocation_id: str
+    parent_task: str | None
+    task_depth: int
+
+
+@dataclass(frozen=True, slots=True)
+class TaskCompletedEvent:
+    """Task execution completed."""
+
+    run_id: str
+    flow_name: str
+    step: int
+    task_name: str
+    task_class: str
+    task_invocation_id: str
+    parent_task: str | None
+    task_depth: int
+    duration_ms: int
+    output_documents: list[DocumentRef] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskFailedEvent:
+    """Task execution failed."""
+
+    run_id: str
+    flow_name: str
+    step: int
+    task_name: str
+    task_class: str
+    task_invocation_id: str
+    parent_task: str | None
+    task_depth: int
+    error_message: str
+
+
 # Protocol
 @runtime_checkable
-class _ResultPublisher(Protocol):
+class ResultPublisher(Protocol):
     """Publishes pipeline lifecycle events to external consumers."""
 
-    async def publish_started(self, event: _StartedEvent) -> None:
-        """Publish a pipeline started event."""
+    async def publish_run_started(self, event: RunStartedEvent) -> None:
+        """Publish a pipeline start event."""
         ...
 
-    async def publish_progress(self, event: _ProgressEvent) -> None:
-        """Publish a flow progress event."""
+    async def publish_run_completed(self, event: RunCompletedEvent) -> None:
+        """Publish a pipeline completion event."""
+        ...
+
+    async def publish_run_failed(self, event: RunFailedEvent) -> None:
+        """Publish a pipeline failure event."""
         ...
 
     async def publish_heartbeat(self, run_id: str) -> None:
         """Publish a heartbeat signal."""
         ...
 
-    async def publish_completed(self, event: _CompletedEvent) -> None:
-        """Publish a pipeline completed event."""
+    async def publish_flow_started(self, event: FlowStartedEvent) -> None:
+        """Publish a flow start event."""
         ...
 
-    async def publish_failed(self, event: _FailedEvent) -> None:
-        """Publish a pipeline failed event."""
+    async def publish_flow_completed(self, event: FlowCompletedEvent) -> None:
+        """Publish a flow completion event."""
+        ...
+
+    async def publish_flow_failed(self, event: FlowFailedEvent) -> None:
+        """Publish a flow failure event."""
+        ...
+
+    async def publish_flow_skipped(self, event: FlowSkippedEvent) -> None:
+        """Publish a flow skipped event."""
+        ...
+
+    async def publish_task_started(self, event: TaskStartedEvent) -> None:
+        """Publish a task start event."""
+        ...
+
+    async def publish_task_completed(self, event: TaskCompletedEvent) -> None:
+        """Publish a task completion event."""
+        ...
+
+    async def publish_task_failed(self, event: TaskFailedEvent) -> None:
+        """Publish a task failure event."""
+        ...
+
+    async def publish_progress(self, event: ProgressEvent) -> None:
+        """Publish a progress event."""
         ...
 
     async def close(self) -> None:
@@ -139,20 +283,41 @@ class TaskResultStore(Protocol):
 class _NoopPublisher:
     """Discards all lifecycle events. Default publisher for CLI and run_local."""
 
-    async def publish_started(self, event: _StartedEvent) -> None:
-        """Accept and discard a started event."""
+    async def publish_run_started(self, event: RunStartedEvent) -> None:
+        """Accept and discard a run started event."""
 
-    async def publish_progress(self, event: _ProgressEvent) -> None:
-        """Accept and discard a progress event."""
+    async def publish_run_completed(self, event: RunCompletedEvent) -> None:
+        """Accept and discard a run completed event."""
+
+    async def publish_run_failed(self, event: RunFailedEvent) -> None:
+        """Accept and discard a run failed event."""
 
     async def publish_heartbeat(self, run_id: str) -> None:
         """Accept and discard a heartbeat."""
 
-    async def publish_completed(self, event: _CompletedEvent) -> None:
-        """Accept and discard a completed event."""
+    async def publish_flow_started(self, event: FlowStartedEvent) -> None:
+        """Accept and discard a flow started event."""
 
-    async def publish_failed(self, event: _FailedEvent) -> None:
-        """Accept and discard a failed event."""
+    async def publish_flow_completed(self, event: FlowCompletedEvent) -> None:
+        """Accept and discard a flow completed event."""
+
+    async def publish_flow_failed(self, event: FlowFailedEvent) -> None:
+        """Accept and discard a flow failed event."""
+
+    async def publish_flow_skipped(self, event: FlowSkippedEvent) -> None:
+        """Accept and discard a flow skipped event."""
+
+    async def publish_task_started(self, event: TaskStartedEvent) -> None:
+        """Accept and discard a task started event."""
+
+    async def publish_task_completed(self, event: TaskCompletedEvent) -> None:
+        """Accept and discard a task completed event."""
+
+    async def publish_task_failed(self, event: TaskFailedEvent) -> None:
+        """Accept and discard a task failed event."""
+
+    async def publish_progress(self, event: ProgressEvent) -> None:
+        """Accept and discard a progress event."""
 
     async def close(self) -> None:
         """No resources to release."""
@@ -162,27 +327,67 @@ class _MemoryPublisher:
     """Records all lifecycle events in-memory for test assertions."""
 
     def __init__(self) -> None:
-        self.events: list[_StartedEvent | _ProgressEvent | _CompletedEvent | _FailedEvent] = []
+        self.events: list[
+            RunStartedEvent
+            | RunCompletedEvent
+            | RunFailedEvent
+            | FlowStartedEvent
+            | FlowCompletedEvent
+            | FlowFailedEvent
+            | FlowSkippedEvent
+            | TaskStartedEvent
+            | TaskCompletedEvent
+            | TaskFailedEvent
+            | ProgressEvent
+        ] = []
         self.heartbeats: list[str] = []
 
-    async def publish_started(self, event: _StartedEvent) -> None:
-        """Record a started event."""
+    async def publish_run_started(self, event: RunStartedEvent) -> None:
+        """Record a run started event."""
         self.events.append(event)
 
-    async def publish_progress(self, event: _ProgressEvent) -> None:
-        """Record a progress event."""
+    async def publish_run_completed(self, event: RunCompletedEvent) -> None:
+        """Record a run completed event."""
+        self.events.append(event)
+
+    async def publish_run_failed(self, event: RunFailedEvent) -> None:
+        """Record a run failed event."""
         self.events.append(event)
 
     async def publish_heartbeat(self, run_id: str) -> None:
         """Record a heartbeat."""
         self.heartbeats.append(run_id)
 
-    async def publish_completed(self, event: _CompletedEvent) -> None:
-        """Record a completed event."""
+    async def publish_flow_started(self, event: FlowStartedEvent) -> None:
+        """Record a flow started event."""
         self.events.append(event)
 
-    async def publish_failed(self, event: _FailedEvent) -> None:
-        """Record a failed event."""
+    async def publish_flow_completed(self, event: FlowCompletedEvent) -> None:
+        """Record a flow completed event."""
+        self.events.append(event)
+
+    async def publish_flow_failed(self, event: FlowFailedEvent) -> None:
+        """Record a flow failed event."""
+        self.events.append(event)
+
+    async def publish_flow_skipped(self, event: FlowSkippedEvent) -> None:
+        """Record a flow skipped event."""
+        self.events.append(event)
+
+    async def publish_task_started(self, event: TaskStartedEvent) -> None:
+        """Record a task started event."""
+        self.events.append(event)
+
+    async def publish_task_completed(self, event: TaskCompletedEvent) -> None:
+        """Record a task completed event."""
+        self.events.append(event)
+
+    async def publish_task_failed(self, event: TaskFailedEvent) -> None:
+        """Record a task failed event."""
+        self.events.append(event)
+
+    async def publish_progress(self, event: ProgressEvent) -> None:
+        """Record a progress event."""
         self.events.append(event)
 
     async def close(self) -> None:
@@ -190,15 +395,23 @@ class _MemoryPublisher:
 
 
 __all__ = [
+    "DocumentRef",
     "ErrorCode",
     "EventType",
+    "FlowCompletedEvent",
+    "FlowFailedEvent",
+    "FlowSkippedEvent",
+    "FlowStartedEvent",
+    "ProgressEvent",
+    "ResultPublisher",
+    "RunCompletedEvent",
+    "RunFailedEvent",
+    "RunStartedEvent",
+    "TaskCompletedEvent",
+    "TaskFailedEvent",
     "TaskResultRecord",
     "TaskResultStore",
-    "_CompletedEvent",
-    "_FailedEvent",
+    "TaskStartedEvent",
     "_MemoryPublisher",
     "_NoopPublisher",
-    "_ProgressEvent",
-    "_ResultPublisher",
-    "_StartedEvent",
 ]

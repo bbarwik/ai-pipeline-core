@@ -25,6 +25,11 @@ class ClickHouseBackend:
         self._last_version: int = 0
         self._lock = Lock()
         self._run_execution_id: UUID | None = None
+        self._run_metadata: dict[str, object] | None = None
+        self._run_parent_execution_id: UUID | None = None
+        self._run_parent_span_id: str | None = None
+        self._run_total_cost: float = 0.0
+        self._run_total_tokens: int = 0
 
     def _next_version(self) -> int:
         """Generate a monotonically increasing version (nanosecond timestamp)."""
@@ -34,6 +39,11 @@ class ClickHouseBackend:
                 now = self._last_version + 1
             self._last_version = now
         return now
+
+    @property
+    def run_total_cost(self) -> float:
+        """Return the accumulated run cost from ingested span data."""
+        return self._run_total_cost
 
     # --- SpanBackend protocol ---
 
@@ -75,6 +85,8 @@ class ClickHouseBackend:
             output_doc_sha256s=tuple(span_data.output_doc_sha256s),
         )
         self._writer.write(TABLE_PIPELINE_SPANS, [row])
+        self._run_total_cost += span_data.cost
+        self._run_total_tokens += span_data.tokens_input + span_data.tokens_output
 
     def shutdown(self) -> None:
         """Flush pending batches and stop the writer thread. Idempotent."""
@@ -91,9 +103,15 @@ class ClickHouseBackend:
         run_scope: str = "",
         parent_execution_id: UUID | None = None,
         parent_span_id: str | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> datetime:
         """Write a running-status row to pipeline_runs. Returns the start_time for use in track_run_end."""
         self._run_execution_id = execution_id
+        self._run_metadata = metadata
+        self._run_parent_execution_id = parent_execution_id
+        self._run_parent_span_id = parent_span_id
+        self._run_total_cost = 0.0
+        self._run_total_tokens = 0
         start_time = datetime.now(UTC)
         row = PipelineRunRow(
             execution_id=execution_id,
@@ -102,6 +120,7 @@ class ClickHouseBackend:
             run_scope=run_scope,
             status=RunStatus.RUNNING,
             start_time=start_time,
+            metadata_json=json.dumps(metadata) if metadata else "{}",
             version=self._next_version(),
             parent_execution_id=parent_execution_id,
             parent_span_id=parent_span_id,
@@ -122,7 +141,17 @@ class ClickHouseBackend:
         total_tokens: int = 0,
         metadata: dict[str, object] | None = None,
     ) -> None:
-        """Write a completed/failed-status row to pipeline_runs."""
+        """Write a completed/failed-status row to pipeline_runs.
+
+        Automatically preserves metadata and parent linkage from track_run_start.
+        Uses accumulated span cost/tokens when caller omits them.
+        """
+        merged_metadata = self._run_metadata or {}
+        if metadata:
+            merged_metadata = {**merged_metadata, **metadata}
+        effective_cost = total_cost if total_cost > 0 else self._run_total_cost
+        effective_tokens = total_tokens if total_tokens > 0 else self._run_total_tokens
+
         self._run_execution_id = None
         row = PipelineRunRow(
             execution_id=execution_id,
@@ -132,12 +161,19 @@ class ClickHouseBackend:
             status=status,
             start_time=start_time,
             end_time=datetime.now(UTC),
-            total_cost=total_cost,
-            total_tokens=total_tokens,
-            metadata_json=json.dumps(metadata) if metadata else "{}",
+            total_cost=effective_cost,
+            total_tokens=effective_tokens,
+            metadata_json=json.dumps(merged_metadata) if merged_metadata else "{}",
             version=self._next_version(),
+            parent_execution_id=self._run_parent_execution_id,
+            parent_span_id=self._run_parent_span_id,
         )
         self._writer.write(TABLE_PIPELINE_RUNS, [row])
+        self._run_metadata = None
+        self._run_parent_execution_id = None
+        self._run_parent_span_id = None
+        self._run_total_cost = 0.0
+        self._run_total_tokens = 0
 
     def flush(self, timeout: float = 30.0) -> None:
         """Flush the underlying writer."""

@@ -1,60 +1,47 @@
-"""Type validation helpers for pipeline decorator annotation checking.
-
-Extracted from decorators.py to keep file sizes manageable.
-Used at decoration time to validate input/output type annotations
-on @pipeline_task and @pipeline_flow targets.
-"""
+"""Type validation helpers for pipeline task and flow annotations."""
 
 __all__ = [
     "callable_name",
+    "collect_document_types",
     "contains_bare_document",
-    "find_non_document_leaves",
     "flatten_union",
     "is_already_traced",
-    "parse_document_types_from_annotation",
     "resolve_type_hints",
-    "validate_input_types",
+    "validate_task_argument_value",
+    "validate_task_input_annotation",
+    "validate_task_return_annotation",
 ]
 
-import inspect
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum
-from pathlib import Path
-from typing import (
-    Any,
-    Union,
-    get_args,
-    get_origin,
-    get_type_hints,
-)
-from uuid import UUID
+from typing import Annotated, Any, Literal, Union, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.pipeline.options import FlowOptions
+from ai_pipeline_core.llm.conversation import Conversation
+
+ALLOWED_TASK_SCALAR_TYPES: tuple[type[Any], ...] = (str, int, float, bool, bytes)
+_MAX_WRAPPED_DEPTH = 10
+_UNHANDLED = object()
+type _RuntimeValidationResult = object | str | None
 
 
-# --------------------------------------------------------------------------- #
-# Small helpers
-# --------------------------------------------------------------------------- #
 def callable_name(obj: Any, fallback: str) -> str:
-    """Safely extract callable's name for error messages."""
+    """Safely extract a callable name for error messages."""
     try:
-        n = getattr(obj, "__name__", None)
-        return n if isinstance(n, str) else fallback
+        name = getattr(obj, "__name__", None)
     except Exception:
         return fallback
-
-
-_MAX_WRAPPED_DEPTH = 10
+    return name if isinstance(name, str) else fallback
 
 
 def is_already_traced(func: Callable[..., Any]) -> bool:
-    """Check if a function has already been wrapped by the trace decorator."""
+    """Check whether a function was already wrapped by the trace decorator."""
     if hasattr(func, "__is_traced__") and func.__is_traced__:  # type: ignore[attr-defined]
         return True
+
     current = func
     depth = 0
     while hasattr(current, "__wrapped__") and depth < _MAX_WRAPPED_DEPTH:
@@ -63,170 +50,430 @@ def is_already_traced(func: Callable[..., Any]) -> bool:
             return True
         current = wrapped
         depth += 1
+
     return False
 
 
-# --------------------------------------------------------------------------- #
-# Annotation parsing helpers
-# --------------------------------------------------------------------------- #
-def flatten_union(tp: Any) -> list[Any]:
-    """Flatten Union / X | Y annotations into a list of constituent types."""
-    origin = get_origin(tp)
-    if origin is Union or isinstance(tp, types.UnionType):
-        result: list[Any] = []
-        for arg in get_args(tp):
-            result.extend(flatten_union(arg))
-        return result
-    return [tp]
-
-
-def find_non_document_leaves(tp: Any) -> list[Any]:
-    """Walk a return type annotation and collect leaf types that are not Document subclasses or NoneType.
-
-    Returns empty list when all leaf types are valid (Document subclasses or None).
-    Used by @pipeline_task to validate return annotations at decoration time.
-    """
-    if tp is type(None) or (isinstance(tp, type) and issubclass(tp, Document)):
-        return []
-
-    origin = get_origin(tp)
-
-    # Union / X | Y: all branches must be valid
-    if origin is Union or isinstance(tp, types.UnionType):
-        return [leaf for arg in get_args(tp) for leaf in find_non_document_leaves(arg)]
-
-    # list[X]: recurse into element type
-    if origin is list:
-        args = get_args(tp)
-        return find_non_document_leaves(args[0]) if args else [tp]
-
-    # tuple[X, Y] or tuple[X, ...]
-    if origin is tuple:
+def _unwrap_annotated(tp: Any) -> Any:
+    """Strip Annotated metadata from a type annotation."""
+    while get_origin(tp) is Annotated:
         args = get_args(tp)
         if not args:
-            return [tp]
-        elements = (args[0],) if (len(args) == 2 and args[1] is Ellipsis) else args
-        return [leaf for arg in elements for leaf in find_non_document_leaves(arg)]
+            break
+        tp = args[0]
+    return tp
 
-    # Everything else is invalid (int, str, Any, object, dict, etc.)
-    return [tp]
+
+def _is_none_type(tp: Any) -> bool:
+    """Check whether a type annotation represents None."""
+    return _unwrap_annotated(tp) is type(None)
+
+
+def _is_union_annotation(tp: Any) -> bool:
+    """Check whether an annotation is a ``Union`` or ``X | Y``."""
+    unwrapped = _unwrap_annotated(tp)
+    origin = get_origin(unwrapped)
+    return origin is Union or isinstance(unwrapped, types.UnionType)
+
+
+def flatten_union(tp: Any) -> list[Any]:
+    """Flatten ``Union`` and ``X | Y`` annotations into their leaf members."""
+    unwrapped = _unwrap_annotated(tp)
+    if not _is_union_annotation(unwrapped):
+        return [unwrapped]
+
+    flattened: list[Any] = []
+    for arg in get_args(unwrapped):
+        flattened.extend(flatten_union(arg))
+    return flattened
 
 
 def contains_bare_document(tp: Any) -> bool:
-    """Check if a type annotation contains bare Document class (not a subclass).
-
-    Walks through Union, list, and tuple annotations recursively.
-    Returns True if bare ``Document`` is found anywhere in the annotation tree.
-    """
-    if tp is Document:
+    """Check whether an annotation contains the bare ``Document`` class."""
+    unwrapped = _unwrap_annotated(tp)
+    if unwrapped is Document:
         return True
-    if tp is type(None):
+    if _is_none_type(unwrapped):
         return False
-    origin = get_origin(tp)
-    if origin is Union or isinstance(tp, types.UnionType):
-        return any(contains_bare_document(arg) for arg in get_args(tp))
-    if origin in {list, tuple}:
-        return any(contains_bare_document(arg) for arg in get_args(tp) if arg is not Ellipsis)
+    if _is_union_annotation(unwrapped):
+        return any(contains_bare_document(arg) for arg in get_args(unwrapped))
+
+    origin = get_origin(unwrapped)
+    if origin in {dict, list, tuple}:
+        return any(contains_bare_document(arg) for arg in get_args(unwrapped) if arg is not Ellipsis)
+
     return False
 
 
-def parse_document_types_from_annotation(annotation: Any) -> list[type[Document]]:
-    """Extract Document subclasses from a list[...] type annotation.
-
-    Handles list[DocA], list[DocA | DocB], list[Union[DocA, DocB]].
-    Returns empty list if annotation is not a list of Document subclasses.
-    """
-    origin = get_origin(annotation)
-    if origin is not list:
+def collect_document_types(annotation: Any) -> list[type[Document]]:
+    """Collect concrete Document subclasses referenced anywhere in an annotation."""
+    unwrapped = _unwrap_annotated(annotation)
+    if _is_none_type(unwrapped):
         return []
+    if _is_document_subclass(unwrapped):
+        return [unwrapped]
+    if _is_union_annotation(unwrapped):
+        return _collect_nested_document_types(get_args(unwrapped))
 
+    origin = get_origin(unwrapped)
+    if origin in {dict, list, tuple}:
+        args = [arg for arg in get_args(unwrapped) if arg is not Ellipsis]
+        return _collect_nested_document_types(args)
+
+    return []
+
+
+def _collect_nested_document_types(annotations: tuple[Any, ...] | list[Any]) -> list[type[Document]]:
+    document_types: dict[str, type[Document]] = {}
+    for annotation in annotations:
+        for document_type in collect_document_types(annotation):
+            document_types[document_type.__name__] = document_type
+    return list(document_types.values())
+
+
+def _is_literal_annotation(annotation: Any) -> bool:
+    """Check whether the annotation is a ``Literal``."""
+    return get_origin(_unwrap_annotated(annotation)) is Literal
+
+
+def _literal_values_are_supported(annotation: Any) -> bool:
+    """Check whether all literal values use supported scalar runtime types."""
+    return all(isinstance(value, ALLOWED_TASK_SCALAR_TYPES) for value in get_args(_unwrap_annotated(annotation)))
+
+
+def _is_conversation_annotation(annotation: Any) -> bool:
+    """Check whether an annotation is ``Conversation`` or ``Conversation[T]``."""
+    unwrapped = _unwrap_annotated(annotation)
+    origin = get_origin(unwrapped)
+    return unwrapped is Conversation or origin is Conversation
+
+
+def _is_document_subclass(annotation: Any) -> bool:
+    """Check whether an annotation is a concrete ``Document`` subclass."""
+    return isinstance(annotation, type) and issubclass(annotation, Document) and annotation is not Document
+
+
+def _is_frozen_basemodel_subclass(annotation: Any) -> bool:
+    """Check whether an annotation is a frozen Pydantic model subclass."""
+    unwrapped = _unwrap_annotated(annotation)
+    if not isinstance(unwrapped, type) or not issubclass(unwrapped, BaseModel) or issubclass(unwrapped, Document):
+        return False
+
+    model_config = cast(Mapping[str, Any], getattr(unwrapped, "model_config", {}))
+    return bool(model_config.get("frozen"))
+
+
+def _is_supported_leaf_task_input(annotation: Any) -> bool:
+    """Check whether an annotation is one supported non-container task input leaf type."""
+    unwrapped = _unwrap_annotated(annotation)
+    if unwrapped in ALLOWED_TASK_SCALAR_TYPES:
+        return True
+    if _is_conversation_annotation(unwrapped):
+        return True
+    if _is_literal_annotation(unwrapped):
+        return _literal_values_are_supported(unwrapped)
+    if isinstance(unwrapped, type) and issubclass(unwrapped, Enum):
+        return True
+    if _is_document_subclass(unwrapped):
+        return True
+    return _is_frozen_basemodel_subclass(unwrapped)
+
+
+def _common_task_annotation_error(annotation: Any, *, context: str) -> str | None:
+    """Return a shared error for invalid ``Any`` or bare ``Document`` usage."""
+    if annotation is Any:
+        return (
+            "must not use 'Any'. Use a concrete scalar, Enum, frozen BaseModel, Conversation, "
+            f"Document subclass, or a container of those types in task {context} annotations."
+        )
+    if contains_bare_document(annotation):
+        message = "must not use bare 'Document'. "
+        if context == "input":
+            return message + "Use specific Document subclasses in task input annotations."
+        return message + "Return specific Document subclasses."
+    return None
+
+
+def _union_annotation_error(annotation: Any, validator: Callable[[Any], str | None]) -> str | None:
+    """Validate each branch of a union annotation."""
+    for branch in flatten_union(annotation):
+        if branch is type(None):
+            continue
+        if error := validator(branch):
+            return error
+    return None
+
+
+def _input_list_annotation_error(annotation: Any) -> str | None:
+    args = get_args(annotation)
+    if len(args) != 1:
+        return "must annotate list inputs as list[T] with exactly one element type."
+    return _task_input_annotation_error(args[0])
+
+
+def _input_tuple_annotation_error(annotation: Any) -> str | None:
     args = get_args(annotation)
     if not args:
-        return []
+        return "must annotate tuple inputs as tuple[T, ...] or tuple[T1, T2, ...]."
+    if len(args) == 2 and args[1] is Ellipsis:
+        return _task_input_annotation_error(args[0])
 
-    inner = args[0]
-    flat = flatten_union(inner)
+    for arg in args:
+        if error := _task_input_annotation_error(arg):
+            return error
+    return None
 
-    return [t for t in flat if isinstance(t, type) and issubclass(t, Document)]
+
+def _input_dict_annotation_error(annotation: Any) -> str | None:
+    args = get_args(annotation)
+    if len(args) != 2:
+        return "must annotate dict inputs as dict[str, T]."
+
+    key_type, value_type = args
+    if _unwrap_annotated(key_type) is not str:
+        return "must use dict[str, T] for task input mappings. Non-string keys are not supported."
+    return _task_input_annotation_error(value_type)
+
+
+def _unsupported_input_annotation_error(annotation: Any) -> str:
+    return (
+        f"uses unsupported input annotation {annotation!r}. Use scalars, Enums, Conversation, specific Document subclasses, "
+        "frozen BaseModel subclasses, or list/tuple/dict[str, ...] containers of those types."
+    )
+
+
+def _task_input_annotation_error(annotation: Any) -> str | None:
+    """Return an error string for an invalid task input annotation."""
+    unwrapped = _unwrap_annotated(annotation)
+    if error := _common_task_annotation_error(unwrapped, context="input"):
+        return error
+    if _is_none_type(unwrapped) or _is_supported_leaf_task_input(unwrapped):
+        return None
+    if _is_union_annotation(unwrapped):
+        return _union_annotation_error(unwrapped, _task_input_annotation_error)
+
+    origin = get_origin(unwrapped)
+    handler = {
+        list: _input_list_annotation_error,
+        tuple: _input_tuple_annotation_error,
+        dict: _input_dict_annotation_error,
+    }.get(origin)
+    if handler is not None:
+        return handler(unwrapped)
+    return _unsupported_input_annotation_error(unwrapped)
+
+
+def validate_task_input_annotation(annotation: Any, *, task_name: str, parameter_name: str) -> list[type[Document]]:
+    """Validate a task input annotation and return any referenced Document types."""
+    if error := _task_input_annotation_error(annotation):
+        raise TypeError(f"PipelineTask '{task_name}'.run parameter '{parameter_name}' {error}")
+    return collect_document_types(annotation)
+
+
+def _document_collection_error(annotation: Any) -> str | None:
+    """Return an error for an invalid document collection member annotation."""
+    unwrapped = _unwrap_annotated(annotation)
+    if contains_bare_document(unwrapped):
+        return "must not use bare 'Document'. Return specific Document subclasses."
+    for branch in flatten_union(unwrapped):
+        if not _is_document_subclass(branch):
+            return f"uses unsupported output member annotation {branch!r}. Collections must contain only specific Document subclasses."
+    return None
+
+
+def _return_list_annotation_error(annotation: Any) -> str | None:
+    args = get_args(annotation)
+    if len(args) != 1:
+        return "must use list[DocumentSubclass | ...] for list outputs."
+    return _document_collection_error(args[0])
+
+
+def _return_tuple_annotation_error(annotation: Any) -> str | None:
+    args = get_args(annotation)
+    if not args:
+        return "must use tuple[DocumentSubclass, ...] or tuple[DocA, DocB, ...] for tuple outputs."
+    if len(args) == 2 and args[1] is Ellipsis:
+        return _document_collection_error(args[0])
+
+    for arg in args:
+        if error := _document_collection_error(arg):
+            return error
+    return None
+
+
+def _task_return_annotation_error(annotation: Any) -> str | None:
+    """Return an error string for an invalid task return annotation."""
+    unwrapped = _unwrap_annotated(annotation)
+    if error := _common_task_annotation_error(unwrapped, context="output"):
+        return error
+    if _is_none_type(unwrapped) or _is_document_subclass(unwrapped):
+        return None
+    if _is_union_annotation(unwrapped):
+        return _union_annotation_error(unwrapped, _task_return_annotation_error)
+
+    origin = get_origin(unwrapped)
+    if origin is list:
+        return _return_list_annotation_error(unwrapped)
+    if origin is tuple:
+        return _return_tuple_annotation_error(unwrapped)
+    return "must return Document, None, list[Document], tuple[Document, ...], or unions of those shapes."
+
+
+def validate_task_return_annotation(annotation: Any, *, task_name: str) -> list[type[Document]]:
+    """Validate a task return annotation and return referenced Document types."""
+    if error := _task_return_annotation_error(annotation):
+        raise TypeError(f"PipelineTask '{task_name}'.run {error}")
+    output_types = collect_document_types(annotation)
+    if not output_types and _unwrap_annotated(annotation) is not type(None):
+        raise TypeError(f"PipelineTask '{task_name}'.run must return Document, None, list[Document], tuple[Document, ...], or unions of those shapes.")
+    return output_types
+
+
+def _matches_scalar(annotation: Any, value: Any) -> bool:
+    """Check a scalar runtime value against a scalar annotation."""
+    if annotation is bool:
+        return type(value) is bool
+    if annotation is int:
+        return type(value) is int
+    return isinstance(value, annotation)
+
+
+def _runtime_none_error(value: Any, annotation: Any, *, path: str) -> _RuntimeValidationResult:
+    if not _is_none_type(annotation):
+        return _UNHANDLED
+    if value is None:
+        return None
+    return f"{path} must be None, got {type(value).__name__}"
+
+
+def _literal_runtime_error(value: Any, annotation: Any, *, path: str) -> str | None:
+    literal_values = get_args(annotation)
+    if value in literal_values:
+        return None
+    return f"{path} must be one of {literal_values!r}, got {value!r}"
+
+
+def _conversation_runtime_error(value: Any, *, path: str) -> str | None:
+    if isinstance(value, Conversation):
+        return None
+    return f"{path} must be Conversation, got {type(value).__name__}"
+
+
+def _typed_leaf_runtime_error(value: Any, annotation: Any, *, path: str) -> _RuntimeValidationResult:
+    if not isinstance(annotation, type):
+        return _UNHANDLED
+    if issubclass(annotation, Enum) or issubclass(annotation, BaseModel):
+        if isinstance(value, annotation):
+            return None
+        return f"{path} must be {annotation.__name__}, got {type(value).__name__}"
+    if _matches_scalar(annotation, value):
+        return None
+    return f"{path} must be {annotation.__name__}, got {type(value).__name__}"
+
+
+def _runtime_leaf_error(value: Any, annotation: Any, *, path: str) -> _RuntimeValidationResult:
+    if not _is_supported_leaf_task_input(annotation):
+        return _UNHANDLED
+    if _is_literal_annotation(annotation):
+        return _literal_runtime_error(value, annotation, path=path)
+    if _is_conversation_annotation(annotation):
+        return _conversation_runtime_error(value, path=path)
+    return _typed_leaf_runtime_error(value, annotation, path=path)
+
+
+def _runtime_union_error(value: Any, annotation: Any, *, path: str) -> _RuntimeValidationResult:
+    if not _is_union_annotation(annotation):
+        return _UNHANDLED
+    for branch in flatten_union(annotation):
+        if _runtime_value_error(value, branch, path=path) is None:
+            return None
+    return f"{path} does not match any allowed type in {annotation!r} (got {type(value).__name__})"
+
+
+def _runtime_list_error(value: Any, annotation: Any, *, path: str) -> _RuntimeValidationResult:
+    if get_origin(annotation) is not list:
+        return _UNHANDLED
+    if not isinstance(value, list):
+        return f"{path} must be list, got {type(value).__name__}"
+
+    args = get_args(annotation)
+    if len(args) != 1:
+        return f"{path} uses unsupported annotation {annotation!r}"
+
+    item_annotation = args[0]
+    for index, item in enumerate(cast(list[Any], value)):
+        if error := _runtime_value_error(item, item_annotation, path=f"{path}[{index}]"):
+            return error
+    return None
+
+
+def _runtime_variadic_tuple_error(value: tuple[Any, ...], item_annotation: Any, *, path: str) -> str | None:
+    for index, item in enumerate(value):
+        if error := _runtime_value_error(item, item_annotation, path=f"{path}[{index}]"):
+            return error
+    return None
+
+
+def _runtime_tuple_error(value: Any, annotation: Any, *, path: str) -> _RuntimeValidationResult:
+    if get_origin(annotation) is not tuple:
+        return _UNHANDLED
+    if not isinstance(value, tuple):
+        return f"{path} must be tuple, got {type(value).__name__}"
+
+    args = get_args(annotation)
+    typed_value = cast(tuple[Any, ...], value)
+    if len(args) == 2 and args[1] is Ellipsis:
+        return _runtime_variadic_tuple_error(typed_value, args[0], path=path)
+    if len(typed_value) != len(args):
+        return f"{path} must contain {len(args)} items, got {len(typed_value)}"
+    for index, (item, item_annotation) in enumerate(zip(typed_value, args, strict=True)):
+        if error := _runtime_value_error(item, item_annotation, path=f"{path}[{index}]"):
+            return error
+    return None
+
+
+def _runtime_dict_error(value: Any, annotation: Any, *, path: str) -> _RuntimeValidationResult:
+    if get_origin(annotation) is not dict:
+        return _UNHANDLED
+    if not isinstance(value, dict):
+        return f"{path} must be dict, got {type(value).__name__}"
+
+    args = get_args(annotation)
+    if len(args) != 2:
+        return f"{path} uses unsupported annotation {annotation!r}"
+
+    key_annotation, value_annotation = args
+    for key, item in cast(dict[Any, Any], value).items():
+        if error := _runtime_value_error(key, key_annotation, path=f"{path}.keys()"):
+            return error
+        key_repr = key if isinstance(key, str) else repr(key)
+        if error := _runtime_value_error(item, value_annotation, path=f"{path}[{key_repr!r}]"):
+            return error
+    return None
+
+
+def _runtime_value_error(value: Any, annotation: Any, *, path: str) -> str | None:
+    """Return an error string if a runtime value does not match an annotation."""
+    unwrapped = _unwrap_annotated(annotation)
+
+    for validator in (_runtime_none_error, _runtime_leaf_error, _runtime_union_error, _runtime_list_error, _runtime_tuple_error, _runtime_dict_error):
+        error = validator(value, unwrapped, path=path)
+        if error is not _UNHANDLED:
+            return cast(str | None, error)
+
+    return f"{path} uses unsupported annotation {unwrapped!r}"
+
+
+def validate_task_argument_value(*, task_name: str, parameter_name: str, value: Any, annotation: Any) -> None:
+    """Validate a runtime task argument against its declared annotation."""
+    if error := _runtime_value_error(value, annotation, path=parameter_name):
+        raise TypeError(f"PipelineTask '{task_name}.run' received invalid value for '{parameter_name}'. {error}. Expected annotation: {annotation!r}.")
 
 
 def resolve_type_hints(fn: Callable[..., Any]) -> dict[str, Any]:
-    """Resolve type hints, raising TypeError on failure with the original cause."""
+    """Resolve type hints, raising ``TypeError`` with the original cause."""
     try:
         return get_type_hints(fn, include_extras=True)
-    except Exception as e:
+    except Exception as exc:
         name = callable_name(fn, "unknown")
-        raise TypeError(f"Failed to resolve type hints for '{name}': {e}") from e
-
-
-# --------------------------------------------------------------------------- #
-# Input type validation
-# --------------------------------------------------------------------------- #
-
-# Types allowed in pipeline_task/pipeline_flow input annotations
-_VALID_SCALAR_TYPES: tuple[type, ...] = (str, int, float, bool, type(None), UUID, Path)
-
-
-_VALID_CONTAINER_ORIGINS: set[type] = {list, tuple}
-
-
-def _is_valid_input_type(tp: Any) -> bool:  # noqa: PLR0911, C901
-    """Check if a type annotation is a valid JSON-serializable input type."""
-    if tp is type(None):
-        return True
-
-    # NewType (e.g., DocumentSha256 = NewType("DocumentSha256", str)) — validate the underlying type
-    if hasattr(tp, "__supertype__"):
-        return _is_valid_input_type(tp.__supertype__)
-
-    if isinstance(tp, type):
-        if tp in _VALID_SCALAR_TYPES or issubclass(tp, (Document, FlowOptions, Enum)):
-            return True
-        if issubclass(tp, BaseModel):
-            return tp.model_config.get("frozen", False) is True
-        return False
-
-    origin = get_origin(tp)
-
-    if origin is Union or isinstance(tp, types.UnionType):
-        return all(_is_valid_input_type(arg) for arg in get_args(tp))
-
-    if origin in _VALID_CONTAINER_ORIGINS:
-        args = get_args(tp)
-        if not args:
-            return True
-        if origin is tuple and len(args) == 2 and args[1] is Ellipsis:
-            return _is_valid_input_type(args[0])
-        return all(_is_valid_input_type(a) for a in args if a is not Ellipsis)
-
-    if origin is dict:
-        args = get_args(tp)
-        if not args:
-            return True
-        if len(args) == 2 and args[0] is str:
-            return _is_valid_input_type(args[1])
-        return False
-
-    return tp is Any
-
-
-def validate_input_types(fn: Callable[..., Any], hints: dict[str, Any]) -> None:
-    """Validate that all input parameter types are JSON-serializable.
-
-    Raises TypeError if any parameter has an unsupported type annotation.
-    """
-    sig = inspect.signature(fn)
-    name = callable_name(fn, "unknown")
-
-    for param_name in sig.parameters:
-        if param_name == "return":
-            continue
-        tp = hints.get(param_name, Any)
-        if tp is Any or tp is inspect.Parameter.empty:
-            continue
-        if not _is_valid_input_type(tp):
-            raise TypeError(
-                f"Parameter '{param_name}' of '{name}' has unsupported type {tp!r}. "
-                f"Pipeline inputs must be JSON-serializable: str, int, float, bool, None, "
-                f"UUID, Path, Enum, list, tuple, dict[str, ...], Document, BaseModel, or FlowOptions."
-            )
+        raise TypeError(f"Failed to resolve type hints for '{name}': {exc}") from exc

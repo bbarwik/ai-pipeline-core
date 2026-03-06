@@ -11,7 +11,7 @@ from ai_pipeline_core.docs_generator.cli import (
     main,
 )
 from ai_pipeline_core.docs_generator.extractor import SymbolTable
-from ai_pipeline_core.docs_generator.guide_builder import GuideData
+from ai_pipeline_core.docs_generator.guide_builder import README_ERROR_SIZE, GuideData
 
 
 def _make_repo(tmp_path):
@@ -527,6 +527,47 @@ class TestReadModulePurposeSyntaxError:
         mod.mkdir(parents=True)
         (mod / "__init__.py").write_text("def broken(:\n")
         assert _read_module_purpose(src, "bad") == ""
+
+
+class TestGenerateReadmeSizeLimit:
+    def test_generate_fails_when_readme_exceeds_limit(self, tmp_path, monkeypatch):
+        src, tests, output = _make_repo(tmp_path)
+        table = SymbolTable()
+
+        monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_symbol_table", lambda _: table)
+        monkeypatch.setattr(
+            "ai_pipeline_core.docs_generator.cli.build_guide",
+            lambda *a, **kw: _empty_guide_data(a[0]),
+        )
+
+        # Produce a README larger than the limit by injecting a bloated _render_readme
+        bloated_content = "x" * (README_ERROR_SIZE + 1024)
+        monkeypatch.setattr(
+            "ai_pipeline_core.docs_generator.cli._render_readme",
+            lambda *a, **kw: bloated_content,
+        )
+
+        result = _run_generate(src, tests, output, tmp_path)
+        assert result == 1
+
+    def test_generate_succeeds_when_readme_under_limit(self, tmp_path, monkeypatch):
+        src, tests, output = _make_repo(tmp_path)
+        table = SymbolTable()
+
+        monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_symbol_table", lambda _: table)
+        monkeypatch.setattr(
+            "ai_pipeline_core.docs_generator.cli.build_guide",
+            lambda *a, **kw: _empty_guide_data(a[0]),
+        )
+
+        small_content = "# Small README\n"
+        monkeypatch.setattr(
+            "ai_pipeline_core.docs_generator.cli._render_readme",
+            lambda *a, **kw: small_content,
+        )
+
+        result = _run_generate(src, tests, output, tmp_path)
+        assert result == 0
 
 
 class TestMainCheckSubcommand:

@@ -51,7 +51,7 @@ class MemoryDocumentStore:
             )
             self._summary_worker.start()
 
-    async def save(self, document: Document, run_scope: RunScope) -> None:
+    async def save(self, document: Document, run_scope: RunScope, *, created_by_task: str = "") -> None:
         """Store document in memory, keyed by (SHA256, class_name)."""
         sha256 = document.sha256
         class_name = document.__class__.__name__
@@ -62,10 +62,10 @@ class MemoryDocumentStore:
         if is_new and self._summary_worker:
             self._summary_worker.schedule(document)
 
-    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope, *, created_by_task: str = "") -> None:
         """Save multiple documents sequentially."""
         for doc in documents:
-            await self.save(doc, run_scope)
+            await self.save(doc, run_scope, created_by_task=created_by_task)
 
     def _iter_scope_documents(self, run_scope: RunScope) -> list[Document]:
         """Return documents for a scope, respecting per-class membership."""
@@ -149,6 +149,7 @@ class MemoryDocumentStore:
                     derived_from=doc.derived_from,
                     triggered_by=doc.triggered_by,
                     summary=self._summaries.get(sha256, ""),
+                    publicly_visible=getattr(doc.__class__, "publicly_visible", False),
                 )
         return result
 
@@ -163,6 +164,7 @@ class MemoryDocumentStore:
                 derived_from=doc.derived_from,
                 triggered_by=doc.triggered_by,
                 summary=self._summaries.get(doc.sha256, ""),
+                publicly_visible=getattr(doc.__class__, "publicly_visible", False),
             )
             for doc in self._iter_scope_documents(run_scope)
         ]

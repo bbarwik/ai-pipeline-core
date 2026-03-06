@@ -215,6 +215,8 @@ def _model_name_to_openrouter_model(model: str) -> str:
         return "perplexity/sonar-pro-search"
     if model.endswith("-search"):
         model = model.replace("-search", ":online")
+    if "gemini-3" in model and not model.endswith("-preview"):
+        model += "-preview"
     provider = get_openrouter_provider(model)
     if provider:
         return f"{provider}/{model}"

@@ -7,7 +7,7 @@ re-sends results until the LLM produces a final answer or max rounds is reached.
 import asyncio
 import json
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -53,13 +53,14 @@ async def _execute_single_tool(
         output = ToolOutput(content=f"Error: Tool '{snake_name}' failed: {e}")
         return ToolCallRecord(tool=tool_cls, input=parsed_input, output=output, round=round_num), output
 
-    if not isinstance(result, ToolOutput):
+    validated_result = cast(Any, result)
+    if not isinstance(validated_result, ToolOutput):
         raise TypeError(
-            f"Tool '{tool_cls.__name__}'.execute() must return ToolOutput (or subclass), got {type(result).__name__}. "
+            f"Tool '{tool_cls.__name__}'.execute() must return ToolOutput (or subclass), got {type(validated_result).__name__}. "
             f"This is a programming error in the tool implementation."
         )
-    record = ToolCallRecord(tool=tool_cls, input=parsed_input, output=result, round=round_num)
-    return record, result
+    record = ToolCallRecord(tool=tool_cls, input=parsed_input, output=validated_result, round=round_num)
+    return record, validated_result
 
 
 InvokeLLMFn = Callable[..., Coroutine[Any, Any, ModelResponse[Any]]]

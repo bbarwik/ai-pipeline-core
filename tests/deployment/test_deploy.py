@@ -11,8 +11,16 @@ import pytest
 from pydantic import Field
 from prefect.deployments.runner import RunnerDeployment
 
-from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, pipeline_flow
+from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment
 from ai_pipeline_core.deployment.deploy import _Deployer as Deployer
+from ai_pipeline_core.documents._context import _suppress_document_registration
+from ai_pipeline_core.pipeline import PipelineFlow
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
 
 
 class TestDeployer:
@@ -21,7 +29,6 @@ class TestDeployer:
     @patch("ai_pipeline_core.deployment.deploy.settings")
     def test_init_validates_prefect_api_url(self, mock_settings):
         """Test that Deployer validates PREFECT_API_URL from settings."""
-        # Test with empty API URL - should fail
         mock_settings.prefect_api_url = ""
         mock_settings.prefect_gcs_bucket = "test-bucket"
         mock_settings.prefect_work_pool_name = "default"
@@ -39,7 +46,6 @@ class TestDeployer:
     @patch("ai_pipeline_core.deployment.deploy.settings")
     def test_init_validates_prefect_gcs_bucket(self, mock_settings):
         """Test that Deployer validates PREFECT_GCS_BUCKET from settings."""
-        # Test with empty bucket - should fail
         mock_settings.prefect_api_url = "http://test.api"
         mock_settings.prefect_gcs_bucket = ""
         mock_settings.prefect_work_pool_name = "default"
@@ -55,7 +61,6 @@ class TestDeployer:
     @patch("ai_pipeline_core.deployment.deploy.settings")
     def test_init_loads_config_from_settings(self, mock_settings):
         """Test that Deployer loads configuration from settings."""
-        # Set up valid settings
         mock_settings.prefect_api_url = "http://test.api"
         mock_settings.prefect_gcs_bucket = "test-bucket"
         mock_settings.prefect_work_pool_name = "test-pool"
@@ -68,7 +73,6 @@ class TestDeployer:
 
                 deployer = Deployer()
 
-                # Verify config was loaded from settings
                 assert deployer.config["bucket"] == "test-bucket"
                 assert deployer.config["work_pool"] == "test-pool"
                 assert deployer.config["work_queue"] == "test-queue"
@@ -77,7 +81,6 @@ class TestDeployer:
     @patch("ai_pipeline_core.deployment.deploy.settings")
     def test_no_os_environ_usage(self, mock_settings):
         """Test that Deployer does not use os.environ directly."""
-        # Set up valid settings
         mock_settings.prefect_api_url = "http://test.api"
         mock_settings.prefect_gcs_bucket = "test-bucket"
         mock_settings.prefect_work_pool_name = "default"
@@ -88,19 +91,15 @@ class TestDeployer:
             with patch("builtins.open", create=True), patch("ai_pipeline_core.deployment.deploy.tomllib.load") as mock_toml:
                 mock_toml.return_value = {"project": {"name": "test-project", "version": "1.0.0"}}
 
-                # Patch os.environ to track any access
                 with patch.dict("os.environ", {}, clear=True) as mock_environ:
-                    # Create a Mock that will fail if accessed
                     mock_environ.__setitem__ = Mock(side_effect=AssertionError("os.environ should not be modified"))
 
-                    # This should succeed without modifying os.environ
                     deployer = Deployer()
                     assert deployer.api_url == "http://test.api"
 
     @patch("ai_pipeline_core.deployment.deploy.settings")
     def test_deploy_uses_settings_for_client(self, mock_settings):
         """Test that deployment uses settings for Prefect client configuration."""
-        # Set up valid settings
         mock_settings.prefect_api_url = "http://test.api"
         mock_settings.prefect_gcs_bucket = "test-bucket"
         mock_settings.prefect_work_pool_name = "test-pool"
@@ -114,9 +113,6 @@ class TestDeployer:
 
                 deployer = Deployer()
 
-                # Verify that Prefect client will receive settings
-                # The actual Prefect client reads from environment variables
-                # which are set by pydantic_settings when settings loads .env
                 assert deployer.api_url == "http://test.api"
                 assert deployer.config["bucket"] == "test-bucket"
 
@@ -131,14 +127,12 @@ class TestDeployer:
         with patch("ai_pipeline_core.deployment.deploy.Path") as mock_path:
             mock_path.return_value.exists.return_value = True
             with patch("builtins.open", create=True), patch("ai_pipeline_core.deployment.deploy.tomllib.load") as mock_toml:
-                # Test with hyphenated name
                 mock_toml.return_value = {"project": {"name": "my-test-project", "version": "1.0.0"}}
 
                 deployer = Deployer()
 
-                # Verify normalization
                 assert deployer.config["name"] == "my-test-project"
-                assert deployer.config["package"] == "my_test_project"  # Hyphens to underscores
+                assert deployer.config["package"] == "my_test_project"
                 assert deployer.config["folder"] == "flows/my-test-project"
 
 
@@ -166,13 +160,16 @@ class _DeployTestResult(DeploymentResult):
     report: str = ""
 
 
-@pipeline_flow()
-async def _deploy_test_flow(run_id: str, documents: list[_DeployInputDoc], flow_options: _DeployTestOptions) -> list[_DeployOutputDoc]:
-    return [_DeployOutputDoc(name="out.txt", content=b"ok")]
+class _DeployTestFlow(PipelineFlow):
+    """Class-based flow for deploy schema tests."""
+
+    async def run(self, run_id: str, documents: list[_DeployInputDoc], options: _DeployTestOptions) -> list[_DeployOutputDoc]:
+        return [_DeployOutputDoc.create_root(name="out.txt", content="ok", reason="test")]
 
 
 class _DeploySchemaTestDeployment(PipelineDeployment[_DeployTestOptions, _DeployTestResult]):
-    flows = [_deploy_test_flow]  # type: ignore[reportAssignmentType]
+    def build_flows(self, options: _DeployTestOptions) -> list[PipelineFlow]:
+        return [_DeployTestFlow()]
 
     @staticmethod
     def build_result(run_id: str, documents: list[Document], options: _DeployTestOptions) -> _DeployTestResult:
@@ -234,11 +231,7 @@ async def _capture_deployed_runner() -> RunnerDeployment:
 
 
 class TestDeployParameterSchemaPopulation:
-    """Test that _deploy_via_api populates RunnerDeployment's parameter_openapi_schema.
-
-    Before the fix, RunnerDeployment was constructed without calling
-    _set_defaults_from_flow(flow), leaving parameter_openapi_schema empty.
-    """
+    """Test that _deploy_via_api populates RunnerDeployment's parameter_openapi_schema."""
 
     async def test_parameter_schema_is_populated(self):
         """_parameter_openapi_schema must have properties after deploy (was empty before fix)."""
@@ -299,17 +292,7 @@ class TestDeployParameterSchemaPopulation:
 
 
 class TestSchemaDefinitionsAreValidJsonSchema:
-    """All entries in parameter_openapi_schema.definitions must be valid JSON Schema.
-
-    JSON Schema (draft 2020-12) requires every value in `definitions` to be of
-    type 'object' or 'boolean'. The deployer injects integration metadata
-    (_InputDocumentTypes, _DeploymentMeta) into definitions — these must be
-    dicts, not lists. A raw list causes Prefect server to crash with 500:
-
-        jsonschema.exceptions.SchemaError: [] is not of type 'object', 'boolean'
-
-    See: prefect/server/api/deployments.py → jsonschema.validate() → check_schema()
-    """
+    """All entries in parameter_openapi_schema.definitions must be valid JSON Schema."""
 
     async def test_all_definitions_are_valid_json_schema_types(self):
         """Every value in schema.definitions must be a dict or bool (JSON Schema requirement)."""
@@ -399,7 +382,6 @@ class TestInstallScript:
         assert "--find-links wheels/" in script, "Install must use bundled wheels"
         assert "--system" in script, "Install must target system Python"
         assert "tar xzf" in script, "Install must extract the bundle first"
-        # Must use newline, not &&, because Prefect's run_shell_script splits by lines
         assert "&&" not in script, "Must use newline separator (Prefect runs each line via shlex.split, not shell)"
 
     def test_install_script_references_bundle_name(self) -> None:
@@ -413,7 +395,6 @@ class TestInstallScript:
         deployer._project_wheel_name = "test_project-1.0.0-py3-none-any.whl"
         script = deployer._build_install_script()
 
-        # Explicit wheel name, not glob
         assert "test_project-1.0.0-py3-none-any.whl" in script
 
     def test_install_script_falls_back_to_glob_without_wheel_name(self) -> None:
@@ -446,8 +427,6 @@ class TestBuildBundle:
 
         def mock_run(cmd: str, *, check: bool = True) -> str:
             commands_run.append(cmd)
-            # Simulate side effects of each command:
-            # After wheel build, create a .whl file; after download, create dep wheels
             if "build --wheel" in cmd:
                 outdir = cmd.rsplit("--out-dir ", maxsplit=1)[-1].strip().strip("'\"")
                 (Path(outdir) / "test_project-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
@@ -500,21 +479,17 @@ class TestBuildBundle:
         with patch("ai_pipeline_core.deployment.deploy.shutil.which", return_value="/usr/bin/uv"):
             bundle_path = deployer._build_bundle()
 
-        # Verify tarball structure
         assert bundle_path.exists()
         with tarfile.open(bundle_path, "r:gz") as tar:
             names = tar.getnames()
 
-        # Project wheel at root (no directory prefix)
         assert "test_project-1.0.0-py3-none-any.whl" in names
 
-        # Dependency wheels in wheels/ subdirectory
         dep_wheels = [n for n in names if n.startswith("wheels/")]
         assert len(dep_wheels) == 2
         assert "wheels/httpx-0.28.0-py3-none-any.whl" in names
         assert "wheels/pydantic-2.11.0-py3-none-any.whl" in names
 
-        # Clean up
         bundle_path.unlink(missing_ok=True)
 
 
@@ -526,7 +501,6 @@ class TestPullStepConfiguration:
         deployment = await _capture_deployed_runner()
         storage = deployment.storage
 
-        # Extract the install script from pull steps
         pull_steps = storage.pull_steps  # type: ignore[union-attr]
         shell_step = pull_steps[1]
         script = shell_step["prefect.deployments.steps.run_shell_script"]["script"]
@@ -543,9 +517,7 @@ class TestShellQuoting:
         deployer = _make_deployer(bundle="my app-1.0-bundle.tar.gz")
         script = deployer._build_install_script()
 
-        # Bundle name with spaces must be quoted
         assert "my app-1.0-bundle.tar.gz" in script
-        # shlex.quote wraps in single quotes
         assert "'" in script
 
     def test_wheel_name_is_quoted(self) -> None:
@@ -616,7 +588,6 @@ class TestPlatformTargeting:
 
         assert deployer._project_wheel_name == "test_project-1.0.0-py3-none-any.whl"
 
-        # Install script should use the explicit name
         script = deployer._build_install_script()
         assert "test_project-1.0.0-py3-none-any.whl" in script
         assert "./*.whl" not in script

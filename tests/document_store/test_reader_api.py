@@ -12,6 +12,7 @@ import pytest
 from ai_pipeline_core import Document, DocumentReader, get_document_store
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.document_store._protocol import set_document_store
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents import DocumentSha256, RunScope
 
 
@@ -30,6 +31,12 @@ def populated_store() -> Generator[MemoryDocumentStore, None, None]:
     set_document_store(store)
     yield store
     set_document_store(None)
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration() -> Generator[None, None, None]:
+    with _suppress_document_registration():
+        yield
 
 
 async def _seed(store: MemoryDocumentStore) -> tuple[ReportDoc, SourceDoc, SourceDoc]:

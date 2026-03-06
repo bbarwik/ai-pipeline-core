@@ -29,7 +29,7 @@ MAX_TASK_LINES = 40
 _FIELD_PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 
 # Path to the packaged .ai-docs guide (resolved once, cached)
-_PROMPT_COMPILER_GUIDE = Path(__file__).resolve().parent.parent / ".ai-docs" / "prompt_compiler.md"
+_PROMPT_COMPILER_GUIDE = Path(__file__).resolve().parent.parent.parent / ".ai-docs" / "prompt_compiler.md"
 
 _SPEC_KNOWN_ATTRS: frozenset[str] = frozenset({
     "_follows",

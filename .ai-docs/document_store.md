@@ -2,7 +2,7 @@
 # CLASSES: FlowCompletion, DocumentNode, DocumentReader
 # DEPENDS: Protocol
 # PURPOSE: Document store protocol and backends for AI pipeline flows.
-# VERSION: 0.12.4
+# VERSION: 0.13.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -38,6 +38,7 @@ class DocumentNode:
     derived_from: tuple[str, ...] = ()
     triggered_by: tuple[str, ...] = ()
     summary: str = ''
+    publicly_visible: bool = False
 
 
 # Protocol — implement in concrete class
@@ -112,7 +113,7 @@ def get_document_store() -> DocumentStore | None:
 
 ## Examples
 
-**Get document store returns reader** (`tests/document_store/test_reader_api.py:46`)
+**Get document store returns reader** (`tests/document_store/test_reader_api.py:53`)
 
 ```python
 @pytest.mark.asyncio
@@ -123,7 +124,7 @@ async def test_get_document_store_returns_reader(populated_store: MemoryDocument
     assert isinstance(reader, DocumentReader)
 ```
 
-**Load documents by type** (`tests/document_store/test_reader_api.py:55`)
+**Load documents by type** (`tests/document_store/test_reader_api.py:62`)
 
 ```python
 @pytest.mark.asyncio
@@ -143,7 +144,7 @@ async def test_load_documents_by_type(populated_store: MemoryDocumentStore):
     assert len(all_docs) == 3
 ```
 
-**Has documents check** (`tests/document_store/test_reader_api.py:73`)
+**Has documents check** (`tests/document_store/test_reader_api.py:80`)
 
 ```python
 @pytest.mark.asyncio
@@ -157,7 +158,7 @@ async def test_has_documents_check(populated_store: MemoryDocumentStore):
     assert await reader.has_documents(RunScope("nonexistent"), ReportDoc) is False
 ```
 
-**Check existing sha256s** (`tests/document_store/test_reader_api.py:85`)
+**Check existing sha256s** (`tests/document_store/test_reader_api.py:92`)
 
 ```python
 @pytest.mark.asyncio
@@ -171,7 +172,7 @@ async def test_check_existing_sha256s(populated_store: MemoryDocumentStore):
     assert len(existing) == 1
 ```
 
-**Load by sha256s** (`tests/document_store/test_reader_api.py:97`)
+**Load by sha256s** (`tests/document_store/test_reader_api.py:104`)
 
 ```python
 @pytest.mark.asyncio
@@ -186,7 +187,7 @@ async def test_load_by_sha256s(populated_store: MemoryDocumentStore):
     assert result[src_b.sha256].name == "source_b.md"
 ```
 
-**Load scope metadata** (`tests/document_store/test_reader_api.py:110`)
+**Load scope metadata** (`tests/document_store/test_reader_api.py:117`)
 
 ```python
 @pytest.mark.asyncio
@@ -206,7 +207,7 @@ async def test_load_scope_metadata(populated_store: MemoryDocumentStore):
     assert src_a.sha256 in report_node.derived_from
 ```
 
-**Load nodes by sha256s** (`tests/document_store/test_reader_api.py:128`)
+**Load nodes by sha256s** (`tests/document_store/test_reader_api.py:135`)
 
 ```python
 @pytest.mark.asyncio
@@ -221,7 +222,7 @@ async def test_load_nodes_by_sha256s(populated_store: MemoryDocumentStore):
     assert nodes[src_a.sha256].class_name == "SourceDoc"
 ```
 
-**Find by source** (`tests/document_store/test_reader_api.py:141`)
+**Find by source** (`tests/document_store/test_reader_api.py:148`)
 
 ```python
 @pytest.mark.asyncio
@@ -247,7 +248,7 @@ def test_get_document_store_returns_none_by_default():
 
 ## Error Examples
 
-**Attachment path traversal rejected** (`tests/document_store/test_local.py:1033`)
+**Attachment path traversal rejected** (`tests/document_store/test_local.py:1086`)
 
 ```python
 @pytest.mark.asyncio

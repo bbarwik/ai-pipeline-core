@@ -3,6 +3,7 @@
 import pytest
 
 from ai_pipeline_core.documents import Attachment, Document
+from ai_pipeline_core.documents._context import _suppress_document_registration
 
 
 class DebugSampleDocument(Document):
@@ -11,6 +12,12 @@ class DebugSampleDocument(Document):
 
 class VeryLongNamedDebugSampleDocument(Document):
     """Sample document with long name for testing."""
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
 
 
 @pytest.mark.asyncio

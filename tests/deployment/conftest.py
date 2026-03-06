@@ -1,245 +1,300 @@
-"""Deployment test fixtures.
+"""Shared fixtures for deployment tests."""
 
-Prefect test harness and logging suppression are provided by tests/conftest.py.
-Controllable test deployments and Pub/Sub emulator fixtures for integration tests.
+# pyright: reportPrivateUsage=false
 
-Pub/Sub emulator fixtures (pubsub_emulator, pubsub_topic, real_publisher) require
-testcontainers (dev dependency) and are conditionally registered.
-"""
-
-# pyright: reportPrivateUsage=false, reportUnusedClass=false, reportArgumentType=false
-
-import asyncio
 import json
+import logging
 import os
-import time
 from dataclasses import dataclass
-from collections.abc import Generator
-from typing import Any, ClassVar
-from uuid import uuid4
+from typing import Any
 
 import pytest
 
-from ai_pipeline_core import (
-    DeploymentResult,
-    Document,
-    FlowOptions,
-    PipelineDeployment,
-    pipeline_flow,
-)
-
+from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.document_store._protocol import set_document_store
+from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask
+
+logger = logging.getLogger(__name__)
+
+
+class InputDoc(Document):
+    pass
+
+
+class MiddleDoc(Document):
+    pass
+
+
+class OutputDoc(Document):
+    pass
+
+
+class _TestOptions(FlowOptions):
+    value: str = "ok"
+
+
+class ToMiddleTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: list[InputDoc]) -> list[MiddleDoc]:
+        return [MiddleDoc.derive(from_documents=(documents[0],), name="middle.txt", content="m")]
+
+
+class ToOutputTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: list[MiddleDoc]) -> list[OutputDoc]:
+        return [OutputDoc.derive(from_documents=(documents[0],), name="output.txt", content="o")]
+
+
+class StageOne(PipelineFlow):
+    async def run(self, run_id: str, documents: list[InputDoc], options: _TestOptions) -> list[MiddleDoc]:
+        _ = (run_id, options)
+        return await ToMiddleTask.run(documents)
+
+
+class StageTwo(PipelineFlow):
+    async def run(self, run_id: str, documents: list[MiddleDoc], options: _TestOptions) -> list[OutputDoc]:
+        _ = (run_id, options)
+        return await ToOutputTask.run(documents)
+
+
+class _TestResult(DeploymentResult):
+    output_count: int = 0
+
+
+@pytest.fixture
+def input_documents() -> list[Document]:
+    return [InputDoc.create_root(name="input.txt", content="in", reason="deployment test input")]
 
 
 # ---------------------------------------------------------------------------
-# Controllable test deployments (no external deps — always available)
+# Pub/Sub integration test infrastructure
 # ---------------------------------------------------------------------------
 
-# Gate for flow control in heartbeat tests
-_flow_1_gate = asyncio.Event()
-_flow_1_gate.set()  # Open by default
-
-# Execution tracker
+# Flow execution tracker (module-level mutable list)
 _flow_executions: list[str] = []
 
 
+# --- Pubsub document types ---
+
+
 class PubsubInputDoc(Document):
-    """Input document for pubsub integration tests."""
+    """Input document for pubsub tests."""
 
 
 class PubsubMiddleDoc(Document):
-    """Intermediate document for pubsub integration tests."""
+    """Intermediate document for pubsub tests."""
 
 
 class PubsubOutputDoc(Document):
-    """Output document for pubsub integration tests."""
+    """Output document for pubsub tests."""
+
+
+class PubsubFinalDoc(Document):
+    """Final document for 3-flow pubsub tests."""
 
 
 class PubsubResult(DeploymentResult):
-    """Result for pubsub integration tests."""
+    """Result type for pubsub tests."""
 
     doc_count: int = 0
 
 
-@pipeline_flow(estimated_minutes=10)
-async def pubsub_flow_1(
-    run_id: str,
-    documents: list[PubsubInputDoc],
-    flow_options: FlowOptions,
-) -> list[PubsubMiddleDoc]:
-    """First flow — controllable via _flow_1_gate."""
-    _flow_executions.append("flow_1")
-    await _flow_1_gate.wait()
-    return [PubsubMiddleDoc.create_root(name="middle.json", content={"step": 1}, reason="test")]
+# --- Pubsub flow classes ---
 
 
-@pipeline_flow(estimated_minutes=20)
-async def pubsub_flow_2(
-    run_id: str,
-    documents: list[PubsubMiddleDoc],
-    flow_options: FlowOptions,
-) -> list[PubsubOutputDoc]:
-    """Second flow — straightforward."""
-    _flow_executions.append("flow_2")
-    return [PubsubOutputDoc.create_root(name="output.json", content={"step": 2}, reason="test")]
+class InputToMiddleTask(PipelineTask):
+    """Task: PubsubInputDoc -> PubsubMiddleDoc."""
+
+    @classmethod
+    async def run(cls, documents: list[PubsubInputDoc]) -> list[PubsubMiddleDoc]:
+        return [PubsubMiddleDoc.derive(from_documents=(documents[0],), name="middle.json", content={"a": 1})]
 
 
-class TwoFlowDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
-    """Standard 2-flow deployment for most integration tests."""
+class MiddleToOutputTask(PipelineTask):
+    """Task: PubsubMiddleDoc -> PubsubOutputDoc."""
 
-    flows: ClassVar = [pubsub_flow_1, pubsub_flow_2]
+    @classmethod
+    async def run(cls, documents: list[PubsubMiddleDoc]) -> list[PubsubOutputDoc]:
+        return [PubsubOutputDoc.derive(from_documents=(documents[0],), name="output.json", content={"b": 2})]
+
+
+class ChainOutputToFinalTask(PipelineTask):
+    """Task: PubsubOutputDoc -> PubsubFinalDoc."""
+
+    @classmethod
+    async def run(cls, documents: list[PubsubOutputDoc]) -> list[PubsubFinalDoc]:
+        return [PubsubFinalDoc.derive(from_documents=(documents[0],), name="c_out.json", content={"c": 3})]
+
+
+class DirectInputToOutputTask(PipelineTask):
+    """Task: PubsubInputDoc -> PubsubOutputDoc."""
+
+    @classmethod
+    async def run(cls, documents: list[PubsubInputDoc]) -> list[PubsubOutputDoc]:
+        return [PubsubOutputDoc.derive(from_documents=(documents[0],), name="output.json", content={"done": True})]
+
+
+class InputToMiddleFlow(PipelineFlow):
+    """Flow: PubsubInputDoc -> PubsubMiddleDoc."""
+
+    name = "input_to_middle"
+
+    async def run(self, run_id: str, documents: list[PubsubInputDoc], options: FlowOptions) -> list[PubsubMiddleDoc]:
+        _flow_executions.append("flow_1")
+        return await InputToMiddleTask.run(documents)
+
+
+class MiddleToOutputFlow(PipelineFlow):
+    """Flow: PubsubMiddleDoc -> PubsubOutputDoc."""
+
+    name = "middle_to_output"
+
+    async def run(self, run_id: str, documents: list[PubsubMiddleDoc], options: FlowOptions) -> list[PubsubOutputDoc]:
+        _flow_executions.append("flow_2")
+        return await MiddleToOutputTask.run(documents)
+
+
+class FailingMiddleToOutputFlow(PipelineFlow):
+    """Flow: PubsubMiddleDoc -> raises RuntimeError."""
+
+    name = "failing_middle_to_output"
+
+    async def run(self, run_id: str, documents: list[PubsubMiddleDoc], options: FlowOptions) -> list[PubsubOutputDoc]:
+        _flow_executions.append("failing_flow_2")
+        raise RuntimeError("deliberate test failure")
+
+
+class ChainInputToMiddleFlow(PipelineFlow):
+    """Three-flow chain step A: PubsubInputDoc -> PubsubMiddleDoc."""
+
+    name = "chain_input_to_middle"
+
+    async def run(self, run_id: str, documents: list[PubsubInputDoc], options: FlowOptions) -> list[PubsubMiddleDoc]:
+        _flow_executions.append("flow_a")
+        return await InputToMiddleTask.run(documents)
+
+
+class ChainMiddleToOutputFlow(PipelineFlow):
+    """Three-flow chain step B: PubsubMiddleDoc -> PubsubOutputDoc."""
+
+    name = "chain_middle_to_output"
+
+    async def run(self, run_id: str, documents: list[PubsubMiddleDoc], options: FlowOptions) -> list[PubsubOutputDoc]:
+        _flow_executions.append("flow_b")
+        return await MiddleToOutputTask.run(documents)
+
+
+class ChainOutputToFinalFlow(PipelineFlow):
+    """Three-flow chain step C: PubsubOutputDoc -> PubsubFinalDoc."""
+
+    name = "chain_output_to_final"
+
+    async def run(self, run_id: str, documents: list[PubsubOutputDoc], options: FlowOptions) -> list[PubsubFinalDoc]:
+        _flow_executions.append("flow_c")
+        return await ChainOutputToFinalTask.run(documents)
+
+
+class DirectInputToOutputFlow(PipelineFlow):
+    """Single-flow pipeline: PubsubInputDoc -> PubsubOutputDoc."""
+
+    name = "direct_input_to_output"
+
+    async def run(self, run_id: str, documents: list[PubsubInputDoc], options: FlowOptions) -> list[PubsubOutputDoc]:
+        _flow_executions.append("single_flow")
+        return await DirectInputToOutputTask.run(documents)
+
+
+# --- Pubsub deployment classes ---
+
+
+class TwoStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
+    """Two-flow deployment for pubsub tests."""
+
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [InputToMiddleFlow(), MiddleToOutputFlow()]
 
     @staticmethod
     def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> PubsubResult:
-        """Build result."""
         return PubsubResult(success=True, doc_count=len(documents))
 
 
-# --- Failing variants ---
+class ThreeStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
+    """Three-flow deployment for pubsub tests."""
 
-
-@pipeline_flow(estimated_minutes=5)
-async def pubsub_failing_flow(
-    run_id: str,
-    documents: list[PubsubMiddleDoc],
-    flow_options: FlowOptions,
-) -> list[PubsubOutputDoc]:
-    """Flow that always raises RuntimeError."""
-    _flow_executions.append("failing_flow")
-    raise RuntimeError("deliberate test failure")
-
-
-class FailingSecondFlowDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
-    """Deployment where second flow fails."""
-
-    flows: ClassVar = [pubsub_flow_1, pubsub_failing_flow]
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [ChainInputToMiddleFlow(), ChainMiddleToOutputFlow(), ChainOutputToFinalFlow()]
 
     @staticmethod
     def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> PubsubResult:
-        """Build result."""
-        return PubsubResult(success=False, error="failed")
-
-
-# --- Single flow for simple resume tests ---
-
-
-@pipeline_flow(estimated_minutes=5)
-async def pubsub_single_flow(
-    run_id: str,
-    documents: list[PubsubInputDoc],
-    flow_options: FlowOptions,
-) -> list[PubsubOutputDoc]:
-    """Single flow for resume tests."""
-    _flow_executions.append("single_flow")
-    return [PubsubOutputDoc.create_root(name="single_out.json", content={"single": True}, reason="test")]
-
-
-class SingleFlowDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
-    """Single-flow deployment for simple resume tests."""
-
-    flows: ClassVar = [pubsub_single_flow]
-
-    @staticmethod
-    def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> PubsubResult:
-        """Build result."""
         return PubsubResult(success=True, doc_count=len(documents))
 
 
-# --- 3-flow for progress and resume tests ---
+class SingleStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
+    """Single-flow deployment for pubsub tests."""
 
-
-class PubsubFinalDoc(Document):
-    """Final document for 3-flow pipeline."""
-
-
-@pipeline_flow(estimated_minutes=10)
-async def pubsub_flow_a(
-    run_id: str,
-    documents: list[PubsubInputDoc],
-    flow_options: FlowOptions,
-) -> list[PubsubMiddleDoc]:
-    """Flow A in 3-flow pipeline."""
-    _flow_executions.append("flow_a")
-    return [PubsubMiddleDoc.create_root(name="a_out.json", content={"a": 1}, reason="test")]
-
-
-@pipeline_flow(estimated_minutes=20)
-async def pubsub_flow_b(
-    run_id: str,
-    documents: list[PubsubMiddleDoc],
-    flow_options: FlowOptions,
-) -> list[PubsubOutputDoc]:
-    """Flow B in 3-flow pipeline."""
-    _flow_executions.append("flow_b")
-    return [PubsubOutputDoc.create_root(name="b_out.json", content={"b": 2}, reason="test")]
-
-
-@pipeline_flow(estimated_minutes=30)
-async def pubsub_flow_c(
-    run_id: str,
-    documents: list[PubsubOutputDoc],
-    flow_options: FlowOptions,
-) -> list[PubsubFinalDoc]:
-    """Flow C in 3-flow pipeline."""
-    _flow_executions.append("flow_c")
-    return [PubsubFinalDoc.create_root(name="c_out.json", content={"c": 3}, reason="test")]
-
-
-class ThreeFlowDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
-    """3-flow deployment for progress and resume tests."""
-
-    flows: ClassVar = [pubsub_flow_a, pubsub_flow_b, pubsub_flow_c]
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [DirectInputToOutputFlow()]
 
     @staticmethod
     def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> PubsubResult:
-        """Build result."""
         return PubsubResult(success=True, doc_count=len(documents))
 
 
-# ---------------------------------------------------------------------------
-# Common fixtures (no external deps)
-# ---------------------------------------------------------------------------
+class FailingSecondStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
+    """Two-flow deployment where second flow raises RuntimeError."""
+
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [InputToMiddleFlow(), FailingMiddleToOutputFlow()]
+
+    @staticmethod
+    def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> PubsubResult:
+        return PubsubResult(success=False, error="deliberate test failure")
 
 
-@pytest.fixture(autouse=True)
-def _reset_flow_state() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]
-    """Clear flow execution tracker and recreate gate before each test.
-
-    asyncio.Event binds to the event loop on first .wait() call. Since
-    pytest-asyncio creates a new loop per test, we must recreate the Event.
-    """
-    global _flow_1_gate
-    _flow_executions.clear()
-    _flow_1_gate = asyncio.Event()
-    _flow_1_gate.set()
-    yield
-    _flow_1_gate.set()
+# --- Pubsub test data structures ---
 
 
-@pytest.fixture
-def flow_gate() -> asyncio.Event:
-    """Return the current flow_1 gate Event (fresh per test)."""
-    return _flow_1_gate
+@dataclass
+class CollectedEvent:
+    """A parsed event pulled from a Pub/Sub subscription."""
+
+    event_type: str
+    service_type: str
+    run_id: str
+    envelope: dict[str, Any]
+    data: dict[str, Any]
+    seq: int
 
 
-@pytest.fixture
-def pubsub_memory_store() -> Generator[MemoryDocumentStore, None, None]:
-    """Provide a MemoryDocumentStore and set it as global singleton. Cleans up after."""
-    store = MemoryDocumentStore()
-    set_document_store(store)
-    yield store
-    store.shutdown()
-    set_document_store(None)
+@dataclass
+class PubsubTestResources:
+    """Topic + subscription resources for a pubsub test."""
+
+    project_id: str
+    topic_path: str
+    subscription_path: str
+    publisher_client: Any
+    subscriber_client: Any
 
 
-def make_input_doc(name: str = "input.txt", content: str = "test data") -> PubsubInputDoc:
-    """Create a standard input document for tests."""
-    return PubsubInputDoc.create_root(name=name, content=content, reason="test input")
+@dataclass
+class PublisherWithStore:
+    """Wraps a PubSubPublisher for test fixtures."""
+
+    publisher: Any
+
+
+# --- Helper functions ---
+
+
+def make_input_doc() -> PubsubInputDoc:
+    """Create a PubsubInputDoc for testing."""
+    return PubsubInputDoc.create_root(name="input.json", content={"test": True}, reason="test")
 
 
 async def run_pipeline(
-    deployment: PipelineDeployment[FlowOptions, PubsubResult],
+    deployment: PipelineDeployment[Any, Any],
     publisher: Any,
     store: MemoryDocumentStore,
     *,
@@ -248,21 +303,105 @@ async def run_pipeline(
     start_step: int = 1,
     end_step: int | None = None,
     task_result_store: Any = None,
-) -> PubsubResult:
-    """Run a pipeline with the given publisher and store."""
+) -> Any:
+    """Run a deployment pipeline with the given publisher and store."""
+    _flow_executions.clear()
     if docs is None:
         docs = [make_input_doc()]
-    kwargs: dict[str, Any] = {"start_step": start_step}
-    if end_step is not None:
-        kwargs["end_step"] = end_step
-    if task_result_store is not None:
-        kwargs["task_result_store"] = task_result_store
-    return await deployment.run(run_id, docs, FlowOptions(), publisher=publisher, **kwargs)
+    set_document_store(store)
+    try:
+        return await deployment.run(
+            run_id,
+            docs,
+            FlowOptions(),
+            publisher=publisher,
+            start_step=start_step,
+            end_step=end_step,
+            task_result_store=task_result_store,
+        )
+    finally:
+        set_document_store(None)
 
 
-# ---------------------------------------------------------------------------
-# Pub/Sub emulator fixtures
-# ---------------------------------------------------------------------------
+def pull_events(
+    resources: PubsubTestResources,
+    expected_count: int,
+    timeout: float = 10.0,
+) -> list[CollectedEvent]:
+    """Pull events from a Pub/Sub subscription and return them sorted by seq.
+
+    Blocks until expected_count events are collected or timeout is reached.
+    """
+    import time
+
+    events: list[CollectedEvent] = []
+    deadline = time.monotonic() + timeout
+
+    while len(events) < expected_count and time.monotonic() < deadline:
+        remaining = max(0.5, deadline - time.monotonic())
+        try:
+            response = resources.subscriber_client.pull(
+                subscription=resources.subscription_path,
+                max_messages=expected_count - len(events),
+                timeout=min(remaining, 5.0),
+            )
+        except (OSError, TimeoutError, ValueError):
+            continue
+
+        ack_ids: list[str] = []
+        for msg in response.received_messages:
+            ack_ids.append(msg.ack_id)
+            event_type = msg.message.attributes.get("event_type", "")
+            if event_type == "run.heartbeat":
+                continue
+            envelope = json.loads(msg.message.data)
+            data = envelope.get("data", {})
+            event = CollectedEvent(
+                event_type=event_type,
+                service_type=msg.message.attributes.get("service_type", ""),
+                run_id=msg.message.attributes.get("run_id", ""),
+                envelope=envelope,
+                data=data,
+                seq=data.get("seq", 0),
+            )
+            events.append(event)
+
+        if ack_ids:
+            resources.subscriber_client.acknowledge(
+                subscription=resources.subscription_path,
+                ack_ids=ack_ids,
+            )
+
+    assert len(events) == expected_count, f"Expected {expected_count} events, got {len(events)}"
+    events.sort(key=lambda e: e.seq)
+    return events
+
+
+def assert_valid_cloudevent(event: CollectedEvent) -> None:
+    """Assert that an event has all required CloudEvents 1.0 fields."""
+    from ai_pipeline_core.deployment._pubsub import CLOUDEVENTS_SPEC_VERSION
+
+    envelope = event.envelope
+    assert envelope["specversion"] == CLOUDEVENTS_SPEC_VERSION
+    assert "id" in envelope
+    assert "source" in envelope
+    assert "type" in envelope
+    assert "time" in envelope
+    assert envelope.get("datacontenttype") == "application/json"
+    assert "subject" in envelope
+
+
+def assert_seq_monotonic(events: list[CollectedEvent]) -> None:
+    """Assert that events have strictly increasing seq values."""
+    seqs = [e.seq for e in events]
+    for i in range(1, len(seqs)):
+        assert seqs[i] > seqs[i - 1], f"seq not monotonic at index {i}: {seqs[i]} <= {seqs[i - 1]}"
+
+
+# --- Pytest fixtures for pubsub integration tests (testcontainers) ---
+
+from collections.abc import Generator
+from uuid import uuid4
 
 from google.api_core.exceptions import GoogleAPICallError
 from google.cloud.pubsub_v1 import PublisherClient, SubscriberClient
@@ -271,120 +410,11 @@ from testcontainers.core.waiting_utils import wait_for_logs
 
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
 
-
-# Data types used by test files (always importable, no external deps)
-
-
-@dataclass(frozen=True, slots=True)
-class CollectedEvent:
-    """A decoded CloudEvents message from Pub/Sub."""
-
-    envelope: dict[str, Any]
-    data: dict[str, Any]
-    event_type: str
-    run_id: str
-    service_type: str
-    seq: int
-
-
-@dataclass(frozen=True, slots=True)
-class PubSubTestResources:
-    """Topic and subscription created for a single test."""
-
-    project_id: str
-    topic_path: str
-    subscription_path: str
-    publisher_client: PublisherClient
-    subscriber_client: SubscriberClient
-
-
-@dataclass
-class PublisherWithStore:
-    """PubSubPublisher for test assertions."""
-
-    publisher: PubSubPublisher
-
-
-def _decode_message(message: Any) -> CollectedEvent:
-    """Decode a Pub/Sub message into a CollectedEvent."""
-    envelope = json.loads(message.data.decode())
-    data = envelope["data"]
-    attrs = message.attributes
-    return CollectedEvent(
-        envelope=envelope,
-        data=data,
-        event_type=attrs.get("event_type", envelope.get("type", "")),
-        run_id=attrs.get("run_id", data.get("run_id", "")),
-        service_type=attrs.get("service_type", ""),
-        seq=data.get("seq", 0),
-    )
-
-
-def pull_events(
-    resources: PubSubTestResources,
-    *,
-    expected_count: int,
-    timeout: float = 15.0,
-) -> list[CollectedEvent]:
-    """Pull exactly expected_count events from the subscription.
-
-    Returns events sorted by seq.
-    """
-    collected: list[CollectedEvent] = []
-    deadline = time.monotonic() + timeout
-
-    while len(collected) < expected_count and time.monotonic() < deadline:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        response = resources.subscriber_client.pull(
-            subscription=resources.subscription_path,
-            max_messages=expected_count - len(collected),
-            timeout=min(remaining, 5.0),
-        )
-        ack_ids = []
-        for msg in response.received_messages:
-            collected.append(_decode_message(msg.message))
-            ack_ids.append(msg.ack_id)
-        if ack_ids:
-            resources.subscriber_client.acknowledge(
-                subscription=resources.subscription_path,
-                ack_ids=ack_ids,
-            )
-        if len(collected) < expected_count:
-            time.sleep(0.1)
-
-    if len(collected) < expected_count:
-        event_types = [e.event_type for e in collected]
-        raise AssertionError(f"Expected {expected_count} events, got {len(collected)} within {timeout}s. Event types received: {event_types}")
-
-    return sorted(collected, key=lambda e: e.seq)
-
-
-def assert_valid_cloudevent(event: CollectedEvent) -> None:
-    """Validate a CollectedEvent has required CloudEvents 1.0 fields."""
-    env = event.envelope
-    assert env["specversion"] == "1.0", f"specversion={env.get('specversion')}"
-    for field_name in ("id", "type", "source", "time", "subject", "datacontenttype"):
-        assert field_name in env, f"Missing CloudEvents field: {field_name}"
-    assert env["datacontenttype"] == "application/json"
-    assert isinstance(env["data"], dict)
-    assert env["data"]["run_id"] == env["subject"]
-
-
-def assert_seq_monotonic(events: list[CollectedEvent]) -> None:
-    """Assert that seq values are strictly increasing."""
-    for i in range(1, len(events)):
-        assert events[i].seq > events[i - 1].seq, f"seq not monotonic: events[{i - 1}].seq={events[i - 1].seq} >= events[{i}].seq={events[i].seq}"
-
-
-# Emulator fixtures
-
 EMULATOR_PORT = 8085
 EMULATOR_PROJECT = "test-project"
 
 
-class PubSubEmulatorContainer(DockerContainer):
+class PubSubEmulatorContainer(DockerContainer):  # pyright: ignore[reportUntypedBaseClass]
     """GCP Pub/Sub emulator via google/cloud-sdk."""
 
     def __init__(self) -> None:
@@ -394,7 +424,7 @@ class PubSubEmulatorContainer(DockerContainer):
 
 
 @pytest.fixture(scope="session")
-def pubsub_emulator() -> Generator[str, None, None]:
+def pubsub_emulator(require_docker) -> Generator[str, None, None]:
     """Start Pub/Sub emulator container for the test session."""
     container = PubSubEmulatorContainer()
     container.start()
@@ -404,7 +434,6 @@ def pubsub_emulator() -> Generator[str, None, None]:
     emulator_host = f"{host}:{port}"
     os.environ["PUBSUB_EMULATOR_HOST"] = emulator_host
 
-    # Warm up: ensure emulator is responsive
     client = PublisherClient()
     warmup_topic = client.create_topic(name=client.topic_path(EMULATOR_PROJECT, "warmup"))
     client.delete_topic(topic=warmup_topic.name)
@@ -416,7 +445,7 @@ def pubsub_emulator() -> Generator[str, None, None]:
 
 
 @pytest.fixture
-def pubsub_topic(pubsub_emulator: str) -> Generator[PubSubTestResources, None, None]:
+def pubsub_test_resources(pubsub_emulator: str) -> Generator[PubsubTestResources, None, None]:
     """Create a unique topic + subscription per test, clean up after."""
     pub_client = PublisherClient()
     sub_client = SubscriberClient()
@@ -429,7 +458,7 @@ def pubsub_topic(pubsub_emulator: str) -> Generator[PubSubTestResources, None, N
     pub_client.create_topic(name=topic_path)
     sub_client.create_subscription(name=sub_path, topic=topic_path)
 
-    yield PubSubTestResources(
+    yield PubsubTestResources(
         project_id=EMULATOR_PROJECT,
         topic_path=topic_path,
         subscription_path=sub_path,
@@ -439,20 +468,30 @@ def pubsub_topic(pubsub_emulator: str) -> Generator[PubSubTestResources, None, N
 
     try:
         sub_client.delete_subscription(subscription=sub_path)
-    except (OSError, GoogleAPICallError):
-        pass
+    except (OSError, GoogleAPICallError) as exc:
+        logger.debug("Failed to delete subscription %s during teardown: %s", sub_path, exc)
     try:
         pub_client.delete_topic(topic=topic_path)
-    except (OSError, GoogleAPICallError):
-        pass
+    except (OSError, GoogleAPICallError) as exc:
+        logger.debug("Failed to delete topic %s during teardown: %s", topic_path, exc)
 
 
 @pytest.fixture
-def real_publisher(pubsub_topic: PubSubTestResources) -> PublisherWithStore:
+def pubsub_memory_store() -> Generator[MemoryDocumentStore, None, None]:
+    """Provide a MemoryDocumentStore and set it as global singleton. Cleans up after."""
+    store = MemoryDocumentStore()
+    set_document_store(store)
+    yield store
+    store.shutdown()
+    set_document_store(None)
+
+
+@pytest.fixture
+def real_publisher(pubsub_test_resources: PubsubTestResources) -> PublisherWithStore:
     """Create a PubSubPublisher pointed at the emulator topic."""
-    topic_id = pubsub_topic.topic_path.split("/")[-1]
+    topic_id = pubsub_test_resources.topic_path.split("/")[-1]
     publisher = PubSubPublisher(
-        project_id=pubsub_topic.project_id,
+        project_id=pubsub_test_resources.project_id,
         topic_id=topic_id,
         service_type="test-service",
     )

@@ -103,3 +103,11 @@ repos:
         files: \.py$
         stages:
           - pre-commit
+      - id: test-collect
+        name: verify all test modules importable
+        entry: uv run pytest --collect-only -q --no-header
+        language: system
+        pass_filenames: false
+        files: \.py$
+        stages:
+          - pre-commit

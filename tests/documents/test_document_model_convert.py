@@ -5,6 +5,7 @@ from enum import StrEnum
 import pytest
 
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.exceptions import DocumentNameError
 
 
@@ -28,6 +29,12 @@ class RestrictedFlowDoc(Document):
     class FILES(StrEnum):
         CONFIG = "config.json"
         DATA = "data.yaml"
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
 
 
 class TestModelConvert:

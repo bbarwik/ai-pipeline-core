@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm.conversation import Conversation
+from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask
 from ai_pipeline_core.replay import ConversationReplay, FlowReplay, HistoryEntry, TaskReplay
 from tests.replay.conftest import (
     ReplayArgsModel,
@@ -41,6 +42,15 @@ async def _test_task_with_model_arg(source: ReplayTextDocument, *, config: Repla
     return ReplayResultDocument(name="result.txt", content=source.content, description=config.label)
 
 
+class _ReplayPipelineTask(PipelineTask):
+    """Class-based task used to verify replay of PipelineTask.run(...)."""
+
+    @classmethod
+    async def run(cls, source: ReplayTextDocument, label: str) -> list[ReplayResultDocument]:
+        _ = cls
+        return [ReplayResultDocument(name="result.txt", content=source.content, description=label)]
+
+
 async def _test_flow_fn(
     run_id: str,
     documents: list[ReplayTextDocument],
@@ -54,6 +64,22 @@ async def _test_flow_fn(
             description=f"{flow_options.replay_label}:{flow_options.replay_mode}",
         )
     ]
+
+
+class _ReplayClassFlow(PipelineFlow):
+    """Class-based PipelineFlow for replay testing."""
+
+    async def run(self, run_id: str, documents: list[ReplayTextDocument], options: ReplayFlowOptions) -> list[ReplayResultDocument]:
+        return [ReplayResultDocument(name="flow_out.txt", content=documents[0].content if documents else b"empty")]
+
+
+class _ParameterizedFlow(PipelineFlow):
+    """PipelineFlow with constructor params for replay testing."""
+
+    model_name: str = "default-model"
+
+    async def run(self, run_id: str, documents: list[ReplayTextDocument], options: ReplayFlowOptions) -> list[ReplayResultDocument]:
+        return [ReplayResultDocument(name="parameterized.txt", content=self.model_name.encode(), description=self.model_name)]
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +345,27 @@ class TestTaskReplayExecute:
         assert isinstance(result, ReplayResultDocument)
         assert result.description == "validated"
 
+    @pytest.mark.asyncio
+    async def test_task_execute_pipeline_task_class(self, populated_store: Path, sample_text_doc: ReplayTextDocument) -> None:
+        """TaskReplay executes PipelineTask subclasses through the wrapped run() entry point."""
+        fn_path = f"{_ReplayPipelineTask.__module__}:{_ReplayPipelineTask.__qualname__}"
+
+        replay = TaskReplay(
+            payload_type="pipeline_task",
+            function_path=fn_path,
+            arguments={
+                "source": doc_ref_dict(sample_text_doc),
+                "label": "pipeline-task",
+            },
+        )
+
+        result = await replay.execute(populated_store)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert isinstance(result[0], ReplayResultDocument)
+        assert result[0].description == "pipeline-task"
+
 
 # ---------------------------------------------------------------------------
 # FlowReplay tests
@@ -350,3 +397,40 @@ class TestFlowReplayExecute:
         assert len(result) == 1
         assert isinstance(result[0], ReplayResultDocument)
         assert result[0].description is not None and "prod:deep" in result[0].description
+
+    @pytest.mark.asyncio
+    async def test_flow_execute_handles_pipeline_flow_class(self, populated_store: Path, sample_text_doc: ReplayTextDocument) -> None:
+        """execute_flow must instantiate PipelineFlow classes, not call them directly."""
+        fn_path = f"{_ReplayClassFlow.__module__}:{_ReplayClassFlow.__qualname__}"
+
+        replay = FlowReplay(
+            payload_type="pipeline_flow",
+            function_path=fn_path,
+            run_id="test-run",
+            documents=[doc_ref_dict(sample_text_doc)],
+            flow_options={},
+        )
+
+        # Before fix: TypeError because PipelineFlow.__init__ doesn't accept positional args
+        result = await replay.execute(populated_store)
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_flow_execute_preserves_constructor_params(self, populated_store: Path, sample_text_doc: ReplayTextDocument) -> None:
+        """flow_params are passed to PipelineFlow constructor during replay."""
+        fn_path = f"{_ParameterizedFlow.__module__}:{_ParameterizedFlow.__qualname__}"
+
+        replay = FlowReplay(
+            payload_type="pipeline_flow",
+            function_path=fn_path,
+            run_id="test-run",
+            documents=[doc_ref_dict(sample_text_doc)],
+            flow_options={},
+            flow_params={"model_name": "gpt-5"},
+        )
+
+        result = await replay.execute(populated_store)
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0].description == "gpt-5"

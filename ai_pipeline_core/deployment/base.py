@@ -10,12 +10,14 @@ creating unified, type-safe pipeline deployments with:
 
 import asyncio
 import contextlib
-import hashlib
 import json
 import os
+import time
 from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
+from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
@@ -30,13 +32,14 @@ from pydantic_settings import BaseSettings
 
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.document_store._protocol import create_document_store, get_document_store, set_document_store
-from ai_pipeline_core.document_store._summary_worker import SummaryGenerator
 from ai_pipeline_core.documents import Document, DocumentSha256, RunContext, RunScope
-from ai_pipeline_core.documents._context import _reset_run_context, _set_run_context
-from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
+from ai_pipeline_core.documents._context import TaskContext, _reset_run_context, _set_run_context, reset_task_context, set_task_context
 from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.observability._initialization import ensure_tracking_processor, get_clickhouse_backend, get_pipeline_processors
+from ai_pipeline_core.observability._initialization import ensure_tracking_processor, get_clickhouse_backend
 from ai_pipeline_core.observability._tracking._models import RunStatus
+from ai_pipeline_core.pipeline._execution_context import ExecutionContext, FlowFrame, get_execution_context, reset_execution_context, set_execution_context
+from ai_pipeline_core.pipeline._flow import PipelineFlow
+from ai_pipeline_core.pipeline._parallel import TaskHandle
 from ai_pipeline_core.pipeline.limits import (
     PipelineLimit,
     _ensure_concurrency_limits,
@@ -47,10 +50,21 @@ from ai_pipeline_core.pipeline.limits import (
     _validate_concurrency_limits,
 )
 from ai_pipeline_core.pipeline.options import FlowOptions
-from ai_pipeline_core.settings import Settings, settings
+from ai_pipeline_core.settings import settings
 
+from ._contract import FlowStatus
 from ._helpers import (
-    _CLI_FIELDS,
+    _HANDLE_CANCEL_GRACE_SECONDS,
+    _MILLISECONDS_PER_SECOND,
+    _build_summary_generator,
+    _classify_error,
+    _clear_run_context_on_processors,
+    _compute_run_scope,
+    _create_publisher,
+    _create_task_result_store,
+    _heartbeat_loop,
+    _set_flow_replay_payload,
+    _set_run_context_on_processors,
     class_name_to_deployment_name,
     extract_generic_params,
     init_observability_best_effort,
@@ -58,132 +72,22 @@ from ._helpers import (
 )
 from ._resolve import DocumentInput, OutputDocument, build_output_document, resolve_document_inputs
 from ._types import (
-    ErrorCode,
+    DocumentRef,
+    FlowCompletedEvent,
+    FlowFailedEvent,
+    FlowSkippedEvent,
+    FlowStartedEvent,
+    ProgressEvent,
+    ResultPublisher,
+    RunCompletedEvent,
+    RunFailedEvent,
+    RunStartedEvent,
     TaskResultStore,
-    _CompletedEvent,
-    _FailedEvent,
     _NoopPublisher,
-    _ProgressEvent,
-    _ResultPublisher,
-    _StartedEvent,
 )
-from .contract import FlowStatus
-from .progress import _flow_context, _safe_uuid
+from .progress import _compute_progress_from_flow_minutes, _flow_context, _safe_uuid
 
 logger = get_pipeline_logger(__name__)
-
-
-def _classify_error(exc: BaseException) -> ErrorCode:
-    """Map exception to ErrorCode enum value."""
-    if isinstance(exc, LLMError):
-        return ErrorCode.PROVIDER_ERROR
-    if isinstance(exc, asyncio.CancelledError):
-        return ErrorCode.CANCELLED
-    if isinstance(exc, TimeoutError):
-        return ErrorCode.DURATION_EXCEEDED
-    if isinstance(exc, (ValueError, TypeError)):
-        return ErrorCode.INVALID_INPUT
-    if isinstance(exc, PipelineCoreError):
-        return ErrorCode.PIPELINE_ERROR
-    return ErrorCode.UNKNOWN
-
-
-def _create_publisher(settings_obj: Settings, service_type: str) -> _ResultPublisher:
-    """Create publisher based on environment and deployment configuration.
-
-    Returns PubSubPublisher when Pub/Sub is configured and service_type is set,
-    _NoopPublisher otherwise.
-    """
-    if not service_type:
-        return _NoopPublisher()
-    if settings_obj.pubsub_project_id and settings_obj.pubsub_topic_id:
-        from ._pubsub import PubSubPublisher
-
-        return PubSubPublisher(
-            project_id=settings_obj.pubsub_project_id,
-            topic_id=settings_obj.pubsub_topic_id,
-            service_type=service_type,
-        )
-    return _NoopPublisher()
-
-
-def _create_task_result_store(settings_obj: Settings) -> TaskResultStore | None:
-    """Create ClickHouseTaskResultStore when ClickHouse is configured.
-
-    Independent of Pub/Sub — results are persisted for remote caller fallback
-    whenever ClickHouse is available.
-    """
-    if not settings_obj.clickhouse_host:
-        return None
-    from ._task_results import ClickHouseTaskResultStore
-
-    return ClickHouseTaskResultStore(
-        host=settings_obj.clickhouse_host,
-        port=settings_obj.clickhouse_port,
-        database=settings_obj.clickhouse_database,
-        username=settings_obj.clickhouse_user,
-        password=settings_obj.clickhouse_password,
-        secure=settings_obj.clickhouse_secure,
-        connect_timeout=settings_obj.clickhouse_connect_timeout,
-        send_receive_timeout=settings_obj.clickhouse_send_receive_timeout,
-    )
-
-
-_HEARTBEAT_INTERVAL_SECONDS = 30
-
-
-def _build_summary_generator() -> SummaryGenerator | None:
-    """Build a summary generator callable from settings, or None if disabled/unavailable."""
-    if not settings.doc_summary_enabled:
-        return None
-
-    from ai_pipeline_core.document_store._summary_llm import generate_document_summary
-
-    model = settings.doc_summary_model
-
-    async def _generator(name: str, excerpt: str) -> str:
-        return await generate_document_summary(name, excerpt, model=model)
-
-    return _generator
-
-
-def _set_run_context_on_processors(execution_id: UUID, run_id: str, flow_name: str, run_scope: str) -> None:
-    """Propagate pipeline run context to all registered PipelineSpanProcessors.
-
-    Each processor injects these values into SpanData for child spans that
-    don't have them set as span/resource attributes.
-    """
-    for processor in get_pipeline_processors():
-        processor.set_run_context(
-            execution_id=execution_id,
-            run_id=run_id,
-            flow_name=flow_name,
-            run_scope=run_scope,
-        )
-
-
-def _clear_run_context_on_processors() -> None:
-    """Clear pipeline run context from all registered PipelineSpanProcessors."""
-    for processor in get_pipeline_processors():
-        processor.clear_run_context()
-
-
-def _compute_run_scope(run_id: str, documents: list[Document], options: FlowOptions) -> RunScope:
-    """Compute a run scope that fingerprints inputs and options.
-
-    Different inputs or options produce a different scope, preventing
-    stale cache hits when re-running with the same run_id.
-    """
-    exclude = set(_CLI_FIELDS & set(type(options).model_fields))
-    options_json = options.model_dump_json(exclude=exclude, exclude_none=True)
-
-    if not documents:
-        fingerprint = hashlib.sha256(options_json.encode()).hexdigest()[:16]
-        return RunScope(f"{run_id}:{fingerprint}")
-
-    sha256s = sorted(doc.sha256 for doc in documents)
-    fingerprint = hashlib.sha256(f"{':'.join(sha256s)}|{options_json}".encode()).hexdigest()[:16]
-    return RunScope(f"{run_id}:{fingerprint}")
 
 
 async def _load_documents_by_sha256s(
@@ -222,14 +126,32 @@ async def _load_documents_by_sha256s(
     return result
 
 
-async def _heartbeat_loop(publisher: _ResultPublisher, run_id: str) -> None:
-    """Publish heartbeat signals at regular intervals until cancelled."""
-    while True:
-        await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
-        try:
-            await publisher.publish_heartbeat(run_id)
-        except Exception as e:
-            logger.warning("Heartbeat publish failed: %s", e)
+async def _cancel_dispatched_handles(
+    active_handles: set[object],
+    *,
+    baseline_handles: set[object],
+) -> None:
+    """Cancel handles dispatched within a flow and wait briefly for shutdown."""
+    new_handles: list[TaskHandle[list[Document]]] = [
+        handle for handle in list(active_handles) if handle not in baseline_handles and isinstance(handle, TaskHandle)
+    ]
+    if not new_handles:
+        return
+
+    for handle in new_handles:
+        handle.cancel()
+
+    pending_tasks: list[asyncio.Task[list[Document]]] = [handle._task for handle in new_handles if not handle.done]
+    if pending_tasks:
+        _done, pending = await asyncio.wait(pending_tasks, timeout=_HANDLE_CANCEL_GRACE_SECONDS)
+        if pending:
+            for task in pending:
+                task.cancel()
+            with contextlib.suppress(Exception):
+                await asyncio.gather(*pending, return_exceptions=True)
+
+    for handle in new_handles:
+        active_handles.discard(handle)
 
 
 class DeploymentResult(BaseModel):
@@ -248,7 +170,22 @@ TResult = TypeVar("TResult", bound=DeploymentResult)
 _LABEL_RUN_ID = "pipeline.run_id"
 
 
-def _validate_flow_chain(deployment_name: str, flows: list[Any]) -> None:
+class FlowAction(StrEnum):
+    """Directive action for dynamic flow control."""
+
+    CONTINUE = "continue"
+    SKIP = "skip"
+
+
+@dataclass(frozen=True, slots=True)
+class FlowDirective:
+    """Flow planning directive returned by plan_next_flow()."""
+
+    action: FlowAction = FlowAction.CONTINUE
+    reason: str = ""
+
+
+def _validate_flow_chain(deployment_name: str, flows: Sequence[PipelineFlow]) -> None:
     """Validate that each flow's input types are satisfiable by preceding flows' outputs.
 
     Simulates a type pool: starts with the first flow's input types, adds each flow's
@@ -257,17 +194,15 @@ def _validate_flow_chain(deployment_name: str, flows: list[Any]) -> None:
     """
     type_pool: set[type[Document]] = set()
 
-    for i, flow_fn in enumerate(flows):
-        input_types: list[type[Document]] = getattr(flow_fn, "input_document_types", [])
-        output_types: list[type[Document]] = getattr(flow_fn, "output_document_types", [])
-        flow_name = getattr(flow_fn, "name", getattr(flow_fn, "__name__", f"flow[{i}]"))
+    for i, flow_instance in enumerate(flows):
+        flow_cls = type(flow_instance)
+        input_types = flow_cls.input_document_types
+        output_types = flow_cls.output_document_types
+        flow_name = flow_instance.name
 
         if i == 0:
-            # First flow: its input types seed the pool
             type_pool.update(input_types)
         elif input_types:
-            # Subsequent flows: at least one declared input type must be satisfiable
-            # from the pool (union semantics — flow accepts any of the declared types)
             any_satisfied = any(any(issubclass(available, t) for available in type_pool) for t in input_types)
             if not any_satisfied:
                 input_names = sorted(t.__name__ for t in input_types)
@@ -289,7 +224,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     - ``as_prefect_flow()``: auto-configured from settings
     """
 
-    flows: ClassVar[list[Any]]
     name: ClassVar[str]
     options_type: ClassVar[type[FlowOptions]]
     result_type: ClassVar[type[DeploymentResult]]
@@ -302,13 +236,11 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
-        if not hasattr(cls, "flows"):
-            return
-
         if cls.__name__.startswith("Test"):
             raise TypeError(f"Deployment class name cannot start with 'Test': {cls.__name__}")
 
-        cls.name = class_name_to_deployment_name(cls.__name__)
+        if "name" not in cls.__dict__:
+            cls.name = class_name_to_deployment_name(cls.__name__)
 
         generic_args = extract_generic_params(cls, PipelineDeployment)
         if len(generic_args) < 2:
@@ -318,28 +250,30 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         cls.options_type = options_type
         cls.result_type = result_type
 
-        if not cls.flows:
-            raise TypeError(f"{cls.__name__}.flows cannot be empty")
-
         # build_result must be implemented (not still abstract from PipelineDeployment)
         build_result_fn = getattr(cls, "build_result", None)
         if build_result_fn is None or getattr(build_result_fn, "__isabstractmethod__", False):
             raise TypeError(f"{cls.__name__} must implement 'build_result' static method")
 
-        # No duplicate flows (by identity)
-        seen_ids: set[int] = set()
-        for flow_fn in cls.flows:
-            fid = id(flow_fn)
-            if fid in seen_ids:
-                flow_name = getattr(flow_fn, "name", getattr(flow_fn, "__name__", str(flow_fn)))
-                raise TypeError(f"{cls.__name__}.flows contains duplicate flow '{flow_name}'")
-            seen_ids.add(fid)
-
-        # Flow type chain validation: simulate a type pool
-        _validate_flow_chain(cls.__name__, cls.flows)
+        if cls.build_flows is PipelineDeployment.build_flows:
+            raise TypeError(f"{cls.__name__} must implement build_flows(options) -> Sequence[PipelineFlow]. Decorator-based `flows = [...]` is removed.")
 
         # Concurrency limits validation
         cls.concurrency_limits = _validate_concurrency_limits(cls.__name__, getattr(cls, "concurrency_limits", MappingProxyType({})))
+
+    def build_flows(self, options: TOptions) -> Sequence[PipelineFlow]:
+        """Build flow instances for this run."""
+        raise NotImplementedError(f"{type(self).__name__}.build_flows() must return a sequence of PipelineFlow.")
+
+    def plan_next_flow(
+        self,
+        flow_class: type[PipelineFlow],
+        plan: Sequence[PipelineFlow],
+        output_documents: list[Document],
+    ) -> FlowDirective:
+        """Optionally skip future instances of a flow class."""
+        _ = (flow_class, plan, output_documents)
+        return FlowDirective()
 
     @staticmethod
     @abstractmethod
@@ -363,13 +297,14 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         """
         return self.build_result(run_id, documents, options)
 
-    def _all_document_types(self) -> list[type[Document]]:
+    def _all_document_types(self, flows: Sequence[PipelineFlow]) -> list[type[Document]]:
         """Collect all document types from all flows (inputs + outputs), deduplicated."""
         types: dict[str, type[Document]] = {}
-        for flow_fn in self.flows:
-            for t in getattr(flow_fn, "input_document_types", []):
+        for flow_inst in flows:
+            flow_cls = type(flow_inst)
+            for t in flow_cls.input_document_types:
                 types[t.__name__] = t
-            for t in getattr(flow_fn, "output_document_types", []):
+            for t in flow_cls.output_document_types:
                 types[t.__name__] = t
         return list(types.values())
 
@@ -381,15 +316,12 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         total_steps: int,
         flow_name: str,
         status: FlowStatus,
+        flow_minutes: tuple[float, ...],
         step_progress: float = 0.0,
         message: str = "",
     ) -> None:
         """Update Prefect flow run labels with progress information."""
-        flow_minutes = [getattr(f, "estimated_minutes", 1) for f in self.flows]
-        total_minutes = sum(flow_minutes) or 1
-        completed_minutes = sum(flow_minutes[: max(step - 1, 0)])
-        current_flow_minutes = flow_minutes[step - 1] if step - 1 < len(flow_minutes) else 1
-        progress = round(max(0.0, min(1.0, (completed_minutes + current_flow_minutes * step_progress) / total_minutes)), 4)
+        progress = _compute_progress_from_flow_minutes(flow_minutes, step, step_progress)
 
         run_uuid = _safe_uuid(flow_run_id) if flow_run_id else None
         if run_uuid is None:
@@ -423,13 +355,10 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         status: FlowStatus,
         step_progress: float,
         message: str,
-    ) -> _ProgressEvent:
-        """Build a _ProgressEvent with computed overall progress."""
-        total_mins = sum(flow_minutes) or 1
-        completed_mins = sum(flow_minutes[: max(step - 1, 0)])
-        current_flow_mins = flow_minutes[step - 1] if step - 1 < len(flow_minutes) else 1
-        progress = round(max(0.0, min(1.0, (completed_mins + current_flow_mins * step_progress) / total_mins)), 4)
-        return _ProgressEvent(
+    ) -> ProgressEvent:
+        """Build a ProgressEvent with computed overall progress."""
+        progress = _compute_progress_from_flow_minutes(flow_minutes, step, step_progress)
+        return ProgressEvent(
             run_id=run_id,
             flow_run_id=flow_run_id,
             flow_name=flow_name,
@@ -447,7 +376,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         run_id: str,
         documents: Sequence[Document],
         options: TOptions,
-        publisher: _ResultPublisher | None = None,
+        publisher: ResultPublisher | None = None,
         start_step: int = 1,
         end_step: int | None = None,
         task_result_store: TaskResultStore | None = None,
@@ -462,8 +391,16 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
         if publisher is None:
             publisher = _NoopPublisher()
+        flows = self.build_flows(options)
+        if not flows:
+            raise ValueError(f"{type(self).__name__}.build_flows() returned an empty list. Provide at least one PipelineFlow.")
+        for flow_item in cast(Sequence[Any], flows):
+            if not isinstance(flow_item, PipelineFlow):
+                raise TypeError(f"{type(self).__name__}.build_flows() must return PipelineFlow instances, got {type(flow_item).__name__}.")
+        _validate_flow_chain(type(self).__name__, flows)
+
         store = get_document_store()
-        total_steps = len(self.flows)
+        total_steps = len(flows)
 
         if end_step is None:
             end_step = total_steps
@@ -488,6 +425,17 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
         input_docs = list(documents)
         run_scope = _compute_run_scope(run_id, input_docs, options)
+        flow_plan = [
+            {
+                "name": flow_instance.name,
+                "flow_class": type(flow_instance).__name__,
+                "step": idx + 1,
+                "estimated_minutes": flow_instance.estimated_minutes,
+                "params": flow_instance.get_params(),
+                "expected_tasks": type(flow_instance).expected_tasks(),
+            }
+            for idx, flow_instance in enumerate(flows)
+        ]
 
         if not store and total_steps > 1:
             logger.warning("No DocumentStore configured for multi-step pipeline — intermediate outputs will not accumulate between flows")
@@ -495,12 +443,14 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         # Tracking lifecycle
         ch_backend = None
         run_uuid: UUID | None = None
+        run_execution_id = uuid4()
         run_start_time = None
         run_failed = False
         try:
             ch_backend = get_clickhouse_backend()
             if ch_backend:
                 run_uuid = (_safe_uuid(flow_run_id) if flow_run_id else None) or uuid4()
+                run_execution_id = run_uuid
                 run_start_time = ch_backend.track_run_start(
                     execution_id=run_uuid,
                     run_id=run_id,
@@ -508,21 +458,42 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     run_scope=str(run_scope),
                     parent_execution_id=parent_execution_id,
                     parent_span_id=parent_span_id,
+                    metadata={"flow_plan": flow_plan},
                 )
             # Set run context on processors so child spans inherit execution_id
-            _set_run_context_on_processors(run_uuid or uuid4(), run_id, self.name, str(run_scope))
+            _set_run_context_on_processors(run_execution_id, run_id, self.name, str(run_scope))
         except Exception as e:
             logger.warning("Tracking initialization failed: %s", e)
             ch_backend = None
 
-        # Set concurrency limits and RunContext for the entire pipeline run
+        # Set concurrency limits and run context for the entire pipeline run
         failed_published = False
         heartbeat_task: asyncio.Task[None] | None = None
-        limits_token = _set_limits_state(_LimitsState(limits=self.concurrency_limits, status=_SharedStatus()))
-        run_token = _set_run_context(RunContext(run_scope=run_scope, execution_id=run_uuid))
+        limits_status = _SharedStatus()
+        limits_token = _set_limits_state(_LimitsState(limits=self.concurrency_limits, status=limits_status))
+        run_token = _set_run_context(RunContext(run_scope=run_scope, execution_id=run_execution_id))
+        execution_token = set_execution_context(
+            ExecutionContext(
+                run_id=run_id,
+                run_scope=run_scope,
+                execution_id=run_execution_id,
+                store=store,
+                publisher=publisher,
+                summary_generator=_build_summary_generator(),
+                limits=self.concurrency_limits,
+                limits_status=limits_status,
+            )
+        )
         try:
-            # Publish task.started event (inside try so failures still hit finally cleanup)
-            await publisher.publish_started(_StartedEvent(run_id=run_id, flow_run_id=flow_run_id, run_scope=str(run_scope)))
+            all_document_types = self._all_document_types(flows)
+            await publisher.publish_run_started(
+                RunStartedEvent(
+                    run_id=run_id,
+                    flow_run_id=flow_run_id,
+                    run_scope=str(run_scope),
+                    flow_plan=flow_plan,
+                )
+            )
 
             # Start heartbeat background task
             heartbeat_task = asyncio.create_task(_heartbeat_loop(publisher, run_id))
@@ -531,27 +502,110 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
             # Save initial input documents to store
             if store and input_docs:
-                await store.save_batch(input_docs, run_scope)
+                await store.save_batch(input_docs, run_scope, created_by_task="")
 
             # Precompute flow minutes for progress calculation
-            flow_minutes = tuple(getattr(f, "estimated_minutes", 1) for f in self.flows)
+            flow_minutes = tuple(flow_instance.estimated_minutes for flow_instance in flows)
 
             # Resume tracking: accumulate output SHA256s from skipped flows
             # so the first non-skipped flow loads by SHA256 instead of by type
             resumed_sha256s: set[str] | None = None
             executed_output_sha256s: set[str] = set()
             last_flow_output_sha256s: tuple[str, ...] = ()
+            skipped_classes: set[type[PipelineFlow]] = set()
+            previous_output_documents: list[Document] = []
 
             for i in range(start_step - 1, end_step):
                 step = i + 1
-                flow_fn = self.flows[i]
-                flow_name = getattr(flow_fn, "name", flow_fn.__name__)
+                flow_instance = flows[i]
+                flow_class = type(flow_instance)
+                flow_name = flow_instance.name
+                completion_name = f"{flow_name}:{step}"
                 # Re-read flow_run_id in case Prefect subflow changes it
                 flow_run_id = str(runtime.flow_run.get_id() or "") if runtime.flow_run else flow_run_id  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType]
 
+                if flow_class in skipped_classes:
+                    skipped_msg = f"Skipped by plan_next_flow: {flow_name}"
+                    await publisher.publish_flow_skipped(
+                        FlowSkippedEvent(
+                            run_id=run_id,
+                            flow_name=flow_name,
+                            step=step,
+                            total_steps=total_steps,
+                            reason="skipped",
+                        )
+                    )
+                    await self._update_progress_labels(
+                        flow_run_id,
+                        run_id,
+                        step,
+                        total_steps,
+                        flow_name,
+                        FlowStatus.CACHED,
+                        flow_minutes=flow_minutes,
+                        step_progress=1.0,
+                        message=skipped_msg,
+                    )
+                    await publisher.publish_progress(
+                        self._build_progress_event(
+                            run_id,
+                            flow_run_id,
+                            flow_name,
+                            step,
+                            total_steps,
+                            flow_minutes,
+                            FlowStatus.CACHED,
+                            1.0,
+                            skipped_msg,
+                        )
+                    )
+                    previous_output_documents = []
+                    continue
+
+                directive = self.plan_next_flow(flow_class, flows, previous_output_documents)
+                if directive.action is FlowAction.SKIP:
+                    skipped_classes.add(flow_class)
+                    skip_reason = directive.reason or "skipped"
+                    skipped_msg = f"Skipped by plan_next_flow: {flow_name}"
+                    await publisher.publish_flow_skipped(
+                        FlowSkippedEvent(
+                            run_id=run_id,
+                            flow_name=flow_name,
+                            step=step,
+                            total_steps=total_steps,
+                            reason=skip_reason,
+                        )
+                    )
+                    await self._update_progress_labels(
+                        flow_run_id,
+                        run_id,
+                        step,
+                        total_steps,
+                        flow_name,
+                        FlowStatus.CACHED,
+                        flow_minutes=flow_minutes,
+                        step_progress=1.0,
+                        message=skipped_msg,
+                    )
+                    await publisher.publish_progress(
+                        self._build_progress_event(
+                            run_id,
+                            flow_run_id,
+                            flow_name,
+                            step,
+                            total_steps,
+                            flow_minutes,
+                            FlowStatus.CACHED,
+                            1.0,
+                            skipped_msg,
+                        )
+                    )
+                    previous_output_documents = []
+                    continue
+
                 # Resume check: skip if flow completed successfully in a previous run
                 if store:
-                    completion = await store.get_flow_completion(run_scope, flow_name, max_age=self.cache_ttl)
+                    completion = await store.get_flow_completion(run_scope, completion_name, max_age=self.cache_ttl)
                     if completion is not None:
                         logger.info("[%d/%d] Resume: skipping %s (completion record found)", step, total_steps, flow_name)
                         if resumed_sha256s is None:
@@ -560,6 +614,15 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                         resumed_sha256s.update(completion.output_sha256s)
                         last_flow_output_sha256s = completion.output_sha256s
                         cached_msg = f"Resumed from store: {flow_name}"
+                        await publisher.publish_flow_skipped(
+                            FlowSkippedEvent(
+                                run_id=run_id,
+                                flow_name=flow_name,
+                                step=step,
+                                total_steps=total_steps,
+                                reason="completed",
+                            )
+                        )
                         await self._update_progress_labels(
                             flow_run_id,
                             run_id,
@@ -567,6 +630,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                             total_steps,
                             flow_name,
                             FlowStatus.CACHED,
+                            flow_minutes=flow_minutes,
                             step_progress=1.0,
                             message=cached_msg,
                         )
@@ -583,8 +647,28 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                                 cached_msg,
                             )
                         )
+                        previous_output_documents = []
+                        if completion.output_sha256s:
+                            previous_output_documents = await _load_documents_by_sha256s(
+                                store,
+                                set(completion.output_sha256s),
+                                flow_class.output_document_types,
+                                all_document_types,
+                                run_scope,
+                            )
                         continue
 
+                await publisher.publish_flow_started(
+                    FlowStartedEvent(
+                        run_id=run_id,
+                        flow_name=flow_name,
+                        flow_class=flow_class.__name__,
+                        step=step,
+                        total_steps=total_steps,
+                        expected_tasks=flow_class.expected_tasks(),
+                        flow_params=flow_instance.get_params(),
+                    )
+                )
                 started_msg = f"Starting: {flow_name}"
                 await self._update_progress_labels(
                     flow_run_id,
@@ -593,6 +677,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     total_steps,
                     flow_name,
                     FlowStatus.STARTED,
+                    flow_minutes=flow_minutes,
                     step_progress=0.0,
                     message=started_msg,
                 )
@@ -612,13 +697,14 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 logger.info("[%d/%d] Starting: %s", step, total_steps, flow_name)
 
                 # Load input documents from store
-                input_types = getattr(flow_fn, "input_document_types", [])
-                if resumed_sha256s is not None and store and input_types:
-                    current_docs = await _load_documents_by_sha256s(  # pyright: ignore[reportUnreachable]  # reachable on 2nd+ loop iteration after resume skip
+                input_types = flow_class.input_document_types
+                pending_resume_sha256s = resumed_sha256s
+                if pending_resume_sha256s is not None and store and input_types:
+                    current_docs = await _load_documents_by_sha256s(
                         store,
-                        resumed_sha256s,
+                        pending_resume_sha256s,
                         input_types,
-                        self._all_document_types(),
+                        all_document_types,
                         run_scope,
                     )
                     resumed_sha256s = None
@@ -629,6 +715,22 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
                 # Set up intra-flow progress context so progress_update() works inside flows
                 completed_mins = sum(flow_minutes[: max(step - 1, 0)])
+                flow_started_at = time.monotonic()
+
+                # Set FlowFrame on ExecutionContext so tasks inside this flow can emit task-level events
+                flow_frame = FlowFrame(
+                    name=flow_name,
+                    flow_class_name=flow_class.__name__,
+                    step=step,
+                    total_steps=total_steps,
+                    flow_minutes=flow_minutes,
+                    completed_minutes=completed_mins,
+                    flow_params=flow_instance.get_params(),
+                )
+                current_exec_ctx = get_execution_context()
+                flow_exec_token = set_execution_context(current_exec_ctx.with_flow(flow_frame)) if current_exec_ctx is not None else None
+                flow_task_token = set_task_context(TaskContext(scope_kind="flow", task_class_name=flow_class.__name__))
+                active_handles_before: set[object] = set(current_exec_ctx.active_task_handles) if current_exec_ctx is not None else set()
 
                 with _flow_context(
                     run_id=run_id,
@@ -640,15 +742,61 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     completed_minutes=completed_mins,
                     publisher=publisher,
                 ):
-                    result_docs = await flow_fn(run_id, current_docs, options)
+                    try:
+                        _set_flow_replay_payload(flow_instance, run_id, current_docs, options)
+                        result_docs = await flow_instance.run(run_id, current_docs, options)
+                    except (Exception, asyncio.CancelledError) as flow_exc:
+                        if current_exec_ctx is not None:
+                            await _cancel_dispatched_handles(current_exec_ctx.active_task_handles, baseline_handles=active_handles_before)
+                        try:
+                            await publisher.publish_flow_failed(
+                                FlowFailedEvent(
+                                    run_id=run_id,
+                                    flow_name=flow_name,
+                                    flow_class=flow_class.__name__,
+                                    step=step,
+                                    total_steps=total_steps,
+                                    error_message=str(flow_exc),
+                                )
+                            )
+                        except Exception as pub_err:
+                            logger.warning("Failed to publish flow.failed event: %s", pub_err)
+                        raise
+                    finally:
+                        reset_task_context(flow_task_token)
+                        if flow_exec_token is not None:
+                            reset_execution_context(flow_exec_token)
+
+                # Cancel handles dispatched during this flow that weren't awaited
+                if current_exec_ctx is not None:
+                    leaked: list[TaskHandle[list[Document]]] = [
+                        h for h in current_exec_ctx.active_task_handles if h not in active_handles_before and isinstance(h, TaskHandle) and not h.done
+                    ]
+                    if leaked:
+                        logger.warning(
+                            "PipelineFlow '%s' returned with %d un-awaited dispatched task(s). Cancelling to prevent post-flow writes.",
+                            flow_class.__name__,
+                            len(leaked),
+                        )
+                        await _cancel_dispatched_handles(
+                            current_exec_ctx.active_task_handles,
+                            baseline_handles=active_handles_before,
+                        )
+
+                untyped_result = cast(Any, result_docs)
+                if not isinstance(untyped_result, list) or any(not isinstance(d, Document) for d in untyped_result):
+                    raise TypeError(f"PipelineFlow '{flow_class.__name__}' returned invalid output. run() must return list[Document].")
+                validated_docs: list[Document] = list(result_docs)
 
                 # Record flow completion for resume (only after successful execution)
-                output_sha256s = tuple(d.sha256 for d in result_docs)
+                output_sha256s = tuple(d.sha256 for d in validated_docs)
                 executed_output_sha256s.update(output_sha256s)
                 last_flow_output_sha256s = output_sha256s
+                previous_output_documents = validated_docs
                 if store:
+                    await store.save_batch(validated_docs, run_scope, created_by_task="")
                     input_sha256s = tuple(d.sha256 for d in current_docs)
-                    await store.save_flow_completion(run_scope, flow_name, input_sha256s, output_sha256s)
+                    await store.save_flow_completion(run_scope, completion_name, input_sha256s, output_sha256s)
 
                 completed_msg = f"Completed: {flow_name}"
                 await self._update_progress_labels(
@@ -658,27 +806,54 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     total_steps,
                     flow_name,
                     FlowStatus.COMPLETED,
+                    flow_minutes=flow_minutes,
                     step_progress=1.0,
                     message=completed_msg,
                 )
-                await publisher.publish_progress(
-                    self._build_progress_event(
-                        run_id,
-                        flow_run_id,
-                        flow_name,
-                        step,
-                        total_steps,
-                        flow_minutes,
-                        FlowStatus.COMPLETED,
-                        1.0,
-                        completed_msg,
+                completed_progress_event = self._build_progress_event(
+                    run_id,
+                    flow_run_id,
+                    flow_name,
+                    step,
+                    total_steps,
+                    flow_minutes,
+                    FlowStatus.COMPLETED,
+                    1.0,
+                    completed_msg,
+                )
+                await publisher.publish_progress(completed_progress_event)
+                summary_lookup: dict[DocumentSha256, str] = {}
+                if store and output_sha256s:
+                    summary_lookup = await store.load_summaries([DocumentSha256(sha) for sha in output_sha256s])
+                output_refs = [
+                    DocumentRef(
+                        sha256=doc.sha256,
+                        class_name=type(doc).__name__,
+                        name=doc.name,
+                        summary=summary_lookup.get(DocumentSha256(doc.sha256), "") or "",
+                        publicly_visible=getattr(type(doc), "publicly_visible", False),
+                        derived_from=tuple(doc.derived_from),
+                        triggered_by=tuple(doc.triggered_by),
+                    )
+                    for doc in validated_docs
+                ]
+                await publisher.publish_flow_completed(
+                    FlowCompletedEvent(
+                        run_id=run_id,
+                        flow_name=flow_name,
+                        flow_class=flow_class.__name__,
+                        step=step,
+                        total_steps=total_steps,
+                        duration_ms=int((time.monotonic() - flow_started_at) * _MILLISECONDS_PER_SECOND),
+                        output_documents=output_refs,
+                        progress=completed_progress_event.progress,
                     )
                 )
                 logger.info("[%d/%d] Completed: %s", step, total_steps, flow_name)
 
             # Build result from all documents in store
             if store:
-                all_docs = await store.load(run_scope, self._all_document_types())
+                all_docs = await store.load(run_scope, all_document_types)
             else:
                 all_docs = input_docs
 
@@ -709,14 +884,13 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 except Exception as e:
                     logger.warning("Task result store write failed for run_id=%s (non-blocking): %s", run_id, e)
 
-            # Publish task.completed event
-            await publisher.publish_completed(
-                _CompletedEvent(
+            await publisher.publish_run_completed(
+                RunCompletedEvent(
                     run_id=run_id,
                     flow_run_id=flow_run_id,
                     result=result.model_dump(),
                     chain_context=chain_context,
-                    actual_cost=0.0,
+                    actual_cost=ch_backend.run_total_cost if ch_backend is not None else 0.0,
                 )
             )
 
@@ -724,11 +898,14 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
         except (Exception, asyncio.CancelledError) as exc:
             run_failed = True
+            current_exec_ctx = get_execution_context()
+            if current_exec_ctx is not None:
+                await _cancel_dispatched_handles(current_exec_ctx.active_task_handles, baseline_handles=set())
             if not failed_published:
                 failed_published = True
                 try:
-                    await publisher.publish_failed(
-                        _FailedEvent(
+                    await publisher.publish_run_failed(
+                        RunFailedEvent(
                             run_id=run_id,
                             flow_run_id=flow_run_id,
                             error_code=_classify_error(exc),
@@ -743,6 +920,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat_task
+            reset_execution_context(execution_token)
             _reset_run_context(run_token)
             _reset_limits_state(limits_token)
             store = get_document_store()
@@ -772,7 +950,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         run_id: str,
         documents: Sequence[Document],
         options: TOptions,
-        publisher: _ResultPublisher | None = None,
+        publisher: ResultPublisher | None = None,
         output_dir: Path | None = None,
     ) -> TResult:
         """Run locally with Prefect test harness and in-memory document store.
@@ -822,21 +1000,36 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         Collected once in as_prefect_flow() and injected into Prefect's
         parameter_openapi_schema.definitions by the deploy script.
         """
-        first_flow = self.flows[0]
-        input_types: list[type[Document]] = getattr(first_flow, "input_document_types", [])
+        flows: Sequence[PipelineFlow]
+        try:
+            options = cast(TOptions, self.options_type.model_construct())
+            flows = self.build_flows(options)
+        except Exception as exc:
+            logger.warning("Failed to build flow metadata for %s: %s", type(self).__name__, exc)
+            flows = []
+
+        if not flows:
+            return {
+                "input_document_types": [],
+                "all_document_types": [],
+                "flow_chain": [],
+            }
+
+        first_flow = flows[0]
+        input_types: list[type[Document]] = type(first_flow).input_document_types
 
         input_document_types = [{"class_name": t.__name__, "description": (t.__doc__ or "").strip()} for t in input_types]
 
-        all_document_types = [{"class_name": t.__name__, "description": (t.__doc__ or "").strip()} for t in self._all_document_types()]
+        all_document_types = [{"class_name": t.__name__, "description": (t.__doc__ or "").strip()} for t in self._all_document_types(flows)]
 
         flow_chain = [
             {
-                "name": getattr(flow_fn, "name", getattr(flow_fn, "__name__", "unknown")),
-                "input_types": [t.__name__ for t in getattr(flow_fn, "input_document_types", [])],
-                "output_types": [t.__name__ for t in getattr(flow_fn, "output_document_types", [])],
-                "estimated_minutes": getattr(flow_fn, "estimated_minutes", 1),
+                "name": flow_instance.name,
+                "input_types": [t.__name__ for t in type(flow_instance).input_document_types],
+                "output_types": [t.__name__ for t in type(flow_instance).output_document_types],
+                "estimated_minutes": flow_instance.estimated_minutes,
             }
-            for flow_fn in self.flows
+            for flow_instance in flows
         ]
 
         return {
@@ -880,10 +1073,13 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     session_id=flow_run_id,
                 ):
                     # Resolve DocumentInput (inline + URL references) into typed Documents
-                    start_step_input_types: list[type[Document]] = getattr(deployment.flows[0], "input_document_types", [])
+                    built_flows = deployment.build_flows(cast(TOptions, options))
+                    if not built_flows:
+                        raise ValueError(f"{type(deployment).__name__}.build_flows() returned an empty list.")
+                    start_step_input_types = type(built_flows[0]).input_document_types
                     typed_docs = await resolve_document_inputs(
                         documents,
-                        deployment._all_document_types(),
+                        deployment._all_document_types(built_flows),
                         start_step_input_types=start_step_input_types,
                     )
                     parent_uuid = UUID(parent_execution_id) if parent_execution_id else None
@@ -922,5 +1118,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
 
 __all__ = [
     "DeploymentResult",
+    "FlowAction",
+    "FlowDirective",
     "PipelineDeployment",
 ]

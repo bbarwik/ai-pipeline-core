@@ -2,16 +2,20 @@
 
 # pyright: reportPrivateUsage=false
 
+import pytest
+
 from ai_pipeline_core import (
     Document,
     FlowOptions,
     PipelineDeployment,
-    pipeline_flow,
+    RemoteDeployment,
 )
 from ai_pipeline_core.deployment import DeploymentResult
 from ai_pipeline_core.deployment._helpers import (
+    MAX_RUN_ID_LENGTH,
     class_name_to_deployment_name,
     extract_generic_params,
+    validate_run_id,
 )
 
 
@@ -35,26 +39,7 @@ class TestClassNameToDeploymentName:
         assert class_name_to_deployment_name("AIResearch") == "a-i-research"
 
 
-class TestExtractGenericParams:
-    """Test extraction of generic type parameters from PipelineDeployment subclasses."""
-
-    def test_extracts_options_and_result(self):
-        """Test correct extraction from concrete subclass."""
-        options_type, result_type = extract_generic_params(SampleDeployment, PipelineDeployment)
-        assert options_type is FlowOptions
-        assert result_type is SampleResult
-
-    def test_returns_empty_for_non_generic(self):
-        """Test returns empty tuple for class without generic params."""
-
-        class Plain:
-            """Plain class."""
-
-        result = extract_generic_params(Plain, PipelineDeployment)
-        assert result == ()
-
-
-# --- Module-level test infrastructure ---
+# --- Test infrastructure for extract_generic_params ---
 
 
 class SampleResult(DeploymentResult):
@@ -64,28 +49,32 @@ class SampleResult(DeploymentResult):
 
 
 class SampleInputDoc(Document):
-    """Input for testing."""
+    """Input for testing extract_generic_params."""
 
 
-class SampleOutputDoc(Document):
-    """Output for testing."""
+class SampleRemote(RemoteDeployment[SampleInputDoc, FlowOptions, SampleResult]):
+    """Remote deployment for testing extract_generic_params."""
 
 
-@pipeline_flow()
-async def sample_flow(run_id: str, documents: list[SampleInputDoc], flow_options: FlowOptions) -> list[SampleOutputDoc]:
-    """Sample flow."""
-    return []
+class TestExtractGenericParams:
+    """Test extraction of generic type parameters from Generic subclasses."""
 
+    def test_extracts_remote_deployment_params(self):
+        """Test correct extraction from RemoteDeployment subclass (3 params)."""
+        params = extract_generic_params(SampleRemote, RemoteDeployment)
+        assert len(params) == 3
+        assert params[0] is SampleInputDoc
+        assert params[1] is FlowOptions
+        assert params[2] is SampleResult
 
-class SampleDeployment(PipelineDeployment[FlowOptions, SampleResult]):
-    """Deployment for testing."""
+    def test_returns_empty_for_non_generic(self):
+        """Test returns empty tuple for class without generic params."""
 
-    flows = [sample_flow]  # type: ignore[reportAssignmentType]
+        class Plain:
+            """Plain class."""
 
-    @staticmethod
-    def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
-        """Build result."""
-        return SampleResult(success=True)
+        result = extract_generic_params(Plain, PipelineDeployment)
+        assert result == ()
 
 
 # ---------------------------------------------------------------------------
@@ -122,10 +111,6 @@ class TestInitObservabilityBestEffort:
 # ---------------------------------------------------------------------------
 # Tests for validate_run_id
 # ---------------------------------------------------------------------------
-
-import pytest
-
-from ai_pipeline_core.deployment._helpers import validate_run_id, MAX_RUN_ID_LENGTH
 
 
 class TestValidateRunId:

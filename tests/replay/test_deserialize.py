@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from ai_pipeline_core.document_store._local import LocalDocumentStore
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents import RunScope
+from ai_pipeline_core.llm.conversation import Conversation
 from ai_pipeline_core.replay._deserialize import resolve_doc_refs, resolve_task_kwargs
 
 from .conftest import ReplayTextDocument, doc_ref_dict
@@ -169,3 +170,52 @@ async def test_resolve_task_kwargs_mixed_args(store_base: Path) -> None:
     assert result["options"].max_items == 10
     assert result["retries"] == 2
     assert result["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_doc_refs_conversation_sentinel(store_base: Path) -> None:
+    """A $conversation payload resolves to a Conversation with context and history."""
+    doc = ReplayTextDocument(name="conversation.txt", content=b"conversation context")
+    store = LocalDocumentStore(base_path=store_base)
+    await store.save(doc, RunScope("replay/test"))
+
+    raw = {
+        "$conversation": {
+            "model": "test-model",
+            "model_options": {},
+            "context": [doc_ref_dict(doc)],
+            "history": [{"type": "assistant_text", "text": "hello"}],
+            "enable_substitutor": False,
+            "extract_result_tags": False,
+            "include_date": False,
+            "current_date": None,
+        }
+    }
+
+    result = resolve_doc_refs(raw, store_base)
+
+    assert isinstance(result, Conversation)
+    assert result.model == "test-model"
+    assert len(result.context) == 1
+    assert result.context[0].name == "conversation.txt"
+    assert len(result.messages) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tuple deserialization
+# ---------------------------------------------------------------------------
+
+
+async def _fixed_tuple_target(pair: tuple[int, int]) -> None:
+    """Target function with fixed-length tuple annotation."""
+
+
+def test_fixed_tuple_replay_rejects_length_mismatch() -> None:
+    """Fixed-length tuple deserialization must reject mismatched lengths."""
+    function_path = f"{__name__}:_fixed_tuple_target"
+    with pytest.raises(ValueError, match="expects 2 items but replay data has 3"):
+        resolve_task_kwargs(
+            function_path,
+            {"pair": [1, 2, 3]},
+            Path("/nonexistent"),
+        )

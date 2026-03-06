@@ -1,5 +1,6 @@
 """Core configuration settings for pipeline operations."""
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = [
@@ -63,11 +64,18 @@ class Settings(BaseSettings):
 
     # Document summary generation (store-level)
     doc_summary_enabled: bool = True
-    doc_summary_model: str = "gemini-3-flash"
+    doc_summary_model: str = "gemini-3.1-flash-lite"
 
     # Pub/Sub event delivery
     pubsub_project_id: str = ""
     pubsub_topic_id: str = ""
+
+    @model_validator(mode="after")
+    def _disable_summary_without_llm(self) -> "Settings":
+        """Auto-disable doc summary generation when LLM credentials are not configured."""
+        if self.doc_summary_enabled and (not self.openai_api_key or not self.openai_base_url):
+            object.__setattr__(self, "doc_summary_enabled", False)  # noqa: PLC2801 — frozen model rejects normal setattr
+        return self
 
 
 settings = Settings()

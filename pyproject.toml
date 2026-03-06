@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.12.5"
+version = "0.13.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -58,10 +58,11 @@ dev = [
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.14.0",
+    "pytest-testmon>=2.2.0",
     "pytest-xdist>=3.8.0",
     "pytest>=8.4.1",
     "ruff==0.15.2",
-    "testcontainers[clickhouse]>=4.0.0",
+    "testcontainers[clickhouse,google]>=4.0.0",
     "vulture==2.14",
     "pylint>=3.0.0",
 ]
@@ -70,17 +71,16 @@ minversion = "8.0"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = '''
-  --doctest-modules
   --quiet
-  -m 'not integration and not clickhouse and not pubsub and not pubsub_live'
+  --tb=short
 '''
 strict = true
 testpaths = ["tests"]
 markers = [
-    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
-    "clickhouse: marks tests requiring a ClickHouse container (deselect with '-m \"not clickhouse\"')",
-    "pubsub: marks tests requiring GCP Pub/Sub emulator via testcontainers",
-    "pubsub_live: marks tests requiring real GCP Pub/Sub (needs PUBSUB_PROJECT_ID in .env)",
+    "integration: tests requiring real LLM API keys (auto-skipped when OPENAI_API_KEY not set)",
+    "clickhouse: tests requiring a ClickHouse Docker container (auto-skipped when Docker unavailable)",
+    "pubsub: tests requiring GCP Pub/Sub emulator via testcontainers (auto-skipped when Docker unavailable)",
+    "pubsub_live: tests requiring real GCP Pub/Sub (needs PUBSUB_PROJECT_ID)",
     "ai_docs: test included as example in .ai-docs/ guides",
 ]
 
@@ -160,7 +160,7 @@ convention = "google"
 "ai_pipeline_core/__init__.py" = ["RUF067", "TID251"]
 "ai_pipeline_core/testing.py" = ["TID251"]
 "ai_pipeline_core/deployment/_cli.py" = ["TID251", "PLR0912", "PLR0914", "PLR0915", "UP047"]
-"ai_pipeline_core/deployment/_helpers.py" = ["PLC0415"]
+"ai_pipeline_core/deployment/_helpers.py" = ["PLC0415", "BLE001"]
 "ai_pipeline_core/prompt_compiler/cli.py" = ["T201", "C901", "PLR0912", "PLR0915", "TID251"]
 "ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046", "BLE001", "TID251"]
 "ai_pipeline_core/pipeline/limits.py" = ["BLE001", "ASYNC109", "TID251"]
@@ -201,7 +201,6 @@ convention = "google"
 "ai_pipeline_core/replay/types.py" = ["PLC0415"]
 "ai_pipeline_core/replay/cli.py" = ["T201", "BLE001"]
 "ai_pipeline_core/observability/cli.py" = ["T201", "BLE001", "PLC0415", "PLR0914"]
-"ai_pipeline_core/pipeline/decorators.py" = ["C901", "PLR0912", "PLR0915", "S110", "SIM105", "BLE001", "TID251"]
 "ai_pipeline_core/logging/logging_config.py" = ["TID251"]
 "ai_pipeline_core/docs_generator/cli.py" = ["T20"]
 
@@ -283,7 +282,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.12.5"
+current_version = "0.13.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"

@@ -1,7 +1,7 @@
 # MODULE: settings
 # CLASSES: Settings
 # DEPENDS: BaseSettings
-# VERSION: 0.12.4
+# VERSION: 0.13.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -47,7 +47,7 @@ Inherit to add application-specific fields::
     clickhouse_send_receive_timeout: int = 30
     tracking_enabled: bool = True  # When False, disables ClickHouse tracking even if ClickHouse is configured
     doc_summary_enabled: bool = True
-    doc_summary_model: str = 'gemini-3-flash'
+    doc_summary_model: str = 'gemini-3.1-flash-lite'
     pubsub_project_id: str = ''
     pubsub_topic_id: str = ''
 

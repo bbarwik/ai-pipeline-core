@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_DOCUMENT_INDEX}
     document_sha256        String,
     content_sha256         String,
     class_name             LowCardinality(String),
+    created_by_task        LowCardinality(String) DEFAULT '',
     name                   String,
     description            String DEFAULT '',
     mime_type              LowCardinality(String),
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_DOCUMENT_INDEX}
     attachment_descriptions Array(String),
     attachment_sha256s      Array(String),
     summary                String DEFAULT '' CODEC(ZSTD(3)),
+    publicly_visible       Bool DEFAULT false,
     stored_at              DateTime64(3, 'UTC'),
     version                UInt64 DEFAULT 1,
 
@@ -112,6 +114,9 @@ ORDER BY (run_scope, flow_name)
 SETTINGS index_granularity = 8192
 """
 
+DDL_INDEX_ADD_CREATED_BY_TASK = f"ALTER TABLE {TABLE_DOCUMENT_INDEX} ADD COLUMN IF NOT EXISTS created_by_task LowCardinality(String) DEFAULT ''"
+DDL_INDEX_ADD_PUBLICLY_VISIBLE = f"ALTER TABLE {TABLE_DOCUMENT_INDEX} ADD COLUMN IF NOT EXISTS publicly_visible Bool DEFAULT false"
+
 
 @dataclass(slots=True)
 class _BufferedWrite:
@@ -119,6 +124,7 @@ class _BufferedWrite:
 
     document: Document
     run_scope: RunScope
+    created_by_task: str = ""
     retry_count: int = 0
 
 
@@ -182,19 +188,20 @@ def _build_document(
 ) -> Document:
     """Reconstruct a Document from parsed row fields and attachment content."""
     attachments = _reconstruct_attachments(row.att_names, row.att_descs, row.att_sha256s, att_content_by_sha, row.name)
-    return doc_type(
-        name=row.name,
-        content=row.content,
-        description=row.description,
-        derived_from=row.derived_from,
-        triggered_by=cast(tuple[DocumentSha256, ...], row.triggered_by) if row.triggered_by else (),
-        attachments=attachments if attachments else None,
-    )
+    with _suppress_document_registration():
+        return doc_type(
+            name=row.name,
+            content=row.content,
+            description=row.description,
+            derived_from=row.derived_from,
+            triggered_by=cast(tuple[DocumentSha256, ...], row.triggered_by) if row.triggered_by else (),
+            attachments=attachments if attachments else None,
+        )
 
 
 def _parse_node_row(row: tuple[Any, ...]) -> DocumentNode:
-    """Parse a ClickHouse row (document_sha256..summary) into a DocumentNode."""
-    doc_sha256_raw, class_name_raw, name_raw, description_raw, derived_from_raw, triggered_by_raw, summary_raw = row
+    """Parse a ClickHouse row (document_sha256..publicly_visible) into a DocumentNode."""
+    doc_sha256_raw, class_name_raw, name_raw, description_raw, derived_from_raw, triggered_by_raw, summary_raw, publicly_visible_raw = row
     doc_sha = DocumentSha256(_decode(doc_sha256_raw))
     return DocumentNode(
         sha256=doc_sha,
@@ -204,6 +211,7 @@ def _parse_node_row(row: tuple[Any, ...]) -> DocumentNode:
         derived_from=tuple(_decode(s) for s in derived_from_raw),
         triggered_by=tuple(_decode(o) for o in triggered_by_raw),
         summary=_decode(summary_raw) if summary_raw else "",
+        publicly_visible=bool(publicly_visible_raw),
     )
 
 
@@ -280,8 +288,14 @@ class ClickHouseDocumentStore:
         self._client.command(DDL_INDEX)
         self._client.command(DDL_RUN_DOCUMENTS)
         self._client.command(DDL_FLOW_COMPLETIONS)
+        self._ensure_columns()
         self._tables_initialized = True
         logger.info("Document store tables verified/created")
+
+    def _ensure_columns(self) -> None:
+        """Run additive schema migrations for existing tables."""
+        self._client.command(DDL_INDEX_ADD_CREATED_BY_TASK)
+        self._client.command(DDL_INDEX_ADD_PUBLICLY_VISIBLE)
 
     def _ensure_connected(self) -> bool:
         try:
@@ -323,15 +337,15 @@ class ClickHouseDocumentStore:
 
     # --- Async public API ---
 
-    async def save(self, document: Document, run_scope: RunScope) -> None:
+    async def save(self, document: Document, run_scope: RunScope, *, created_by_task: str = "") -> None:
         """Save a document. Buffers writes when circuit breaker is open."""
-        await self._run(self._save_sync, document, run_scope)
+        await self._run(self._save_sync, document, run_scope, created_by_task)
         if self._summary_worker and not self._circuit_open:
             self._summary_worker.schedule(document)
 
-    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope, *, created_by_task: str = "") -> None:
         """Save multiple documents. Remaining docs are buffered on failure."""
-        await self._run(self._save_batch_sync, documents, run_scope)
+        await self._run(self._save_batch_sync, documents, run_scope, created_by_task)
         if self._summary_worker and not self._circuit_open:
             for doc in documents:
                 self._summary_worker.schedule(doc)
@@ -421,7 +435,7 @@ class ClickHouseDocumentStore:
 
     # --- Sync implementations (executor thread only) ---
 
-    def _buffer_append(self, document: Document, run_scope: RunScope) -> None:
+    def _buffer_append(self, document: Document, run_scope: RunScope, created_by_task: str) -> None:
         """Append a document to the retry buffer with overflow warning."""
         buf_len = len(self._buffer)
         if buf_len >= _MAX_BUFFER_SIZE:
@@ -432,7 +446,7 @@ class ClickHouseDocumentStore:
             )
         elif buf_len >= _BUFFER_WARNING_THRESHOLD:
             logger.warning("Document buffer at %d/%d capacity", buf_len, _MAX_BUFFER_SIZE)
-        self._buffer.append(_BufferedWrite(document=document, run_scope=run_scope))
+        self._buffer.append(_BufferedWrite(document=document, run_scope=run_scope, created_by_task=created_by_task))
 
     def _buffer_flush_due(self) -> bool:
         """Check if enough time has passed since the last buffer flush attempt."""
@@ -442,10 +456,10 @@ class ClickHouseDocumentStore:
         self._last_flush_attempt = now
         return True
 
-    def _save_sync(self, document: Document, run_scope: RunScope) -> None:
+    def _save_sync(self, document: Document, run_scope: RunScope, created_by_task: str = "") -> None:
         if self._circuit_open:
             if not self._try_reconnect():
-                self._buffer_append(document, run_scope)
+                self._buffer_append(document, run_scope, created_by_task)
                 return
             self._flush_buffer()
         elif self._buffer and self._buffer_flush_due():
@@ -453,18 +467,18 @@ class ClickHouseDocumentStore:
 
         try:
             self._ensure_tables()
-            self._insert_document(document, run_scope)
+            self._insert_document(document, run_scope, created_by_task)
             self._record_success()
         except Exception as e:
             logger.warning("Failed to save document '%s': %s", document.name, e)
             self._record_failure()
-            self._buffer_append(document, run_scope)
+            self._buffer_append(document, run_scope, created_by_task)
 
-    def _save_batch_sync(self, documents: list[Document], run_scope: RunScope) -> None:
+    def _save_batch_sync(self, documents: list[Document], run_scope: RunScope, created_by_task: str = "") -> None:
         if self._circuit_open:
             if not self._try_reconnect():
                 for doc in documents:
-                    self._buffer_append(doc, run_scope)
+                    self._buffer_append(doc, run_scope, created_by_task)
                 return
             self._flush_buffer()
         elif self._buffer and self._buffer_flush_due():
@@ -472,13 +486,13 @@ class ClickHouseDocumentStore:
 
         try:
             self._ensure_tables()
-            self._insert_documents_batch(documents, run_scope)
+            self._insert_documents_batch(documents, run_scope, created_by_task)
             self._record_success()
         except Exception as e:
             logger.warning("Failed to save batch of %d documents: %s", len(documents), e)
             self._record_failure()
             for doc in documents:
-                self._buffer_append(doc, run_scope)
+                self._buffer_append(doc, run_scope, created_by_task)
 
     def _rebuffer_failed_items(self, items: list[_BufferedWrite], error: Exception) -> None:
         """Increment retry_count per item, re-buffer or drop individually."""
@@ -498,19 +512,19 @@ class ClickHouseDocumentStore:
             while self._buffer and len(chunk) < FLUSH_CHUNK_SIZE:
                 chunk.append(self._buffer.popleft())
 
-            groups: dict[RunScope, list[_BufferedWrite]] = {}
+            groups: dict[tuple[RunScope, str], list[_BufferedWrite]] = {}
             for item in chunk:
-                groups.setdefault(item.run_scope, []).append(item)
+                groups.setdefault((item.run_scope, item.created_by_task), []).append(item)
 
             failed = False
-            for run_scope, items in groups.items():
+            for (run_scope, created_by_task), items in groups.items():
                 if failed:
                     # Re-buffer unprocessed groups from this chunk (preserving retry_count)
                     for it in items:
                         self._buffer.append(it)
                     continue
                 try:
-                    self._insert_documents_batch([it.document for it in items], run_scope)
+                    self._insert_documents_batch([it.document for it in items], run_scope, created_by_task)
                     if self._summary_worker:
                         for it in items:
                             self._summary_worker.schedule(it.document)
@@ -521,11 +535,11 @@ class ClickHouseDocumentStore:
             if failed:
                 break  # Stop flushing — retry on next throttled drain or shutdown
 
-    def _insert_document(self, document: Document, run_scope: RunScope) -> None:
+    def _insert_document(self, document: Document, run_scope: RunScope, created_by_task: str) -> None:
         """Insert a single document. Thin wrapper around batch insert."""
-        self._insert_documents_batch([document], run_scope)
+        self._insert_documents_batch([document], run_scope, created_by_task)
 
-    def _insert_documents_batch(self, documents: list[Document], run_scope: RunScope) -> None:
+    def _insert_documents_batch(self, documents: list[Document], run_scope: RunScope, created_by_task: str) -> None:
         """Insert multiple documents in exactly 3 client.insert() calls (one per table).
 
         Content rows are deduplicated by content_sha256 within the batch.
@@ -563,6 +577,7 @@ class ClickHouseDocumentStore:
                 doc_sha256,
                 content_sha256,
                 document.__class__.__name__,
+                created_by_task,
                 document.name,
                 document.description or "",
                 document.mime_type,
@@ -572,6 +587,7 @@ class ClickHouseDocumentStore:
                 att_descriptions,
                 att_sha256s,
                 "",
+                getattr(document.__class__, "publicly_visible", False),
                 now,
                 1,
             ])
@@ -594,6 +610,7 @@ class ClickHouseDocumentStore:
                     "document_sha256",
                     "content_sha256",
                     "class_name",
+                    "created_by_task",
                     "name",
                     "description",
                     "mime_type",
@@ -603,6 +620,7 @@ class ClickHouseDocumentStore:
                     "attachment_descriptions",
                     "attachment_sha256s",
                     "summary",
+                    "publicly_visible",
                     "stored_at",
                     "version",
                 ],
@@ -711,12 +729,12 @@ class ClickHouseDocumentStore:
             version = int(datetime.now(UTC).timestamp() * 1000)
             self._client.command(
                 f"INSERT INTO {TABLE_DOCUMENT_INDEX} "
-                "(document_sha256, content_sha256, class_name, name, description, mime_type, "
+                "(document_sha256, content_sha256, class_name, created_by_task, name, description, mime_type, "
                 "derived_from, triggered_by, attachment_names, attachment_descriptions, attachment_sha256s, "
-                "summary, stored_at, version) "
-                f"SELECT document_sha256, content_sha256, class_name, name, description, mime_type, "
+                "summary, publicly_visible, stored_at, version) "
+                f"SELECT document_sha256, content_sha256, class_name, created_by_task, name, description, mime_type, "
                 f"derived_from, triggered_by, attachment_names, attachment_descriptions, attachment_sha256s, "
-                f"{{summary:String}}, stored_at, {{version:UInt64}} "
+                f"{{summary:String}}, publicly_visible, stored_at, {{version:UInt64}} "
                 f"FROM {TABLE_DOCUMENT_INDEX} FINAL "
                 f"WHERE document_sha256 = {{sha256:String}}",
                 parameters={
@@ -802,7 +820,7 @@ class ClickHouseDocumentStore:
             return {}
         self._ensure_tables()
         result = self._client.query(
-            f"SELECT document_sha256, class_name, name, description, derived_from, triggered_by, summary "
+            f"SELECT document_sha256, class_name, name, description, derived_from, triggered_by, summary, publicly_visible "
             f"FROM {TABLE_DOCUMENT_INDEX} FINAL "
             f"WHERE document_sha256 IN {{sha256s:Array(String)}}",
             parameters={"sha256s": sha256s},
@@ -818,7 +836,7 @@ class ClickHouseDocumentStore:
         self._ensure_tables()
         result = self._client.query(
             f"SELECT rd.document_sha256, rd.class_name, di.name, di.description, "
-            f"di.derived_from, di.triggered_by, di.summary "
+            f"di.derived_from, di.triggered_by, di.summary, di.publicly_visible "
             f"FROM {TABLE_RUN_DOCUMENTS} AS rd FINAL "
             f"JOIN {TABLE_DOCUMENT_INDEX} AS di FINAL ON rd.document_sha256 = di.document_sha256 "
             f"WHERE rd.run_scope = {{run_scope:String}}",

@@ -1188,3 +1188,12 @@ def test_task_placeholder_error_explains_framework_rendering() -> None:
     assert "MultiLineField" in msg
     assert "Remove {field_name} references" in msg
     assert "Example fix" in msg
+
+
+def test_prompt_compiler_guide_path_resolves() -> None:
+    """_PROMPT_COMPILER_GUIDE points to an existing file in the repo."""
+    from ai_pipeline_core.prompt_compiler.spec import _PROMPT_COMPILER_GUIDE
+
+    assert _PROMPT_COMPILER_GUIDE.is_file(), f"Guide not found at {_PROMPT_COMPILER_GUIDE}"
+    assert _PROMPT_COMPILER_GUIDE.name == "prompt_compiler.md"
+    assert _PROMPT_COMPILER_GUIDE.parent.name == ".ai-docs"

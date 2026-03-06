@@ -14,7 +14,6 @@ from textwrap import dedent
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
-from pydantic.fields import FieldInfo
 
 __all__ = ["Tool", "ToolCallRecord", "ToolOutput", "generate_tool_schema", "to_snake_case"]
 
@@ -78,7 +77,7 @@ class Tool:
 
         # Validate all Input fields have descriptions
         for field_name, field_info in input_cls.model_fields.items():
-            if not isinstance(field_info, FieldInfo) or field_info.description is None:
+            if field_info.description is None:
                 raise TypeError(
                     f"Tool '{name}'.Input field '{field_name}' must use Field(description='...'). All Input fields require descriptions for the LLM."
                 )
@@ -119,21 +118,23 @@ def _make_strict_schema(schema: dict[str, Any]) -> None:
     Required by OpenAI strict mode. LiteLLM silently strips strict/additionalProperties
     for providers that don't support it (Gemini, xAI).
     """
+    empty_dict: dict[str, Any] = {}
+    empty_list: list[Any] = []
     if schema.get("type") == "object":
         schema["additionalProperties"] = False
         # Strict mode requires ALL properties in the required list
         if "properties" in schema:
             schema["required"] = list(schema["properties"].keys())
-        for prop in schema.get("properties", {}).values():
+        for prop in schema.get("properties", empty_dict).values():
             if isinstance(prop, dict):
                 _make_strict_schema(prop)
     # Handle $defs for nested models
-    for definition in schema.get("$defs", {}).values():
+    for definition in schema.get("$defs", empty_dict).values():
         if isinstance(definition, dict):
             _make_strict_schema(definition)
     # Handle allOf, anyOf, oneOf
     for key in ("allOf", "anyOf", "oneOf"):
-        for item in schema.get(key, []):
+        for item in schema.get(key, empty_list):
             if isinstance(item, dict):
                 _make_strict_schema(item)
     # Handle items for arrays

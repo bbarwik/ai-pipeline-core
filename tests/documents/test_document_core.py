@@ -6,6 +6,7 @@ from enum import StrEnum
 import pytest
 
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents.attachment import Attachment
 from ai_pipeline_core.exceptions import DocumentNameError, DocumentSizeError
 
@@ -45,6 +46,12 @@ class SmallDocument(Document):
 
     def get_type(self) -> str:
         return "small"
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
 
 
 class TestDocumentValidation:
@@ -1037,3 +1044,26 @@ class TestDocumentTotalSizeValidation:
         """Document names ending with .meta.json are rejected (reserved for store)."""
         with pytest.raises(DocumentNameError, match=r"\.meta\.json"):
             ConcreteTestDocument(name="data.meta.json", content=b"test")
+
+
+class TestPubliclyVisibleClassVar:
+    def test_default_is_false(self):
+        assert ConcreteTestDocument.publicly_visible is False
+
+    def test_subclass_override_to_true(self):
+        class VisibleDoc(Document):
+            publicly_visible = True
+
+        assert VisibleDoc.publicly_visible is True
+        # Base class unaffected
+        assert ConcreteTestDocument.publicly_visible is False
+
+    def test_inherited_default(self):
+        class DerivedDoc(ConcreteTestDocument):
+            """Inherits publicly_visible from parent."""
+
+        assert DerivedDoc.publicly_visible is False
+
+    def test_not_a_model_field(self):
+        """publicly_visible is a ClassVar, not a Pydantic field."""
+        assert "publicly_visible" not in ConcreteTestDocument.model_fields

@@ -1,16 +1,11 @@
-"""Tests proving the Pydantic serialization bug for binary content.
-
-These tests demonstrate that binary content is CORRUPTED when using
-Pydantic's model_dump() / model_validate() path, while serialize_model() /
-from_dict() works correctly.
-
-TDD approach: These tests should FAIL before the fix, PASS after.
-"""
+"""Tests for binary content serialization roundtrip via model_dump/model_validate and serialize_model/from_dict."""
 
 import base64
 
+import pytest
 
 from ai_pipeline_core.documents import Attachment
+from ai_pipeline_core.documents._context import _suppress_document_registration
 
 from tests.support.helpers import ConcreteDocument
 
@@ -30,6 +25,12 @@ MINIMAL_JPEG = base64.b64decode(
 
 # Some arbitrary binary data (not valid image)
 BINARY_DATA = bytes(range(256))
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
 
 
 class TestDocumentPydanticSerializationBug:

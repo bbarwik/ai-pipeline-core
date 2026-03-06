@@ -2,7 +2,7 @@
 # CLASSES: Attachment, Document, RunContext
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.12.4
+# VERSION: 0.13.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -85,6 +85,7 @@ Attachments:
     Attachments affect the document SHA256 hash."""
     MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024  # Maximum allowed total size in bytes (default 25MB).
     FILES: ClassVar[type[StrEnum] | None] = None  # Allowed filenames enum. Define as nested ``class FILES(StrEnum)`` or assign an external StrEnum subclass.
+    publicly_visible: ClassVar[bool] = False  # Whether this document type should be displayed in frontend dashboards.
     name: str
     description: str | None = None
     content: bytes
@@ -118,15 +119,18 @@ Attachments:
         # Register with task context for lifecycle tracking (skip during deserialization)
         if not is_registration_suppressed():
             ctx = get_task_context()
-            if ctx is not None:
-                ctx.created.add(self.sha256)
-                if ctx.scope_kind == "flow":
-                    logger.warning(
-                        "%s created directly in @pipeline_flow body. "
-                        "Wrap document creation in a @pipeline_task for proper "
-                        "lifecycle management (tracing, persistence, retries).",
-                        type(self).__name__,
-                    )
+            if ctx is None:
+                raise RuntimeError(
+                    f"{type(self).__name__} created outside pipeline task context. "
+                    "Documents must be created inside a PipelineTask.run() or PipelineFlow.run() method. "
+                    "Use create_root(...) only for deployment-boundary root inputs, "
+                    "or _suppress_document_registration() for deserialization paths."
+                )
+            if ctx.scope_kind not in {"task", "flow", "test"}:
+                raise RuntimeError(
+                    f"{type(self).__name__} created in {ctx.scope_kind} body. Documents must be created inside a PipelineTask or PipelineFlow execution scope."
+                )
+            ctx.created.add(self.sha256)
 
     @property
     def content_documents(self) -> tuple[str, ...]:
@@ -182,13 +186,15 @@ Attachments:
         derived_from: tuple[str, ...] | None = None,
         triggered_by: tuple[DocumentSha256, ...] | None = None,
         attachments: tuple[Attachment, ...] | None = None,
+        summary: str | None = None,
     ) -> Self:
         """Create a document with automatic content-to-bytes conversion.
 
-        Must be called within a @pipeline_task or @pipeline_flow context.
+        Must be called within a PipelineTask or PipelineFlow context.
         Must provide derived_from or triggered_by for provenance tracking.
         For root inputs (no provenance), use create_root(reason='...') instead.
-        All created documents must be returned from the task/flow — unreturned documents are flagged as orphans.
+        Optional summary is stored in an inline registry for later persistence/event publishing.
+        All created documents must be returned from the task — unreturned documents are flagged as orphans.
         Serialization is extension-driven: .json → JSON, .yaml → YAML, others → UTF-8.
         Reversible via parse(). Cannot be called on Document directly — must use a subclass.
         """
@@ -197,7 +203,7 @@ Attachments:
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
             _validate_content_schema(cls._content_type, content, content_bytes, name)
-        return cls(
+        doc = cls(
             name=name,
             content=content_bytes,
             description=description,
@@ -205,6 +211,9 @@ Attachments:
             triggered_by=triggered_by,
             attachments=attachments,
         )
+        if summary is not None:
+            set_inline_summary(doc.sha256, summary)
+        return doc
 
     @classmethod
     def create_root(
@@ -218,22 +227,30 @@ Attachments:
     ) -> Self:
         """Create a root document (pipeline input) with no provenance.
 
-        Must be called within a @pipeline_task or @pipeline_flow context.
-        Must provide reason explaining why this document has no provenance.
-        The reason is stored as description if no explicit description is given.
-        All created documents must be returned from the task/flow — unreturned documents are flagged as orphans.
+        This is the explicit escape hatch for deployment-boundary inputs.
+        The reason is logged for auditability and not stored on the document.
         """
+        if not reason.strip():
+            raise ValueError(f"{cls.__name__}.create_root(reason=...) requires a non-empty reason.")
+        ctx = get_task_context()
+        if ctx is not None and ctx.scope_kind != "test":
+            raise RuntimeError(
+                f"{cls.__name__}.create_root() cannot be called inside pipeline task/flow execution. Use create()/derive() with provenance in task code."
+            )
+
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
             _validate_content_schema(cls._content_type, content, content_bytes, name)
-        return cls(
-            name=name,
-            content=content_bytes,
-            description=description or reason,
-            derived_from=(),
-            triggered_by=(),
-            attachments=attachments,
-        )
+        logger.info("Creating root document '%s' (%s): %s", name, cls.__name__, reason)
+        with _suppress_document_registration():
+            return cls(
+                name=name,
+                content=content_bytes,
+                description=description,
+                derived_from=(),
+                triggered_by=(),
+                attachments=attachments,
+            )
 
     @classmethod
     def derive(
@@ -248,8 +265,8 @@ Attachments:
     ) -> Self:
         """Create a document derived from other documents. The 95% API path.
 
-        Must be called within a @pipeline_task or @pipeline_flow context.
-        All created documents must be returned from the task/flow — unreturned documents are flagged as orphans.
+        Must be called within a PipelineTask or PipelineFlow context.
+        All created documents must be returned from the task — unreturned documents are flagged as orphans.
         Accepts Document objects directly (extracts SHA256 hashes automatically).
         Use this for content transformations (summaries, analyses, reviews).
         """
@@ -589,6 +606,21 @@ class RunContext:
 ## Functions
 
 ```python
+def get_inline_summary(document_sha256: DocumentSha256) -> str | None:
+    """Get an inline summary registered at document creation time, if any."""
+    with _document_summaries_lock:
+        return _document_summaries.get(document_sha256)
+
+def pop_inline_summary(document_sha256: DocumentSha256) -> str | None:
+    """Consume and remove an inline summary for a document, if any."""
+    with _document_summaries_lock:
+        return _document_summaries.pop(document_sha256, None)
+
+def set_inline_summary(document_sha256: DocumentSha256, summary: str) -> None:
+    """Set or replace an inline summary for a document."""
+    with _document_summaries_lock:
+        _document_summaries[document_sha256] = summary
+
 def sanitize_url(url: str) -> str:
     """Sanitize URL or query string for use as a filename (max 100 chars)."""
     # Remove protocol if it's a URL
@@ -668,7 +700,7 @@ def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
 
 ## Examples
 
-**Attachment mime type** (`tests/documents/test_document_core.py:924`)
+**Attachment mime type** (`tests/documents/test_document_core.py:931`)
 
 ```python
 def test_attachment_mime_type(self):
@@ -677,7 +709,7 @@ def test_attachment_mime_type(self):
     assert "text" in att.mime_type
 ```
 
-**Attachment no detected mime type** (`tests/documents/test_document_core.py:929`)
+**Attachment no detected mime type** (`tests/documents/test_document_core.py:936`)
 
 ```python
 def test_attachment_no_detected_mime_type(self):
@@ -686,7 +718,7 @@ def test_attachment_no_detected_mime_type(self):
     assert not hasattr(att, "detected_mime_type")
 ```
 
-**Attachment order does not affect hash** (`tests/documents/test_document_attachments.py:62`)
+**Attachment order does not affect hash** (`tests/documents/test_document_attachments.py:69`)
 
 ```python
 def test_attachment_order_does_not_affect_hash(self):
@@ -698,7 +730,7 @@ def test_attachment_order_does_not_affect_hash(self):
     assert doc_xy.sha256 == doc_yx.sha256
 ```
 
-**Attachment order does not matter** (`tests/documents/test_hashing.py:41`)
+**Attachment order does not matter** (`tests/documents/test_hashing.py:50`)
 
 ```python
 def test_attachment_order_does_not_matter(self):
@@ -710,7 +742,7 @@ def test_attachment_order_does_not_matter(self):
     assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
 ```
 
-**Document mime type** (`tests/documents/test_document_core.py:914`)
+**Document mime type** (`tests/documents/test_document_core.py:921`)
 
 ```python
 def test_document_mime_type(self):
@@ -722,7 +754,23 @@ def test_document_mime_type(self):
 
 ## Error Examples
 
-**Cannot convert to document** (`tests/documents/test_document_model_convert.py:145`)
+**Document instantiate base class raises** (`tests/documents/test_document_enforcement.py:71`)
+
+```python
+def test_document_instantiate_base_class_raises() -> None:
+    with pytest.raises(TypeError, match="Cannot instantiate Document directly"):
+        Document(name="test.txt", content=b"data")
+```
+
+**Document creation outside context raises** (`tests/documents/test_document_enforcement.py:19`)
+
+```python
+def test_document_creation_outside_context_raises() -> None:
+    with pytest.raises(RuntimeError, match="outside pipeline task context"):
+        _EnforcementDoc(name="test.txt", content=b"data")
+```
+
+**Cannot convert to document** (`tests/documents/test_document_model_convert.py:152`)
 
 ```python
 def test_cannot_convert_to_document(self):
@@ -733,7 +781,7 @@ def test_cannot_convert_to_document(self):
         doc.retype(Document, preserve_provenance=True)
 ```
 
-**Cannot convert to non document** (`tests/documents/test_document_model_convert.py:152`)
+**Cannot convert to non document** (`tests/documents/test_document_model_convert.py:159`)
 
 ```python
 def test_cannot_convert_to_non_document(self):
@@ -747,37 +795,11 @@ def test_cannot_convert_to_non_document(self):
         doc.retype(str, preserve_provenance=True)  # type: ignore
 ```
 
-**Cannot instantiate document** (`tests/documents/test_document_core.py:119`)
+**Cannot instantiate document** (`tests/documents/test_document_core.py:126`)
 
 ```python
 def test_cannot_instantiate_document(self):
     """Test that Document cannot be instantiated directly."""
     with pytest.raises(TypeError, match="Cannot instantiate Document directly"):
         Document(name="test.txt", content=b"test")
-```
-
-**Content plus attachments exceeding limit** (`tests/documents/test_document_core.py:1017`)
-
-```python
-def test_content_plus_attachments_exceeding_limit(self):
-    """Content + attachments exceeding MAX_CONTENT_SIZE is rejected by model_validator."""
-    # Content is 7 bytes (under 10-byte limit), but total with attachment is 12
-    with pytest.raises(DocumentSizeError, match="including attachments"):
-        SmallDocument(
-            name="test.txt",
-            content=b"1234567",  # 7 bytes
-            attachments=(Attachment(name="a.txt", content=b"12345"),),  # 5 bytes => total 12
-        )
-```
-
-**Content plus attachments exceeding limit rejected** (`tests/documents/test_document_attachments.py:137`)
-
-```python
-def test_content_plus_attachments_exceeding_limit_rejected(self):
-    with pytest.raises(DocumentSizeError, match="including attachments"):
-        SmallLimitDoc(
-            name="test.txt",
-            content=b"A" * 30,  # 30 bytes
-            attachments=(Attachment(name="a.txt", content=b"B" * 25),),  # total 55 > 50
-        )
 ```

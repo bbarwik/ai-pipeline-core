@@ -27,6 +27,7 @@ type ModelName = (
         "gemini-3-flash",
         "gpt-5-mini",
         "grok-4.1-fast",
+        "gemini-3.1-flash-lite",
         # Search models
         "gemini-3-flash-search",
         "gpt-5-mini-search",

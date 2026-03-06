@@ -45,6 +45,7 @@ class DocumentNode:
     derived_from: tuple[str, ...] = ()
     triggered_by: tuple[str, ...] = ()
     summary: str = ""
+    publicly_visible: bool = False
 
 
 def build_provenance_graph(

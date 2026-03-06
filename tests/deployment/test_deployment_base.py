@@ -1,7 +1,13 @@
-"""Tests for deployment base module classes and validation."""
+"""PipelineDeployment class-based execution tests.
+
+Covers: deployment lifecycle, step validation, run scope hashing, options passing,
+result serialization, contract models, flow chain validation, refactoring verification.
+"""
 
 # pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportPrivateUsage=false, reportUnusedClass=false, reportFunctionMemberAccess=false
 
+import inspect
+import json
 from datetime import UTC
 from typing import Any
 
@@ -13,53 +19,50 @@ from ai_pipeline_core import (
     Document,
     FlowOptions,
     PipelineDeployment,
-    pipeline_flow,
+    PipelineFlow,
 )
-from ai_pipeline_core.deployment.contract import (
+from ai_pipeline_core.deployment._contract import (
     CompletedRun,
     DeploymentResultData,
     FailedRun,
     PendingRun,
     ProgressRun,
 )
+from ai_pipeline_core.document_store._memory import MemoryDocumentStore
+from ai_pipeline_core.document_store._protocol import set_document_store
+from ai_pipeline_core.documents._context import _suppress_document_registration
+
+from .conftest import InputDoc, MiddleDoc, OutputDoc, StageOne, StageTwo, _TestOptions, _TestResult
+
 
 # --- Module-level test infrastructure ---
-
-
-class InputDoc(Document):
-    """Input for testing."""
-
-
-class OutputDoc(Document):
-    """Output for testing."""
-
-
-class MiddleDoc(Document):
-    """Intermediate document for testing."""
-
-
-@pipeline_flow()
-async def valid_flow(run_id: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
-    """Valid flow."""
-    return [OutputDoc(name="output.txt", content=b"result")]
-
-
-@pipeline_flow()
-async def flow_a(run_id: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[MiddleDoc]:
-    """First flow in multi-step pipeline."""
-    return [MiddleDoc(name="middle.txt", content=b"middle")]
-
-
-@pipeline_flow()
-async def flow_b(run_id: str, documents: list[MiddleDoc], flow_options: FlowOptions) -> list[OutputDoc]:
-    """Second flow in multi-step pipeline."""
-    return [OutputDoc(name="output.txt", content=b"final")]
 
 
 class ValidResult(DeploymentResult):
     """Result for testing."""
 
     count: int = 0
+
+
+class ValidFlow(PipelineFlow):
+    """Single-step flow for testing."""
+
+    async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
+        return [OutputDoc.derive(from_documents=(documents[0],), name="output.txt", content="result")]
+
+
+class FlowA(PipelineFlow):
+    """First flow in multi-step pipeline."""
+
+    async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[MiddleDoc]:
+        return [MiddleDoc.derive(from_documents=(documents[0],), name="middle.txt", content="middle")]
+
+
+class FlowB(PipelineFlow):
+    """Second flow in multi-step pipeline."""
+
+    async def run(self, run_id: str, documents: list[MiddleDoc], options: FlowOptions) -> list[OutputDoc]:
+        return [OutputDoc.derive(from_documents=(documents[0],), name="output.txt", content="final")]
 
 
 # --- DeploymentResult tests ---
@@ -165,15 +168,6 @@ class TestContractModels:
 
     def test_no_storage_uri_field(self):
         """Test that storage_uri has been removed from contract models."""
-        from datetime import datetime
-        from uuid import UUID
-
-        _run = PendingRun(
-            flow_run_id=UUID(int=1),
-            run_id="test",
-            state="PENDING",
-            timestamp=datetime.now(UTC),
-        )
         assert "storage_uri" not in PendingRun.model_fields
 
 
@@ -189,11 +183,11 @@ class TestPipelineDeploymentValidation:
         class MyDeployment(PipelineDeployment[FlowOptions, ValidResult]):
             """Valid deployment."""
 
-            flows = [valid_flow]  # type: ignore[reportAssignmentType]
+            def build_flows(self, options):
+                return [ValidFlow()]
 
             @staticmethod
             def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
-                """Build."""
                 return ValidResult(success=True)
 
         assert MyDeployment.name == "my-deployment"
@@ -207,8 +201,10 @@ class TestPipelineDeploymentValidation:
         class WithServiceType(PipelineDeployment[FlowOptions, ValidResult]):
             """Deployment with pubsub_service_type."""
 
-            flows = [valid_flow]  # type: ignore[reportAssignmentType]
             pubsub_service_type = "research"
+
+            def build_flows(self, options):
+                return [ValidFlow()]
 
             @staticmethod
             def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
@@ -223,25 +219,11 @@ class TestPipelineDeploymentValidation:
             class TestDeployment(PipelineDeployment[FlowOptions, ValidResult]):
                 """Invalid name."""
 
-                flows = [valid_flow]  # type: ignore[reportAssignmentType]
+                def build_flows(self, options):
+                    return [ValidFlow()]
 
                 @staticmethod
                 def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
-                    """Build."""
-                    return ValidResult(success=True)
-
-    def test_empty_flows_raises(self):
-        """Test that empty flows raises TypeError."""
-        with pytest.raises(TypeError, match="cannot be empty"):
-
-            class EmptyDeployment(PipelineDeployment[FlowOptions, ValidResult]):
-                """Empty flows."""
-
-                flows = []  # type: ignore[reportAssignmentType]
-
-                @staticmethod
-                def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
-                    """Build."""
                     return ValidResult(success=True)
 
     def test_missing_generic_params_raises(self):
@@ -251,35 +233,37 @@ class TestPipelineDeploymentValidation:
             class RawDeployment(PipelineDeployment):  # type: ignore[type-arg]
                 """No generics."""
 
-                flows = [valid_flow]  # type: ignore[reportAssignmentType]
+                def build_flows(self, options):
+                    return [ValidFlow()]
 
                 @staticmethod
                 def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
-                    """Build."""
                     return ValidResult(success=True)
 
 
 class TestAbstractSubclass:
-    """Test PipelineDeployment partial subclassing (no flows)."""
+    """Test PipelineDeployment partial subclassing."""
 
-    def test_subclass_without_flows_skipped(self):
-        """Test that subclass without flows attribute is silently skipped."""
+    def test_requires_build_flows_override(self):
+        """Test that subclass without build_flows override raises TypeError."""
+        with pytest.raises(TypeError, match="build_flows"):
 
-        class PartialDeployment(PipelineDeployment[FlowOptions, ValidResult]):
-            """Intermediate abstract class without flows."""
+            class PartialDeployment(PipelineDeployment[FlowOptions, ValidResult]):
+                """Intermediate class without build_flows."""
 
-        # Should not raise - flows not defined, so validation is skipped
-        assert not hasattr(PartialDeployment, "name")
+                @staticmethod
+                def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
+                    return ValidResult(success=True)
 
 
 class ValidDeployment(PipelineDeployment[FlowOptions, ValidResult]):
     """Deployment for testing."""
 
-    flows = [valid_flow]  # type: ignore[reportAssignmentType]
+    def build_flows(self, options):
+        return [ValidFlow()]
 
     @staticmethod
     def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
-        """Build result."""
         return ValidResult(success=True, count=len(documents))
 
 
@@ -295,14 +279,16 @@ class TestAllDocumentTypes:
         class MultiFlowDeployment(PipelineDeployment[FlowOptions, ValidResult]):
             """Multi-flow deployment."""
 
-            flows = [flow_a, flow_b]  # type: ignore[reportAssignmentType]
+            def build_flows(self, options):
+                return [FlowA(), FlowB()]
 
             @staticmethod
             def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
                 return ValidResult(success=True)
 
         deployment = MultiFlowDeployment()
-        types = deployment._all_document_types()
+        flows = deployment.build_flows(FlowOptions())
+        types = deployment._all_document_types(flows)
         type_names = {t.__name__ for t in types}
         assert "InputDoc" in type_names
         assert "MiddleDoc" in type_names
@@ -316,7 +302,8 @@ class TestComputeRunScope:
         """Test that different options produce different run_scope when documents are provided."""
         from ai_pipeline_core.deployment.base import _compute_run_scope
 
-        doc = InputDoc(name="input.txt", content=b"test")
+        with _suppress_document_registration():
+            doc = InputDoc(name="input.txt", content=b"test")
 
         class CustomOptions(FlowOptions):
             flag: bool = False
@@ -346,7 +333,8 @@ class TestComputeRunScope:
         """Test that identical inputs produce identical run_scope."""
         from ai_pipeline_core.deployment.base import _compute_run_scope
 
-        doc = InputDoc(name="input.txt", content=b"test")
+        with _suppress_document_registration():
+            doc = InputDoc(name="input.txt", content=b"test")
 
         scope1 = _compute_run_scope("project", [doc], FlowOptions())
         scope2 = _compute_run_scope("project", [doc], FlowOptions())
@@ -355,7 +343,8 @@ class TestComputeRunScope:
 
     def test_cli_fields_are_excluded(self):
         """Test that CLI-only fields do not affect run_scope."""
-        from ai_pipeline_core.deployment.base import _CLI_FIELDS, _compute_run_scope
+        from ai_pipeline_core.deployment._helpers import _CLI_FIELDS
+        from ai_pipeline_core.deployment.base import _compute_run_scope
 
         class CliOptions(FlowOptions):
             working_directory: str = ""
@@ -388,7 +377,7 @@ class TestComputeRunScope:
 # --- as_prefect_flow parameter schema tests ---
 
 
-class _SchemaTestOptions(FlowOptions):
+class _Schema_TestOptions(FlowOptions):
     """Options with concrete fields for schema testing."""
 
     task_name: str = Field(default="", description="Name of the task")
@@ -396,23 +385,26 @@ class _SchemaTestOptions(FlowOptions):
     threshold: float = Field(default=0.5, description="Score threshold")
 
 
-class _SchemaTestResult(DeploymentResult):
+class _Schema_TestResult(DeploymentResult):
     """Result for schema testing."""
 
     output: str = ""
 
 
-@pipeline_flow()
-async def _schema_test_flow(run_id: str, documents: list[InputDoc], flow_options: _SchemaTestOptions) -> list[OutputDoc]:
-    return [OutputDoc(name="out.txt", content=b"ok")]
+class _SchemaTestFlow(PipelineFlow):
+    """Flow for schema testing."""
+
+    async def run(self, run_id: str, documents: list[InputDoc], options: _Schema_TestOptions) -> list[OutputDoc]:
+        return [OutputDoc.derive(from_documents=(documents[0],), name="out.txt", content="ok")]
 
 
-class _SchemaTestDeployment(PipelineDeployment[_SchemaTestOptions, _SchemaTestResult]):
-    flows = [_schema_test_flow]  # type: ignore[reportAssignmentType]
+class _SchemaTestDeployment(PipelineDeployment[_Schema_TestOptions, _Schema_TestResult]):
+    def build_flows(self, options):
+        return [_SchemaTestFlow()]
 
     @staticmethod
-    def build_result(run_id: str, documents: list[Document], options: _SchemaTestOptions) -> _SchemaTestResult:
-        return _SchemaTestResult(success=True, output="done")
+    def build_result(run_id: str, documents: list[Document], options: _Schema_TestOptions) -> _Schema_TestResult:
+        return _Schema_TestResult(success=True, output="done")
 
 
 def _resolve_options_properties(schema: Any) -> dict[str, Any]:
@@ -479,7 +471,7 @@ class TestCliFieldsFrozenset:
     """Verify _CLI_FIELDS is immutable."""
 
     def test_cli_fields_is_frozenset(self):
-        from ai_pipeline_core.deployment.base import _CLI_FIELDS
+        from ai_pipeline_core.deployment._helpers import _CLI_FIELDS
 
         assert isinstance(_CLI_FIELDS, frozenset)
 
@@ -491,33 +483,30 @@ class TestStepValidation:
     def deployment(self):
         return ValidDeployment()
 
+    @pytest.mark.asyncio
     async def test_start_step_zero_raises(self, deployment):
-        from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-        from ai_pipeline_core.document_store._protocol import set_document_store
-
-        set_document_store(MemoryDocumentStore())
+        store = MemoryDocumentStore()
+        set_document_store(store)
         try:
             with pytest.raises(ValueError, match="start_step must be 1"):
                 await deployment.run("proj", [], FlowOptions(), start_step=0)
         finally:
             set_document_store(None)
 
+    @pytest.mark.asyncio
     async def test_start_step_too_large_raises(self, deployment):
-        from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-        from ai_pipeline_core.document_store._protocol import set_document_store
-
-        set_document_store(MemoryDocumentStore())
+        store = MemoryDocumentStore()
+        set_document_store(store)
         try:
             with pytest.raises(ValueError, match="start_step must be 1"):
                 await deployment.run("proj", [], FlowOptions(), start_step=99)
         finally:
             set_document_store(None)
 
+    @pytest.mark.asyncio
     async def test_end_step_less_than_start_raises(self, deployment):
-        from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-        from ai_pipeline_core.document_store._protocol import set_document_store
-
-        set_document_store(MemoryDocumentStore())
+        store = MemoryDocumentStore()
+        set_document_store(store)
         try:
             with pytest.raises(ValueError, match="end_step must be"):
                 await deployment.run("proj", [], FlowOptions(), start_step=1, end_step=0)
@@ -528,19 +517,18 @@ class TestStepValidation:
 class TestRunPassesOptionsObject:
     """Verify run() passes options object (not dict) to flows."""
 
+    @pytest.mark.asyncio
     async def test_flow_receives_options_not_dict(self):
-        from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-        from ai_pipeline_core.document_store._protocol import set_document_store
+        received_options: list[FlowOptions] = []
 
-        received_options = []
-
-        @pipeline_flow()
-        async def capturing_flow(run_id: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
-            received_options.append(flow_options)
-            return [OutputDoc(name="out.txt", content=b"ok")]
+        class CapturingFlow(PipelineFlow):
+            async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
+                received_options.append(options)
+                return [OutputDoc.derive(from_documents=(documents[0],), name="out.txt", content="ok")]
 
         class CapturingDeployment(PipelineDeployment[FlowOptions, ValidResult]):
-            flows = [capturing_flow]  # type: ignore[reportAssignmentType]
+            def build_flows(self, options):
+                return [CapturingFlow()]
 
             @staticmethod
             def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
@@ -551,7 +539,7 @@ class TestRunPassesOptionsObject:
         try:
             deployment = CapturingDeployment()
             opts = FlowOptions()
-            await deployment.run("proj", [InputDoc(name="in.txt", content=b"input")], opts)
+            await deployment.run("proj", [InputDoc.create_root(name="in.txt", content="input", reason="test")], opts)
             assert len(received_options) == 1
             assert isinstance(received_options[0], FlowOptions), f"Expected FlowOptions, got {type(received_options[0])}"
             assert not isinstance(received_options[0], dict)
@@ -560,28 +548,26 @@ class TestRunPassesOptionsObject:
             set_document_store(None)
 
 
-# ---------------------------------------------------------------------------
-# Bug 9: Parent-child run lineage
-# ---------------------------------------------------------------------------
+# --- Bug 9: Parent-child run lineage ---
 
 
 class TestRunContextIncludesExecutionId:
     """Verify RunContext.execution_id is populated during run()."""
 
+    @pytest.mark.asyncio
     async def test_run_context_has_execution_id(self):
-        from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-        from ai_pipeline_core.document_store._protocol import set_document_store
         from ai_pipeline_core.documents._context import _get_run_context
 
-        captured_ctx = []
+        captured_ctx: list[Any] = []
 
-        @pipeline_flow()
-        async def ctx_flow(run_id: str, documents: list[InputDoc], flow_options: FlowOptions) -> list[OutputDoc]:
-            captured_ctx.append(_get_run_context())
-            return [OutputDoc(name="out.txt", content=b"ok")]
+        class CtxFlow(PipelineFlow):
+            async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
+                captured_ctx.append(_get_run_context())
+                return [OutputDoc.derive(from_documents=(documents[0],), name="out.txt", content="ok")]
 
         class CtxDeployment(PipelineDeployment[FlowOptions, ValidResult]):
-            flows = [ctx_flow]  # type: ignore[reportAssignmentType]
+            def build_flows(self, options):
+                return [CtxFlow()]
 
             @staticmethod
             def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> ValidResult:
@@ -590,7 +576,7 @@ class TestRunContextIncludesExecutionId:
         store = MemoryDocumentStore()
         set_document_store(store)
         try:
-            await CtxDeployment().run("proj", [InputDoc(name="in.txt", content=b"x")], FlowOptions())
+            await CtxDeployment().run("proj", [InputDoc.create_root(name="in.txt", content="x", reason="test")], FlowOptions())
             assert len(captured_ctx) == 1
             ctx = captured_ctx[0]
             assert ctx is not None
@@ -605,11 +591,87 @@ class TestAsPrefectFlowParentParams:
     """Verify _deployment_flow accepts parent lineage parameters."""
 
     def test_deployment_flow_has_parent_params(self):
-        import inspect
-
         prefect_flow = ValidDeployment().as_prefect_flow()
         sig = inspect.signature(prefect_flow.fn)
         assert "parent_execution_id" in sig.parameters
         assert "parent_span_id" in sig.parameters
         assert sig.parameters["parent_execution_id"].default is None
         assert sig.parameters["parent_span_id"].default is None
+
+
+# --- Deployment run executes flow instances ---
+
+
+class ExampleDeployment(PipelineDeployment[_TestOptions, _TestResult]):
+    def build_flows(self, options: _TestOptions):
+        _ = options
+        return [StageOne(), StageTwo()]
+
+    @staticmethod
+    def build_result(run_id, documents, options):
+        _ = (run_id, options)
+        return _TestResult(success=True, output_count=len([d for d in documents if isinstance(d, OutputDoc)]))
+
+
+@pytest.mark.asyncio
+async def test_deployment_run_executes_flow_instances(input_documents):
+    store = MemoryDocumentStore()
+    set_document_store(store)
+    try:
+        deployment = ExampleDeployment()
+        result = await deployment.run("run-1", input_documents, _TestOptions())
+    finally:
+        set_document_store(None)
+        store.shutdown()
+
+    assert result.success is True
+    assert result.output_count == 1
+
+
+def test_deployment_requires_build_flows_override():
+    with pytest.raises(TypeError, match="build_flows"):
+
+        class MissingFlows(PipelineDeployment[_TestOptions, _TestResult]):
+            @staticmethod
+            def build_result(run_id, documents, options):
+                _ = (run_id, documents, options)
+                return _TestResult(success=True)
+
+
+@pytest.mark.asyncio
+async def test_deployment_captures_flow_replay_payload(input_documents: list[Document]) -> None:
+    """Flow execution in deployment must set a replay.payload span attribute."""
+    captured: list[dict[str, object]] = []
+    original_set_span_attributes = None
+
+    from lmnr import Laminar
+
+    original_set_span_attributes = Laminar.set_span_attributes
+
+    def fake_set_span_attributes(attrs: dict[str, object]) -> None:
+        captured.append(attrs)
+        try:
+            original_set_span_attributes(attrs)
+        except (OSError, RuntimeError, ValueError, TypeError):
+            pass
+
+    import ai_pipeline_core.deployment.base as base_mod
+
+    original_fn = base_mod.Laminar.set_span_attributes
+    base_mod.Laminar.set_span_attributes = staticmethod(fake_set_span_attributes)  # type: ignore[assignment]
+
+    store = MemoryDocumentStore()
+    set_document_store(store)
+    try:
+        deployment = ExampleDeployment()
+        await deployment.run("run-replay", input_documents, _TestOptions())
+    finally:
+        set_document_store(None)
+        store.shutdown()
+        base_mod.Laminar.set_span_attributes = original_fn  # type: ignore[assignment]
+
+    replay_payloads = [
+        json.loads(str(attrs["replay.payload"])) for attrs in captured if "replay.payload" in attrs and "pipeline_flow" in str(attrs.get("replay.payload", ""))
+    ]
+    assert len(replay_payloads) >= 1, "No flow replay payload captured"
+    assert replay_payloads[0]["payload_type"] == "pipeline_flow"

@@ -1,0 +1,91 @@
+"""Tests for _validate_flow_chain type-pool validation."""
+
+import pytest
+
+from ai_pipeline_core.deployment.base import _validate_flow_chain
+from ai_pipeline_core.documents import Document
+from ai_pipeline_core.pipeline import PipelineFlow
+from ai_pipeline_core.pipeline.options import FlowOptions
+
+
+class _DocA(Document):
+    """Type A."""
+
+
+class _DocB(Document):
+    """Type B."""
+
+
+class _DocC(Document):
+    """Type C."""
+
+
+class _DocDerived(_DocA):
+    """Subclass of DocA."""
+
+
+class _FlowAtoB(PipelineFlow):
+    async def run(self, run_id: str, documents: list[_DocA], options: FlowOptions) -> list[_DocB]:
+        return []
+
+
+class _FlowBtoC(PipelineFlow):
+    async def run(self, run_id: str, documents: list[_DocB], options: FlowOptions) -> list[_DocC]:
+        return []
+
+
+class _FlowCtoA(PipelineFlow):
+    async def run(self, run_id: str, documents: list[_DocC], options: FlowOptions) -> list[_DocA]:
+        return []
+
+
+class _FlowDerivedOutput(PipelineFlow):
+    async def run(self, run_id: str, documents: list[_DocA], options: FlowOptions) -> list[_DocDerived]:
+        return []
+
+
+class _FlowBaseInput(PipelineFlow):
+    async def run(self, run_id: str, documents: list[_DocA], options: FlowOptions) -> list[_DocC]:
+        return []
+
+
+def test_single_flow_always_valid() -> None:
+    _validate_flow_chain("test", [_FlowAtoB()])
+
+
+def test_valid_chain_sequential_types() -> None:
+    _validate_flow_chain("test", [_FlowAtoB(), _FlowBtoC()])
+
+
+def test_invalid_chain_unsatisfied_input() -> None:
+    # FlowAtoB outputs DocB, but FlowCtoA needs DocC
+    with pytest.raises(TypeError, match="requires input types"):
+        _validate_flow_chain("test", [_FlowAtoB(), _FlowCtoA()])
+
+
+def test_type_pool_accumulates_across_flows() -> None:
+    # FlowAtoB: pool = {A, B}; FlowBtoC: pool = {A, B, C}; FlowCtoA: needs C → in pool ✓
+    _validate_flow_chain("test", [_FlowAtoB(), _FlowBtoC(), _FlowCtoA()])
+
+
+def test_first_flow_inputs_added_to_pool() -> None:
+    # FlowAtoB adds DocA (its input) to pool, then outputs DocB
+    # FlowBaseInput needs DocA → DocA is in pool from first flow's input
+    _validate_flow_chain("test", [_FlowAtoB(), _FlowBaseInput()])
+
+
+def test_subclass_output_satisfies_parent_input() -> None:
+    # FlowDerivedOutput outputs DocDerived (subclass of DocA)
+    # FlowBaseInput needs DocA → DocDerived satisfies via issubclass
+    _validate_flow_chain("test", [_FlowDerivedOutput(), _FlowBaseInput()])
+
+
+def test_empty_flow_list() -> None:
+    _validate_flow_chain("test", [])
+
+
+def test_error_message_includes_available_types() -> None:
+    with pytest.raises(TypeError, match="Available types") as exc_info:
+        _validate_flow_chain("test-deploy", [_FlowAtoB(), _FlowCtoA()])
+    assert "test-deploy" in str(exc_info.value)
+    assert "_DocC" in str(exc_info.value)

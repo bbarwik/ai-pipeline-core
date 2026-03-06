@@ -1,20 +1,4 @@
-"""Tests that verify the issues were fixed.
-
-Originally these tests were designed to FAIL, proving bugs exist.
-After fixes, most should now PASS.
-
-Issues covered:
-1. Boolean truthiness bug (temperature=0.0, max_completion_tokens=0, stop=[]) - FIXED
-2. Substitutor state persistence across Conversation.send() - FIXED
-3. Async without await in URLSubstitutor.prepare() - FIXED (now sync)
-4. XML injection vulnerability in document processing - FIXED
-5. Attachments inside document wrapper - FIXED
-6. Backward compatibility shim (token_usage property) - FIXED (removed)
-7. Blocking I/O in async context - NOT YET FIXED
-8. Missing slots=True on dataclasses - FIXED
-9. Magic number inconsistency (1000 vs 1080) - FIXED
-10. PydanticSerializationUnexpectedValue on bare ModelResponse in Conversation.messages
-"""
+"""LLM regression tests: boolean truthiness, substitutor persistence, XML injection, attachment placement, slots, and serialization."""
 
 import inspect
 from typing import Any

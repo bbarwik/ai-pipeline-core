@@ -13,10 +13,39 @@ from pydantic import BaseModel
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import ModelOptions
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.llm.conversation import AssistantMessage, ConversationContent, ToolResultMessage, UserMessage
+from ai_pipeline_core.llm.conversation import AssistantMessage, Conversation, ConversationContent, ToolResultMessage, UserMessage
 from ai_pipeline_core.replay.types import ToolCallEntry
 
 __all__ = ["build_conversation_replay_payload", "serialize_kwargs", "serialize_prior_messages"]
+
+
+def _serialize_document_ref(doc: Document[Any]) -> dict[str, str]:
+    """Serialize a Document into a replay reference dict."""
+    return {
+        "$doc_ref": doc.sha256,
+        "class_name": type(doc).__name__,
+        "name": doc.name,
+    }
+
+
+def _serialize_conversation(value: Conversation[Any]) -> dict[str, Any]:
+    """Serialize a Conversation for use as a task argument."""
+    model_options: dict[str, Any] = {}
+    if value.model_options is not None:
+        model_options = value.model_options.model_dump(exclude_defaults=True)
+
+    return {
+        "$conversation": {
+            "model": value.model,
+            "model_options": model_options,
+            "context": [_serialize_document_ref(doc) for doc in value.context],
+            "history": serialize_prior_messages(value.messages),
+            "enable_substitutor": value.enable_substitutor,
+            "extract_result_tags": value.extract_result_tags,
+            "include_date": value.include_date,
+            "current_date": value.current_date,
+        }
+    }
 
 
 def _serialize_value(value: Any) -> Any:
@@ -25,22 +54,20 @@ def _serialize_value(value: Any) -> Any:
     Recursively handles list, tuple, and dict containers so that nested
     Documents, BaseModels, and Enums are properly serialized.
     """
-    if isinstance(value, Document):
-        doc = cast("Document[Any]", value)
-        return {
-            "$doc_ref": doc.sha256,
-            "class_name": type(doc).__name__,
-            "name": doc.name,
-        }
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, Enum):
-        return value.value
-    if isinstance(value, (list, tuple)):
-        return [_serialize_value(item) for item in cast("Sequence[Any]", value)]
-    if isinstance(value, dict):
-        return {key: _serialize_value(val) for key, val in cast(dict[str, Any], value).items()}
-    return value
+    result: Any = value
+    if isinstance(value, Conversation):
+        result = _serialize_conversation(value)
+    elif isinstance(value, Document):
+        result = _serialize_document_ref(value)
+    elif isinstance(value, BaseModel):
+        result = value.model_dump(mode="json")
+    elif isinstance(value, Enum):
+        result = value.value
+    elif isinstance(value, (list, tuple)):
+        result = [_serialize_value(item) for item in cast("Sequence[Any]", value)]
+    elif isinstance(value, dict):
+        result = {key: _serialize_value(val) for key, val in cast(dict[str, Any], value).items()}
+    return result
 
 
 def serialize_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -82,13 +109,7 @@ def serialize_prior_messages(messages: tuple[Any, ...]) -> list[dict[str, Any]]:
                 entry["tool_calls"] = [ToolCallEntry(id=tc.id, function_name=tc.function_name, arguments=tc.arguments).model_dump() for tc in msg.tool_calls]
             result.append(entry)
         elif isinstance(msg, Document):
-            doc = cast("Document[Any]", msg)
-            result.append({
-                "type": "document",
-                "$doc_ref": doc.sha256,
-                "class_name": doc.__class__.__name__,
-                "name": doc.name,
-            })
+            result.append({"type": "document", **_serialize_document_ref(msg)})
     return result
 
 
@@ -107,7 +128,7 @@ def build_conversation_replay_payload(
 ) -> dict[str, Any]:
     """Build a replay payload dict capturing the full conversation state."""
     # Serialize context as document references
-    ctx_refs = [{"$doc_ref": d.sha256, "class_name": type(d).__name__, "name": d.name} for d in context]
+    ctx_refs = [_serialize_document_ref(document) for document in context]
 
     # Extract prompt text
     prompt: str

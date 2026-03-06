@@ -7,6 +7,7 @@ SHA256 hashing, and serialization. All documents must be concrete subclasses of 
 import base64
 import functools
 import json
+import threading
 from enum import StrEnum
 from functools import cached_property
 from io import BytesIO
@@ -54,6 +55,9 @@ from .attachment import Attachment
 
 __all__ = [
     "Document",
+    "get_inline_summary",
+    "pop_inline_summary",
+    "set_inline_summary",
 ]
 
 logger = get_pipeline_logger(__name__)
@@ -67,6 +71,11 @@ _STRUCTURED_EXTENSIONS: frozenset[str] = frozenset({".json", ".yaml", ".yml"})
 # Registry of class __name__ -> Document subclass for collision detection.
 # Only non-test classes are registered. Test modules (tests.*, conftest, etc.) are skipped.
 _class_name_registry: dict[str, type["Document"]] = {}  # nosemgrep: no-mutable-module-globals
+
+# Optional inline summaries provided during Document.create(..., summary=...),
+# keyed by document identity hash for later persistence/event enrichment.
+_document_summaries: dict[DocumentSha256, str] = {}  # nosemgrep: no-mutable-module-globals
+_document_summaries_lock = threading.Lock()
 
 # Metadata keys added by serialize_model() that should be stripped before validation.
 _DOCUMENT_SERIALIZE_METADATA_KEYS: frozenset[str] = frozenset({
@@ -84,6 +93,24 @@ def _is_test_module(cls: type) -> bool:
     module = getattr(cls, "__module__", "") or ""
     parts = module.split(".")
     return any(p == "tests" or p.startswith("test_") or p == "conftest" for p in parts)
+
+
+def get_inline_summary(document_sha256: DocumentSha256) -> str | None:
+    """Get an inline summary registered at document creation time, if any."""
+    with _document_summaries_lock:
+        return _document_summaries.get(document_sha256)
+
+
+def pop_inline_summary(document_sha256: DocumentSha256) -> str | None:
+    """Consume and remove an inline summary for a document, if any."""
+    with _document_summaries_lock:
+        return _document_summaries.pop(document_sha256, None)
+
+
+def set_inline_summary(document_sha256: DocumentSha256, summary: str) -> None:
+    """Set or replace an inline summary for a document."""
+    with _document_summaries_lock:
+        _document_summaries[document_sha256] = summary
 
 
 def _warn_content_type_issues(cls: type["Document"]) -> None:
@@ -211,6 +238,10 @@ class Document(BaseModel, Generic[TContent]):
     FILES: ClassVar[type[StrEnum] | None] = None
     """Allowed filenames enum. Define as nested ``class FILES(StrEnum)`` or assign an external StrEnum subclass."""
 
+    publicly_visible: ClassVar[bool] = False
+    """Whether this document type should be displayed in frontend dashboards.
+    Override to ``True`` in subclasses whose content is meant for end-user consumption."""
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Validate subclass at definition time. Cannot start with 'Test', cannot add custom fields."""
         super().__init_subclass__(**kwargs)
@@ -281,22 +312,30 @@ class Document(BaseModel, Generic[TContent]):
     ) -> Self:
         """Create a root document (pipeline input) with no provenance.
 
-        Must be called within a @pipeline_task or @pipeline_flow context.
-        Must provide reason explaining why this document has no provenance.
-        The reason is stored as description if no explicit description is given.
-        All created documents must be returned from the task/flow — unreturned documents are flagged as orphans.
+        This is the explicit escape hatch for deployment-boundary inputs.
+        The reason is logged for auditability and not stored on the document.
         """
+        if not reason.strip():
+            raise ValueError(f"{cls.__name__}.create_root(reason=...) requires a non-empty reason.")
+        ctx = get_task_context()
+        if ctx is not None and ctx.scope_kind != "test":
+            raise RuntimeError(
+                f"{cls.__name__}.create_root() cannot be called inside pipeline task/flow execution. Use create()/derive() with provenance in task code."
+            )
+
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
             _validate_content_schema(cls._content_type, content, content_bytes, name)
-        return cls(
-            name=name,
-            content=content_bytes,
-            description=description or reason,
-            derived_from=(),
-            triggered_by=(),
-            attachments=attachments,
-        )
+        logger.info("Creating root document '%s' (%s): %s", name, cls.__name__, reason)
+        with _suppress_document_registration():
+            return cls(
+                name=name,
+                content=content_bytes,
+                description=description,
+                derived_from=(),
+                triggered_by=(),
+                attachments=attachments,
+            )
 
     @classmethod
     def create(
@@ -308,13 +347,15 @@ class Document(BaseModel, Generic[TContent]):
         derived_from: tuple[str, ...] | None = None,
         triggered_by: tuple[DocumentSha256, ...] | None = None,
         attachments: tuple[Attachment, ...] | None = None,
+        summary: str | None = None,
     ) -> Self:
         """Create a document with automatic content-to-bytes conversion.
 
-        Must be called within a @pipeline_task or @pipeline_flow context.
+        Must be called within a PipelineTask or PipelineFlow context.
         Must provide derived_from or triggered_by for provenance tracking.
         For root inputs (no provenance), use create_root(reason='...') instead.
-        All created documents must be returned from the task/flow — unreturned documents are flagged as orphans.
+        Optional summary is stored in an inline registry for later persistence/event publishing.
+        All created documents must be returned from the task — unreturned documents are flagged as orphans.
         Serialization is extension-driven: .json → JSON, .yaml → YAML, others → UTF-8.
         Reversible via parse(). Cannot be called on Document directly — must use a subclass.
         """
@@ -323,7 +364,7 @@ class Document(BaseModel, Generic[TContent]):
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
             _validate_content_schema(cls._content_type, content, content_bytes, name)
-        return cls(
+        doc = cls(
             name=name,
             content=content_bytes,
             description=description,
@@ -331,6 +372,9 @@ class Document(BaseModel, Generic[TContent]):
             triggered_by=triggered_by,
             attachments=attachments,
         )
+        if summary is not None:
+            set_inline_summary(doc.sha256, summary)
+        return doc
 
     @classmethod
     def derive(
@@ -345,8 +389,8 @@ class Document(BaseModel, Generic[TContent]):
     ) -> Self:
         """Create a document derived from other documents. The 95% API path.
 
-        Must be called within a @pipeline_task or @pipeline_flow context.
-        All created documents must be returned from the task/flow — unreturned documents are flagged as orphans.
+        Must be called within a PipelineTask or PipelineFlow context.
+        All created documents must be returned from the task — unreturned documents are flagged as orphans.
         Accepts Document objects directly (extracts SHA256 hashes automatically).
         Use this for content transformations (summaries, analyses, reviews).
         """
@@ -384,15 +428,18 @@ class Document(BaseModel, Generic[TContent]):
         # Register with task context for lifecycle tracking (skip during deserialization)
         if not is_registration_suppressed():
             ctx = get_task_context()
-            if ctx is not None:
-                ctx.created.add(self.sha256)
-                if ctx.scope_kind == "flow":
-                    logger.warning(
-                        "%s created directly in @pipeline_flow body. "
-                        "Wrap document creation in a @pipeline_task for proper "
-                        "lifecycle management (tracing, persistence, retries).",
-                        type(self).__name__,
-                    )
+            if ctx is None:
+                raise RuntimeError(
+                    f"{type(self).__name__} created outside pipeline task context. "
+                    "Documents must be created inside a PipelineTask.run() or PipelineFlow.run() method. "
+                    "Use create_root(...) only for deployment-boundary root inputs, "
+                    "or _suppress_document_registration() for deserialization paths."
+                )
+            if ctx.scope_kind not in {"task", "flow", "test"}:
+                raise RuntimeError(
+                    f"{type(self).__name__} created in {ctx.scope_kind} body. Documents must be created inside a PipelineTask or PipelineFlow execution scope."
+                )
+            ctx.created.add(self.sha256)
 
     name: str
     description: str | None = None

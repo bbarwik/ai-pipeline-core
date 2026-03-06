@@ -25,10 +25,6 @@ test-clickhouse:
 test-pubsub:
 	@uv run pytest -m pubsub $(EXTRA_ARGS)
 
-.PHONY: test-pubsub-live
-test-pubsub-live:
-	@uv run pytest -m pubsub_live $(EXTRA_ARGS)
-
 .PHONY: test-cov
 test-cov:
 	@uv run pytest \
@@ -37,6 +33,10 @@ test-cov:
 		--cov-report=term \
 		--cov-fail-under=80 \
 		$(EXTRA_ARGS)
+
+.PHONY: test-collect
+test-collect:
+	@uv run pytest --collect-only -q --no-header
 
 .PHONY: lint
 lint:
@@ -131,5 +131,5 @@ lint-pre-commit-config:
 	@pre-commit validate-config .pre-commit-config.yaml
 
 .PHONY: check
-check: lint typecheck deadcode semgrep docstrings-cover filesize check-claude-md docs-ai-check test
+check: lint typecheck deadcode semgrep docstrings-cover filesize check-claude-md docs-ai-check test-collect test
 	@echo "All checks passed"

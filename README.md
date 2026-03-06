@@ -21,8 +21,8 @@ This framework is the foundation of AI projects at [research.tech](https://resea
 - **LLM Integration**: Unified interface to any model via LiteLLM proxy (OpenRouter compatible) with context caching (default 300s TTL)
 - **Tool Calling**: Define tools as typed Python classes with import-time validation, automatic schema generation, and a built-in auto-loop that executes tools and re-sends results until the LLM produces a final answer
 - **Structured Output**: Type-safe generation with Pydantic model validation via `Conversation.send_structured()`
-- **Workflow Orchestration**: Prefect-based flows and tasks with annotation-driven document types and decoration-time input/output validation
-- **Auto-Persistence**: `@pipeline_task` saves returned documents to `DocumentStore` automatically
+- **Workflow Orchestration**: Class-based `PipelineTask`, `PipelineFlow`, and `PipelineDeployment` with annotation-driven document types and import-time validation
+- **Auto-Persistence**: `PipelineTask` saves returned documents to `DocumentStore` automatically with provenance tracking
 - **Image Processing**: Automatic image tiling/splitting for LLM vision models with model-specific presets
 - **Observability**: Built-in distributed tracing via Laminar (LMNR) with cost tracking, local trace debugging, ClickHouse-based tracking, and remote trace download/reconstruction
 - **Prompt Compiler**: Type-safe prompt specifications replacing Jinja2 templates — typed Python classes for roles, rules, guides, and output formats with definition-time validation and a CLI tool for inspection
@@ -64,8 +64,6 @@ make install-dev     # Initializes uv environment and installs pre-commit hooks
 ### Basic Pipeline
 
 ```python
-from typing import ClassVar
-
 from pydantic import BaseModel, Field
 
 from ai_pipeline_core import (
@@ -73,8 +71,8 @@ from ai_pipeline_core import (
     DeploymentResult,
     FlowOptions,
     PipelineDeployment,
-    pipeline_flow,
-    pipeline_task,
+    PipelineFlow,
+    PipelineTask,
     setup_logging,
     get_pipeline_logger,
 )
@@ -100,41 +98,40 @@ class AnalysisSummary(BaseModel):
     top_keywords: list[str] = Field(default_factory=list)
 
 
-# 3. Pipeline task -- auto-saves returned documents to DocumentStore
-@pipeline_task
-async def analyze_document(document: InputDocument) -> AnalysisDocument:
-    return AnalysisDocument.create(
-        name=f"analysis_{document.sha256[:12]}.json",
-        content=AnalysisSummary(word_count=42, top_keywords=["ai", "pipeline"]),
-        derived_from=(document.sha256,),
-    )
+# 3. Pipeline task -- class-based, auto-saves returned documents to DocumentStore
+class AnalyzeDocument(PipelineTask):
+    """Analyze a single document."""
+
+    async def run(self, documents: list[InputDocument]) -> list[AnalysisDocument]:
+        doc = documents[0]
+        return [AnalysisDocument.create(
+            name=f"analysis_{doc.sha256[:12]}.json",
+            content=AnalysisSummary(word_count=42, top_keywords=["ai", "pipeline"]),
+            derived_from=(doc.sha256,),
+        )]
 
 
-# 4. Pipeline flow -- type contract is in the annotations
-@pipeline_flow(estimated_minutes=5)
-async def analysis_flow(
-    run_id: str,
-    documents: list[InputDocument],
-    flow_options: FlowOptions,
-) -> list[AnalysisDocument]:
-    results: list[AnalysisDocument] = []
-    for doc in documents:
-        results.append(await analyze_document(doc))
-    return results
+# 4. Pipeline flow -- type contract is in the run() annotations
+class AnalysisFlow(PipelineFlow):
+    """Analyze all input documents."""
+
+    async def run(self, run_id: str, documents: list[InputDocument], options: FlowOptions) -> list[AnalysisDocument]:
+        results: list[AnalysisDocument] = []
+        for doc in documents:
+            results.extend(await AnalyzeDocument.run([doc]))
+        return results
 
 
-@pipeline_flow(estimated_minutes=2)
-async def report_flow(
-    run_id: str,
-    documents: list[AnalysisDocument],
-    flow_options: FlowOptions,
-) -> list[ReportDocument]:
-    report = ReportDocument.create(
-        name="report.md",
-        content="# Report\n\nAnalysis complete.",
-        derived_from=tuple(doc.sha256 for doc in documents),
-    )
-    return [report]
+class ReportFlow(PipelineFlow):
+    """Generate final report from analyses."""
+
+    async def run(self, run_id: str, documents: list[AnalysisDocument], options: FlowOptions) -> list[ReportDocument]:
+        report = ReportDocument.create(
+            name="report.md",
+            content="# Report\n\nAnalysis complete.",
+            derived_from=tuple(doc.sha256 for doc in documents),
+        )
+        return [report]
 
 
 # 5. Deployment -- ties flows together with type chain validation
@@ -143,7 +140,8 @@ class MyResult(DeploymentResult):
 
 
 class MyPipeline(PipelineDeployment[FlowOptions, MyResult]):
-    flows: ClassVar = [analysis_flow, report_flow]
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [AnalysisFlow(), ReportFlow()]
 
     @staticmethod
     def build_result(
@@ -416,7 +414,7 @@ Documents support:
 
 ### Document Store
 
-Documents are automatically persisted by `@pipeline_task` to a document store. The framework provides four backend implementations (ClickHouse, local filesystem, in-memory, dual), all managed internally — application code interacts only through the read-only `DocumentReader` protocol.
+Documents are automatically persisted by `PipelineTask` to a document store. The framework provides four backend implementations (ClickHouse, local filesystem, in-memory, dual), all managed internally — application code interacts only through the read-only `DocumentReader` protocol.
 
 **Backend implementations** (internal, auto-selected by execution mode):
 - **ClickHouse**: Production backend (selected when `CLICKHOUSE_HOST` is configured)
@@ -440,7 +438,7 @@ Documents are automatically persisted by `@pipeline_task` to a document store. T
 - `load_scope_metadata(run_scope)` -- Load `DocumentNode` metadata for all documents in a scope
 - `get_flow_completion(run_scope, flow_name, *, max_age=None)` -- Check flow completion record (returns `FlowCompletion | None`)
 
-Write operations (`save`, `save_batch`, `flush`, `shutdown`) are framework-internal — `@pipeline_task` handles persistence automatically.
+Write operations (`save`, `save_batch`, `flush`, `shutdown`) are framework-internal — `PipelineTask` handles persistence automatically.
 
 **Document summaries:** When enabled, stores automatically generate LLM-powered summaries in the background after each new document is saved. Summaries are best-effort and stored as store-level metadata (not on the `Document` model). Configure via `DOC_SUMMARY_ENABLED` and `DOC_SUMMARY_MODEL` environment variables.
 
@@ -561,64 +559,103 @@ from ai_pipeline_core import PipelineCoreError, LLMError, DocumentValidationErro
 
 Output degeneration (token repetition loops) is detected automatically and raises `LLMError` after retry exhaustion.
 
-### Pipeline Decorators
+### Pipeline Classes
 
-#### `@pipeline_task`
+The pipeline system uses a three-tier class hierarchy: `PipelineTask` → `PipelineFlow` → `PipelineDeployment`. All classes use `__init_subclass__` for import-time validation — errors are caught when the module is imported, not at runtime.
 
-Decorates async functions as traced Prefect tasks with automatic document persistence:
+#### `PipelineTask`
+
+Base class for pipeline tasks with automatic tracing, document persistence, and lifecycle events:
 
 ```python
-from ai_pipeline_core import pipeline_task
+from ai_pipeline_core import PipelineTask
 
-@pipeline_task  # No parameters needed for most cases
-async def process_chunk(document: InputDocument) -> OutputDocument:
-    return OutputDocument.create(
-        name="result.json",
-        content={"processed": True},
-        derived_from=(document.sha256,),
-    )
+class ProcessChunk(PipelineTask):
+    """Process a single document chunk."""
 
-@pipeline_task(retries=3, estimated_minutes=5)
-async def expensive_task(data: str) -> OutputDocument:
-    # Retries, tracing, and document auto-save handled automatically
-    ...
+    async def run(self, documents: list[InputDocument]) -> list[OutputDocument]:
+        doc = documents[0]
+        return [OutputDocument.create(
+            name="result.json",
+            content={"processed": True},
+            derived_from=(doc.sha256,),
+        )]
 
+
+class ExpensiveTask(PipelineTask):
+    retries = 3
+    timeout_seconds = 600
+    estimated_minutes = 5
+
+    async def run(self, documents: list[InputDocument]) -> list[OutputDocument]:
+        ...
 ```
 
-Key parameters:
-- `retries`: Retry attempts on failure (default `0` -- no retries unless specified)
+**Invocation patterns:**
+
+```python
+# Sequential — await TaskClass.run(documents)
+result = await ProcessChunk.run(documents)
+
+# Parallel — TaskClass.run() without await returns TaskHandle
+handle = ProcessChunk.run(documents)
+result = await handle.result()
+```
+
+**ClassVar configuration:**
+- `retries`: Retry attempts on failure (default `0`)
+- `retry_delay_seconds`: Delay between retries (default `20`)
+- `timeout_seconds`: Task execution timeout (default `None`)
+- `cacheable`: Enable task-level completion caching (default `False`)
 - `estimated_minutes`: Duration estimate for progress tracking (default `1`, must be >= 1)
-- `timeout_seconds`: Task execution timeout
 - `trace_level`: `"always" | "debug" | "off"` (default `"always"`)
 - `expected_cost`: Expected cost budget for cost tracking
 
-Key features:
-- Async-only enforcement (raises `TypeError` if not `async def`)
-- Decoration-time return type validation (must return Document types or None)
-- Decoration-time input type validation (all parameters must be annotated with serializable types)
-- Laminar tracing (automatic)
-- Document auto-save to DocumentStore (returned documents are extracted and persisted)
+**Key features:**
+- Import-time validation of `run()` signature and document type annotations
+- Async-only enforcement (raises `TypeError` if `run` is not `async def`)
+- Rejects classes starting with `Test` (reserved for pytest)
+- Rejects required `__init__` parameters (tasks use documents-only invocation)
+- Automatic Laminar tracing
+- Document auto-save to DocumentStore (returned documents are persisted)
 - Source validation (warns if referenced SHA256s don't exist in store)
+- Task-level lifecycle events (`TaskStartedEvent`, `TaskCompletedEvent`, `TaskFailedEvent`)
 
-**Input type validation** — all `@pipeline_task` parameters must be annotated with serializable types. Allowed: `str`, `int`, `float`, `bool`, `Path`, `UUID`, `None`, `Any`, Document subclasses, FlowOptions subclasses, frozen BaseModel, Enum, `NewType` wrappers of valid types, and `list`/`tuple`/`dict[str, ...]`/`Union` containers thereof. Non-serializable types (mutable models, plain classes) are rejected at decoration time.
+#### `PipelineFlow`
 
-#### `@pipeline_flow`
-
-Decorates async flow functions with annotation-driven document type extraction. Always requires parentheses:
+Base class for pipeline flows that orchestrate tasks:
 
 ```python
-from ai_pipeline_core import pipeline_flow, FlowOptions
+from ai_pipeline_core import PipelineFlow, FlowOptions
 
-@pipeline_flow(estimated_minutes=10, retries=2, timeout_seconds=1200)
-async def my_flow(
-    run_id: str,                     # Must be named 'run_id' or '_run_id'
-    documents: list[InputDoc],       # Input types extracted from annotation
-    flow_options: MyFlowOptions,     # Must be FlowOptions or subclass
-) -> list[OutputDoc]:                # Output types extracted from annotation
-    ...
+class AnalysisFlow(PipelineFlow):
+    """Analyze input documents."""
+
+    async def run(
+        self,
+        run_id: str,                      # Must be str
+        documents: list[InputDoc],        # Input types extracted from annotation
+        options: MyFlowOptions,           # Must be FlowOptions or subclass
+    ) -> list[OutputDoc]:                 # Output types extracted from annotation
+        results: list[OutputDoc] = []
+        for doc in documents:
+            results.extend(await AnalyzeTask.run([doc]))
+        return results
 ```
 
-The flow's `documents` parameter annotation determines input types, and the return annotation determines output types. The function must have exactly 3 parameters. The first must be named `run_id: str` (or `_run_id: str` when unused), followed by `documents: list[...]` and `flow_options: FlowOptions`. No separate config class needed -- the type contract is in the function signature.
+The flow's `documents` parameter annotation determines input types, and the return annotation determines output types. The `run()` method must have exactly 4 parameters: `self`, `run_id: str`, `documents: list[...]`, and `options: FlowOptions`.
+
+**Constructor parameters** for per-instance configuration:
+
+```python
+class ConfigurableFlow(PipelineFlow):
+    async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
+        model = self.model  # Access constructor params as attributes
+        ...
+
+flow = ConfigurableFlow(model="gemini-3-pro", temperature=0.7)
+flow.get_params()  # {"model": "gemini-3-pro", "temperature": 0.7}
+```
 
 **FlowOptions** is a base `BaseSettings` class for pipeline configuration. Subclass it to add flow-specific parameters:
 
@@ -636,8 +673,10 @@ Orchestrates multi-flow pipelines with resume, per-flow uploads, and event publi
 
 ```python
 class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
-    flows: ClassVar = [flow_1, flow_2, flow_3]
-    pubsub_service_type: ClassVar = "research"  # Enables Pub/Sub event publishing
+    pubsub_service_type = "research"  # Enables Pub/Sub event publishing
+
+    def build_flows(self, options: MyOptions) -> list[PipelineFlow]:
+        return [AnalysisFlow(), ReportFlow(model="gemini-3-pro")]
 
     @staticmethod
     def build_result(
@@ -646,6 +685,21 @@ class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
         options: MyOptions,
     ) -> MyResult:
         ...
+```
+
+**Dynamic flow control** with `plan_next_flow()`:
+
+```python
+from ai_pipeline_core.deployment.base import FlowDirective, FlowAction
+
+class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
+    def build_flows(self, options: MyOptions) -> list[PipelineFlow]:
+        return [ExtractFlow(), AnalyzeFlow(), SynthesisFlow()]
+
+    def plan_next_flow(self, flow_class, plan, output_documents) -> FlowDirective:
+        if flow_class is SynthesisFlow and not output_documents:
+            return FlowDirective(action=FlowAction.SKIP, reason="No documents to synthesize")
+        return FlowDirective()  # CONTINUE by default
 ```
 
 **Execution modes:**
@@ -668,10 +722,12 @@ result = pipeline.run_local(
 prefect_flow = pipeline.as_prefect_flow()
 ```
 
-Features:
+**Features:**
 - **Per-flow resume**: Skips flows with a `FlowCompletion` record in the store (explicit completion tracking, not document-presence inference). Configurable `cache_ttl` (default 24h)
-- **Type chain validation**: At class definition time, validates that at least one of each flow's declared input types is producible by preceding flows (union semantics)
-- **Event publishing**: Lifecycle events (started, progress, heartbeat, completed, failed) via Pub/Sub. Enabled by setting `pubsub_service_type` ClassVar on the deployment class. Requires `PUBSUB_PROJECT_ID` and `PUBSUB_TOPIC_ID` env vars for infrastructure config
+- **Task-level caching**: Tasks with `cacheable = True` skip re-execution when the same inputs produce a cached completion record
+- **Type chain validation**: At runtime, validates that at least one of each flow's declared input types is producible by preceding flows (union semantics)
+- **Event publishing**: 12 lifecycle events (run started/completed/failed, flow started/completed/failed/skipped, task started/completed/failed, heartbeat, progress) via Pub/Sub. Task events include `step`, `task_invocation_id` for correlation. `actual_cost` aggregated from LLM spans. Enabled by setting `pubsub_service_type` ClassVar. Requires `PUBSUB_PROJECT_ID` and `PUBSUB_TOPIC_ID` env vars
+- **Dynamic flow control**: `plan_next_flow()` returns `FlowDirective` to skip or continue flows based on runtime state
 - **Concurrency limits**: Cross-run enforcement via Prefect global concurrency limits
 - **CLI mode**: `--start N` / `--end N` for step control, `DualDocumentStore` when ClickHouse is configured
 
@@ -683,7 +739,6 @@ Declare cross-run concurrency and rate limits on `PipelineDeployment` to prevent
 from ai_pipeline_core import LimitKind, PipelineLimit, PipelineDeployment, pipeline_concurrency
 
 class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
-    flows = [my_flow]
     concurrency_limits = {
         "provider-a": PipelineLimit(500, LimitKind.CONCURRENT),       # max 500 simultaneous
         "provider-b": PipelineLimit(15, LimitKind.PER_MINUTE, timeout=300),  # 15/min token bucket
@@ -714,7 +769,30 @@ async def fetch_data(url: str) -> Data:
 
 #### Parallel Execution
 
-`safe_gather` and `safe_gather_indexed` run coroutines in parallel with fault tolerance:
+**Task dispatch** for parallel task execution within flows:
+
+```python
+from ai_pipeline_core import PipelineTask, collect_tasks, as_task_completed, run_tasks_until
+
+# Dispatch tasks for parallel execution (run without await returns TaskHandle)
+handle_a = ExtractTask.run(docs_a)
+handle_b = ExtractTask.run(docs_b)
+handle_c = ExtractTask.run(docs_c)
+
+# Collect all results with optional deadline
+batch = await collect_tasks(handle_a, handle_b, handle_c, deadline_seconds=120.0)
+# batch.completed = [result_a, result_b, ...]
+# batch.incomplete = [handle_c]  # timed out or failed
+
+# Iterate in completion order
+async for handle in as_task_completed(handle_a, handle_b, handle_c):
+    result = await handle.result()
+
+# Sugar: dispatch + collect in one call
+batch = await run_tasks_until(ExtractTask, [((docs_a,), {}), ((docs_b,), {}), ((docs_c,), {})], deadline_seconds=120.0)
+```
+
+**`safe_gather` and `safe_gather_indexed`** run coroutines in parallel with fault tolerance:
 
 ```python
 from ai_pipeline_core import safe_gather, safe_gather_indexed
@@ -988,8 +1066,8 @@ print(result.content)
 
 **Three payload types:**
 - `ConversationReplay` — captures `Conversation.send()` / `send_structured()` with model, prompt, context docs, multi-turn history, and response_format
-- `TaskReplay` — captures `@pipeline_task` calls with function path and all arguments (Documents as `$doc_ref` references)
-- `FlowReplay` — captures `@pipeline_flow` calls with function path, run_id, documents, and flow_options
+- `TaskReplay` — captures `PipelineTask` calls with class path and all arguments (Documents as `$doc_ref` references)
+- `FlowReplay` — captures `PipelineFlow` calls with class path, run_id, documents, and flow_options
 
 ### Local Trace Debugging
 
@@ -1009,12 +1087,12 @@ The directory structure mirrors the execution flow. Each new run overwrites the 
       input.yaml          # Span input (block scalar YAML for multiline)
       output.yaml         # Span output
       events.yaml         # OTel span events (log records)
-      flow.yaml           # Replay payload (for @pipeline_flow spans)
+      flow.yaml           # Replay payload (for PipelineFlow spans)
       002_task_1/
           span.yaml
           input.yaml
           output.yaml
-          task.yaml        # Replay payload (for @pipeline_task spans)
+          task.yaml        # Replay payload (for PipelineTask spans)
           003_analyze/
               span.yaml
               input.yaml
@@ -1122,14 +1200,15 @@ print(settings.app_name)
 
 ### Framework Rules
 
-1. **Decorators**: Use `@pipeline_task` without parameters for most cases, `@pipeline_flow(estimated_minutes=N)` with annotations (always requires parentheses)
-2. **Logging**: Use `get_pipeline_logger(__name__)` -- never `print()` or `logging` module directly
-3. **LLM calls**: Use `Conversation` for all LLM interactions (multi-turn and single-shot). Use `tools=` for function calling
-4. **Options**: Omit `ModelOptions` unless specifically needed (defaults are production-optimized)
-5. **Documents**: Use `create_root()` for pipeline inputs (no provenance), `create()` or `derive()` for derived documents. Always subclass `Document`
-6. **Flow annotations**: Input/output types are in the function signature -- `list[InputDoc]` and `-> list[OutputDoc]`
-7. **Initialization**: Logger at module scope, not in functions
-8. **Document lists**: Use plain `list[Document]` -- no wrapper class needed
+1. **Pipeline classes**: Subclass `PipelineTask` for tasks and `PipelineFlow` for flows. Use `PipelineDeployment.build_flows()` for dynamic flow lists
+2. **Task invocation**: Use `await TaskClass.run(documents)` for sequential execution, `TaskClass.run(documents)` (without await) for parallel TaskHandle
+3. **Logging**: Use `get_pipeline_logger(__name__)` -- never `print()` or `logging` module directly
+4. **LLM calls**: Use `Conversation` for all LLM interactions (multi-turn and single-shot). Use `tools=` for function calling
+5. **Options**: Omit `ModelOptions` unless specifically needed (defaults are production-optimized)
+6. **Documents**: Use `create_root()` for pipeline inputs (no provenance), `create()` or `derive()` for derived documents. Always subclass `Document`
+7. **Type annotations**: Input/output types are in the `run()` method signature -- `list[InputDoc]` and `-> list[OutputDoc]`
+8. **Initialization**: Logger at module scope, not in functions
+9. **Document lists**: Use plain `list[Document]` -- no wrapper class needed
 
 ### Import Convention
 
@@ -1137,10 +1216,10 @@ Always import from the top-level package when possible:
 
 ```python
 # Top-level imports (preferred)
-from ai_pipeline_core import Document, pipeline_flow, pipeline_task, Conversation, Tool, ToolOutput
+from ai_pipeline_core import Document, PipelineTask, PipelineFlow, PipelineDeployment, Conversation, Tool, ToolOutput
+from ai_pipeline_core import collect_tasks, as_task_completed, run_tasks_until, TaskHandle, TaskBatch
 
 # Sub-package imports for symbols not at top level
-from ai_pipeline_core.deployment import CompletedRun, DeploymentResultData
 from ai_pipeline_core.llm import ModelOptions
 ```
 
@@ -1149,12 +1228,14 @@ from ai_pipeline_core.llm import ModelOptions
 ### Running Tests
 
 ```bash
-make test              # Run all tests
+make test              # Run all tests (infra tests auto-skip when Docker/API keys unavailable)
 make test-cov          # Run with coverage report
 make test-clickhouse   # ClickHouse integration tests (requires Docker)
 make test-pubsub       # Pub/Sub emulator integration tests (requires Docker)
-make test-pubsub-live  # Pub/Sub tests against real GCP (requires PUBSUB_PROJECT_ID, PUBSUB_TOPIC_ID)
+make test-collect      # Verify all test modules are importable
 ```
+
+Infrastructure tests (ClickHouse, Pub/Sub, LLM integration) auto-skip when their requirements are unavailable — no flags needed. `make test` is always safe to run.
 
 ### Code Quality
 
@@ -1192,8 +1273,8 @@ When building applications on this framework, include the relevant `.ai-docs/*.m
 
 The `examples/` directory contains:
 
-- **`showcase.py`** -- Full 3-stage pipeline: Conversation API, multi-turn LLM analysis, structured extraction, PipelineDeployment with CLI, resume/skip, progress tracking, image processing
-- **`showcase_document_store.py`** -- Document store usage: pipeline tasks with auto-save, flow execution via `run_local()`, document provenance tracking
+- **`showcase.py`** -- Full 3-stage pipeline: class-based PipelineTask/PipelineFlow, Conversation API, multi-turn LLM analysis, structured extraction, PipelineDeployment with CLI, resume/skip, progress tracking, image processing
+- **`showcase_document_store.py`** -- Document store usage: class-based PipelineTask with auto-save, flow execution via `run_local()`, document provenance tracking
 - **`showcase_prompt_compiler.py`** -- Prompt compiler features: Role, Rule, OutputRule, Guide, PromptSpec, rendering, output_structure, follow-up specs, definition-time validation
 
 Run examples:
@@ -1221,7 +1302,7 @@ ai-pipeline-core/
 |   |-- llm/               # Conversation class, Tool base class, tool loop, URLSubstitutor, image processing
 |   |-- logging/           # Logging infrastructure
 |   |-- observability/     # Tracing, ClickHouse tracking, local debug traces, and ai-trace CLI
-|   |-- pipeline/          # Pipeline decorators, FlowOptions, and concurrency limits
+|   |-- pipeline/          # PipelineTask, PipelineFlow, parallel primitives, FlowOptions, concurrency limits
 |   |-- prompt_compiler/   # Type-safe prompt specs, rendering, and CLI tool
 |   |-- replay/            # Trace-based replay system (capture, serialize, resolve, execute)
 |   |-- settings.py        # Configuration management (Pydantic BaseSettings)

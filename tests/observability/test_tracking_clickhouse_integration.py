@@ -29,7 +29,7 @@ pytestmark = pytest.mark.clickhouse
 
 
 @pytest.fixture(scope="module")
-def clickhouse_container():
+def clickhouse_container(require_docker):
     """Start a ClickHouse container for the test module."""
     with ClickHouseContainer() as container:
         yield container

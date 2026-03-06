@@ -5,6 +5,7 @@ Core execution logic for each payload type: conversation, task, and flow.
 
 import inspect
 import typing
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -12,9 +13,13 @@ from pydantic import BaseModel
 
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import ModelOptions, RawToolCall, TokenUsage
+from ai_pipeline_core.document_store._local import LocalDocumentStore
 from ai_pipeline_core.documents.document import Document
 from ai_pipeline_core.llm.conversation import Conversation, ToolResultMessage, UserMessage
 from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.pipeline._execution_context import pipeline_test_context
+from ai_pipeline_core.pipeline._flow import PipelineFlow
+from ai_pipeline_core.pipeline._task import PipelineTask
 
 from ._deserialize import _import_by_path, resolve_task_kwargs
 from ._resolve import resolve_document_ref
@@ -23,6 +28,22 @@ from .types import ConversationReplay, DocumentRef, FlowReplay, TaskReplay
 __all__: list[str] = []
 
 logger = get_pipeline_logger(__name__)
+
+
+async def _execute_pipeline_task(
+    task_cls: type[PipelineTask],
+    *,
+    resolved_kwargs: dict[str, Any],
+    store_base: Path,
+) -> Any:
+    """Execute a class-based pipeline task inside replay test context."""
+    store = LocalDocumentStore(base_path=store_base)
+    try:
+        with pipeline_test_context(store=store):
+            handle = task_cls.run(**resolved_kwargs)
+            return await handle
+    finally:
+        store.shutdown()
 
 
 def _resolve_context_docs(payload: ConversationReplay, store_base: Path) -> list[Document]:
@@ -105,22 +126,34 @@ async def execute_conversation(payload: ConversationReplay, store_base: Path) ->
 
 
 async def execute_task(payload: TaskReplay, store_base: Path) -> Any:
-    """Execute a TaskReplay payload."""
-    resolved_kwargs = resolve_task_kwargs(payload.function_path, dict(payload.arguments), store_base)
+    """Execute a TaskReplay payload (class-based PipelineTask or function task)."""
     fn = _import_by_path(payload.function_path)
+    resolved_kwargs = resolve_task_kwargs(payload.function_path, dict(payload.arguments), store_base)
+
+    # Class-based pipeline tasks use Task.run(...) and return awaitable TaskHandle objects.
+    if isinstance(fn, type) and issubclass(fn, PipelineTask):
+        return await _execute_pipeline_task(fn, resolved_kwargs=resolved_kwargs, store_base=store_base)
 
     # Handle Prefect-wrapped functions: try .fn attribute first
-    actual_fn = getattr(fn, "fn", fn)
+    actual_fn: Callable[..., Any] = getattr(fn, "fn", fn)
     return await actual_fn(**resolved_kwargs)
 
 
 async def execute_flow(payload: FlowReplay, store_base: Path) -> Any:
     """Execute a FlowReplay payload."""
     fn = _import_by_path(payload.function_path)
-    actual_fn = getattr(fn, "fn", fn)
 
     # Resolve document references
     resolved_docs = [resolve_document_ref(ref, store_base) for ref in payload.documents]
+
+    # Class-based PipelineFlow: instantiate with captured constructor params, then call .run()
+    actual_fn: Callable[..., Any]
+    if isinstance(fn, type) and issubclass(fn, PipelineFlow):
+        flow_instance = fn(**payload.flow_params)
+        actual_fn = flow_instance.run
+    else:
+        # Legacy function-based flows / Prefect-wrapped
+        actual_fn = getattr(fn, "fn", fn)
 
     # Resolve flow_options via type hints
     flow_options: Any = dict(payload.flow_options)

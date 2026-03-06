@@ -8,6 +8,14 @@ import pytest
 from pydantic import BaseModel, Field
 
 from ai_pipeline_core import Conversation, ModelOptions, Tool, ToolOutput
+from ai_pipeline_core.settings import settings
+
+HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not HAS_API_KEYS, reason="OpenAI API keys not configured"),
+]
 
 # Models to test tool calling
 TOOL_MODELS = ("grok-4.1-fast", "gemini-3-flash", "gpt-5-mini")
@@ -80,7 +88,6 @@ class WeatherLookup(Tool):
 # ── Integration Tests ────────────────────────────────────────────────────────
 
 
-@pytest.mark.integration
 async def test_single_tool_call(model_opts: tuple[str, ModelOptions]) -> None:
     """LLM calls a single tool and uses the result in its response."""
     model, opts = model_opts
@@ -95,7 +102,6 @@ async def test_single_tool_call(model_opts: tuple[str, ModelOptions]) -> None:
     assert conv.tool_call_records[0].tool is GetCapital
 
 
-@pytest.mark.integration
 async def test_tool_with_calculation(model_opts: tuple[str, ModelOptions]) -> None:
     """LLM uses a calculator tool."""
     model, opts = model_opts
@@ -110,7 +116,6 @@ async def test_tool_with_calculation(model_opts: tuple[str, ModelOptions]) -> No
     assert len(conv.tool_call_records) >= 1
 
 
-@pytest.mark.integration
 async def test_multiple_tools_available(model_opts: tuple[str, ModelOptions]) -> None:
     """LLM correctly selects from multiple available tools."""
     model, opts = model_opts
@@ -124,7 +129,6 @@ async def test_multiple_tools_available(model_opts: tuple[str, ModelOptions]) ->
     assert any(r.tool is GetCapital for r in conv.tool_call_records)
 
 
-@pytest.mark.integration
 async def test_tool_error_recovery(model_opts: tuple[str, ModelOptions]) -> None:
     """LLM receives tool error and gracefully handles it."""
     model, opts = model_opts
@@ -140,7 +144,6 @@ async def test_tool_error_recovery(model_opts: tuple[str, ModelOptions]) -> None
     assert len(conv.messages) > 1  # at least user + error response + final
 
 
-@pytest.mark.integration
 async def test_tool_choice_none(model_opts: tuple[str, ModelOptions]) -> None:
     """tool_choice='none' prevents tool usage."""
     model, opts = model_opts
@@ -156,7 +159,6 @@ async def test_tool_choice_none(model_opts: tuple[str, ModelOptions]) -> None:
     assert len(conv.tool_call_records) == 0
 
 
-@pytest.mark.integration
 async def test_max_tool_rounds_forced_final(model_opts: tuple[str, ModelOptions]) -> None:
     """max_tool_rounds=1 forces a final response after one round."""
     model, opts = model_opts
@@ -171,7 +173,6 @@ async def test_max_tool_rounds_forced_final(model_opts: tuple[str, ModelOptions]
     assert conv.content
 
 
-@pytest.mark.integration
 async def test_structured_output_with_tools(model_opts: tuple[str, ModelOptions]) -> None:
     """Tools work with structured output (tool loop → final structured call)."""
 
@@ -193,7 +194,6 @@ async def test_structured_output_with_tools(model_opts: tuple[str, ModelOptions]
     assert result.city.lower() == "paris"
 
 
-@pytest.mark.integration
 async def test_multi_round_tool_conversation(model_opts: tuple[str, ModelOptions]) -> None:
     """Multi-round tool conversation within a single send call."""
     model, opts = model_opts
@@ -209,7 +209,6 @@ async def test_multi_round_tool_conversation(model_opts: tuple[str, ModelOptions
     assert len(conv.tool_call_records) >= 1
 
 
-@pytest.mark.integration
 async def test_tool_choice_required(model_opts: tuple[str, ModelOptions]) -> None:
     """tool_choice='required' forces at least one tool call."""
     model, opts = model_opts
@@ -224,7 +223,6 @@ async def test_tool_choice_required(model_opts: tuple[str, ModelOptions]) -> Non
     assert len(conv.tool_call_records) >= 1
 
 
-@pytest.mark.integration
 async def test_conversation_continues_after_tools() -> None:
     """Conversation state is preserved after tool usage for follow-up messages."""
     conv = await Conversation(

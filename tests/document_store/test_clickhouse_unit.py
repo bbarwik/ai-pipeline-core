@@ -21,10 +21,16 @@ from ai_pipeline_core.document_store._clickhouse import (
 from ai_pipeline_core.document_store._models import DocumentNode
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents import RunScope
+from ai_pipeline_core.documents._context import _suppress_document_registration
 
 
 class _TestDoc(Document):
     pass
+
+
+def _make_test_doc(name: str, content: bytes) -> _TestDoc:
+    with _suppress_document_registration():
+        return _TestDoc(name=name, content=content)
 
 
 def _make_store() -> ClickHouseDocumentStore:
@@ -96,7 +102,7 @@ class TestParseDocumentRow:
 
 class TestParseNodeRow:
     def test_tuple_to_document_node(self):
-        row = ("sha256hex", "MyDoc", "report.txt", "desc", ["src"], ["trig"], "summary text")
+        row = ("sha256hex", "MyDoc", "report.txt", "desc", ["src"], ["trig"], "summary text", True)
         node = _parse_node_row(row)
         assert isinstance(node, DocumentNode)
         assert node.sha256 == "sha256hex"
@@ -106,11 +112,18 @@ class TestParseNodeRow:
         assert node.derived_from == ("src",)
         assert node.triggered_by == ("trig",)
         assert node.summary == "summary text"
+        assert node.publicly_visible is True
 
     def test_empty_summary(self):
-        row = ("sha", "Cls", "n", "", [], [], "")
+        row = ("sha", "Cls", "n", "", [], [], "", False)
         node = _parse_node_row(row)
         assert node.summary == ""
+        assert node.publicly_visible is False
+
+    def test_publicly_visible_false_by_default(self):
+        row = ("sha", "Cls", "n", "", [], [], "", 0)
+        node = _parse_node_row(row)
+        assert node.publicly_visible is False
 
 
 class TestBuildDocument:
@@ -194,7 +207,7 @@ class TestCircuitBreaker:
 class TestFlushBuffer:
     def test_retries_then_drops(self):
         store = _make_store()
-        doc = _TestDoc(name="buf.txt", content=b"x")
+        doc = _make_test_doc(name="buf.txt", content=b"x")
         item = _BufferedWrite(document=doc, run_scope=RunScope("r"), retry_count=_MAX_BUFFER_RETRIES - 1)
         store._buffer.append(item)
         store._client.insert.side_effect = Exception("insert fail")
@@ -205,7 +218,7 @@ class TestFlushBuffer:
         store = _make_store()
         store._tables_initialized = False
         store._client.command.side_effect = Exception("table creation failed")
-        docs = [_TestDoc(name="a.txt", content=b"a"), _TestDoc(name="b.txt", content=b"b")]
+        docs = [_make_test_doc(name="a.txt", content=b"a"), _make_test_doc(name="b.txt", content=b"b")]
         store._save_batch_sync(docs, RunScope("r"))
         assert len(store._buffer) == 2
 
@@ -213,14 +226,14 @@ class TestFlushBuffer:
         store = _make_store()
         store._circuit_open = True
         store._last_reconnect_attempt = time.monotonic()
-        doc = _TestDoc(name="c.txt", content=b"c")
+        doc = _make_test_doc(name="c.txt", content=b"c")
         store._save_sync(doc, RunScope("r"))
         assert len(store._buffer) == 1
 
     def test_save_sync_opens_circuit(self):
         store = _make_store()
         store._client.insert.side_effect = Exception("insert fail")
-        doc = _TestDoc(name="d.txt", content=b"d")
+        doc = _make_test_doc(name="d.txt", content=b"d")
         for _ in range(_FAILURE_THRESHOLD):
             store._save_sync(doc, RunScope("r"))
         assert store._circuit_open is True

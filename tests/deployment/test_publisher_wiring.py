@@ -1,7 +1,8 @@
 """Tests for publisher factory, heartbeat lifecycle, and run() publisher integration."""
 
-# pyright: reportPrivateUsage=false, reportArgumentType=false, reportUnusedClass=false
+# pyright: reportPrivateUsage=false
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,21 +12,21 @@ from ai_pipeline_core import (
     Document,
     FlowOptions,
     PipelineDeployment,
-    pipeline_flow,
 )
 from ai_pipeline_core.deployment._types import (
-    _CompletedEvent,
     ErrorCode,
-    _FailedEvent,
+    ProgressEvent,
+    ResultPublisher,
+    RunCompletedEvent,
+    RunFailedEvent,
+    RunStartedEvent,
     _MemoryPublisher,
     _NoopPublisher,
-    _ProgressEvent,
-    _ResultPublisher,
-    _StartedEvent,
 )
 from ai_pipeline_core.deployment.base import _create_publisher, _create_task_result_store
-from ai_pipeline_core.document_store._protocol import set_document_store
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
+from ai_pipeline_core.document_store._protocol import set_document_store
+from ai_pipeline_core.pipeline import PipelineFlow
 
 
 # --- Test infrastructure ---
@@ -43,38 +44,58 @@ class _WiringResult(DeploymentResult):
     """Result for wiring tests."""
 
 
-@pipeline_flow()
-async def _wiring_flow(run_id: str, documents: list[_WiringInputDoc], flow_options: FlowOptions) -> list[_WiringOutputDoc]:
+class _WiringFlow(PipelineFlow):
     """Flow for wiring tests."""
-    return [_WiringOutputDoc.create_root(name="out.txt", content="done", reason="test")]
+
+    async def run(self, run_id: str, documents: list[_WiringInputDoc], options: FlowOptions) -> list[_WiringOutputDoc]:
+        return [_WiringOutputDoc.derive(from_documents=documents, name="out.txt", content="done")]
 
 
 class _WiringDeployment(PipelineDeployment[FlowOptions, _WiringResult]):
     """Deployment for wiring tests."""
 
-    flows = [_wiring_flow]  # type: ignore[reportAssignmentType]
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [_WiringFlow()]
 
     @staticmethod
     def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> _WiringResult:
-        """Build result."""
         return _WiringResult(success=True)
 
 
-@pipeline_flow()
-async def _failing_flow(run_id: str, documents: list[_WiringInputDoc], flow_options: FlowOptions) -> list[_WiringOutputDoc]:
+class _FailingFlow(PipelineFlow):
     """Flow that always raises."""
-    raise RuntimeError("deliberate failure")
+
+    async def run(self, run_id: str, documents: list[_WiringInputDoc], options: FlowOptions) -> list[_WiringOutputDoc]:
+        raise RuntimeError("deliberate failure")
 
 
 class _FailingDeployment(PipelineDeployment[FlowOptions, _WiringResult]):
     """Deployment that always fails."""
 
-    flows = [_failing_flow]  # type: ignore[reportAssignmentType]
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [_FailingFlow()]
 
     @staticmethod
     def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> _WiringResult:
-        """Build result."""
         return _WiringResult(success=False, error="failed")
+
+
+class _CancellingFlow(PipelineFlow):
+    """Flow that raises CancelledError."""
+
+    async def run(self, run_id: str, documents: list[_WiringInputDoc], options: FlowOptions) -> list[_WiringOutputDoc]:
+        raise asyncio.CancelledError()
+
+
+class _CancelDeployment(PipelineDeployment[FlowOptions, _WiringResult]):
+    """Deployment where the flow raises CancelledError."""
+
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [_CancellingFlow()]
+
+    @staticmethod
+    def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> _WiringResult:
+        return _WiringResult(success=False)
 
 
 # --- _create_publisher tests ---
@@ -114,7 +135,7 @@ class TestCreatePublisher:
         mock_settings.pubsub_topic_id = "events"
 
         with patch("ai_pipeline_core.deployment._pubsub.PubSubPublisher") as mock_pub_cls:
-            mock_pub_cls.return_value = MagicMock(spec=_ResultPublisher)
+            mock_pub_cls.return_value = MagicMock(spec=ResultPublisher)
             _create_publisher(mock_settings, "research")
             mock_pub_cls.assert_called_once_with(
                 project_id="my-project",
@@ -167,7 +188,7 @@ class TestRunPublisherIntegration:
     """Test that run() publishes lifecycle events via the publisher."""
 
     async def test_publishes_started_event(self):
-        """run() must publish _StartedEvent before executing flows."""
+        """run() must publish RunStartedEvent before executing flows."""
         pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
@@ -179,12 +200,12 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        started_events = [e for e in pub.events if isinstance(e, _StartedEvent)]
+        started_events = [e for e in pub.events if isinstance(e, RunStartedEvent)]
         assert len(started_events) == 1
         assert started_events[0].run_id == "run-1"
 
     async def test_publishes_completed_event(self):
-        """run() must publish _CompletedEvent after successful execution."""
+        """run() must publish RunCompletedEvent after successful execution."""
         pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
@@ -196,7 +217,7 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        completed_events = [e for e in pub.events if isinstance(e, _CompletedEvent)]
+        completed_events = [e for e in pub.events if isinstance(e, RunCompletedEvent)]
         assert len(completed_events) == 1
         assert completed_events[0].run_id == "run-1"
         assert "version" in completed_events[0].chain_context
@@ -215,14 +236,14 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        progress_events = [e for e in pub.events if isinstance(e, _ProgressEvent)]
+        progress_events = [e for e in pub.events if isinstance(e, ProgressEvent)]
         assert len(progress_events) >= 2
         statuses = [e.status for e in progress_events]
         assert "started" in statuses
         assert "completed" in statuses
 
     async def test_publishes_failed_event_on_error(self):
-        """run() must publish _FailedEvent when a flow raises."""
+        """run() must publish RunFailedEvent when a flow raises."""
         pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
@@ -235,7 +256,7 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        failed_events = [e for e in pub.events if isinstance(e, _FailedEvent)]
+        failed_events = [e for e in pub.events if isinstance(e, RunFailedEvent)]
         assert len(failed_events) == 1
         assert failed_events[0].run_id == "run-1"
         assert failed_events[0].error_code == ErrorCode.UNKNOWN
@@ -255,8 +276,8 @@ class TestRunPublisherIntegration:
             set_document_store(None)
 
         event_types = [type(e).__name__ for e in pub.events]
-        assert event_types[0] == "_StartedEvent"
-        assert event_types[-1] == "_CompletedEvent"
+        assert event_types[0] == "RunStartedEvent"
+        assert event_types[-1] == "RunCompletedEvent"
 
     async def test_heartbeat_runs_during_execution(self):
         """Heartbeat task is created and cancelled during run()."""
@@ -265,7 +286,7 @@ class TestRunPublisherIntegration:
         set_document_store(store)
 
         # Patch heartbeat interval to be very short
-        with patch("ai_pipeline_core.deployment.base._HEARTBEAT_INTERVAL_SECONDS", 0.01):
+        with patch("ai_pipeline_core.deployment._helpers._HEARTBEAT_INTERVAL_SECONDS", 0.01):
             try:
                 deployment = _WiringDeployment()
                 doc = _WiringInputDoc.create_root(name="in.txt", content="test", reason="test")
@@ -278,7 +299,7 @@ class TestRunPublisherIntegration:
         # but the heartbeat task should have been created and cleaned up without errors
 
     async def test_chain_context_structure(self):
-        """_CompletedEvent chain_context has correct structure."""
+        """RunCompletedEvent chain_context has correct structure."""
         pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
@@ -290,7 +311,7 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        completed = [e for e in pub.events if isinstance(e, _CompletedEvent)][0]
+        completed = [e for e in pub.events if isinstance(e, RunCompletedEvent)][0]
         ctx = completed.chain_context
         assert ctx["version"] == 1
         assert "run_scope" in ctx
@@ -312,20 +333,7 @@ class TestRunPublisherIntegration:
             set_document_store(None)
 
     async def test_cancelled_error_publishes_failed(self):
-        """CancelledError in flow publishes _FailedEvent with CANCELLED error code."""
-        import asyncio
-
-        @pipeline_flow()
-        async def _cancelling_flow(run_id: str, documents: list[_WiringInputDoc], flow_options: FlowOptions) -> list[_WiringOutputDoc]:
-            raise asyncio.CancelledError()
-
-        class _CancelDeployment(PipelineDeployment[FlowOptions, _WiringResult]):
-            flows = [_cancelling_flow]  # type: ignore[reportAssignmentType]
-
-            @staticmethod
-            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> _WiringResult:
-                return _WiringResult(success=False)
-
+        """CancelledError in flow publishes RunFailedEvent with CANCELLED error code."""
         pub = _MemoryPublisher()
         store = MemoryDocumentStore()
         set_document_store(store)
@@ -338,6 +346,6 @@ class TestRunPublisherIntegration:
             store.shutdown()
             set_document_store(None)
 
-        failed_events = [e for e in pub.events if isinstance(e, _FailedEvent)]
+        failed_events = [e for e in pub.events if isinstance(e, RunFailedEvent)]
         assert len(failed_events) == 1
         assert failed_events[0].error_code == ErrorCode.CANCELLED

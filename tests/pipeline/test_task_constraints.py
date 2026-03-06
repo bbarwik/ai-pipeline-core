@@ -1,0 +1,184 @@
+# pyright: reportPrivateUsage=false
+"""Tests for pipeline constraints: create_root context guards, collect_tasks deadlines/ordering, and PipelineFlow validation."""
+
+import asyncio
+
+import pytest
+
+from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._context import set_task_context, reset_task_context, TaskContext
+from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask, collect_tasks, pipeline_test_context
+from ai_pipeline_core.pipeline.options import FlowOptions
+
+
+# ---------------------------------------------------------------------------
+# Document types
+# ---------------------------------------------------------------------------
+
+
+class LowInputDoc(Document):
+    """Input for low-priority tests."""
+
+
+class LowOutputDoc(Document):
+    """Output for low-priority tests."""
+
+
+# ---------------------------------------------------------------------------
+# create_root inside task context → RuntimeError
+# ---------------------------------------------------------------------------
+
+
+def test_create_root_inside_task_context_raises() -> None:
+    """Document.create_root() is forbidden inside a pipeline task context."""
+    token = set_task_context(TaskContext(scope_kind="task", task_class_name="SomeTask"))
+    try:
+        with pytest.raises(RuntimeError, match="cannot be called inside"):
+            LowInputDoc.create_root(name="bad.txt", content="x", reason="should fail")
+    finally:
+        reset_task_context(token)
+
+
+def test_create_root_inside_flow_context_raises() -> None:
+    """Document.create_root() is forbidden inside a pipeline flow context."""
+    token = set_task_context(TaskContext(scope_kind="flow", task_class_name="SomeFlow"))
+    try:
+        with pytest.raises(RuntimeError, match="cannot be called inside"):
+            LowInputDoc.create_root(name="bad.txt", content="x", reason="should fail")
+    finally:
+        reset_task_context(token)
+
+
+def test_create_root_outside_context_succeeds() -> None:
+    """Document.create_root() works when no task context is active."""
+    doc = LowInputDoc.create_root(name="ok.txt", content="x", reason="no context")
+    assert doc.name == "ok.txt"
+
+
+def test_create_root_inside_test_context_succeeds() -> None:
+    """Document.create_root() is allowed inside pipeline_test_context (scope_kind='test')."""
+    with pipeline_test_context():
+        doc = LowInputDoc.create_root(name="test-root.txt", content="x", reason="test context")
+    assert doc.name == "test-root.txt"
+
+
+# ---------------------------------------------------------------------------
+# collect_tasks deadline boundary
+# ---------------------------------------------------------------------------
+
+
+class _SlowTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: list[LowInputDoc], delay: float) -> list[LowOutputDoc]:
+        await asyncio.sleep(delay)
+        return [LowOutputDoc.derive(from_documents=(documents[0],), name="slow.txt", content="done")]
+
+
+@pytest.mark.asyncio
+async def test_collect_tasks_deadline_zero_returns_all_incomplete() -> None:
+    """deadline_seconds=0 returns all handles as incomplete (no time to complete)."""
+    doc = LowInputDoc.create_root(name="in.txt", content="x", reason="gap23")
+    with pipeline_test_context():
+        batch = await collect_tasks(
+            _SlowTask.run([doc], delay=1.0),
+            _SlowTask.run([doc], delay=1.0),
+            deadline_seconds=0,
+        )
+
+    assert batch.completed == []
+    assert len(batch.incomplete) == 2
+
+
+@pytest.mark.asyncio
+async def test_collect_tasks_empty_returns_empty_batch() -> None:
+    """collect_tasks with no handles returns empty batch."""
+    batch = await collect_tasks()
+    assert batch.completed == []
+    assert batch.incomplete == []
+
+
+@pytest.mark.asyncio
+async def test_collect_tasks_completed_within_deadline() -> None:
+    """Fast tasks complete within generous deadline."""
+    doc = LowInputDoc.create_root(name="in.txt", content="x", reason="gap23c")
+    with pipeline_test_context():
+        batch = await collect_tasks(
+            _SlowTask.run([doc], delay=0.01),
+            _SlowTask.run([doc], delay=0.01),
+            deadline_seconds=5.0,
+        )
+
+    assert len(batch.completed) == 2
+    assert batch.incomplete == []
+
+
+# ---------------------------------------------------------------------------
+# collect_tasks result ordering
+# ---------------------------------------------------------------------------
+
+
+class _TimedTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: list[LowInputDoc], delay: float, label: str) -> list[LowOutputDoc]:
+        await asyncio.sleep(delay)
+        return [LowOutputDoc.derive(from_documents=(documents[0],), name=f"{label}.txt", content=label)]
+
+
+@pytest.mark.asyncio
+async def test_collect_tasks_returns_in_completion_order() -> None:
+    """collect_tasks returns results in completion order (fast first)."""
+    doc = LowInputDoc.create_root(name="in.txt", content="x", reason="gap24")
+    with pipeline_test_context():
+        batch = await collect_tasks(
+            _TimedTask.run([doc], delay=0.15, label="slow"),
+            _TimedTask.run([doc], delay=0.01, label="fast"),
+        )
+
+    assert len(batch.completed) == 2
+    # Fast completes first, so appears first in completed list
+    labels = [docs[0].name for docs in batch.completed]
+    assert labels[0] == "fast.txt"
+    assert labels[1] == "slow.txt"
+
+
+# ---------------------------------------------------------------------------
+# PipelineFlow.__init_subclass__ edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_flow_rejects_test_prefix_name() -> None:
+    """Flow class name starting with 'Test' is rejected."""
+    with pytest.raises(TypeError, match="cannot start with 'Test'"):
+
+        class TestBadFlow(PipelineFlow):
+            async def run(self, run_id: str, documents: list[LowInputDoc], options: FlowOptions) -> list[LowOutputDoc]:
+                return []
+
+
+def test_flow_rejects_sync_run() -> None:
+    """Flow with synchronous run() is rejected."""
+    with pytest.raises(TypeError, match="must be async def"):
+
+        class SyncFlow(PipelineFlow):
+            def run(self, run_id: str, documents: list[LowInputDoc], options: FlowOptions) -> list[LowOutputDoc]:  # type: ignore[override]
+                return []
+
+
+def test_flow_rejects_wrong_param_count() -> None:
+    """Flow run() with wrong parameter count is rejected."""
+    with pytest.raises(TypeError, match="must have signature"):
+
+        class BadParamFlow(PipelineFlow):
+            async def run(self, run_id: str, documents: list[LowInputDoc]) -> list[LowOutputDoc]:  # type: ignore[override]
+                return []
+
+
+def test_flow_rejects_low_estimated_minutes() -> None:
+    """Flow with estimated_minutes < 1 is rejected."""
+    with pytest.raises(TypeError, match="estimated_minutes"):
+
+        class FastFlow(PipelineFlow):
+            estimated_minutes = 0.5
+
+            async def run(self, run_id: str, documents: list[LowInputDoc], options: FlowOptions) -> list[LowOutputDoc]:
+                return []

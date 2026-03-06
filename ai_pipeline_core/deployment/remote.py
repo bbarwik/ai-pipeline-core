@@ -28,10 +28,11 @@ from ai_pipeline_core.deployment._helpers import (
 from ai_pipeline_core.deployment._resolve import AttachmentInput, DocumentInput
 from ai_pipeline_core.deployment._task_results import ClickHouseTaskResultStore
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._context import _get_run_context
+from ai_pipeline_core.documents._context import _get_run_context, _suppress_document_registration
 from ai_pipeline_core.logging import get_pipeline_logger
 from ai_pipeline_core.observability._span_data import ATTR_INPUT_DOC_SHA256S, ATTR_OUTPUT_DOC_SHA256S
 from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
+from ai_pipeline_core.pipeline._execution_context import get_execution_context
 from ai_pipeline_core.pipeline._type_validation import is_already_traced
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
@@ -322,15 +323,19 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         """Serialize, call Prefect, deserialize, track document lineage.
 
         Wrapped with @trace in __init_subclass__. Tracks input/output document
-        SHA256s on the OTel span, matching @pipeline_task/@pipeline_flow behavior.
+        SHA256s on the OTel span, matching PipelineTask/PipelineFlow behavior.
         """
         validate_run_id(run_id)
         derived_run_id = _derive_remote_run_id(run_id, documents, options)
         validate_run_id(derived_run_id)
 
-        # Extract parent lineage from RunContext and current OTel span
-        run_ctx = _get_run_context()
-        parent_exec_id = str(run_ctx.execution_id) if run_ctx and run_ctx.execution_id else None
+        # Extract parent lineage from ExecutionContext (or RunContext) and current OTel span
+        execution_ctx = get_execution_context()
+        parent_exec_id = str(execution_ctx.execution_id) if execution_ctx and execution_ctx.execution_id else None
+        if parent_exec_id is None:
+            run_ctx = _get_run_context()
+            if run_ctx is not None and run_ctx.execution_id is not None:
+                parent_exec_id = str(run_ctx.execution_id)
         parent_span_hex: str | None = None
         try:
             current_span = otel_trace.get_current_span()
@@ -361,11 +366,12 @@ class RemoteDeployment(Generic[TDoc, TOptions, TResult]):
         if isinstance(result, DeploymentResult):
             typed_result = cast(TResult, result)
         elif isinstance(result, dict):
-            typed_result = cast(TResult, self.result_type.model_validate(result))
+            with _suppress_document_registration():
+                typed_result = cast(TResult, self.result_type.model_validate(result))
         else:
             raise TypeError(f"Remote deployment '{self.name}' returned unexpected type: {type(result).__name__}. Expected DeploymentResult or dict.")
 
-        # Track document lineage on the current span (matching @pipeline_task/@pipeline_flow)
+        # Track document lineage on the current span (matching PipelineTask/PipelineFlow behavior)
         try:
             span = otel_trace.get_current_span()
             input_sha256s = [doc.sha256 for doc in documents]

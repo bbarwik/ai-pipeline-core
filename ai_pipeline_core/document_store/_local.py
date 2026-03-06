@@ -12,9 +12,11 @@ import json
 import os
 import tempfile
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from ai_pipeline_core.document_store._models import DocumentNode, FlowCompletion
 from ai_pipeline_core.document_store._summary_worker import SummaryGenerator, SummaryWorker
@@ -34,6 +36,25 @@ _D = TypeVar("_D", bound=Document)
 _T = TypeVar("_T")
 
 DOC_ID_LENGTH = 6
+_FILESYSTEM_FUTURE_POLL_SECONDS = 0.01
+_FILESYSTEM_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="local-document-store")
+
+
+async def _run_filesystem_call[T](func: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
+    """Run a blocking filesystem call on the shared local-store executor.
+
+    LocalDocumentStore is used heavily from short-lived event loops in replay,
+    CLI helpers, and subprocess-based tests. The loop-owned default executor
+    can stall both direct awaits and loop shutdown for these filesystem calls.
+    A shared executor plus a short timed wait keeps the thread-to-loop bridge
+    deterministic without tying executor lifetime to a specific event loop.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(_FILESYSTEM_EXECUTOR, partial(func, *args, **kwargs))
+    while True:
+        done, _pending = await asyncio.wait({future}, timeout=_FILESYSTEM_FUTURE_POLL_SECONDS)
+        if done:
+            return future.result()
 
 
 def _safe_filename(name: str, doc_sha256: str) -> str:
@@ -82,6 +103,7 @@ def _node_from_meta(doc_sha: DocumentSha256, meta: dict[str, Any]) -> DocumentNo
         derived_from=tuple(meta.get("derived_from", ())),
         triggered_by=tuple(meta.get("triggered_by", ())),
         summary=meta.get("summary") or "",
+        publicly_visible=bool(meta.get("publicly_visible")),
     )
 
 
@@ -116,48 +138,49 @@ class LocalDocumentStore:
         """Root directory for all stored documents."""
         return self._base_path
 
-    async def save(self, document: Document, run_scope: RunScope) -> None:
+    async def save(self, document: Document, run_scope: RunScope, *, created_by_task: str = "") -> None:
         """Save a document to disk. Idempotent — same SHA256 is a no-op."""
-        written = await asyncio.to_thread(self._save_sync, document, run_scope)
+        written = await _run_filesystem_call(self._save_sync, document, run_scope, created_by_task)
         if written and self._summary_worker:
             self._summary_worker.schedule(document)
 
-    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope, *, created_by_task: str = "") -> None:
         """Save multiple documents sequentially."""
         for doc in documents:
-            await self.save(doc, run_scope)
+            await self.save(doc, run_scope, created_by_task=created_by_task)
 
     async def load(self, run_scope: RunScope, document_types: list[type[Document]]) -> list[Document]:
         """Load documents by type from the store."""
-        return await asyncio.to_thread(self._load_sync, run_scope, document_types)
+        return await _run_filesystem_call(self._load_sync, run_scope, document_types)
 
     async def has_documents(self, run_scope: RunScope, document_type: type[Document], *, max_age: timedelta | None = None) -> bool:
         """Check for meta files in the type's directory without loading content."""
-        return await asyncio.to_thread(self._has_documents_sync, run_scope, document_type, max_age)
+        return await _run_filesystem_call(self._has_documents_sync, run_scope, document_type, max_age)
 
     async def check_existing(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
         """Scan all meta files to find matching document_sha256 values."""
-        return await asyncio.to_thread(self._check_existing_sync, sha256s)
+        return await _run_filesystem_call(self._check_existing_sync, sha256s)
 
     async def update_summary(self, document_sha256: DocumentSha256, summary: str) -> None:
         """Update summary in all .meta.json files matching this document SHA256."""
-        await asyncio.to_thread(self._update_summary_sync, document_sha256, summary)
+        await _run_filesystem_call(self._update_summary_sync, document_sha256, summary)
 
     async def load_summaries(self, document_sha256s: list[DocumentSha256]) -> dict[DocumentSha256, str]:
         """Load summaries from .meta.json files for the given SHA256s."""
-        return await asyncio.to_thread(self._load_summaries_sync, document_sha256s)
+        return await _run_filesystem_call(self._load_summaries_sync, document_sha256s)
 
     async def load_by_sha256s(self, sha256s: list[DocumentSha256], document_type: type[_D], run_scope: RunScope | None = None) -> dict[DocumentSha256, _D]:
         """Batch-load documents by SHA256. Searches all directories — class_name is not enforced."""
-        return await asyncio.to_thread(self._load_by_sha256s_sync, sha256s, document_type, run_scope)  # pyright: ignore[reportReturnType]
+        result = await _run_filesystem_call(self._load_by_sha256s_sync, sha256s, document_type, run_scope)
+        return cast(dict[DocumentSha256, _D], result)
 
     async def load_nodes_by_sha256s(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentNode]:
         """Batch-load lightweight metadata by SHA256."""
-        return await asyncio.to_thread(self._load_nodes_by_sha256s_sync, sha256s)
+        return await _run_filesystem_call(self._load_nodes_by_sha256s_sync, sha256s)
 
     async def load_scope_metadata(self, run_scope: RunScope) -> list[DocumentNode]:
         """Load lightweight metadata for all documents in the store."""
-        return await asyncio.to_thread(self._load_scope_metadata_sync, run_scope)
+        return await _run_filesystem_call(self._load_scope_metadata_sync, run_scope)
 
     async def find_by_source(
         self,
@@ -167,7 +190,7 @@ class LocalDocumentStore:
         max_age: timedelta | None = None,
     ) -> dict[str, Document]:
         """Find most recent document per source value by scanning meta files."""
-        return await asyncio.to_thread(self._find_by_source_sync, source_values, document_type, max_age)
+        return await _run_filesystem_call(self._find_by_source_sync, source_values, document_type, max_age)
 
     async def save_flow_completion(
         self,
@@ -177,7 +200,7 @@ class LocalDocumentStore:
         output_sha256s: tuple[str, ...],
     ) -> None:
         """Save flow completion record as JSON file."""
-        await asyncio.to_thread(self._save_flow_completion_sync, run_scope, flow_name, input_sha256s, output_sha256s)
+        await _run_filesystem_call(self._save_flow_completion_sync, run_scope, flow_name, input_sha256s, output_sha256s)
 
     async def get_flow_completion(
         self,
@@ -187,7 +210,7 @@ class LocalDocumentStore:
         max_age: timedelta | None = None,
     ) -> FlowCompletion | None:
         """Load flow completion record from JSON file."""
-        return await asyncio.to_thread(self._get_flow_completion_sync, run_scope, flow_name, max_age)
+        return await _run_filesystem_call(self._get_flow_completion_sync, run_scope, flow_name, max_age)
 
     def flush(self) -> None:
         """Block until all pending document summaries are processed."""
@@ -199,9 +222,9 @@ class LocalDocumentStore:
         if self._summary_worker:
             self._summary_worker.shutdown()
 
-    # --- Sync implementation (called via asyncio.to_thread) ---
+    # --- Sync implementation (called via the shared filesystem executor) ---
 
-    def _save_sync(self, document: Document, run_scope: RunScope) -> bool:
+    def _save_sync(self, document: Document, run_scope: RunScope, created_by_task: str) -> bool:
         canonical = document.__class__.__name__
         doc_dir = self._base_path / canonical
         doc_dir.mkdir(parents=True, exist_ok=True)
@@ -257,10 +280,12 @@ class LocalDocumentStore:
             "document_sha256": doc_sha256,
             "content_sha256": content_sha256,
             "class_name": document.__class__.__name__,
+            "created_by_task": created_by_task,
             "description": document.description,
             "derived_from": list(document.derived_from),
             "triggered_by": list(document.triggered_by),
             "mime_type": document.mime_type,
+            "publicly_visible": getattr(document.__class__, "publicly_visible", False),
             "attachments": att_meta_list,
             "stored_at": datetime.now(UTC).isoformat(),
         }

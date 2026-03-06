@@ -47,21 +47,33 @@ class DualDocumentStore:
             )
             self._summary_worker.start()
 
-    async def save(self, document: Document, run_scope: RunScope) -> None:
+    async def _save_primary(self, document: Document, run_scope: RunScope, created_by_task: str) -> None:
+        await self._primary.save(document, run_scope, created_by_task=created_by_task)
+
+    async def _save_secondary(self, document: Document, run_scope: RunScope, created_by_task: str) -> None:
+        await self._secondary.save(document, run_scope, created_by_task=created_by_task)
+
+    async def _save_batch_primary(self, documents: list[Document], run_scope: RunScope, created_by_task: str) -> None:
+        await self._primary.save_batch(documents, run_scope, created_by_task=created_by_task)
+
+    async def _save_batch_secondary(self, documents: list[Document], run_scope: RunScope, created_by_task: str) -> None:
+        await self._secondary.save_batch(documents, run_scope, created_by_task=created_by_task)
+
+    async def save(self, document: Document, run_scope: RunScope, *, created_by_task: str = "") -> None:
         """Save document to both stores; schedule summary generation."""
-        await self._primary.save(document, run_scope)
+        await self._save_primary(document, run_scope, created_by_task)
         try:
-            await self._secondary.save(document, run_scope)
+            await self._save_secondary(document, run_scope, created_by_task)
         except Exception:
             logger.warning("Secondary store save failed for '%s'", document.name, exc_info=True)
         if self._summary_worker:
             self._summary_worker.schedule(document)
 
-    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope, *, created_by_task: str = "") -> None:
         """Save documents to both stores; schedule summary generation for each."""
-        await self._primary.save_batch(documents, run_scope)
+        await self._save_batch_primary(documents, run_scope, created_by_task)
         try:
-            await self._secondary.save_batch(documents, run_scope)
+            await self._save_batch_secondary(documents, run_scope, created_by_task)
         except Exception:
             logger.warning("Secondary store save_batch failed", exc_info=True)
         if self._summary_worker:

@@ -10,24 +10,23 @@ import pytest
 from google.api_core.exceptions import GoogleAPICallError
 
 from ai_pipeline_core import FlowOptions
+from ai_pipeline_core.deployment._pubsub import PubSubPublisher
 from ai_pipeline_core.deployment._types import EventType, _NoopPublisher
-from ai_pipeline_core.deployment.contract import FlowStatus
+from ai_pipeline_core.deployment._contract import FlowStatus
+from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 
 from .conftest import (
     CollectedEvent,
-    PubSubTestResources,
+    PubsubTestResources,
     PublisherWithStore,
-    SingleFlowDeployment,
-    ThreeFlowDeployment,
-    TwoFlowDeployment,
+    SingleStageDeployment,
+    ThreeStageDeployment,
+    TwoStageDeployment,
     _flow_executions,
     make_input_doc,
     pull_events,
     run_pipeline,
 )
-from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-from ai_pipeline_core.deployment._pubsub import PubSubPublisher
-
 
 pytestmark = pytest.mark.pubsub
 
@@ -37,11 +36,11 @@ def _progress_events(events: list[CollectedEvent]) -> list[CollectedEvent]:
     return [e for e in events if e.event_type == EventType.PROGRESS]
 
 
-def _make_fresh_publisher(pubsub_topic: PubSubTestResources) -> PublisherWithStore:
+def _make_fresh_publisher(pubsub_test_resources: PubsubTestResources) -> PublisherWithStore:
     """Create a new PubSubPublisher for the second run."""
-    topic_id = pubsub_topic.topic_path.split("/")[-1]
+    topic_id = pubsub_test_resources.topic_path.split("/")[-1]
     publisher = PubSubPublisher(
-        project_id=pubsub_topic.project_id,
+        project_id=pubsub_test_resources.project_id,
         topic_id=topic_id,
         service_type="test-service",
     )
@@ -56,8 +55,8 @@ class TestResumedFlowCachedStatus:
         pubsub_emulator: str,
         pubsub_memory_store: MemoryDocumentStore,
     ):
-        """Run TwoFlowDeployment twice; second run's progress events all have status=CACHED."""
-        deployment = TwoFlowDeployment()
+        """Run TwoStageDeployment twice; second run's progress events all have status=CACHED."""
+        deployment = TwoStageDeployment()
         doc = make_input_doc()
 
         # First run: use _NoopPublisher (we don't care about its events)
@@ -65,9 +64,9 @@ class TestResumedFlowCachedStatus:
         assert len(_flow_executions) == 2  # both flows executed
 
         # Create a fresh topic + subscription for the second run
-        from .conftest import PubSubTestResources
-        from google.cloud.pubsub_v1 import PublisherClient, SubscriberClient
         from uuid import uuid4
+
+        from google.cloud.pubsub_v1 import PublisherClient, SubscriberClient
 
         pub_client = PublisherClient()
         sub_client = SubscriberClient()
@@ -78,7 +77,7 @@ class TestResumedFlowCachedStatus:
         pub_client.create_topic(name=topic_path)
         sub_client.create_subscription(name=sub_path, topic=topic_path)
 
-        resources = PubSubTestResources(
+        resources = PubsubTestResources(
             project_id="test-project",
             topic_path=topic_path,
             subscription_path=sub_path,
@@ -94,8 +93,8 @@ class TestResumedFlowCachedStatus:
             await run_pipeline(deployment, second_pub.publisher, pubsub_memory_store, docs=[doc])
             assert len(_flow_executions) == 0  # no flows executed (all cached)
 
-            # 2 cached flows: 1 started + 2 progress (CACHED x2) + 1 completed = 4
-            events = pull_events(resources, expected_count=4)
+            # 2 cached flows: 1 run.started + 2*(flow.skipped + progress.CACHED) + 1 run.completed = 6
+            events = pull_events(resources, expected_count=6)
             progress = _progress_events(events)
 
             assert len(progress) == 2
@@ -124,8 +123,8 @@ class TestResumedPipelineLifecycle:
         pubsub_emulator: str,
         pubsub_memory_store: MemoryDocumentStore,
     ):
-        """SingleFlowDeployment run twice: second run still has task.started and task.completed."""
-        deployment = SingleFlowDeployment()
+        """SingleStageDeployment run twice: second run still has run.started and run.completed."""
+        deployment = SingleStageDeployment()
         doc = make_input_doc()
 
         # First run: use _NoopPublisher
@@ -133,8 +132,9 @@ class TestResumedPipelineLifecycle:
         assert len(_flow_executions) == 1
 
         # Create fresh topic for second run
-        from google.cloud.pubsub_v1 import PublisherClient, SubscriberClient
         from uuid import uuid4
+
+        from google.cloud.pubsub_v1 import PublisherClient, SubscriberClient
 
         pub_client = PublisherClient()
         sub_client = SubscriberClient()
@@ -145,7 +145,7 @@ class TestResumedPipelineLifecycle:
         pub_client.create_topic(name=topic_path)
         sub_client.create_subscription(name=sub_path, topic=topic_path)
 
-        resources = PubSubTestResources(
+        resources = PubsubTestResources(
             project_id="test-project",
             topic_path=topic_path,
             subscription_path=sub_path,
@@ -160,11 +160,11 @@ class TestResumedPipelineLifecycle:
             await run_pipeline(deployment, second_pub.publisher, pubsub_memory_store, docs=[doc])
             assert len(_flow_executions) == 0  # cached
 
-            # 1 cached flow: 1 started + 1 progress (CACHED) + 1 completed = 3
-            events = pull_events(resources, expected_count=3)
+            # 1 cached flow: 1 run.started + (flow.skipped + progress.CACHED) + 1 run.completed = 4
+            events = pull_events(resources, expected_count=4)
 
-            started = [e for e in events if e.event_type == EventType.STARTED]
-            completed = [e for e in events if e.event_type == EventType.COMPLETED]
+            started = [e for e in events if e.event_type == EventType.RUN_STARTED]
+            completed = [e for e in events if e.event_type == EventType.RUN_COMPLETED]
             progress = _progress_events(events)
 
             assert len(started) == 1
@@ -193,23 +193,24 @@ class TestPartialResumeMix:
         """3-flow deployment: flows A and B have pre-saved FlowCompletion records,
         flow C executes. Assert A+B progress events are CACHED, C has STARTED -> COMPLETED.
         """
-        deployment = ThreeFlowDeployment()
+        deployment = ThreeStageDeployment()
         doc = make_input_doc()
 
-        # Pre-save FlowCompletion records for flow_a and flow_b (same pattern as test_resume_logic.py)
-        # First, run a full pipeline to populate the store with documents and completions
+        # First run to populate the store with documents and completions
         await run_pipeline(deployment, _NoopPublisher(), pubsub_memory_store, docs=[doc])
         assert set(_flow_executions) == {"flow_a", "flow_b", "flow_c"}
 
         # Delete flow_c's completion record so it re-executes on second run
+        # completion_name format: f"{flow_name}:{step}" where flow_c is step 3
         from ai_pipeline_core.deployment.base import _compute_run_scope
 
         run_scope = _compute_run_scope("test-run", [doc], FlowOptions())
-        del pubsub_memory_store._flow_completions[run_scope, "pubsub_flow_c"]
+        del pubsub_memory_store._flow_completions[run_scope, "chain_output_to_final:3"]
 
         # Create fresh topic for second run
-        from google.cloud.pubsub_v1 import PublisherClient, SubscriberClient
         from uuid import uuid4
+
+        from google.cloud.pubsub_v1 import PublisherClient, SubscriberClient
 
         pub_client = PublisherClient()
         sub_client = SubscriberClient()
@@ -220,7 +221,7 @@ class TestPartialResumeMix:
         pub_client.create_topic(name=topic_path)
         sub_client.create_subscription(name=sub_path, topic=topic_path)
 
-        resources = PubSubTestResources(
+        resources = PubsubTestResources(
             project_id="test-project",
             topic_path=topic_path,
             subscription_path=sub_path,
@@ -237,8 +238,10 @@ class TestPartialResumeMix:
             # Only flow_c should have re-executed
             assert _flow_executions == ["flow_c"]
 
-            # 2 cached + 1 executed: 1 started + 4 progress (2 CACHED + STARTED + COMPLETED) + 1 completed = 6
-            events = pull_events(resources, expected_count=6)
+            # 2 cached + 1 executed:
+            # 1 run.started + 2*(flow.skipped + progress.CACHED) + (flow.started + progress.STARTED
+            # + progress.COMPLETED + flow.completed) + 1 run.completed = 10
+            events = pull_events(resources, expected_count=10)
             progress = _progress_events(events)
 
             assert len(progress) == 4
@@ -249,13 +252,13 @@ class TestPartialResumeMix:
                 by_flow.setdefault(evt.data["flow_name"], []).append(evt)
 
             # Flows A and B: single CACHED event each
-            for name in ("pubsub_flow_a", "pubsub_flow_b"):
+            for name in ("chain_input_to_middle", "chain_middle_to_output"):
                 flow_events = by_flow[name]
                 assert len(flow_events) == 1
                 assert flow_events[0].data["status"] == FlowStatus.CACHED
 
             # Flow C: STARTED then COMPLETED
-            flow_c_events = by_flow["pubsub_flow_c"]
+            flow_c_events = by_flow["chain_output_to_final"]
             assert len(flow_c_events) == 2
             statuses = [evt.data["status"] for evt in flow_c_events]
             assert statuses == [FlowStatus.STARTED, FlowStatus.COMPLETED]

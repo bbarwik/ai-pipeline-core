@@ -1,130 +1,92 @@
 #!/usr/bin/env python3
-"""Document store showcase — runs standalone without external services.
-
-Demonstrates:
-  - Defining Document subclasses
-  - @pipeline_task auto-save behavior
-  - @pipeline_flow annotation-driven type extraction
-  - A simple 2-flow PipelineDeployment with run_local()
-  - Reading documents back from the store after pipeline execution
-
-Usage:
-  python examples/showcase_document_store.py
-"""
-
-from typing import ClassVar
+"""Document-store showcase using class-based PipelineTask/PipelineFlow."""
 
 from ai_pipeline_core import (
     DeploymentResult,
     Document,
     FlowOptions,
     PipelineDeployment,
-    pipeline_flow,
-    pipeline_task,
+    PipelineFlow,
+    PipelineTask,
 )
+from ai_pipeline_core.logging import get_pipeline_logger
 
-# ---------------------------------------------------------------------------
-# Document types
-# ---------------------------------------------------------------------------
+logger = get_pipeline_logger(__name__)
 
 
 class RawDataDocument(Document):
-    """Raw input data."""
+    """Root input."""
 
 
 class CleanedDataDocument(Document):
-    """Cleaned/processed data."""
+    """Normalized output from cleaning."""
 
 
 class SummaryReportDocument(Document):
-    """Final summary report."""
+    """Final report."""
 
 
-# ---------------------------------------------------------------------------
-# Pipeline tasks with auto-save
-# ---------------------------------------------------------------------------
+class CleanDataTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: list[RawDataDocument]) -> list[CleanedDataDocument]:
+        logger.debug("Running %s", cls.name)
+        return [
+            CleanedDataDocument.derive(
+                from_documents=(raw,),
+                name=f"cleaned_{raw.name}",
+                content=" ".join(raw.text.split()).upper(),
+            )
+            for raw in documents
+        ]
 
 
-@pipeline_task
-async def clean_data(raw: RawDataDocument) -> CleanedDataDocument:
-    """Clean raw data. Returned document is auto-saved by @pipeline_task."""
-    content = " ".join(raw.text.split()).upper()
-    return CleanedDataDocument.create(
-        name=f"cleaned_{raw.name}",
-        content=content,
-        derived_from=(raw.sha256,),
-    )
+class BuildSummaryTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: list[CleanedDataDocument]) -> list[SummaryReportDocument]:
+        logger.debug("Running %s", cls.name)
+        lines = ["# Summary", "", f"Total documents: {len(documents)}", ""]
+        for idx, doc in enumerate(documents, start=1):
+            lines.append(f"- Doc {idx} ({doc.name}): {doc.text[:60]}")
+        return [
+            SummaryReportDocument.create(
+                name="summary.md",
+                content="\n".join(lines),
+                derived_from=tuple(doc.sha256 for doc in documents),
+            )
+        ]
 
 
-@pipeline_task
-async def build_summary(
-    run_id: str,
-    cleaned_docs: list[CleanedDataDocument],
-) -> SummaryReportDocument:
-    """Summarize cleaned documents into a report."""
-    lines = [
-        f"# {run_id} Summary",
-        "",
-        f"Total documents: {len(cleaned_docs)}",
-        "",
-    ]
-    for i, doc in enumerate(cleaned_docs, start=1):
-        preview = doc.text[:60]
-        lines.append(f"- Doc {i} ({doc.name}): {preview}...")
-
-    return SummaryReportDocument.create(
-        name="summary.md",
-        content="\n".join(lines),
-        derived_from=tuple(d.sha256 for d in cleaned_docs),
-    )
+class CleaningFlow(PipelineFlow):
+    async def run(
+        self,
+        run_id: str,
+        documents: list[RawDataDocument],
+        options: FlowOptions,
+    ) -> list[CleanedDataDocument]:
+        logger.debug("Running %s [%s]", type(self).name, run_id)
+        return await CleanDataTask.run(documents)
 
 
-# ---------------------------------------------------------------------------
-# Pipeline flows with annotation-driven types
-# ---------------------------------------------------------------------------
-
-
-@pipeline_flow(estimated_minutes=1)
-async def cleaning_flow(
-    run_id: str,
-    documents: list[RawDataDocument],
-    flow_options: FlowOptions,
-) -> list[CleanedDataDocument]:
-    """Flow 1: clean all raw data documents."""
-    results: list[CleanedDataDocument] = []
-    for doc in documents:
-        cleaned = await clean_data(doc)
-        results.append(cleaned)
-    return results
-
-
-@pipeline_flow(estimated_minutes=1)
-async def summary_flow(
-    run_id: str,
-    documents: list[CleanedDataDocument],
-    flow_options: FlowOptions,
-) -> list[SummaryReportDocument]:
-    """Flow 2: generate summary from cleaned documents."""
-    report = await build_summary(run_id, documents)
-    return [report]
-
-
-# ---------------------------------------------------------------------------
-# PipelineDeployment with run_local()
-# ---------------------------------------------------------------------------
+class SummaryFlow(PipelineFlow):
+    async def run(
+        self,
+        run_id: str,
+        documents: list[CleanedDataDocument],
+        options: FlowOptions,
+    ) -> list[SummaryReportDocument]:
+        logger.debug("Running %s [%s]", type(self).name, run_id)
+        return await BuildSummaryTask.run(documents)
 
 
 class StoreShowcaseResult(DeploymentResult):
-    """Result from the document store showcase pipeline."""
-
     summary_preview: str = ""
     document_count: int = 0
 
 
 class StoreShowcasePipeline(PipelineDeployment[FlowOptions, StoreShowcaseResult]):
-    """2-flow pipeline: clean raw data, then summarize."""
-
-    flows: ClassVar = [cleaning_flow, summary_flow]
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        logger.debug("Building flows for %s", type(self).__name__)
+        return [CleaningFlow(), SummaryFlow()]
 
     @staticmethod
     def build_result(
@@ -132,42 +94,37 @@ class StoreShowcasePipeline(PipelineDeployment[FlowOptions, StoreShowcaseResult]
         documents: list[Document],
         options: FlowOptions,
     ) -> StoreShowcaseResult:
+        _ = (run_id, options)
         summaries = [d for d in documents if isinstance(d, SummaryReportDocument)]
-        if summaries:
-            return StoreShowcaseResult(
-                success=True,
-                summary_preview=summaries[0].text[:200],
-                document_count=len(documents),
-            )
-        return StoreShowcaseResult(success=False, error="No summary produced")
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+        if not summaries:
+            return StoreShowcaseResult(success=False, error="No summary produced")
+        return StoreShowcaseResult(
+            success=True,
+            summary_preview=summaries[0].text[:200],
+            document_count=len(documents),
+        )
 
 
 def main() -> None:
-    """Run full pipeline via PipelineDeployment.run_local()."""
-    print("\n=== PipelineDeployment.run_local() Demo ===\n")
-
     pipeline = StoreShowcasePipeline()
     input_docs: list[Document] = [
-        RawDataDocument.create(name="file_a.txt", content="First raw document with important data"),
-        RawDataDocument.create(name="file_b.txt", content="Second raw document with more data"),
-        RawDataDocument.create(name="file_c.txt", content="Third raw document with final data"),
+        RawDataDocument.create_root(
+            name="file_a.txt",
+            content="First raw document with important data",
+            reason="showcase sample input data for document store demo",
+        ),
+        RawDataDocument.create_root(
+            name="file_b.txt",
+            content="Second raw document with more data",
+            reason="showcase sample input data for document store demo",
+        ),
     ]
-
     result = pipeline.run_local(
         run_id="store-showcase",
         documents=input_docs,
         options=FlowOptions(),
     )
-
-    print(f"Pipeline success: {result.success}")
-    print(f"Total documents in store: {result.document_count}")
-    print(f"Summary preview:\n{result.summary_preview}")
-    print("\nDemo completed successfully.")
+    print(result.model_dump_json(indent=2))
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from ai_pipeline_core.documents._context import (
     RunContext,
     _TaskDocumentContext,
     _get_run_context,
+    _suppress_document_registration,
     _set_run_context,
 )
 
@@ -24,9 +25,10 @@ def _make_doc(
     derived_from: tuple[str, ...] | None = None,
     triggered_by: tuple[str, ...] | None = None,
 ) -> SampleDoc:
-    if derived_from or triggered_by:
-        return SampleDoc.create(name=name, content=content, derived_from=derived_from, triggered_by=triggered_by)
-    return SampleDoc.create_root(name=name, content=content, reason="test fixture")
+    with _suppress_document_registration():
+        if derived_from or triggered_by:
+            return SampleDoc.create(name=name, content=content, derived_from=derived_from, triggered_by=triggered_by)
+        return SampleDoc.create_root(name=name, content=content, reason="test fixture")
 
 
 # ===== RunContext tests =====

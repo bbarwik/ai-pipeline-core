@@ -8,12 +8,19 @@ import pytest
 from ai_pipeline_core.document_store._summary_worker import SUMMARY_EXCERPT_CHARS, _build_excerpt
 from ai_pipeline_core.document_store._local import LocalDocumentStore
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents.document import Document
 from ai_pipeline_core.documents import RunScope
 
 
 class SummaryTestDocument(Document):
     pass
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
 
 
 async def _mock_generator(name: str, excerpt: str) -> str:

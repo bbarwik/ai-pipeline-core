@@ -7,8 +7,11 @@ document SHA256 arrays on various output types (single, list, tuple, None).
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from pydantic import BaseModel, ConfigDict
+
+from ai_pipeline_core.documents import DocumentSha256
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.observability._document_tracking import track_task_io
+from ai_pipeline_core.observability._document_tracking import _collect_sha256s, track_task_io
 from ai_pipeline_core.observability._span_data import ATTR_INPUT_DOC_SHA256S, ATTR_OUTPUT_DOC_SHA256S
 
 
@@ -116,6 +119,7 @@ class TestDeploymentSpanOutput:
 
     def test_as_prefect_flow_sets_span_output(self) -> None:
         from ai_pipeline_core.deployment.base import DeploymentResult, PipelineDeployment
+        from ai_pipeline_core.pipeline._flow import PipelineFlow
         from ai_pipeline_core.pipeline.options import FlowOptions
 
         class _TestResult(DeploymentResult):
@@ -124,20 +128,21 @@ class TestDeploymentSpanOutput:
         class _TestOptions(FlowOptions):
             pass
 
-        async def _test_flow(
-            run_id: str,
-            documents: list[Document],
-            flow_options: _TestOptions,
-        ) -> list[Document]:
-            return []
+        class _SpanTestInputDoc(Document):
+            """Input document for span output test."""
 
-        _test_flow.input_document_types = []  # type: ignore[attr-defined]
-        _test_flow.output_document_types = []  # type: ignore[attr-defined]
-        _test_flow.estimated_minutes = 1  # type: ignore[attr-defined]
-        _test_flow.name = "test_flow"  # type: ignore[attr-defined]
+        class _SpanTestOutputDoc(Document):
+            """Output document for span output test."""
+
+        class _SpanTestFlow(PipelineFlow):
+            """Test flow for span output test."""
+
+            async def run(self, run_id: str, documents: list[_SpanTestInputDoc], options: FlowOptions) -> list[_SpanTestOutputDoc]:
+                return []
 
         class _TestDeployment(PipelineDeployment[_TestOptions, _TestResult]):
-            flows = [_test_flow]
+            def build_flows(self, options: _TestOptions) -> list[PipelineFlow]:
+                return [_SpanTestFlow()]
 
             @staticmethod
             def build_result(run_id: str, documents: list[Document], options: Any) -> _TestResult:
@@ -158,3 +163,22 @@ class TestDeploymentSpanOutput:
 
         source = inspect.getsource(run_cli_for_deployment)
         assert "set_span_output" in source
+
+
+class _TrackDoc(Document):
+    """Doc for tracking test."""
+
+
+def test_collect_sha256s_recurses_into_dict_and_basemodel() -> None:
+    """_collect_sha256s must find documents in dict values and BaseModel fields."""
+
+    class Carrier(BaseModel):
+        model_config = ConfigDict(frozen=True)
+        payload: dict[str, _TrackDoc]
+
+    doc = _TrackDoc(name="t.txt", content=b"x")
+    carrier = Carrier(payload={"a": doc})
+
+    sha256s: list[DocumentSha256] = []
+    _collect_sha256s(carrier, sha256s)
+    assert doc.sha256 in sha256s

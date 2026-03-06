@@ -361,14 +361,10 @@ def test_tool_call_records_not_accumulated_across_sends() -> None:
     Phase 1 records must NOT appear in Phase 2's tool_call_records.
     This enables the collection pattern: phase1.tool_call_records + phase2.tool_call_records.
     """
-    phase1_records = (
-        ToolCallRecord(tool=ToolA, input=ToolA.Input(x="a"), output=ToolOutput(content="r1"), round=1),
-    )
+    phase1_records = (ToolCallRecord(tool=ToolA, input=ToolA.Input(x="a"), output=ToolOutput(content="r1"), round=1),)
     conv_after_phase1 = Conversation(model="test").model_copy(update={"_tool_call_records": phase1_records})
 
-    phase2_records = (
-        ToolCallRecord(tool=ToolB, input=ToolB.Input(y="b"), output=ToolOutput(content="r2"), round=1),
-    )
+    phase2_records = (ToolCallRecord(tool=ToolB, input=ToolB.Input(y="b"), output=ToolOutput(content="r2"), round=1),)
     conv_after_phase2 = conv_after_phase1.model_copy(update={"_tool_call_records": phase2_records})
 
     # Phase 1 has only its own records

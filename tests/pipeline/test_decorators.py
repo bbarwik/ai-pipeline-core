@@ -1,905 +1,257 @@
-"""Comprehensive tests for pipeline.py decorators."""
+"""PipelineTask and PipelineFlow entry-point tests.
 
-import asyncio
-import datetime
-from typing import Any
+Tests estimated_minutes validation, document persistence to store,
+persistence failure handling, and annotation extraction.
+"""
+
+from unittest.mock import AsyncMock
 
 import pytest
-from prefect.cache_policies import NONE
-from prefect.context import TaskRunContext
-from prefect.flows import Flow
-from prefect.tasks import Task
-from pydantic import BaseModel
 
-from ai_pipeline_core.document_store._protocol import set_document_store
+from ai_pipeline_core import Document
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents import RunContext
-from ai_pipeline_core.documents._context import _get_run_context, _reset_run_context, _set_run_context
-from ai_pipeline_core.pipeline import (
-    pipeline_flow,
-    pipeline_task,
-)
-from ai_pipeline_core.pipeline._type_validation import (
-    flatten_union,
-    parse_document_types_from_annotation,
-)
-from ai_pipeline_core.pipeline.decorators import (
-    _extract_documents,
-)
+from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask, collect_tasks, pipeline_test_context
 from ai_pipeline_core.pipeline.options import FlowOptions
 
 
-class InputDocument(Document):
-    """Input document for flow testing."""
+class InputDoc(Document):
+    pass
 
 
-class OutputDocument(Document):
-    """Output document for flow testing."""
+class OutputDoc(Document):
+    pass
 
 
-class AltInputDocument(Document):
-    """Alternative input document for union type testing."""
-
-
-# --------------------------------------------------------------------------- #
-# Annotation parsing tests
-# --------------------------------------------------------------------------- #
-class TestAnnotationParsing:
-    """Test annotation extraction from type hints."""
-
-    def test_single_type(self):
-        parsed = parse_document_types_from_annotation(list[InputDocument])
-        assert parsed == [InputDocument]
-
-    def test_pipe_union(self):
-        parsed = parse_document_types_from_annotation(list[InputDocument | AltInputDocument])
-        assert set(parsed) == {InputDocument, AltInputDocument}
-
-    def test_typing_union(self):
-        parsed = parse_document_types_from_annotation(list[InputDocument | AltInputDocument])
-        assert set(parsed) == {InputDocument, AltInputDocument}
-
-    def test_base_document(self):
-        parsed = parse_document_types_from_annotation(list[Document])
-        assert parsed == [Document]
-
-    def test_non_list_returns_empty(self):
-        parsed = parse_document_types_from_annotation(dict[str, InputDocument])
-        assert parsed == []
-
-    def test_plain_list_returns_empty(self):
-        parsed = parse_document_types_from_annotation(list)
-        assert parsed == []
-
-    def test_non_document_types_ignored(self):
-        # list[str] has no Document subclasses
-        parsed = parse_document_types_from_annotation(list[str])
-        assert parsed == []
-
-    def test_flatten_union_simple(self):
-        result = flatten_union(InputDocument)
-        assert result == [InputDocument]
-
-    def test_flatten_union_pipe(self):
-        result = flatten_union(InputDocument | AltInputDocument)
-        assert set(result) == {InputDocument, AltInputDocument}
+class AltInputDoc(Document):
+    pass
 
 
 # --------------------------------------------------------------------------- #
-# Document extraction tests
+# Basic task lifecycle tests
 # --------------------------------------------------------------------------- #
-class TestDocumentExtraction:
-    """Test _extract_documents recursive walker."""
 
-    def test_single_document(self):
-        doc = InputDocument(name="a.txt", content=b"a")
-        assert _extract_documents(doc) == [doc]
 
-    def test_list_of_documents(self):
-        d1 = InputDocument(name="a.txt", content=b"a")
-        d2 = OutputDocument(name="b.txt", content=b"b")
-        result = _extract_documents([d1, d2])
-        assert result == [d1, d2]
+class EchoTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: list[InputDoc]) -> list[OutputDoc]:
+        _ = cls
+        return [
+            OutputDoc.derive(
+                from_documents=(doc,),
+                name=f"out_{doc.name}",
+                content=doc.content,
+            )
+            for doc in documents
+        ]
 
-    def test_tuple_of_documents(self):
-        d1 = InputDocument(name="a.txt", content=b"a")
-        result = _extract_documents((d1,))
-        assert result == [d1]
 
-    def test_dict_returns_empty(self):
-        """Simplified _extract_documents does not walk dicts."""
-        d1 = InputDocument(name="a.txt", content=b"a")
-        result = _extract_documents({"key": d1})
-        assert result == []
+@pytest.mark.asyncio
+async def test_task_run_is_awaitable() -> None:
+    doc = InputDoc.create_root(name="a.txt", content="hello", reason="test input")
+    with pipeline_test_context():
+        outputs = await EchoTask.run([doc])
+    assert len(outputs) == 1
+    assert outputs[0].name == "out_a.txt"
 
-    def test_pydantic_model_returns_empty(self):
-        """Simplified _extract_documents does not walk BaseModel fields."""
-        d1 = InputDocument(name="a.txt", content=b"a")
 
-        class Result(BaseModel):
-            model_config = {"arbitrary_types_allowed": True}
-            report: InputDocument
-            count: int = 5
-
-        r = Result(report=d1)
-        result = _extract_documents(r)
-        assert result == []
-
-    def test_non_document_returns_empty(self):
-        assert _extract_documents("hello") == []
-        assert _extract_documents(42) == []
-        assert _extract_documents(None) == []
-
-    def test_mixed_types(self):
-        d1 = InputDocument(name="a.txt", content=b"a")
-        result = _extract_documents([d1, "string", 42, None])
-        assert result == [d1]
+@pytest.mark.asyncio
+async def test_task_handles_can_be_collected() -> None:
+    first = InputDoc.create_root(name="a.txt", content="a", reason="test input")
+    second = InputDoc.create_root(name="b.txt", content="b", reason="test input")
+    with pipeline_test_context():
+        batch = await collect_tasks(EchoTask.run([first]), EchoTask.run([second]))
+    flattened = [doc for docs in batch.completed for doc in docs]
+    assert batch.incomplete == []
+    assert {doc.name for doc in flattened} == {"out_a.txt", "out_b.txt"}
 
 
 # --------------------------------------------------------------------------- #
 # Estimated minutes tests
 # --------------------------------------------------------------------------- #
+
+
 class TestEstimatedMinutes:
-    """Test estimated_minutes parameter."""
+    """Test estimated_minutes ClassVar validation."""
 
     def test_task_stores_estimated_minutes(self):
-        @pipeline_task(estimated_minutes=5)
-        async def my_task() -> None:
-            pass
+        class MinutesTask(PipelineTask):
+            estimated_minutes = 5
 
-        assert my_task.estimated_minutes == 5
-
-    def test_task_default_estimated_minutes(self):
-        @pipeline_task
-        async def my_task() -> None:
-            pass
-
-        assert my_task.estimated_minutes == 1
-
-    def test_flow_stores_estimated_minutes(self):
-        @pipeline_flow(estimated_minutes=30)
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return []
-
-        assert my_flow.estimated_minutes == 30
-
-    def test_flow_default_estimated_minutes(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return []
-
-        assert my_flow.estimated_minutes == 1
-
-    def test_task_rejects_zero(self):
-        with pytest.raises(ValueError, match="estimated_minutes must be >= 1"):
-
-            @pipeline_task(estimated_minutes=0)
-            async def my_task() -> None:
+            @classmethod
+            async def run(cls) -> None:
                 pass
 
-    def test_flow_rejects_zero(self):
-        with pytest.raises(ValueError, match="estimated_minutes must be >= 1"):
+        assert MinutesTask.estimated_minutes == 5
 
-            @pipeline_flow(estimated_minutes=0)
-            async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
+    def test_task_default_estimated_minutes(self):
+        class DefaultTask(PipelineTask):
+            @classmethod
+            async def run(cls) -> None:
+                pass
+
+        assert DefaultTask.estimated_minutes == 1
+
+    def test_flow_stores_estimated_minutes(self):
+        class MinutesFlow(PipelineFlow):
+            estimated_minutes = 30
+
+            async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
                 return []
+
+        assert MinutesFlow.estimated_minutes == 30
+
+    def test_flow_default_estimated_minutes(self):
+        class DefaultFlow(PipelineFlow):
+            async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
+                return []
+
+        assert DefaultFlow.estimated_minutes == 1
+
+    def test_task_rejects_zero(self):
+        with pytest.raises(TypeError, match="estimated_minutes"):
+
+            class BadTask(PipelineTask):
+                estimated_minutes = 0
+
+                @classmethod
+                async def run(cls) -> None:
+                    pass
+
+    def test_flow_rejects_zero(self):
+        with pytest.raises(TypeError, match="estimated_minutes"):
+
+            class BadFlow(PipelineFlow):
+                estimated_minutes = 0
+
+                async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
+                    return []
 
 
 # --------------------------------------------------------------------------- #
 # Flow annotation extraction tests
 # --------------------------------------------------------------------------- #
+
+
 class TestFlowAnnotationExtraction:
-    """Test that @pipeline_flow extracts document types from annotations."""
+    """Test that PipelineFlow extracts document types from annotations."""
 
     def test_extracts_input_types(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return []
+        class ExtractFlow(PipelineFlow):
+            async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
+                return []
 
-        assert my_flow.input_document_types == [InputDocument]
+        assert ExtractFlow.input_document_types == [InputDoc]
 
     def test_extracts_output_types(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return []
+        class ExtractFlow(PipelineFlow):
+            async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
+                return []
 
-        assert my_flow.output_document_types == [OutputDocument]
+        assert ExtractFlow.output_document_types == [OutputDoc]
 
     def test_extracts_union_input_types(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument | AltInputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return []
+        class UnionFlow(PipelineFlow):
+            async def run(self, run_id: str, documents: list[InputDoc | AltInputDoc], options: FlowOptions) -> list[OutputDoc]:
+                return []
 
-        assert set(my_flow.input_document_types) == {InputDocument, AltInputDocument}
+        assert set(UnionFlow.input_document_types) == {InputDoc, AltInputDoc}
 
 
 # --------------------------------------------------------------------------- #
 # Document auto-save tests
 # --------------------------------------------------------------------------- #
-class TestDocumentAutoSave:
-    """Test document persistence via @pipeline_task."""
 
+
+class TestDocumentAutoSave:
+    """Test document persistence via PipelineTask."""
+
+    @pytest.mark.asyncio
     async def test_documents_saved_to_store(self):
         store = MemoryDocumentStore()
-        set_document_store(store)
-        token = _set_run_context(RunContext(run_scope="test/flow"))
-        try:
 
-            @pipeline_task
-            async def my_task() -> list[OutputDocument]:
-                return [OutputDocument(name="out.txt", content=b"output")]
+        class SaveTask(PipelineTask):
+            @classmethod
+            async def run(cls, source: InputDoc) -> list[OutputDoc]:
+                return [OutputDoc.derive(from_documents=(source,), name="out.txt", content="output")]
 
-            result = await my_task()
+        source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
+        with pipeline_test_context(store=store) as ctx:
+            result = await SaveTask.run(source)
             assert len(result) == 1
 
-            loaded = await store.load("test/flow", [OutputDocument])
+            loaded = await store.load(ctx.run_scope, [OutputDoc])
             assert len(loaded) == 1
             assert loaded[0].name == "out.txt"
-        finally:
-            _reset_run_context(token)
-            set_document_store(None)
 
-    async def test_no_store_skips_save(self):
-        set_document_store(None)
-        token = _set_run_context(RunContext(run_scope="test/flow"))
-        try:
+    @pytest.mark.asyncio
+    async def test_no_store_works(self):
+        """Task works when no store is configured."""
 
-            @pipeline_task
-            async def my_task() -> list[OutputDocument]:
-                return [OutputDocument(name="out.txt", content=b"output")]
+        class NoStoreTask(PipelineTask):
+            @classmethod
+            async def run(cls, source: InputDoc) -> list[OutputDoc]:
+                return [OutputDoc.derive(from_documents=(source,), name="out.txt", content="output")]
 
-            result = await my_task()
-            assert len(result) == 1  # task still works
-        finally:
-            _reset_run_context(token)
-
-    async def test_no_run_context_skips_save(self):
-        store = MemoryDocumentStore()
-        set_document_store(store)
-        try:
-
-            @pipeline_task
-            async def my_task() -> list[OutputDocument]:
-                return [OutputDocument(name="out.txt", content=b"output")]
-
-            result = await my_task()
+        source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
+        with pipeline_test_context():
+            result = await NoStoreTask.run(source)
             assert len(result) == 1
-            loaded = await store.load("any_scope", [OutputDocument])
-            assert len(loaded) == 0
-        finally:
-            set_document_store(None)
 
+    @pytest.mark.asyncio
     async def test_single_document_return_saved(self):
         store = MemoryDocumentStore()
-        set_document_store(store)
-        token = _set_run_context(RunContext(run_scope="test/flow"))
-        try:
 
-            @pipeline_task
-            async def my_task() -> OutputDocument:
-                return OutputDocument(name="single.txt", content=b"data")
+        class SingleTask(PipelineTask):
+            @classmethod
+            async def run(cls, source: InputDoc) -> OutputDoc:
+                return OutputDoc.derive(from_documents=(source,), name="single.txt", content="data")
 
-            await my_task()
-            loaded = await store.load("test/flow", [OutputDocument])
+        source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
+        with pipeline_test_context(store=store) as ctx:
+            await SingleTask.run(source)
+            loaded = await store.load(ctx.run_scope, [OutputDoc])
             assert len(loaded) == 1
-        finally:
-            _reset_run_context(token)
-            set_document_store(None)
 
+    @pytest.mark.asyncio
+    async def test_none_return_saves_nothing(self):
+        store = MemoryDocumentStore()
 
-# --------------------------------------------------------------------------- #
-# Flow RunContext tests
-# --------------------------------------------------------------------------- #
-class TestFlowRunContext:
-    """Test that @pipeline_flow sets RunContext."""
+        class NoneTask(PipelineTask):
+            @classmethod
+            async def run(cls, source: InputDoc) -> None:
+                pass
 
-    async def test_flow_sets_run_context(self):
-        captured_scope: list[str] = []
-
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            ctx = _get_run_context()
-            assert ctx is not None
-            captured_scope.append(ctx.run_scope)
-            return []
-
-        await my_flow("myproject", [], FlowOptions())
-        assert captured_scope == ["myproject/my_flow"]
-
-    async def test_run_context_cleared_after_flow(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return []
-
-        await my_flow("myproject", [], FlowOptions())
-        assert _get_run_context() is None
-
-    async def test_nested_flow_preserves_outer_context(self):
-        """When outer RunContext exists (set by deployment), flow defers to it."""
-        outer_token = _set_run_context(RunContext(run_scope="outer/scope"))
-        try:
-            captured: list[str] = []
-
-            @pipeline_flow()
-            async def inner_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-                ctx = _get_run_context()
-                assert ctx is not None
-                captured.append(ctx.run_scope)
-                return []
-
-            await inner_flow("inner", [], FlowOptions())
-            # Flow should see the outer (deployment-level) context
-            assert captured == ["outer/scope"]
-            # Outer context must still be intact
-            assert _get_run_context() is not None
-            assert _get_run_context().run_scope == "outer/scope"  # type: ignore[union-attr]
-        finally:
-            _reset_run_context(outer_token)
-
-    async def test_run_scope_uses_name_override(self):
-        """When name= is provided, run_scope should use it instead of function name."""
-        captured_scope: list[str] = []
-
-        @pipeline_flow(name="custom_name")
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            ctx = _get_run_context()
-            assert ctx is not None
-            captured_scope.append(ctx.run_scope)
-            return []
-
-        await my_flow("proj", [], FlowOptions())
-        assert captured_scope == ["proj/custom_name"]
-
-    async def test_run_context_cleared_on_exception(self):
-        """RunContext should be cleared even if the flow raises."""
-
-        @pipeline_flow()
-        async def failing_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            raise RuntimeError("boom")
-
-        with pytest.raises(RuntimeError, match="boom"):
-            await failing_flow("proj", [], FlowOptions())
-
-        assert _get_run_context() is None
+        source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
+        with pipeline_test_context(store=store) as ctx:
+            result = await NoneTask.run(source)
+            assert result == []
+            loaded = await store.load(ctx.run_scope, [OutputDoc])
+            assert len(loaded) == 0
 
 
 # --------------------------------------------------------------------------- #
 # Persistence failure graceful degradation
 # --------------------------------------------------------------------------- #
+
+
 class TestPersistenceGracefulDegradation:
     """Test that persistence failures don't crash tasks."""
 
+    @pytest.mark.asyncio
     async def test_store_save_failure_logs_warning(self):
         """A store that raises on save_batch should not crash the task."""
-        from unittest.mock import AsyncMock, MagicMock
+        broken_store = AsyncMock(spec=MemoryDocumentStore)
+        broken_store.save_batch.side_effect = RuntimeError("store broken")
 
-        broken_store = MagicMock()
-        broken_store.save_batch = AsyncMock(side_effect=RuntimeError("store broken"))
-        broken_store.check_existing = AsyncMock(return_value=set())
-        set_document_store(broken_store)
-        token = _set_run_context(RunContext(run_scope="test/flow"))
-        try:
+        class FailStoreTask(PipelineTask):
+            @classmethod
+            async def run(cls, source: InputDoc) -> list[OutputDoc]:
+                return [OutputDoc.derive(from_documents=(source,), name="out.txt", content="output")]
 
-            @pipeline_task
-            async def my_task() -> list[OutputDocument]:
-                return [OutputDocument(name="out.txt", content=b"output")]
-
-            # Should not raise
-            result = await my_task()
+        source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
+        with pipeline_test_context(store=broken_store):
+            result = await FailStoreTask.run(source)
             assert len(result) == 1
-        finally:
-            _reset_run_context(token)
-            set_document_store(None)
 
 
-# --------------------------------------------------------------------------- #
-# Document extraction edge cases
-# --------------------------------------------------------------------------- #
-class TestDocumentExtractionEdgeCases:
-    """Additional edge cases for _extract_documents."""
-
-    def test_duplicate_instance_not_deduplicated(self):
-        """Simplified _extract_documents returns all instances from flat list."""
-        doc = InputDocument(name="a.txt", content=b"a")
-        result = _extract_documents([doc, doc, doc])
-        assert len(result) == 3
-
-    def test_empty_structures(self):
-        assert _extract_documents([]) == []
-        assert _extract_documents(()) == []
-
-
-# --------------------------------------------------------------------------- #
-# Original test cases (preserved from previous version)
-# --------------------------------------------------------------------------- #
-class TestPipelineTaskDecorator:
-    """Test the pipeline_task decorator functionality."""
-
-    async def test_task_bare_decorator(self):
-        @pipeline_task
-        async def my_task() -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-        assert hasattr(my_task, "submit")
-        assert hasattr(my_task, "map")
-
-    async def test_task_with_parentheses(self):
-        @pipeline_task()
-        async def my_task() -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-
-    async def test_task_with_trace_level_off(self):
-        @pipeline_task(trace_level="off")
-        async def my_task() -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-
-    async def test_task_with_trace_parameters(self):
-        def format_input(*args, **kwargs) -> str:
-            return f"Input: {args}"
-
-        def format_output(result) -> str:
-            return f"Output: {result}"
-
-        @pipeline_task(
-            trace_level="debug",
-            trace_ignore_input=True,
-            trace_ignore_output=True,
-            trace_ignore_inputs=["secret"],
-            trace_input_formatter=format_input,
-            trace_output_formatter=format_output,
-        )
-        async def my_task(x: int, secret: str) -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-
-    async def test_task_with_prefect_parameters(self):
-        @pipeline_task(
-            name="custom_task",
-            description="A test task",
-            tags=["test", "pipeline"],
-            version="1.0.0",
-            retries=3,
-            timeout_seconds=60,
-            log_prints=True,
-        )
-        async def my_task() -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-        assert my_task.name == "custom_task"
-        assert my_task.description == "A test task"
-        assert my_task.retries == 3
-
-    async def test_task_with_cache_parameters(self):
-        def cache_key(context: TaskRunContext, parameters: dict[str, Any]) -> str:
-            return f"key-{parameters.get('x', 0)}"
-
-        @pipeline_task(
-            cache_policy=NONE,
-            cache_key_fn=cache_key,
-            cache_expiration=datetime.timedelta(minutes=10),
-            refresh_cache=True,
-            cache_result_in_memory=False,
-        )
-        async def my_task() -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-
-    async def test_task_with_result_parameters(self):
-        @pipeline_task(
-            persist_result=True,
-            result_storage="local-file-system",
-            result_serializer="json",
-            result_storage_key="my-result",
-        )
-        async def my_task() -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-
-    async def test_task_with_retry_parameters(self):
-        def should_retry(task, task_run, state) -> bool:
-            return True
-
-        @pipeline_task(
-            retries=3,
-            retry_delay_seconds=[1, 2, 3],
-            retry_jitter_factor=0.1,
-            retry_condition_fn=should_retry,
-        )
-        async def my_task() -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-
-    async def test_task_with_hooks(self):
-        def on_complete(task, task_run, state):
-            print("Task completed")
-
-        def on_fail(task, task_run, state):
-            print("Task failed")
-
-        @pipeline_task(on_completion=[on_complete], on_failure=[on_fail])
-        async def my_task() -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-
-    async def test_task_with_viz_and_assets(self):
-        @pipeline_task(viz_return_value=True, asset_deps=[])
-        async def my_task() -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-
-    async def test_task_async_function(self):
-        @pipeline_task(trace_level="always")
-        async def my_async_task() -> None:
-            await asyncio.sleep(0.01)
-
-        assert isinstance(my_async_task, Task)
-
-    async def test_task_with_task_run_name(self):
-        @pipeline_task(task_run_name="my-task-run")
-        async def my_task() -> None:
-            pass
-
-        assert isinstance(my_task, Task)
-
-        @pipeline_task(task_run_name=lambda: "dynamic-name")
-        async def my_task2() -> None:
-            pass
-
-        assert isinstance(my_task2, Task)
-
-    async def test_task_with_trace_cost(self):
-        from unittest.mock import patch
-
-        with patch("ai_pipeline_core.pipeline.decorators.set_trace_cost") as mock_set_cost:
-
-            @pipeline_task(trace_cost=0.025)
-            async def my_task() -> None:
-                pass
-
-            assert isinstance(my_task, Task)
-            await my_task()
-            mock_set_cost.assert_called_once_with(0.025)
-
-
-class TestPipelineFlowDecorator:
-    """Test the pipeline_flow decorator functionality."""
-
-    async def test_flow_bare_decorator(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return list([OutputDocument(name="output.txt", content=b"output")])
-
-        assert isinstance(my_flow, Flow)
-        docs = list([InputDocument(name="test.txt", content=b"test")])
-        options = FlowOptions()
-        result = await my_flow("project", docs, options)
-        assert len(result) == 1
-        assert result[0].name == "output.txt"
-        assert result[0].content == b"output"
-
-    async def test_flow_with_parentheses(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return list([OutputDocument(name="modified.txt", content=b"modified")])
-
-        assert isinstance(my_flow, Flow)
-        docs = list([InputDocument(name="test.txt", content=b"test")])
-        options = FlowOptions()
-        result = await my_flow("project", docs, options)
-        assert len(result) == 1
-
-    async def test_flow_with_trace_parameters(self):
-        @pipeline_flow(
-            trace_level="debug",
-            trace_ignore_input=True,
-            trace_ignore_output=False,
-        )
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return list([OutputDocument(name="output.txt", content=b"output")])
-
-        assert isinstance(my_flow, Flow)
-
-    async def test_flow_with_prefect_parameters(self):
-        @pipeline_flow(
-            name="docs_flow",
-            version="1.0",
-            description="Process documents",
-            retries=1,
-            timeout_seconds=600,
-        )
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return list([OutputDocument(name="output.txt", content=b"output")])
-
-        assert isinstance(my_flow, Flow)
-        assert my_flow.name == "docs_flow"
-        assert my_flow.version == "1.0"
-
-    async def test_flow_with_extra_parameters(self):
-        @pipeline_flow()
-        async def my_flow(
-            run_id: str,
-            documents: list[InputDocument],
-            flow_options: FlowOptions,
-        ) -> list[OutputDocument]:
-            assert run_id == "project"
-            assert len(documents) == 1
-            assert documents[0].name == "test.txt"
-            assert flow_options is not None
-            return list([OutputDocument(name="output.txt", content=b"output")])
-
-        assert isinstance(my_flow, Flow)
-        docs = list([InputDocument(name="test.txt", content=b"test")])
-        options = FlowOptions()
-        result = await my_flow("project", docs, options)
-        assert len(result) == 1
-        assert result[0].name == "output.txt"
-        assert result[0].content == b"output"
-
-    async def test_flow_async(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            await asyncio.sleep(0.01)
-            return list([OutputDocument(name="output.txt", content=b"output")])
-
-        assert isinstance(my_flow, Flow)
-        docs = list([InputDocument(name="test.txt", content=b"test")])
-        options = FlowOptions()
-        result = await my_flow("project", docs, options)
-        assert len(result) == 1
-        assert result[0].name == "output.txt"
-        assert result[0].content == b"output"
-
-    async def test_flow_invalid_signature(self):
-        with pytest.raises(TypeError, match="must have exactly 3 parameters"):
-
-            @pipeline_flow()
-            async def my_flow(run_id: str) -> list[OutputDocument]:
-                return list([])
-
-    async def test_flow_invalid_return_type(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return "invalid"  # type: ignore
-
-        docs = list([InputDocument(name="test.txt", content=b"test")])
-        options = FlowOptions()
-
-        with pytest.raises(TypeError, match=r"must return list\[Document\]"):
-            await my_flow("project", docs, options)
-
-    async def test_flow_with_custom_options(self):
-        class CustomOptions(FlowOptions):
-            custom_field: str = "custom"
-
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: CustomOptions) -> list[OutputDocument]:
-            assert flow_options.custom_field == "custom"
-            return list([OutputDocument(name="output.txt", content=b"output")])
-
-        assert isinstance(my_flow, Flow)
-        docs = list([InputDocument(name="test.txt", content=b"test")])
-        options = CustomOptions()
-        result = await my_flow("project", docs, options)
-        assert len(result) == 1
-        assert result[0].name == "output.txt"
-        assert result[0].content == b"output"
-
-    async def test_flow_with_all_parameters(self):
-        def format_input(*args, **kwargs) -> str:
-            return "input"
-
-        def format_output(result) -> str:
-            return "output"
-
-        def on_complete(flow, flow_run, state):
-            pass
-
-        @pipeline_flow(
-            trace_level="off",
-            trace_ignore_input=True,
-            trace_ignore_output=True,
-            trace_ignore_inputs=["secret"],
-            trace_input_formatter=format_input,
-            trace_output_formatter=format_output,
-            name="full_flow",
-            version="3.0",
-            flow_run_name="test-run",
-            retries=2,
-            retry_delay_seconds=5.5,
-            description="Full test",
-            timeout_seconds=120.5,
-            validate_parameters=False,
-            persist_result=True,
-            result_storage="local-file-system",
-            result_serializer="json",
-            cache_result_in_memory=False,
-            log_prints=True,
-            on_completion=[on_complete],
-        )
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return list([OutputDocument(name="output.txt", content=b"output")])
-
-        assert isinstance(my_flow, Flow)
-        assert my_flow.name == "full_flow"
-
-    async def test_flow_with_nested_task(self):
-        @pipeline_task(trace_level="debug")
-        async def add_one() -> None:
-            pass
-
-        @pipeline_flow(trace_level="always")
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            await add_one()
-            return list([OutputDocument(name="output.txt", content=b"output")])
-
-        assert isinstance(my_flow, Flow)
-        docs = list([InputDocument(name="test.txt", content=b"test")])
-        options = FlowOptions()
-        result = await my_flow("project", docs, options)
-        assert len(result) == 1
-        assert result[0].name == "output.txt"
-        assert result[0].content == b"output"
-
-    async def test_flow_with_trace_cost(self):
-        from unittest.mock import patch
-
-        with patch("ai_pipeline_core.pipeline.decorators.set_trace_cost") as mock_set_cost:
-
-            @pipeline_flow(trace_cost=0.15)
-            async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-                return list([OutputDocument(name="output.txt", content=b"output")])
-
-            assert isinstance(my_flow, Flow)
-            docs = list([InputDocument(name="test.txt", content=b"test")])
-            options = FlowOptions()
-            result = await my_flow("project", docs, options)
-            assert len(result) == 1
-            assert result[0].name == "output.txt"
-            assert result[0].content == b"output"
-
-            mock_set_cost.assert_called_once_with(0.15)
-
-
-class TestSyncFunctionRejection:
-    """Test rejection of sync functions with pipeline decorators."""
-
-    def test_sync_function_with_pipeline_task_raises_error(self):
-        from typing import Any, cast
-
-        with pytest.raises(TypeError, match="must be 'async def'"):
-
-            @cast(Any, pipeline_task)
-            def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-                return x * 2
-
-    def test_sync_function_with_pipeline_task_with_params_raises_error(self):
-        from typing import Any, cast
-
-        with pytest.raises(TypeError, match="must be 'async def'"):
-
-            @cast(Any, pipeline_task(retries=3, trace_level="debug"))
-            def sync_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-                return x * 2
-
-    def test_sync_function_with_pipeline_flow_raises_error(self):
-        from typing import Any, cast
-
-        with pytest.raises(TypeError, match="must be declared with 'async def'"):
-
-            @cast(Any, pipeline_flow())
-            def sync_flow(  # pyright: ignore[reportUnusedFunction]
-                run_id: str, documents: list[InputDocument], flow_options: FlowOptions
-            ) -> list[OutputDocument]:
-                return list([OutputDocument(name="output.txt", content=b"output")])
-
-    def test_sync_function_with_pipeline_flow_with_params_raises_error(self):
-        from typing import Any, cast
-
-        with pytest.raises(TypeError, match="must be declared with 'async def'"):
-
-            @cast(Any, pipeline_flow(name="sync_flow", retries=2))
-            def sync_flow(  # pyright: ignore[reportUnusedFunction]
-                run_id: str, documents: list[InputDocument], flow_options: FlowOptions
-            ) -> list[OutputDocument]:
-                return list([OutputDocument(name="output.txt", content=b"output")])
-
-
-class TestDoubleTracingDetection:
-    """Test detection of double tracing with @trace and pipeline decorators."""
-
-    def test_trace_then_pipeline_task_raises_error(self):
-        from ai_pipeline_core import trace
-
-        with pytest.raises(TypeError, match=r"already decorated.*with @trace"):
-
-            @pipeline_task
-            @trace
-            async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-                return x * 2
-
-    def test_pipeline_task_then_trace_raises_error(self):
-        from ai_pipeline_core import trace
-
-        with pytest.raises(TypeError, match=r"already decorated with @pipeline_task"):
-
-            @trace
-            @pipeline_task
-            async def my_task() -> None:  # pyright: ignore[reportUnusedFunction]
-                pass
-
-    def test_trace_then_pipeline_flow_raises_error(self):
-        from ai_pipeline_core import trace
-
-        with pytest.raises(TypeError, match=r"already decorated.*with @trace"):
-
-            @pipeline_flow()
-            @trace
-            async def my_flow(  # pyright: ignore[reportUnusedFunction]
-                run_id: str, documents: list[InputDocument], flow_options: FlowOptions
-            ) -> list[OutputDocument]:
-                return list([OutputDocument(name="output.txt", content=b"output")])
-
-    def test_pipeline_flow_then_trace_raises_error(self):
-        from ai_pipeline_core import trace
-
-        with pytest.raises(TypeError, match=r"already decorated with @pipeline"):
-
-            @trace
-            @pipeline_flow()
-            async def my_flow(  # pyright: ignore[reportUnusedFunction]
-                run_id: str, documents: list[InputDocument], flow_options: FlowOptions
-            ) -> list[OutputDocument]:
-                return list([OutputDocument(name="output.txt", content=b"output")])
-
-    def test_multiple_trace_then_pipeline_task_raises_error(self):
-        from ai_pipeline_core import trace
-
-        with pytest.raises(TypeError, match=r"already decorated.*with @trace"):
-
-            @pipeline_task
-            @trace
-            @trace
-            async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-                return x * 2
-
-    def test_trace_with_params_then_pipeline_task_raises_error(self):
-        from ai_pipeline_core import trace
-
-        with pytest.raises(TypeError, match=r"already decorated.*with @trace"):
-
-            @pipeline_task
-            @trace(level="always")
-            async def my_task(x: int) -> int:  # pyright: ignore[reportUnusedFunction]
-                return x * 2
-
-    async def test_normal_pipeline_task_still_works(self):
-        @pipeline_task
-        async def my_task() -> None:
-            pass
-
-        await my_task()
-
-    async def test_normal_pipeline_flow_still_works(self):
-        @pipeline_flow()
-        async def my_flow(run_id: str, documents: list[InputDocument], flow_options: FlowOptions) -> list[OutputDocument]:
-            return list([OutputDocument(name="output.txt", content=b"output")])
-
-        docs = list([InputDocument(name="test.txt", content=b"test")])
-        options = FlowOptions()
-        result = await my_flow("project", docs, options)
-        assert len(result) == 1
-        assert result[0].name == "output.txt"
-        assert result[0].content == b"output"
+# Sync function rejection: see test_static_validation.py for canonical tests.

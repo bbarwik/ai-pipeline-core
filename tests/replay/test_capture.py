@@ -1,5 +1,6 @@
 """Tests for replay capture: serialize_kwargs and serialize_prior_messages."""
 
+from ai_pipeline_core.llm.conversation import Conversation
 from ai_pipeline_core.llm.conversation import AssistantMessage, UserMessage
 from ai_pipeline_core.replay._capture import serialize_kwargs, serialize_prior_messages
 from tests.support.helpers import create_test_model_response
@@ -76,6 +77,20 @@ def test_serialize_kwargs_mixed_list() -> None:
     result = serialize_kwargs({"items": [doc, "string", 42]})
 
     assert result["items"] == [doc_ref_dict(doc), "string", 42]
+
+
+def test_serialize_kwargs_conversation() -> None:
+    """Conversation arguments are serialized with a dedicated sentinel payload."""
+    doc = ReplayTextDocument(name="ctx.txt", content=b"context")
+    conv = Conversation(model="test-model", enable_substitutor=False).with_context(doc).with_assistant_message("ready")
+
+    result = serialize_kwargs({"conv": conv})
+
+    assert "$conversation" in result["conv"]
+    payload = result["conv"]["$conversation"]
+    assert payload["model"] == "test-model"
+    assert payload["context"] == [doc_ref_dict(doc)]
+    assert payload["history"][0] == {"type": "assistant_text", "text": "ready"}
 
 
 # ---------------------------------------------------------------------------

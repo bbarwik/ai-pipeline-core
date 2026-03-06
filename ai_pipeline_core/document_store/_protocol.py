@@ -94,11 +94,11 @@ class DocumentStore(DocumentReader, Protocol):
     Write operations (save, save_batch, etc.) are called by the framework only.
     """
 
-    async def save(self, document: Document, run_scope: RunScope) -> None:
+    async def save(self, document: Document, run_scope: RunScope, *, created_by_task: str = "") -> None:
         """Save a single document to the store. Idempotent -- same SHA256 is a no-op."""
         ...
 
-    async def save_batch(self, documents: list[Document], run_scope: RunScope) -> None:
+    async def save_batch(self, documents: list[Document], run_scope: RunScope, *, created_by_task: str = "") -> None:
         """Save multiple documents. Dependencies must be sorted (caller's responsibility)."""
         ...
 

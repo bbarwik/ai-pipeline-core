@@ -69,6 +69,9 @@ jobs:
       - name: AI docs freshness
         run: make docs-ai-check
 
+      - name: Verify all test modules importable
+        run: uv run pytest --collect-only -q --no-header
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -87,7 +90,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run tests with coverage (unit only)
-        run: uv run pytest -v --tb=short -m "not integration and not clickhouse" --maxfail=1 --durations=10 --cov=ai_pipeline_core --cov-report=term-missing --cov-fail-under=80 -n 4
+        run: uv run pytest -v --tb=short --maxfail=1 --durations=10 --cov=ai_pipeline_core --cov-report=term-missing --cov-fail-under=80 -n 4 -m "not pubsub and not clickhouse and not integration"
 
   clickhouse-test:
     if: github.event_name == 'push' || github.event_name == 'workflow_call'

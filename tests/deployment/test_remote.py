@@ -12,9 +12,9 @@ from ai_pipeline_core import (
     Document,
     FlowOptions,
     PipelineDeployment,
-    pipeline_flow,
-    trace,
 )
+from ai_pipeline_core.observability.tracing import trace
+from ai_pipeline_core.pipeline import PipelineFlow
 
 # --- Module-level test infrastructure ---
 
@@ -27,10 +27,11 @@ class SampleOutputDoc(Document):
     """Output document for testing."""
 
 
-@pipeline_flow()
-async def sample_flow(run_id: str, documents: list[SampleInputDoc], flow_options: FlowOptions) -> list[SampleOutputDoc]:
+class SampleFlow(PipelineFlow):
     """Sample flow for testing."""
-    return []
+
+    async def run(self, run_id: str, documents: list[SampleInputDoc], options: FlowOptions) -> list[SampleOutputDoc]:
+        return []
 
 
 class SampleResult(DeploymentResult):
@@ -42,11 +43,11 @@ class SampleResult(DeploymentResult):
 class SamplePipeline(PipelineDeployment[FlowOptions, SampleResult]):
     """Pipeline for testing."""
 
-    flows = [sample_flow]  # type: ignore[reportAssignmentType]
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [SampleFlow()]
 
     @staticmethod
     def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
-        """Build result from pipeline output."""
         return SampleResult(success=True, report="done")
 
 
@@ -108,41 +109,41 @@ class TestRunRemoteDeployment:
 
 
 class TestIsAlreadyTraced:
-    """Test _is_already_traced utility function."""
+    """Test is_already_traced utility function."""
 
     def test_false_for_untraced(self):
         """Test returns False for untraced function."""
-        from ai_pipeline_core.pipeline._type_validation import is_already_traced as _is_already_traced
+        from ai_pipeline_core.pipeline._type_validation import is_already_traced
 
         async def my_func() -> None:
             pass
 
-        assert _is_already_traced(my_func) is False
+        assert is_already_traced(my_func) is False
 
     def test_true_for_traced(self):
         """Test returns True for traced function."""
-        from ai_pipeline_core.pipeline._type_validation import is_already_traced as _is_already_traced
+        from ai_pipeline_core.pipeline._type_validation import is_already_traced
 
         @trace(level="always")
         async def my_func() -> None:
             pass
 
-        assert _is_already_traced(my_func) is True
+        assert is_already_traced(my_func) is True
 
     def test_detects_nested_trace(self):
         """Test detects trace with double decoration."""
-        from ai_pipeline_core.pipeline._type_validation import is_already_traced as _is_already_traced
+        from ai_pipeline_core.pipeline._type_validation import is_already_traced
 
         @trace(level="always")
         @trace(level="always")
         async def my_func() -> None:
             pass
 
-        assert _is_already_traced(my_func) is True
+        assert is_already_traced(my_func) is True
 
     def test_deep_wrapped_chain(self):
         """Test detects trace through __wrapped__ chain."""
-        from ai_pipeline_core.pipeline._type_validation import is_already_traced as _is_already_traced
+        from ai_pipeline_core.pipeline._type_validation import is_already_traced
 
         @trace(level="always")
         async def base_func() -> None:
@@ -154,7 +155,7 @@ class TestIsAlreadyTraced:
 
         wrapper.__wrapped__ = base_func  # type: ignore[attr-defined]
 
-        assert _is_already_traced(wrapper) is True
+        assert is_already_traced(wrapper) is True
 
 
 # --- Polling tests ---

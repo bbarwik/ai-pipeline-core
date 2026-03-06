@@ -1,209 +1,163 @@
-"""Tests for trace_trim_documents parameter in pipeline decorators."""
+"""Trace trim configuration tests for class-based tasks and flows.
 
-from unittest.mock import MagicMock, patch
+Tests trace_trim_documents ClassVar behavior on PipelineTask.
+"""
 
-from ai_pipeline_core.documents import Document
-from ai_pipeline_core.pipeline import pipeline_flow, pipeline_task
-from ai_pipeline_core.pipeline.options import FlowOptions
+from typing import Any
 
+import pytest
 
-class WorkTaskDoc(Document):
-    """Task document for testing tasks."""
-
-
-class InputFlowDoc(Document):
-    """Input document for testing flows."""
+from ai_pipeline_core import Document
+from ai_pipeline_core.pipeline import PipelineTask, pipeline_test_context
 
 
-class OutputFlowDoc(Document):
-    """Output document for testing flows."""
+class InDoc(Document):
+    pass
 
 
-class TestPipelineTraceTrimDocuments:
-    """Test trace_trim_documents parameter in pipeline decorators."""
+class OutDoc(Document):
+    pass
 
-    @patch("ai_pipeline_core.pipeline.decorators.trace")
-    async def test_pipeline_task_with_trace_trim_documents_true(self, mock_trace):
-        mock_decorator = MagicMock()
-        mock_trace.return_value = mock_decorator
-        mock_decorator.return_value = MagicMock()
 
-        @pipeline_task(trace_trim_documents=True, name="test_task")
-        async def task_func(doc: WorkTaskDoc) -> WorkTaskDoc:  # pyright: ignore[reportUnusedFunction]
-            return doc
+def test_default_trace_trim_documents_enabled() -> None:
+    class DefaultTask(PipelineTask):
+        @classmethod
+        async def run(cls, documents: list[InDoc]) -> list[OutDoc]:
+            _ = (cls, documents)
+            return []
 
-        mock_trace.assert_called_once()
-        call_kwargs = mock_trace.call_args.kwargs
-        assert call_kwargs["trim_documents"] is True
-        assert call_kwargs["name"] == "test_task"
+    assert DefaultTask.trace_trim_documents is True
 
-    @patch("ai_pipeline_core.pipeline.decorators.trace")
-    async def test_pipeline_task_with_trace_trim_documents_false(self, mock_trace):
-        mock_decorator = MagicMock()
-        mock_trace.return_value = mock_decorator
-        mock_decorator.return_value = MagicMock()
 
-        @pipeline_task(trace_trim_documents=False, name="test_task")
-        async def task_func(doc: WorkTaskDoc) -> WorkTaskDoc:  # pyright: ignore[reportUnusedFunction]
-            return doc
+def test_trace_trim_documents_can_be_disabled() -> None:
+    class UntrimmedTask(PipelineTask):
+        trace_trim_documents = False
 
-        mock_trace.assert_called_once()
-        call_kwargs = mock_trace.call_args.kwargs
-        assert call_kwargs["trim_documents"] is False
+        @classmethod
+        async def run(cls, documents: list[InDoc]) -> list[OutDoc]:
+            _ = (cls, documents)
+            return []
 
-    @patch("ai_pipeline_core.pipeline.decorators.trace")
-    async def test_pipeline_task_default_trace_trim_documents(self, mock_trace):
-        mock_decorator = MagicMock()
-        mock_trace.return_value = mock_decorator
-        mock_decorator.return_value = MagicMock()
+    assert UntrimmedTask.trace_trim_documents is False
 
-        @pipeline_task(name="test_task")
-        async def task_func(doc: WorkTaskDoc) -> WorkTaskDoc:  # pyright: ignore[reportUnusedFunction]
-            return doc
 
-        mock_trace.assert_called_once()
-        call_kwargs = mock_trace.call_args.kwargs
-        assert call_kwargs["trim_documents"] is True
+def test_trace_trim_documents_explicit_true() -> None:
+    class TrimmedTask(PipelineTask):
+        trace_trim_documents = True
 
-    @patch("ai_pipeline_core.pipeline.decorators.trace")
-    async def test_pipeline_flow_with_trace_trim_documents_true(self, mock_trace):
-        mock_decorator = MagicMock()
-        mock_trace.return_value = mock_decorator
+        @classmethod
+        async def run(cls, documents: list[InDoc]) -> list[OutDoc]:
+            _ = (cls, documents)
+            return []
 
-        async def mock_wrapper(*args, **kwargs):
-            return list([OutputFlowDoc.create_root(name="out.txt", content="test")], reason="test input")
+    assert TrimmedTask.trace_trim_documents is True
 
-        mock_decorator.return_value = mock_wrapper
 
-        @pipeline_flow(trace_trim_documents=True, name="test_flow")
-        async def flow_func(  # pyright: ignore[reportUnusedFunction]
-            run_id: str,
-            documents: list[InputFlowDoc],
-            flow_options: FlowOptions,
-        ) -> list[OutputFlowDoc]:
-            return [OutputFlowDoc.create_root(name=f"output_{doc.name}", content=doc.content, reason="test input") for doc in documents]
+def test_trace_trim_documents_inherited() -> None:
+    """Subclass inherits parent's trace_trim_documents setting."""
 
-        mock_trace.assert_called_once()
-        call_kwargs = mock_trace.call_args.kwargs
-        assert call_kwargs["trim_documents"] is True
-        assert call_kwargs["name"] == "test_flow"
+    class _BaseTask(PipelineTask):
+        trace_trim_documents = False
 
-    @patch("ai_pipeline_core.pipeline.decorators.trace")
-    async def test_pipeline_flow_with_trace_trim_documents_false(self, mock_trace):
-        mock_decorator = MagicMock()
-        mock_trace.return_value = mock_decorator
+        @classmethod
+        async def run(cls, documents: list[InDoc]) -> list[OutDoc]:
+            _ = (cls, documents)
+            return []
 
-        async def mock_wrapper(*args, **kwargs):
-            return list([OutputFlowDoc.create_root(name="out.txt", content="test")], reason="test input")
+    class DerivedTask(_BaseTask):
+        pass
 
-        mock_decorator.return_value = mock_wrapper
+    assert DerivedTask.trace_trim_documents is False
 
-        @pipeline_flow(trace_trim_documents=False, name="test_flow")
-        async def flow_func(  # pyright: ignore[reportUnusedFunction]
-            run_id: str,
-            documents: list[InputFlowDoc],
-            flow_options: FlowOptions,
-        ) -> list[OutputFlowDoc]:
-            return [OutputFlowDoc.create_root(name=f"output_{doc.name}", content=doc.content, reason="test input") for doc in documents]
 
-        mock_trace.assert_called_once()
-        call_kwargs = mock_trace.call_args.kwargs
-        assert call_kwargs["trim_documents"] is False
+def test_trace_trim_documents_override_in_subclass() -> None:
+    """Subclass can override parent's trace_trim_documents."""
 
-    @patch("ai_pipeline_core.pipeline.decorators.trace")
-    async def test_pipeline_flow_default_trace_trim_documents(self, mock_trace):
-        mock_decorator = MagicMock()
-        mock_trace.return_value = mock_decorator
+    class _BaseTask(PipelineTask):
+        trace_trim_documents = False
 
-        async def mock_wrapper(*args, **kwargs):
-            return list([OutputFlowDoc.create_root(name="out.txt", content="test")], reason="test input")
+        @classmethod
+        async def run(cls, documents: list[InDoc]) -> list[OutDoc]:
+            _ = (cls, documents)
+            return []
 
-        mock_decorator.return_value = mock_wrapper
+    class OverrideTask(_BaseTask):
+        trace_trim_documents = True
 
-        @pipeline_flow(name="test_flow")
-        async def flow_func(  # pyright: ignore[reportUnusedFunction]
-            run_id: str,
-            documents: list[InputFlowDoc],
-            flow_options: FlowOptions,
-        ) -> list[OutputFlowDoc]:
-            return [OutputFlowDoc.create_root(name=f"output_{doc.name}", content=doc.content, reason="test input") for doc in documents]
+    assert OverrideTask.trace_trim_documents is True
 
-        mock_trace.assert_called_once()
-        call_kwargs = mock_trace.call_args.kwargs
-        assert call_kwargs["trim_documents"] is True
 
-    async def test_pipeline_task_functional_with_trim(self):
-        @pipeline_task(trace_trim_documents=True)
-        async def process_doc(doc: WorkTaskDoc) -> WorkTaskDoc:
-            return WorkTaskDoc.create(
+@pytest.mark.asyncio
+async def test_task_functional_with_trim_enabled() -> None:
+    """Task with trace_trim_documents=True executes correctly."""
+
+    class TrimTask(PipelineTask):
+        trace_trim_documents = True
+
+        @classmethod
+        async def run(cls, doc: InDoc) -> OutDoc:
+            return OutDoc.derive(
+                from_documents=(doc,),
                 name=f"processed_{doc.name}",
-                content=f"Processed: {doc.text[:50]}",
-                derived_from=(doc.sha256,),
+                content="ok",
             )
 
-        doc = WorkTaskDoc.create_root(name="input.txt", content="x" * 1000, reason="test input")
-        result = await process_doc(doc)
+    doc = InDoc.create_root(name="input.txt", content="x" * 1000, reason="test input")
+    with pipeline_test_context():
+        results: list[Any] = await TrimTask.run(doc)
+    assert results[0].name == "processed_input.txt"
 
-        assert result.name == "processed_input.txt"
-        assert "Processed:" in result.text
-        assert doc.sha256 in result.derived_from
 
-    async def test_pipeline_flow_functional_with_trim(self):
-        @pipeline_flow(trace_trim_documents=True)
-        async def process_flow(
-            run_id: str,
-            documents: list[InputFlowDoc],
-            flow_options: FlowOptions,
-        ) -> list[OutputFlowDoc]:
-            return [
-                OutputFlowDoc.create(
-                    name=f"{run_id}_{doc.name}",
-                    content=f"Flow processed: {doc.text[:100]}",
-                    derived_from=(doc.sha256,),
-                )
-                for doc in documents
-            ]
+@pytest.mark.asyncio
+async def test_task_functional_with_trim_disabled() -> None:
+    """Task with trace_trim_documents=False executes correctly."""
 
-        input_doc = InputFlowDoc.create_root(name="input.txt", content="y" * 1000, reason="test input")
-        docs = [input_doc]
-        options = FlowOptions()
+    class UntrimmedTask(PipelineTask):
+        trace_trim_documents = False
 
-        result = await process_flow("test_project", docs, options)
+        @classmethod
+        async def run(cls, doc: InDoc) -> OutDoc:
+            return OutDoc.derive(
+                from_documents=(doc,),
+                name=f"full_{doc.name}",
+                content="full output",
+            )
 
-        assert len(result) == 1
-        assert result[0].name == "test_project_input.txt"
-        assert "Flow processed:" in result[0].text
-        assert input_doc.sha256 in result[0].derived_from
+    doc = InDoc.create_root(name="input.txt", content="y" * 1000, reason="test input")
+    with pipeline_test_context():
+        results: list[Any] = await UntrimmedTask.run(doc)
+    assert results[0].name == "full_input.txt"
 
-    async def test_pipeline_decorators_combined(self):
-        @pipeline_task(trace_trim_documents=True)
-        async def trim_task(doc: WorkTaskDoc) -> WorkTaskDoc:
-            return WorkTaskDoc.create_root(name=f"trimmed_{doc.name}", content=doc.content[:100], reason="test input")
 
-        @pipeline_flow(trace_trim_documents=False)
-        async def full_flow(
-            run_id: str,
-            documents: list[InputFlowDoc],
-            flow_options: FlowOptions,
-        ) -> list[OutputFlowDoc]:
-            task_doc = WorkTaskDoc.create_root(name="task.txt", content="a" * 500, reason="test input")
-            trimmed = await trim_task(task_doc)
+@pytest.mark.asyncio
+async def test_tasks_with_different_trim_settings() -> None:
+    """Multiple tasks with different trim settings work together."""
 
-            return [
-                OutputFlowDoc.create_root(
-                    name=f"output_{doc.name}",
-                    content=f"{doc.text}\nTask result: {trimmed.text}",
-                    reason="test input",
-                )
-                for doc in documents
-            ]
+    class TrimTask(PipelineTask):
+        trace_trim_documents = True
 
-        input_doc = InputFlowDoc.create_root(name="input.txt", content="Original content", reason="test input")
-        docs = [input_doc]
-        options = FlowOptions()
+        @classmethod
+        async def run(cls, doc: InDoc) -> OutDoc:
+            return OutDoc.derive(
+                from_documents=(doc,),
+                name=f"trimmed_{doc.name}",
+                content="trimmed",
+            )
 
-        result = await full_flow("test", docs, options)
+    class FullTask(PipelineTask):
+        trace_trim_documents = False
 
-        assert len(result) == 1
-        assert "Task result: " in result[0].text
-        assert "Original content" in result[0].text
+        @classmethod
+        async def run(cls, doc: InDoc) -> OutDoc:
+            return OutDoc.derive(
+                from_documents=(doc,),
+                name=f"full_{doc.name}",
+                content="full",
+            )
+
+    doc = InDoc.create_root(name="input.txt", content="data", reason="test input")
+    with pipeline_test_context():
+        trimmed: list[Any] = await TrimTask.run(doc)
+        full: list[Any] = await FullTask.run(doc)
+    assert trimmed[0].name == "trimmed_input.txt"
+    assert full[0].name == "full_input.txt"

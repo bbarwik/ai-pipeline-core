@@ -77,6 +77,7 @@ class TaskContext:
 
     created: set[DocumentSha256] = field(default_factory=set)
     scope_kind: str = "task"
+    task_class_name: str | None = None
 
 
 _task_context: ContextVar[TaskContext | None] = ContextVar("_task_context", default=None)
@@ -126,7 +127,7 @@ from ai_pipeline_core.documents.utils import is_document_sha256  # noqa: E402
 class _TaskDocumentContext:
     """Tracks documents created within a single pipeline task or flow execution.
 
-    Used by @pipeline_task and @pipeline_flow decorators to:
+    Used by PipelineTask/PipelineFlow runtime to:
     - Validate that all derived_from/triggered_by SHA256 references point to pre-existing documents
     - Detect same-task interdependencies (doc B referencing doc A created in the same task)
     - Warn about documents with no provenance (no derived_from and no triggered_by)

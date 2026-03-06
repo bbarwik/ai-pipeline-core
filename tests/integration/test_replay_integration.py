@@ -10,7 +10,8 @@ from pydantic import BaseModel
 
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm import Conversation, ModelOptions
-from ai_pipeline_core.pipeline import pipeline_task
+from ai_pipeline_core.pipeline import PipelineTask, pipeline_test_context
+from ai_pipeline_core.replay.types import TaskReplay
 from ai_pipeline_core.settings import settings
 
 pytestmark = pytest.mark.integration
@@ -89,7 +90,7 @@ class _CaptureLaminar:
 
 
 class _TaskCaptureLaminar:
-    """Capture for pipeline_task decorator spans."""
+    """Capture for PipelineTask spans."""
 
     def __init__(self) -> None:
         self.payloads: list[str] = []
@@ -100,25 +101,27 @@ class _TaskCaptureLaminar:
             self.payloads.append(payload)
 
 
-# -- Pipeline task for test 8 ------------------------------------------------
+# -- Pipeline task for replay test -------------------------------------------
 
 
-@pipeline_task(estimated_minutes=1)
-async def replay_integration_task(source: ReplayTaskInputDocument, *, model_name: str) -> ReplayTaskOutputDocument:
-    conv = Conversation(model=model_name, model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"))
-    conv = conv.with_context(source)
-    conv = await conv.send_structured(
-        "Extract source_summary and extracted_code from context.",
-        response_format=ReplayTaskExtraction,
-        purpose="replay_task",
-    )
-    parsed = conv.parsed
-    assert parsed is not None, "Structured output returned None"
-    return ReplayTaskOutputDocument(
-        name=f"result_{source.id}.json",
-        content=parsed.model_dump_json().encode(),
-        description="Task result",
-    )
+class ReplayIntegrationTask(PipelineTask):
+    @classmethod
+    async def run(cls, source: ReplayTaskInputDocument, model_name: str) -> ReplayTaskOutputDocument:
+        conv = Conversation(model=model_name, model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"))
+        conv = conv.with_context(source)
+        conv = await conv.send_structured(
+            "Extract source_summary and extracted_code from context.",
+            response_format=ReplayTaskExtraction,
+            purpose="replay_task",
+        )
+        parsed = conv.parsed
+        assert parsed is not None, "Structured output returned None"
+        return ReplayTaskOutputDocument.derive(
+            from_documents=(source,),
+            name=f"result_{source.id}.json",
+            content=parsed.model_dump_json(),
+            description="Task result",
+        )
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -148,7 +151,17 @@ def _write_document_to_local_store(doc: Document, store_base: Path) -> None:
     )
 
 
-# -- Tests --------------------------------------------------------------------
+# -- Unit test (always runs) -------------------------------------------------
+
+
+def test_task_replay_yaml_roundtrip() -> None:
+    payload = TaskReplay(function_path="pkg.tasks:NormalizeTask", arguments={"documents": []})
+    restored = TaskReplay.from_yaml(payload.to_yaml())
+    assert restored.function_path == payload.function_path
+    assert restored.payload_type == "pipeline_task"
+
+
+# -- Integration tests (require API keys) ------------------------------------
 
 
 @pytest.mark.skipif(not HAS_API_KEYS, reason="OpenAI API keys not configured in settings or .env file")
@@ -164,9 +177,10 @@ class TestReplayIntegration:
         capture = _CaptureLaminar()
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.Laminar", capture)
 
-        doc = ReplayContextDocument(
+        doc = ReplayContextDocument.create_root(
             name="context.txt",
-            content=f"The replay code is {token}.".encode(),
+            content=f"The replay code is {token}.",
+            reason="test input",
             description="Replay context",
         )
         _write_document_to_local_store(doc, tmp_path)
@@ -351,9 +365,10 @@ class TestReplayIntegration:
         """Manually build ConversationReplay with $doc_ref, execute, verify LLM uses document."""
         from ai_pipeline_core.replay import ConversationReplay, DocumentRef
 
-        doc = ReplayContextDocument(
+        doc = ReplayContextDocument.create_root(
             name="facts.txt",
-            content=b"The Eiffel Tower is 330 meters tall and was built in 1889.",
+            content="The Eiffel Tower is 330 meters tall and was built in 1889.",
+            reason="test input",
             description="Facts about the Eiffel Tower",
         )
         _write_document_to_local_store(doc, tmp_path)
@@ -362,13 +377,13 @@ class TestReplayIntegration:
             model=DEFAULT_MODEL,
             model_options={"max_completion_tokens": MAX_COMPLETION_TOKENS},
             prompt="How tall is the Eiffel Tower according to the document? Answer in one sentence.",
-            context=[
+            context=(
                 DocumentRef.model_validate({
                     "$doc_ref": doc.sha256,
                     "class_name": "ReplayContextDocument",
                     "name": "facts.txt",
-                })
-            ],
+                }),
+            ),
             enable_substitutor=False,
         )
 
@@ -382,37 +397,44 @@ class TestReplayIntegration:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        memory_store: Any,
-        run_context: Any,
     ) -> None:
-        """Capture TaskReplay from a @pipeline_task run, YAML round-trip, re-execute."""
-        from ai_pipeline_core.replay import TaskReplay
+        """Capture TaskReplay from a PipelineTask run, YAML round-trip, re-execute."""
+        from ai_pipeline_core.document_store._memory import MemoryDocumentStore
+        from ai_pipeline_core.replay import TaskReplay as TaskReplayType
 
         token = uuid.uuid4().hex[:10].upper()
         task_capture = _TaskCaptureLaminar()
-        monkeypatch.setattr("ai_pipeline_core.pipeline.decorators.Laminar", task_capture)
+        monkeypatch.setattr("ai_pipeline_core.pipeline._task.Laminar", task_capture)
         conv_capture = _CaptureLaminar()
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.Laminar", conv_capture)
 
-        source_doc = ReplayTaskInputDocument(
+        source_doc = ReplayTaskInputDocument.create_root(
             name="source.txt",
-            content=f"Project code: {token}. Extract the code from this document.".encode(),
+            content=f"Project code: {token}. Extract the code from this document.",
+            reason="test input",
             description="Source document for task replay",
         )
         _write_document_to_local_store(source_doc, tmp_path)
-        result_doc = await replay_integration_task(source_doc, model_name=DEFAULT_MODEL)
 
+        store = MemoryDocumentStore()
+        with pipeline_test_context(store=store):
+            result_docs: list[Any] = await ReplayIntegrationTask.run(source_doc, model_name=DEFAULT_MODEL)
+
+        assert len(result_docs) == 1
+        result_doc = result_docs[0]
         assert isinstance(result_doc, ReplayTaskOutputDocument)
         parsed = ReplayTaskExtraction.model_validate_json(result_doc.content)
         assert token in parsed.extracted_code.upper() or token in parsed.source_summary.upper()
 
         assert len(task_capture.payloads) > 0, "No task replay payload captured"
-        task_replay = TaskReplay.from_yaml(task_capture.payloads[-1])
+        task_replay = TaskReplayType.from_yaml(task_capture.payloads[-1])
 
         yaml_text = task_replay.to_yaml()
-        restored = TaskReplay.from_yaml(yaml_text)
+        restored = TaskReplayType.from_yaml(yaml_text)
         replay_result = await restored.execute(store_base=tmp_path)
 
-        assert isinstance(replay_result, ReplayTaskOutputDocument)
-        replay_parsed = ReplayTaskExtraction.model_validate_json(replay_result.content)
+        assert isinstance(replay_result, list)
+        assert len(replay_result) == 1
+        assert isinstance(replay_result[0], ReplayTaskOutputDocument)
+        replay_parsed = ReplayTaskExtraction.model_validate_json(replay_result[0].content)
         assert token in replay_parsed.extracted_code.upper() or token in replay_parsed.source_summary.upper()

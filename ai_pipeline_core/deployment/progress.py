@@ -11,8 +11,8 @@ from prefect import get_client
 
 from ai_pipeline_core.logging import get_pipeline_logger
 
-from ._types import _ProgressEvent, _ResultPublisher
-from .contract import FlowStatus
+from ._contract import FlowStatus
+from ._types import ProgressEvent, ResultPublisher
 
 logger = get_pipeline_logger(__name__)
 
@@ -43,7 +43,7 @@ class _ProgressContext:
     total_minutes: float
     completed_minutes: float
     current_flow_minutes: float
-    publisher: _ResultPublisher | None = None
+    publisher: ResultPublisher | None = None
 
 
 _context: ContextVar[_ProgressContext | None] = ContextVar("progress_context", default=None)
@@ -61,6 +61,22 @@ def _compute_weighted_progress(
     else:
         overall = fraction
     return round(max(0.0, min(1.0, overall)), 4)
+
+
+def _compute_progress_from_flow_minutes(
+    flow_minutes: tuple[float, ...],
+    step: int,
+    step_progress: float,
+) -> float:
+    """Compute overall weighted progress from flow schedule and current step progress.
+
+    Extracts total_minutes, completed_minutes, and current_flow_minutes from
+    the flow_minutes tuple, then delegates to _compute_weighted_progress.
+    """
+    total_minutes = sum(flow_minutes) or 1.0
+    completed_minutes = sum(flow_minutes[: max(step - 1, 0)])
+    current_flow_minutes = flow_minutes[step - 1] if step - 1 < len(flow_minutes) else 1.0
+    return _compute_weighted_progress(completed_minutes, current_flow_minutes, step_progress, total_minutes)
 
 
 def _build_progress_labels(
@@ -119,7 +135,7 @@ async def _emit_progress(
 async def progress_update(fraction: float, message: str = "") -> None:
     """Report intra-flow progress (0.0-1.0). No-op without context.
 
-    Publishes a _ProgressEvent via the publisher and updates Prefect flow run
+    Publishes a ProgressEvent via the publisher and updates Prefect flow run
     labels (if flow_run_id available) so poll consumers see progress and
     staleness detection stays current.
     """
@@ -133,7 +149,7 @@ async def progress_update(fraction: float, message: str = "") -> None:
 
     # Fire-and-forget progress event publish to avoid blocking flow execution
     if ctx.publisher is not None:
-        event = _ProgressEvent(
+        event = ProgressEvent(
             run_id=ctx.run_id,
             flow_run_id=ctx.flow_run_id,
             flow_name=ctx.flow_name,
@@ -169,7 +185,7 @@ def _flow_context(
     total_steps: int,
     flow_minutes: tuple[float, ...],
     completed_minutes: float,
-    publisher: _ResultPublisher | None = None,
+    publisher: ResultPublisher | None = None,
 ) -> Generator[None, None, None]:
     """Set up progress context for a flow. Framework internal use."""
     current_flow_minutes = flow_minutes[step - 1] if step <= len(flow_minutes) else 1.0
@@ -193,6 +209,7 @@ def _flow_context(
 
 
 __all__ = [
+    "_compute_progress_from_flow_minutes",
     "_flow_context",
     "progress_update",
 ]

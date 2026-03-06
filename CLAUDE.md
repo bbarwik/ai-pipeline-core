@@ -90,12 +90,7 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - Supported formats: JPEG, PNG, GIF, WebP. Re-encoded as WebP only when processing is needed; images within model limits are sent in original format.
 
 **Model Options:**
-- `ModelOptions` with: `reasoning_effort`, `cache_ttl`, `retries`, `retry_delay_seconds`, `timeout`, `service_tier`, `search_context_size`
-- `system_prompt` — System-level instructions for the model
-- `temperature` — Optional, default to None (provider decides). Only set if you have a specific reason.
-- `max_completion_tokens` — Controls output length. Default: provider decides (~30K typical).
-- `stop` — Stop sequences (tuple of strings). Used internally by `send_spec()` for `</result>` tags. Only effective on models that support stop sequences (currently Gemini only); silently dropped for other providers.
-- `verbosity`, `stream`, `usage_tracking`, `user`, `metadata`, `extra_body` — Additional provider options.
+- `ModelOptions` — `reasoning_effort`, `cache_ttl`, `retries`, `timeout`, `system_prompt`, `temperature`, `max_completion_tokens`, `stop`, and provider-specific options
 
 **Output Degeneration Detection:**
 - Automatic detection of token repetition loops in LLM responses
@@ -170,25 +165,13 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 ### 2.4 Document Storage (`document_store/`)
 
 **Public API — `DocumentReader` protocol** (read-only, exported at top level):
-- `load(run_scope, document_types)` — Load documents by type from a run scope
-- `has_documents(run_scope, document_type, *, max_age=None)` — Check if documents of a type exist
-- `check_existing(sha256s)` — Check which SHA256s exist globally
-- `find_by_source(source_values, document_type, *, max_age=None)` — Find most recent document per source value
-- `load_by_sha256s(sha256s, document_type, run_scope=None)` — Batch-load full documents by SHA256
-- `load_nodes_by_sha256s(sha256s)` — Batch-load lightweight `DocumentNode` metadata (cross-scope)
-- `load_scope_metadata(run_scope)` — Load `DocumentNode` metadata for all documents in a scope
-- `get_flow_completion(run_scope, flow_name, *, max_age=None)` — Check flow completion record
-- `load_summaries(document_sha256s)` — Load summaries by SHA256
+- Load, query, and check documents by type, SHA256, source values, or run scope
 
 **Internal — `DocumentStore` protocol** (`_protocol.py`, full read/write):
-- Extends `DocumentReader` with `save()`, `save_batch()`, `update_summary()`, `save_flow_completion()`, `flush()`, `shutdown()`
-- Write operations are framework-internal — `@pipeline_task` handles persistence automatically
+- Extends `DocumentReader` with write operations — `@pipeline_task` handles persistence automatically
 
-**Backend implementations** (all internal, prefixed with `_`):
-- ClickHouse — Production (indexed, circuit breaker)
-- Local filesystem — CLI/debug (browsable)
-- In-memory — Testing (dict-based)
-- Dual — Wraps primary (ClickHouse) + secondary (local filesystem)
+**Backends** (all internal, prefixed with `_`):
+- ClickHouse (production), Local filesystem (CLI/debug), In-memory (testing), Dual (ClickHouse + local)
 
 ### 2.5 Deployment (`deployment/`)
 
@@ -266,29 +249,13 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - TraceInfo propagation across function calls
 - **Prompt traceability** — Every LLM call logs the context used
 
-**Unified Write Path:**
-- `PipelineSpanProcessor` — Single OTel SpanProcessor that extracts `SpanData` once and dispatches to all backends
-- `SpanData` — Frozen dataclass shared by all backends, constructed from OTel ReadableSpan (live) or ClickHouse row (download)
-- `FilesystemBackend` — Writes `.trace/` directory via `TraceMaterializer` (queue + background thread)
-- `ClickHouseBackend` — Writes to `pipeline_runs` and `pipeline_spans` tables via `ClickHouseWriter` (batched columnar inserts)
+**Write Path:** `PipelineSpanProcessor` dispatches `SpanData` to `FilesystemBackend` (`.trace/` directory) and `ClickHouseBackend` (`pipeline_runs` + `pipeline_spans` tables). Document lineage tracked via SHA256 arrays on span attributes.
 
-**Document Lineage:**
-- Tracked via SHA256 arrays on OTel span attributes (`pipeline.input_document_sha256s`, `pipeline.output_document_sha256s`)
-- Persisted as `Array(String)` columns on `pipeline_spans` (`input_doc_sha256s`, `output_doc_sha256s`)
-
-**ClickHouse Tracking Tables:**
-- `pipeline_runs` — Run metadata (execution_id, status, timing, cost totals). `ReplacingMergeTree` with version column.
-- `pipeline_spans` — All span data including ZSTD-compressed content (input/output, replay, attributes, events), LLM metrics, and document lineage. `ReplacingMergeTree`.
-- Optional dependency — no-op when not configured for CLI, required for production deployment.
-
-**Local Debug Traces:**
-- `.trace/` directory produced by `TraceMaterializer` — hierarchical span directories with `span.yaml`, `input.yaml`, `output.yaml`, `events.yaml`, replay files, indexes (`llm_calls.yaml`, `errors.yaml`), `summary.md`, `costs.md`
-- Same code path for live CLI execution and download-from-ClickHouse reconstruction
-- `ai-trace` CLI tool for listing, inspecting, and downloading task/flow runs from ClickHouse
+**Local Debug:** `.trace/` directory with hierarchical span data, replay files, indexes, `summary.md`, `costs.md`. CLI tool `ai-trace` for ClickHouse access.
 
 **Logging:**
 - `get_pipeline_logger()` — Configured logger with context
-- Logging bridge forwards to OTel span events (INFO+ level; attributes: `log.level`, `log.message`, `log.logger`)
+- Logging bridge forwards to OTel span events (INFO+ level)
 
 ### 2.8 Replay (`replay/`)
 
@@ -301,40 +268,11 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 
 **Each payload type has:** `to_yaml()`, `from_yaml(text)`, `execute(store_base)` methods.
 
-**Document References** — documents are referenced by SHA256, not inlined:
-```yaml
-analysis:
-  $doc_ref: LX36TAADYWU2UMV64RANK7FI2MZEVY3DAFLXWACQFFCZRDS46SPQ
-  class_name: AnalysisDocument
-  name: analysis_CAONCJVGJIS5.md
-```
+**Document References** — documents are referenced by SHA256 (`$doc_ref`), resolved from LocalDocumentStore during replay.
 
-**Capture Flow:**
-1. Execution boundary completes (LLM call, task, flow)
-2. Capture hook builds replay payload dict (Documents → `$doc_ref`)
-3. Payload attached as `replay.payload` JSON string to Laminar span attribute
-4. Trace writer extracts it, writes `conversation.yaml`/`task.yaml`/`flow.yaml` to span directory
-5. Attribute excluded from `span.yaml` via `_EXCLUDED_ATTRIBUTES`
+**CLI Tool** (`ai-replay`): `run <file>` to execute, `show <file>` to inspect. Supports `--store`, `--set KEY=VALUE`, `--import MODULE`, `--output-dir`, `--no-trace`.
 
-**Replay Flow:**
-1. Load YAML → parse into typed payload
-2. Infer store base (walk up to `.trace/` parent) or accept explicit `--store`
-3. Resolve `$doc_ref` references from LocalDocumentStore (6-char SHA256 prefix glob)
-4. Validate BaseModel arguments via function type hints
-5. Execute: build Conversation and send, or import function and call
-
-**CLI Tool** (`ai-replay` / `python -m ai_pipeline_core.replay`):
-- `run <file>` — Execute replay YAML. Flags: `--store`, `--set KEY=VALUE`, `--import MODULE`, `--output-dir`, `--no-trace`
-- `show <file>` — Pretty-print payload summary
-- `--import` remaps `__main__:X` references to the imported module (required when original ran as script)
-- `--output-dir` — Override output directory (default: `{replay_file_stem}_replay/` next to the replay file)
-- `--no-trace` — Skip tracing setup, only save `output.yaml` without `.trace/` directory
-
-**Replay Output:**
-- Results saved to `output_dir/output.yaml` (content, usage, cost, timestamp)
-- Full OTel tracing via `PipelineSpanProcessor` with `FilesystemBackend` writes to `output_dir/.trace/`
-- Trace output includes `summary.md`, `llm_calls.yaml`, `costs.md`, and per-span directories with nested replay YAMLs (enabling recursive replay debugging)
-- Tracing initialized via `_init_replay_tracing()` which registers a processor with the OTel TracerProvider
+**Output:** Results saved to `output_dir/output.yaml` with full OTel tracing to `output_dir/.trace/`.
 
 ---
 
@@ -707,10 +645,50 @@ These features are planned but not implemented:
 - Complex access control/RBAC
 - Custom orchestrator implementation
 
-## 10. Bash Guidelines
+## 10. Test Running Guidelines
+
+### Infrastructure tests auto-skip
+ClickHouse, Pub/Sub, and LLM integration tests auto-skip when their requirements are unavailable. No flags or marker exclusions needed — `pytest tests/deployment/ -x -q` is always safe to run even without Docker.
+
+### NEVER pipe pytest output through grep, head, tail, or any filter
+These cause buffering hangs. Use pytest's native flags instead.
+
+### NEVER run the full test suite (`pytest tests/`) for small changes
+The full suite has 3000+ tests and takes 3-5 minutes. Run only the relevant test directory:
+
+| Changed source | Test command |
+|---|---|
+| `ai_pipeline_core/documents/` | `pytest tests/documents/ -x -q` |
+| `ai_pipeline_core/llm/` | `pytest tests/llm/ -x -q` |
+| `ai_pipeline_core/pipeline/` | `pytest tests/pipeline/ -x -q` |
+| `ai_pipeline_core/deployment/` | `pytest tests/deployment/ -x -q` |
+| `ai_pipeline_core/document_store/` | `pytest tests/document_store/ -x -q` |
+| `ai_pipeline_core/prompt_compiler/` | `pytest tests/prompt_compiler/ -x -q` |
+| `ai_pipeline_core/observability/` | `pytest tests/observability/ -x -q` |
+| `ai_pipeline_core/replay/` | `pytest tests/replay/ -x -q` |
+
+### Use -x to stop on first failure
+`pytest tests/pipeline/ -x -q` — fix one failure at a time.
+
+### Use --lf to rerun only failures
+After a failed run, `pytest --lf -x -q` reruns only what failed last time.
+
+### Use --testmon to only run tests affected by your changes
+`pytest --testmon -q` — testmon tracks which source lines each test covers and only reruns affected tests. A cached run with no changes takes ~5 seconds instead of minutes. The `.testmondata` file persists across runs.
+
+### Full suite validation (rare — only before final commit/PR)
+`pytest -n auto --dist worksteal -q` — parallel execution across all cores.
+
+### pytest output flags (no grep needed)
+- `--tb=no` — pass/fail counts only
+- `--tb=line` — one line per failure
+- `--tb=short` — short tracebacks (default in pyproject.toml)
+- `-q` — quiet mode, minimal output
+
+## 11. Bash Guidelines
 
 ### IMPORTANT: Avoid commands that cause output buffering issues
-- DO NOT pipe output through `head`, `tail`, `less`, or `more` when monitoring or checking command output
+- DO NOT pipe output through `head`, `tail`, `less`, `more`, or `grep` when monitoring or checking command output
 - DO NOT use `| head -n X` or `| tail -n X` to truncate output - these cause buffering problems
 - Instead, let commands complete fully, or use `--max-lines` flags if the command supports them
 - For log monitoring, prefer reading files directly rather than piping through filter

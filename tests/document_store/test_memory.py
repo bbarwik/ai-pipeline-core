@@ -8,6 +8,7 @@ from ai_pipeline_core.document_store._protocol import DocumentStore
 from ai_pipeline_core.document_store._models import DocumentNode, walk_provenance
 from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents import DocumentSha256, RunScope
 
 
@@ -22,6 +23,12 @@ class DocB(Document):
 @pytest.fixture
 def store() -> MemoryDocumentStore:
     return MemoryDocumentStore()
+
+
+@pytest.fixture(autouse=True)
+def _suppress_registration():
+    with _suppress_document_registration():
+        yield
 
 
 def _make(cls: type[Document], name: str, content: str = "test") -> Document:

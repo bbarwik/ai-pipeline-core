@@ -360,7 +360,7 @@ class Conversation(BaseModel, Generic[T]):
         """
         return tuple(r for r in self._tool_call_records if r.tool is tool_cls)
 
-    def restore_content(self, text: str) -> str:
+    def _restore_content(self, text: str) -> str:
         """Restore shortened URLs/addresses in text using the substitutor from the last send.
 
         Use when extracting URLs from .parsed structured output fields, as .parsed may

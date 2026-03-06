@@ -17,14 +17,15 @@ from ai_pipeline_core.deployment._pubsub import (
     TimestampSequencer,
 )
 from ai_pipeline_core.deployment._types import (
-    _CompletedEvent,
     ErrorCode,
-    _FailedEvent,
-    _ProgressEvent,
-    _StartedEvent,
+    EventType,
+    ProgressEvent,
+    RunCompletedEvent,
+    RunFailedEvent,
+    RunStartedEvent,
 )
 from ai_pipeline_core.deployment.base import _classify_error
-from ai_pipeline_core.deployment.contract import FlowStatus
+from ai_pipeline_core.deployment._contract import FlowStatus
 from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
 
 
@@ -126,11 +127,11 @@ class TestPubSubPublisher:
     def test_build_envelope_structure(self):
         """_build_envelope produces a valid CloudEvents 1.0 envelope."""
         pub, _ = _make_pubsub_publisher()
-        data_bytes = pub._build_envelope("task.started", "run-1", {"flow_run_id": "fr-1"})
+        data_bytes = pub._build_envelope(EventType.RUN_STARTED, "run-1", {"flow_run_id": "fr-1"})
         envelope = json.loads(data_bytes)
 
         assert envelope["specversion"] == CLOUDEVENTS_SPEC_VERSION
-        assert envelope["type"] == "task.started"
+        assert envelope["type"] == "run.started"
         assert envelope["source"] == "ai-research-worker"
         assert envelope["subject"] == "run-1"
         assert envelope["datacontenttype"] == "application/json"
@@ -145,28 +146,28 @@ class TestPubSubPublisher:
     def test_build_envelope_seq_is_monotonic(self):
         """Sequential envelopes have strictly increasing seq values."""
         pub, _ = _make_pubsub_publisher()
-        env1 = json.loads(pub._build_envelope("task.started", "run-1", {}))
-        env2 = json.loads(pub._build_envelope("task.progress", "run-1", {}))
+        env1 = json.loads(pub._build_envelope(EventType.RUN_STARTED, "run-1", {}))
+        env2 = json.loads(pub._build_envelope(EventType.PROGRESS, "run-1", {}))
         assert env2["data"]["seq"] > env1["data"]["seq"]
 
     async def test_publish_started_is_critical(self):
-        """publish_started uses critical publish path."""
+        """publish_run_started uses critical publish path."""
         pub, mock_client = _make_pubsub_publisher()
-        event = _StartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
+        event = RunStartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
 
         mock_future = asyncio.Future()
         mock_future.set_result("msg-id")
         mock_client.publish.return_value = mock_future
 
-        await pub.publish_started(event)
+        await pub.publish_run_started(event)
         mock_client.publish.assert_called_once()
         call_kwargs = mock_client.publish.call_args
-        assert call_kwargs[1]["event_type"] == "task.started"
+        assert call_kwargs[1]["event_type"] == "run.started"
 
     async def test_publish_progress_is_noncritical(self):
         """publish_progress uses non-critical publish path."""
         pub, mock_client = _make_pubsub_publisher()
-        event = _ProgressEvent(
+        event = ProgressEvent(
             run_id="run-1",
             flow_run_id="fr-1",
             flow_name="extract",
@@ -186,7 +187,7 @@ class TestPubSubPublisher:
         mock_client.publish.assert_called_once()
 
     async def test_publish_heartbeat(self):
-        """publish_heartbeat publishes task.heartbeat event."""
+        """publish_heartbeat publishes run.heartbeat event."""
         pub, mock_client = _make_pubsub_publisher()
 
         mock_future = asyncio.Future()
@@ -196,7 +197,7 @@ class TestPubSubPublisher:
         await pub.publish_heartbeat("run-1")
         mock_client.publish.assert_called_once()
         call_kwargs = mock_client.publish.call_args
-        assert call_kwargs[1]["event_type"] == "task.heartbeat"
+        assert call_kwargs[1]["event_type"] == "run.heartbeat"
 
     async def test_heartbeat_contains_timestamp(self):
         """publish_heartbeat includes a timestamp field in the data payload."""
@@ -214,11 +215,11 @@ class TestPubSubPublisher:
         assert "T" in envelope["data"]["timestamp"]
 
     async def test_publish_completed_size_guard(self):
-        """publish_completed raises ResultTooLargeError for oversized messages."""
+        """publish_run_completed raises ResultTooLargeError for oversized messages."""
         pub, mock_client = _make_pubsub_publisher()
 
         huge_result = {"data": "x" * (MAX_PUBSUB_MESSAGE_BYTES + 1)}
-        event = _CompletedEvent(
+        event = RunCompletedEvent(
             run_id="run-1",
             flow_run_id="fr-1",
             result=huge_result,
@@ -227,14 +228,14 @@ class TestPubSubPublisher:
         )
 
         with pytest.raises(ResultTooLargeError):
-            await pub.publish_completed(event)
+            await pub.publish_run_completed(event)
 
         mock_client.publish.assert_not_called()
 
     async def test_publish_failed_is_critical(self):
-        """publish_failed uses critical publish path."""
+        """publish_run_failed uses critical publish path."""
         pub, mock_client = _make_pubsub_publisher()
-        event = _FailedEvent(
+        event = RunFailedEvent(
             run_id="run-1",
             flow_run_id="fr-1",
             error_code=ErrorCode.PIPELINE_ERROR,
@@ -245,18 +246,18 @@ class TestPubSubPublisher:
         mock_future.set_result("msg-id")
         mock_client.publish.return_value = mock_future
 
-        await pub.publish_failed(event)
+        await pub.publish_run_failed(event)
         mock_client.publish.assert_called_once()
         call_kwargs = mock_client.publish.call_args
-        assert call_kwargs[1]["event_type"] == "task.failed"
+        assert call_kwargs[1]["event_type"] == "run.failed"
 
     def test_make_attributes(self):
         """_make_attributes returns correct Pub/Sub message attributes."""
         pub, _ = _make_pubsub_publisher()
-        attrs = pub._make_attributes("task.started", "run-1")
+        attrs = pub._make_attributes(EventType.RUN_STARTED, "run-1")
         assert attrs == {
             "service_type": "research",
-            "event_type": "task.started",
+            "event_type": "run.started",
             "run_id": "run-1",
         }
 
@@ -282,10 +283,10 @@ class TestPubSubPublisher:
         success_future.set_result("msg-id")
         mock_client.publish.side_effect = [fail_future, success_future]
 
-        event = _StartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
+        event = RunStartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
 
         with patch("ai_pipeline_core.deployment._pubsub.asyncio.sleep", new_callable=AsyncMock):
-            await pub.publish_started(event)
+            await pub.publish_run_started(event)
 
         assert mock_client.publish.call_count == 2
 
@@ -301,10 +302,10 @@ class TestPubSubPublisher:
 
         mock_client.publish.side_effect = make_fail_future
 
-        event = _StartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
+        event = RunStartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
 
         with patch("ai_pipeline_core.deployment._pubsub.asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(RuntimeError, match=f"failed after {CRITICAL_MAX_RETRIES} attempts"):
-                await pub.publish_started(event)
+                await pub.publish_run_started(event)
 
         assert mock_client.publish.call_count == CRITICAL_MAX_RETRIES
