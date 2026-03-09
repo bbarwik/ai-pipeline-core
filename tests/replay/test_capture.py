@@ -1,11 +1,11 @@
-"""Tests for replay capture: serialize_kwargs and serialize_prior_messages."""
+"""Tests for replay capture: serialize_kwargs, serialize_prior_messages, and conversation payload capture."""
 
 from ai_pipeline_core.llm.conversation import Conversation
 from ai_pipeline_core.llm.conversation import AssistantMessage, UserMessage
-from ai_pipeline_core.replay._capture import serialize_kwargs, serialize_prior_messages
+from ai_pipeline_core.replay._capture import build_conversation_replay_payload, serialize_kwargs, serialize_prior_messages
 from tests.support.helpers import create_test_model_response
 
-from .conftest import ReplayArgsModel, ReplayMode, ReplayTextDocument, doc_ref_dict
+from .conftest import ReplayArgsModel, ReplayBinaryDocument, ReplayMode, ReplayTextDocument, doc_ref_dict
 
 
 # ---------------------------------------------------------------------------
@@ -166,3 +166,58 @@ def test_serialize_prior_messages_multi_turn() -> None:
     assert result[4] == {"type": "user_text", "text": "turn three"}
     assert result[5]["type"] == "response"
     assert result[5]["content"] == "second reply"
+
+
+def test_build_conversation_replay_payload_preserves_document_prompt(
+    sample_text_doc: ReplayTextDocument,
+) -> None:
+    """send(Document) payloads keep the prompt as a document reference instead of flattening to text."""
+    response = create_test_model_response(content="done")
+
+    payload = build_conversation_replay_payload(
+        content=sample_text_doc,
+        response_format=None,
+        purpose="doc-prompt",
+        response=response,
+        context=(),
+        model="test-model",
+        model_options=None,
+        messages=(),
+        enable_substitutor=False,
+        extract_result_tags=False,
+        include_date=True,
+        current_date="2025-03-15",
+    )
+
+    assert payload["prompt"] == ""
+    assert payload["prompt_documents"] == (doc_ref_dict(sample_text_doc),)
+    assert payload["include_date"] is True
+    assert payload["current_date"] == "2025-03-15"
+
+
+def test_build_conversation_replay_payload_preserves_document_list_prompt(
+    sample_text_doc: ReplayTextDocument,
+    sample_binary_doc: ReplayBinaryDocument,
+) -> None:
+    """send([Document, ...]) payloads keep all prompt documents as refs."""
+    response = create_test_model_response(content="done")
+
+    payload = build_conversation_replay_payload(
+        content=[sample_text_doc, sample_binary_doc],
+        response_format=None,
+        purpose="doc-list-prompt",
+        response=response,
+        context=(),
+        model="test-model",
+        model_options=None,
+        messages=(),
+        enable_substitutor=False,
+        extract_result_tags=False,
+        include_date=False,
+        current_date=None,
+    )
+
+    assert payload["prompt"] == ""
+    assert payload["prompt_documents"] == (doc_ref_dict(sample_text_doc), doc_ref_dict(sample_binary_doc))
+    assert payload["include_date"] is False
+    assert payload["current_date"] is None

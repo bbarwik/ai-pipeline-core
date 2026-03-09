@@ -100,31 +100,3 @@ class ModelResponse(BaseModel, Generic[T]):
     def serialize_citations(self, value: tuple[Citation, ...]) -> list[dict[str, Any]]:
         """Serialize citations dataclass to dict."""
         return [{"title": c.title, "url": c.url, "start_index": c.start_index, "end_index": c.end_index} for c in value]
-
-    def get_laminar_metadata(self) -> dict[str, str | int | float]:
-        """Extract metadata for Laminar observability spans."""
-        result: dict[str, str | int | float] = {
-            "gen_ai.response.id": self.response_id,
-            "gen_ai.system": "litellm",
-            "gen_ai.request_model": self.model,
-            "gen_ai.usage.input_tokens": self.usage.prompt_tokens,
-            "gen_ai.usage.output_tokens": self.usage.completion_tokens,
-            "gen_ai.usage.total_tokens": self.usage.total_tokens,
-        }
-
-        if self.usage.cached_tokens:
-            result["gen_ai.usage.cache_read_input_tokens"] = self.usage.cached_tokens
-
-        if self.usage.reasoning_tokens:
-            result["gen_ai.usage.reasoning_tokens"] = self.usage.reasoning_tokens
-
-        if self.cost is not None:
-            result["gen_ai.usage.output_cost"] = self.cost
-            result["gen_ai.usage.cost"] = self.cost
-
-        # Include timing metadata
-        for key, value in self.metadata.items():
-            if isinstance(value, (str, int, float)):
-                result[key] = value
-
-        return result

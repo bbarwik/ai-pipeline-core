@@ -2,7 +2,7 @@
 # CLASSES: DocumentRef, ToolCallEntry, HistoryEntry, ConversationReplay, TaskReplay, FlowReplay
 # DEPENDS: BaseModel
 # PURPOSE: First-class replay system for AI pipeline debugging.
-# VERSION: 0.13.0
+# VERSION: 0.14.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -15,12 +15,12 @@ from ai_pipeline_core.replay import ConversationReplay, DocumentRef, FlowReplay,
 
 ```python
 class DocumentRef(BaseModel):
-    """Reference to a document stored in LocalDocumentStore by SHA256.
+    """Reference to a document stored in a database backend by SHA256.
 
 Documents are not inlined in replay YAML — they are referenced by SHA256 hash
-and resolved from the local store at execution time."""
+and resolved from the database at execution time."""
     model_config = ConfigDict(frozen=True, populate_by_name=True)
-    doc_ref: str = Field(alias='$doc_ref')  # Full SHA256 hash of the document
+    doc_ref: DocumentSha256 = Field(alias='$doc_ref')  # Full SHA256 hash of the document
     class_name: str  # Document subclass name for type resolution
     name: str  # Original document name
 
@@ -54,19 +54,22 @@ tool_result uses tool_call_id/function_name/content, document uses doc_ref."""
 class ConversationReplay(BaseModel):
     """Replay payload for a Conversation.send() / send_structured() call.
 
-Auto-captured in each span directory as ``conversation.yaml``."""
+Serialized to YAML files such as ``conversation.yaml`` for replay and inspection."""
     model_config = ConfigDict(frozen=True, populate_by_name=True)
     version: int = 1
     payload_type: Literal['conversation'] = 'conversation'
     model: str
     model_options: dict[str, Any] = {}  # ModelOptions fields (reasoning_effort, cache_ttl, etc.)
-    prompt: str
+    prompt: str = ''
+    prompt_documents: tuple[DocumentRef, ...] = ()  # Prompt documents sent via send(Document) or send([Document, ...])
     response_format: str | None = None  # "module:ClassName" path to Pydantic model for send_structured()
-    purpose: str | None = None  # Laminar span label for tracing
+    purpose: str | None = None  # Purpose label for the LLM call
     context: tuple[DocumentRef, ...] = ()  # Context documents resolved by SHA256 at execution
     history: tuple[HistoryEntry, ...] = ()  # Prior conversation turns
     enable_substitutor: bool = True  # URL/token protection via URLSubstitutor
     extract_result_tags: bool = False  # Extract content between <result> tags
+    include_date: bool = True
+    current_date: str | None = None
     original: dict[str, Any] = {}  # Cost/tokens from original execution, for comparison
 
     @classmethod
@@ -75,11 +78,11 @@ Auto-captured in each span directory as ``conversation.yaml``."""
         data = yaml.safe_load(text)
         return cls.model_validate(data)
 
-    async def execute(self, store_base: Path) -> Any:
+    async def execute(self, database: DatabaseReader) -> Any:
         """Resolve document references and re-execute the LLM call."""
         from ._execute import execute_conversation
 
-        return await execute_conversation(self, store_base)
+        return await execute_conversation(self, database)
 
     def to_yaml(self) -> str:
         """Serialize to human-editable YAML."""
@@ -94,7 +97,7 @@ Auto-captured in each span directory as ``conversation.yaml``."""
 class TaskReplay(BaseModel):
     """Replay payload for a PipelineTask invocation.
 
-Auto-captured in each span directory as ``task.yaml``."""
+Serialized to YAML files such as ``task.yaml`` for replay and inspection."""
     model_config = ConfigDict(frozen=True, populate_by_name=True)
     version: int = 1
     payload_type: Literal['pipeline_task'] = 'pipeline_task'
@@ -108,11 +111,11 @@ Auto-captured in each span directory as ``task.yaml``."""
         data = yaml.safe_load(text)
         return cls.model_validate(data)
 
-    async def execute(self, store_base: Path) -> Any:
+    async def execute(self, database: DatabaseReader) -> Any:
         """Resolve document references and re-execute the task."""
         from ._execute import execute_task
 
-        return await execute_task(self, store_base)
+        return await execute_task(self, database)
 
     def to_yaml(self) -> str:
         """Serialize to human-editable YAML."""
@@ -127,12 +130,12 @@ Auto-captured in each span directory as ``task.yaml``."""
 class FlowReplay(BaseModel):
     """Replay payload for a PipelineFlow call.
 
-Auto-captured in each span directory as ``flow.yaml``."""
+Serialized to YAML files such as ``flow.yaml`` for replay and inspection."""
     model_config = ConfigDict(frozen=True, populate_by_name=True)
     version: int = 1
     payload_type: Literal['pipeline_flow'] = 'pipeline_flow'
     function_path: str  # "module:qualname" path to the flow function
-    run_id: str  # Unique run identifier for document store scoping
+    run_id: str  # Unique run identifier for database-backed replay scoping
     documents: tuple[DocumentRef, ...] = ()  # Input documents referenced by SHA256
     flow_options: dict[str, Any] = {}  # FlowOptions fields (filtered to known fields at execution)
     flow_params: dict[str, Any] = {}  # PipelineFlow constructor kwargs for replay
@@ -144,11 +147,11 @@ Auto-captured in each span directory as ``flow.yaml``."""
         data = yaml.safe_load(text)
         return cls.model_validate(data)
 
-    async def execute(self, store_base: Path) -> Any:
+    async def execute(self, database: DatabaseReader) -> Any:
         """Resolve document references and re-execute the flow function."""
         from ._execute import execute_flow
 
-        return await execute_flow(self, store_base)
+        return await execute_flow(self, database)
 
     def to_yaml(self) -> str:
         """Serialize to human-editable YAML."""
@@ -166,24 +169,14 @@ Auto-captured in each span directory as ``flow.yaml``."""
 
 ```python
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point for replay operations.
-
-    ``--import MODULE`` also remaps ``__main__:X`` references to ``MODULE:X`` in replay
-    payloads — required when replaying scripts originally run as ``python script.py``.
-
-    Usage:
-        ai-replay show conversation.yaml
-        ai-replay run conversation.yaml --store ./output
-        ai-replay run task.yaml --set model=grok-4.1-fast --import my_app
-        ai-replay run flow.yaml --output-dir ./replay_out --import my_app
-    """
-    parser = argparse.ArgumentParser(prog="ai-replay", description="Execute or inspect replay YAML files")
+    """CLI entry point for replay operations."""
+    parser = argparse.ArgumentParser(prog="ai-replay", description="Execute or inspect replay payloads")
     subparsers = parser.add_subparsers(dest="command")
 
-    # run
-    run_parser = subparsers.add_parser("run", help="Execute a replay YAML file")
-    run_parser.add_argument("replay_file", help="Path to replay YAML file (conversation.yaml, task.yaml, flow.yaml)")
-    run_parser.add_argument("--store", type=str, help="Override store base path (default: inferred from .trace/ ancestor)")
+    run_parser = subparsers.add_parser("run", help="Execute a replay payload")
+    run_parser.add_argument("replay_file", nargs="?", help="Path to replay YAML file (conversation.yaml, task.yaml, flow.yaml)")
+    run_parser.add_argument("--from-db", type=str, help="Load replay payload from an execution node ID in the database")
+    run_parser.add_argument("--db-path", type=str, help="Use a FilesystemDatabase at this path instead of ClickHouse or auto-discovery")
     run_parser.add_argument("--set", action="append", metavar="KEY=VALUE", help="Override a field before execution (repeatable)")
     run_parser.add_argument(
         "--import",
@@ -196,20 +189,19 @@ def main(argv: list[str] | None = None) -> int:
         "--output-dir",
         type=str,
         default=None,
-        help="Output directory for results and traces (default: {replay_file_stem}_replay/ next to replay file)",
-    )
-    run_parser.add_argument(
-        "--no-trace",
-        action="store_true",
-        default=False,
-        help="Skip tracing setup — only print result without producing .trace/ output",
+        help="Output directory for replay results",
     )
 
-    # show
     show_parser = subparsers.add_parser("show", help="Pretty-print a replay YAML file")
     show_parser.add_argument("replay_file", help="Path to replay YAML file")
 
     args = parser.parse_args(argv)
+
+    if args.command == "run":
+        if args.replay_file is None and args.from_db is None:
+            parser.error("run requires either a replay_file or --from-db <node_id>")
+        if args.replay_file is not None and args.from_db is not None:
+            parser.error("run accepts a replay_file or --from-db <node_id>, not both")
 
     handlers: dict[str, Any] = {"run": _cmd_run, "show": _cmd_show}
     handler = handlers.get(args.command)
@@ -223,11 +215,10 @@ def main(argv: list[str] | None = None) -> int:
 
 ## Examples
 
-**Main show conversation** (`tests/replay/test_cli_usage.py:56`)
+**Main show conversation** (`tests/replay/test_cli_usage.py:67`)
 
 ```python
 def test_main_show_conversation(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Inspect a replay file without executing it."""
     replay_file = _conversation_yaml(tmp_path, model="gemini-3-pro")
 
     exit_code = main(["show", str(replay_file)])
@@ -238,57 +229,125 @@ def test_main_show_conversation(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert "gemini-3-pro" in output
 ```
 
-**Main run with no trace** (`tests/replay/test_cli_usage.py:69`)
+**Main run with db path** (`tests/replay/test_cli_usage.py:79`)
 
 ```python
-def test_main_run_with_no_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Execute a replay file, saving output.yaml but skipping .trace/ generation."""
+def test_main_run_with_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     replay_file = _conversation_yaml(tmp_path)
-    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), _MockResult())[1])
+    db_path = tmp_path / "bundle"
+    FilesystemDatabase(db_path)
 
-    exit_code = main(["run", str(replay_file), "--store", str(tmp_path), "--no-trace"])
+    async def fake_execute(payload: object, database: object) -> _MockResult:
+        _ = (payload, database)
+        return _MockResult()
+
+    monkeypatch.setattr("ai_pipeline_core.replay.cli._execute_with_database", fake_execute)
+
+    exit_code = main(["run", str(replay_file), "--db-path", str(db_path)])
 
     assert exit_code == 0
     output_dir = tmp_path / "conversation_replay"
     assert (output_dir / "output.yaml").exists()
-    assert not (output_dir / ".trace").exists()
 ```
 
-**Main run with set override** (`tests/replay/test_cli_usage.py:83`)
+**Main run with set override** (`tests/replay/test_cli_usage.py:98`)
 
 ```python
 def test_main_run_with_set_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Override model before execution using --set flag."""
     replay_file = _conversation_yaml(tmp_path, model="gemini-3-flash")
-    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), _MockResult())[1])
-    monkeypatch.setattr("ai_pipeline_core.replay.cli._init_replay_tracing", lambda _d: None)
+    db_path = tmp_path / "bundle"
+    FilesystemDatabase(db_path)
 
-    exit_code = main(["run", str(replay_file), "--store", str(tmp_path), "--set", "model=grok-4.1-fast"])
+    captured_models: list[str] = []
+
+    async def fake_execute(payload: object, database: object) -> _MockResult:
+        _ = database
+        captured_models.append(payload.model)
+        return _MockResult()
+
+    monkeypatch.setattr("ai_pipeline_core.replay.cli._execute_with_database", fake_execute)
+
+    exit_code = main(["run", str(replay_file), "--db-path", str(db_path), "--set", "model=grok-4.1-fast"])
 
     assert exit_code == 0
+    assert captured_models == ["grok-4.1-fast"]
 ```
 
-**Main run with output dir** (`tests/replay/test_cli_usage.py:95`)
+**Main run with output dir** (`tests/replay/test_cli_usage.py:119`)
 
 ```python
 def test_main_run_with_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Place replay output in a custom directory using --output-dir."""
     replay_file = _conversation_yaml(tmp_path)
+    db_path = tmp_path / "bundle"
+    FilesystemDatabase(db_path)
     custom_dir = tmp_path / "my_output"
-    monkeypatch.setattr("ai_pipeline_core.replay.cli.asyncio.run", lambda _coro: (_coro.close(), _MockResult())[1])
-    monkeypatch.setattr("ai_pipeline_core.replay.cli._init_replay_tracing", lambda _d: None)
 
-    exit_code = main(["run", str(replay_file), "--store", str(tmp_path), "--output-dir", str(custom_dir)])
+    async def fake_execute(payload: object, database: object) -> _MockResult:
+        _ = (payload, database)
+        return _MockResult()
+
+    monkeypatch.setattr("ai_pipeline_core.replay.cli._execute_with_database", fake_execute)
+
+    exit_code = main(["run", str(replay_file), "--db-path", str(db_path), "--output-dir", str(custom_dir)])
 
     assert exit_code == 0
     assert (custom_dir / "output.yaml").exists()
 ```
 
-**Conversationreplay from yaml and override** (`tests/replay/test_cli_usage.py:109`)
+**Main run from db** (`tests/replay/test_cli_usage.py:138`)
+
+```python
+def test_main_run_from_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "bundle"
+    database = FilesystemDatabase(db_path)
+    node_id = uuid4()
+    deployment_id = uuid4()
+
+    async def seed() -> None:
+        await database.insert_node(
+            ExecutionNode(
+                node_id=node_id,
+                node_kind=NodeKind.TASK,
+                deployment_id=deployment_id,
+                root_deployment_id=deployment_id,
+                run_id="run-123",
+                run_scope="run-123/scope",
+                deployment_name="Replay Test",
+                name="ReplayTask",
+                sequence_no=0,
+                started_at=datetime.now(UTC),
+                payload={
+                    "replay_payload": {
+                        "version": 1,
+                        "payload_type": "conversation",
+                        "model": "gemini-3-flash",
+                        "prompt": "Replay from db",
+                        "context": [],
+                        "history": [],
+                    }
+                },
+            )
+        )
+
+    asyncio.run(seed())
+
+    async def fake_execute(payload: object, database_obj: object) -> _MockResult:
+        _ = (payload, database_obj)
+        return _MockResult("DB replay")
+
+    monkeypatch.setattr("ai_pipeline_core.replay.cli._execute_with_database", fake_execute)
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(["run", "--from-db", str(node_id), "--db-path", str(db_path)])
+
+    assert exit_code == 0
+    assert (tmp_path / f"node_{str(node_id)[:8]}_replay" / "output.yaml").exists()
+```
+
+**Conversationreplay from yaml and override** (`tests/replay/test_cli_usage.py:317`)
 
 ```python
 def test_ConversationReplay_from_yaml_and_override() -> None:
-    """Load a replay payload from YAML, override a field, and serialize back."""
     yaml_text = yaml.dump({
         "version": 1,
         "payload_type": "conversation",
@@ -301,29 +360,142 @@ def test_ConversationReplay_from_yaml_and_override() -> None:
     replay = ConversationReplay.from_yaml(yaml_text)
     assert replay.model == "gemini-3-flash"
 
-    # Override model for re-execution with a different provider
     modified = replay.model_copy(update={"model": "grok-4.1-fast"})
     assert modified.model == "grok-4.1-fast"
     assert modified.prompt == replay.prompt
-
-    # Serialize back to YAML
-    output = modified.to_yaml()
-    assert "grok-4.1-fast" in output
+    assert "grok-4.1-fast" in modified.to_yaml()
 ```
 
-** infer store base from trace tree** (`tests/replay/test_cli_usage.py:134`)
+** infer db path from filesystem database root** (`tests/replay/test_cli_usage.py:337`)
 
 ```python
-def test__infer_store_base_from_trace_tree(tmp_path: Path) -> None:
-    """Find the store base directory by walking up to the .trace/ parent."""
+def test__infer_db_path_from_filesystem_database_root(tmp_path: Path) -> None:
     store_dir = tmp_path / "pipeline_output"
-    trace_dir = store_dir / ".trace" / "001_flow" / "002_task"
-    trace_dir.mkdir(parents=True)
-    replay_file = trace_dir / "conversation.yaml"
+    replay_dir = store_dir / "runs" / "20260308_pipeline_abcd1234" / "flows" / "01_flow_1234"
+    replay_dir.mkdir(parents=True)
+    (store_dir / "blobs").mkdir(parents=True)
+    replay_file = replay_dir / "conversation.yaml"
     replay_file.write_text("dummy")
 
-    result = _infer_store_base(replay_file)
+    result = _infer_db_path(replay_file)
     assert result == store_dir
+```
+
+**Main run from db missing payload message does not claim failed nodes must succeed first** (`tests/replay/test_cli_usage.py:279`)
+
+```python
+def test_main_run_from_db_missing_payload_message_does_not_claim_failed_nodes_must_succeed_first(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "bundle"
+    database = FilesystemDatabase(db_path)
+    node_id = uuid4()
+    deployment_id = uuid4()
+
+    async def seed() -> None:
+        await database.insert_node(
+            ExecutionNode(
+                node_id=node_id,
+                node_kind=NodeKind.FLOW,
+                deployment_id=deployment_id,
+                root_deployment_id=deployment_id,
+                parent_node_id=deployment_id,
+                run_id="run-123",
+                run_scope="run-123/scope",
+                deployment_name="Replay Test",
+                name="FailedFlow",
+                sequence_no=1,
+                status=NodeStatus.FAILED,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+                payload={"error_message": "boom"},
+            )
+        )
+
+    asyncio.run(seed())
+
+    exit_code = main(["run", "--from-db", str(node_id), "--db-path", str(db_path)])
+
+    assert exit_code == 1
+    assert "executed normally" not in capsys.readouterr().err
+```
+
+**Main run from db rejects conversation parent node** (`tests/replay/test_cli_usage.py:185`)
+
+```python
+def test_main_run_from_db_rejects_conversation_parent_node(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "bundle"
+    database = FilesystemDatabase(db_path)
+    node_id = uuid4()
+    deployment_id = uuid4()
+
+    async def seed() -> None:
+        await database.insert_node(
+            ExecutionNode(
+                node_id=node_id,
+                node_kind=NodeKind.CONVERSATION,
+                deployment_id=deployment_id,
+                root_deployment_id=deployment_id,
+                run_id="run-123",
+                run_scope="run-123/scope",
+                deployment_name="Replay Test",
+                name="ConversationParent",
+                sequence_no=0,
+                started_at=datetime.now(UTC),
+                payload={"turn_count": 1},
+            )
+        )
+
+    asyncio.run(seed())
+
+    exit_code = main(["run", "--from-db", str(node_id), "--db-path", str(db_path)])
+
+    assert exit_code == 1
+    assert "conversation_turn, task, and flow" in capsys.readouterr().err
+```
+
+**Main run from db rejects flow without replay payload** (`tests/replay/test_cli_usage.py:242`)
+
+```python
+def test_main_run_from_db_rejects_flow_without_replay_payload(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "bundle"
+    database = FilesystemDatabase(db_path)
+    node_id = uuid4()
+    deployment_id = uuid4()
+
+    async def seed() -> None:
+        await database.insert_node(
+            ExecutionNode(
+                node_id=node_id,
+                node_kind=NodeKind.FLOW,
+                deployment_id=deployment_id,
+                root_deployment_id=deployment_id,
+                parent_node_id=deployment_id,
+                run_id="run-123",
+                run_scope="run-123/scope",
+                deployment_name="Replay Test",
+                name="CachedFlow",
+                sequence_no=1,
+                status=NodeStatus.CACHED,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+                payload={"skip_reason": "cached result"},
+            )
+        )
+
+    asyncio.run(seed())
+
+    exit_code = main(["run", "--from-db", str(node_id), "--db-path", str(db_path)])
+
+    assert exit_code == 1
+    assert "has no replay payload and cannot be replayed" in capsys.readouterr().err
 ```
 
 **Flow replay empty flow params default** (`tests/replay/test_e2e_mocked.py:44`)
@@ -338,7 +510,7 @@ def test_flow_replay_empty_flow_params_default() -> None:
     assert restored.flow_params == {}
 ```
 
-**Empty documents** (`tests/replay/test_payload_roundtrip.py:167`)
+**Empty documents** (`tests/replay/test_payload_roundtrip.py:191`)
 
 ```python
 def test_empty_documents(self) -> None:
@@ -355,172 +527,68 @@ def test_empty_documents(self) -> None:
     assert restored.flow_options == {}
 ```
 
-**Empty history** (`tests/replay/test_payload_roundtrip.py:20`)
-
-```python
-def test_empty_history(self) -> None:
-    payload = ConversationReplay(
-        model="gemini-3-flash",
-        prompt="Summarize the document.",
-        context=[],
-        history=[],
-    )
-    yaml_text = payload.to_yaml()
-    restored = ConversationReplay.from_yaml(yaml_text)
-    assert restored == payload
-    assert restored.model == "gemini-3-flash"
-    assert restored.prompt == "Summarize the document."
-    assert restored.context == ()
-    assert restored.history == ()
-```
-
-**Flow replay yaml round trip** (`tests/replay/test_e2e_mocked.py:25`)
-
-```python
-def test_flow_replay_yaml_round_trip() -> None:
-    """FlowReplay survives to_yaml() → from_yaml() with all fields including flow_params."""
-    original = FlowReplay(
-        function_path="app.flows:MyFlow",
-        run_id="run-1",
-        documents=({"$doc_ref": "DEF456", "class_name": "InputDoc", "name": "data.txt"},),
-        flow_options={"custom_field": "value"},
-        flow_params={"model_name": "gpt-5", "temperature": 0.7},
-    )
-    yaml_text = original.to_yaml()
-    restored = FlowReplay.from_yaml(yaml_text)
-    assert restored.function_path == original.function_path
-    assert restored.run_id == original.run_id
-    assert restored.flow_options == original.flow_options
-    assert restored.flow_params == {"model_name": "gpt-5", "temperature": 0.7}
-    assert restored.payload_type == "pipeline_flow"
-    assert restored.to_yaml() == yaml_text
-```
-
-**Primitives only** (`tests/replay/test_payload_roundtrip.py:123`)
-
-```python
-def test_primitives_only(self) -> None:
-    payload = TaskReplay(
-        function_path="my_pipeline.tasks.simple",
-        arguments={
-            "name": "hello",
-            "count": 7,
-            "ratio": 3.14,
-            "enabled": True,
-        },
-    )
-    yaml_text = payload.to_yaml()
-    restored = TaskReplay.from_yaml(yaml_text)
-    assert restored == payload
-    assert restored.arguments["name"] == "hello"
-    assert restored.arguments["count"] == 7
-    assert restored.arguments["ratio"] == 3.14
-    assert restored.arguments["enabled"] is True
-```
-
 
 ## Error Examples
 
-**Fixed tuple replay rejects length mismatch** (`tests/replay/test_deserialize.py:213`)
-
-```python
-def test_fixed_tuple_replay_rejects_length_mismatch() -> None:
-    """Fixed-length tuple deserialization must reject mismatched lengths."""
-    function_path = f"{__name__}:_fixed_tuple_target"
-    with pytest.raises(ValueError, match="expects 2 items but replay data has 3"):
-        resolve_task_kwargs(
-            function_path,
-            {"pair": [1, 2, 3]},
-            Path("/nonexistent"),
-        )
-```
-
-**Missing trace raises** (`tests/replay/test_resolution.py:163`)
-
-```python
-def test_missing_trace_raises(self, tmp_path: Path) -> None:
-    """When no .trace/ directory exists in any ancestor, raise FileNotFoundError."""
-    deep_path = tmp_path / "some" / "random" / "path"
-    deep_path.mkdir(parents=True)
-    replay_file = deep_path / "replay.yaml"
-    replay_file.write_text("dummy")
-
-    with pytest.raises(FileNotFoundError):
-        _infer_store_base(replay_file)
-```
-
-**Resolve missing document raises** (`tests/replay/test_resolution.py:66`)
-
-```python
-def test_resolve_missing_document_raises(self, store_base: Path) -> None:
-    store_base.mkdir(parents=True, exist_ok=True)
-    fake_sha = "Z" * 52
-    ref = DocumentRef.model_validate({
-        "$doc_ref": fake_sha,
-        "class_name": "ReplayTextDocument",
-        "name": "ghost.txt",
-    })
-    with pytest.raises(FileNotFoundError):
-        resolve_document_ref(ref, store_base)
-```
-
-**Resolve wrong sha256 same prefix raises** (`tests/replay/test_resolution.py:78`)
+**Resolve missing document raises** (`tests/replay/test_resolution.py:57`)
 
 ```python
 @pytest.mark.asyncio
-async def test_resolve_wrong_sha256_same_prefix_raises(
-    self,
-    populated_store: Path,
-    sample_text_doc: ReplayTextDocument,
-) -> None:
-    """Mutate SHA256 after the 6-char prefix so the filesystem file is found
-    but the full SHA256 does not match any stored document."""
-    real_sha = sample_text_doc.sha256
-    # Keep first 6 chars (filename prefix), flip the rest
-    mutated_sha = real_sha[:6] + ("A" if real_sha[6] != "A" else "B") + real_sha[7:]
+async def test_resolve_missing_document_raises(self, memory_database: MemoryDatabase) -> None:
     ref = DocumentRef.model_validate({
-        "$doc_ref": mutated_sha,
+        "$doc_ref": "Z" * 52,
         "class_name": "ReplayTextDocument",
-        "name": "notes.txt",
+        "name": "ghost.txt",
     })
-    with pytest.raises(FileNotFoundError):
-        resolve_document_ref(ref, populated_store)
+    with pytest.raises(FileNotFoundError, match="not found in database"):
+        await resolve_document_ref(ref, memory_database)
 ```
 
-**Resolve missing class in registry raises** (`tests/replay/test_resolution.py:96`)
+** infer db path missing root raises** (`tests/replay/test_cli_usage.py:349`)
 
 ```python
-def test_resolve_missing_class_in_registry_raises(self, store_base: Path) -> None:
-    """Manually create store files with an unknown class_name and verify
-    that resolution fails because the class is not in Document._class_name_registry."""
-    fake_class = "NonExistentDocumentXYZ"
-    class_dir = store_base / fake_class
-    class_dir.mkdir(parents=True, exist_ok=True)
+def test__infer_db_path_missing_root_raises(tmp_path: Path) -> None:
+    replay_file = tmp_path / "conversation.yaml"
+    replay_file.write_text("dummy")
 
-    fake_sha = "ABCDEF" + "0" * 46
-    safe_name = _safe_filename("fake.txt", fake_sha)
-    content_path = class_dir / safe_name
-    meta_path = class_dir / f"{safe_name}.meta.json"
+    with pytest.raises(FileNotFoundError):
+        _infer_db_path(replay_file)
+```
 
-    content_path.write_bytes(b"fake content")
-    meta = {
-        "name": "fake.txt",
-        "document_sha256": fake_sha,
-        "content_sha256": "0" * 52,
-        "class_name": fake_class,
-        "description": "",
-        "derived_from": [],
-        "triggered_by": [],
-        "mime_type": "text/plain",
-        "attachments": [],
-    }
-    meta_path.write_text(json.dumps(meta))
+**Fixed tuple replay rejects length mismatch** (`tests/replay/test_deserialize.py:177`)
 
+```python
+@pytest.mark.asyncio
+async def test_fixed_tuple_replay_rejects_length_mismatch(memory_database) -> None:
+    function_path = f"{__name__}:_fixed_tuple_target"
+    with pytest.raises(ValueError, match="expects 2 items but replay data has 3"):
+        await resolve_task_kwargs(
+            function_path,
+            {"pair": [1, 2, 3]},
+            memory_database,
+        )
+```
+
+**Resolve missing blob raises** (`tests/replay/test_resolution.py:67`)
+
+```python
+@pytest.mark.asyncio
+async def test_resolve_missing_blob_raises(self, memory_database: MemoryDatabase) -> None:
+    record = DocumentRecord(
+        document_sha256="A" * 64,
+        content_sha256="B" * 64,
+        deployment_id=uuid4(),
+        producing_node_id=None,
+        document_type="ReplayTextDocument",
+        name="broken.txt",
+    )
+    await memory_database.save_document(record)
     ref = DocumentRef.model_validate({
-        "$doc_ref": fake_sha,
-        "class_name": fake_class,
-        "name": "fake.txt",
+        "$doc_ref": record.document_sha256,
+        "class_name": "ReplayTextDocument",
+        "name": record.name,
     })
-    with pytest.raises((KeyError, FileNotFoundError, ValueError)):
-        resolve_document_ref(ref, store_base)
+
+    with pytest.raises(FileNotFoundError, match="Blob"):
+        await resolve_document_ref(ref, memory_database)
 ```

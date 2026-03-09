@@ -25,28 +25,28 @@ class _DocDerived(_DocA):
 
 
 class _FlowAtoB(PipelineFlow):
-    async def run(self, run_id: str, documents: list[_DocA], options: FlowOptions) -> list[_DocB]:
-        return []
+    async def run(self, documents: tuple[_DocA, ...], options: FlowOptions) -> tuple[_DocB, ...]:
+        return ()
 
 
 class _FlowBtoC(PipelineFlow):
-    async def run(self, run_id: str, documents: list[_DocB], options: FlowOptions) -> list[_DocC]:
-        return []
+    async def run(self, documents: tuple[_DocB, ...], options: FlowOptions) -> tuple[_DocC, ...]:
+        return ()
 
 
 class _FlowCtoA(PipelineFlow):
-    async def run(self, run_id: str, documents: list[_DocC], options: FlowOptions) -> list[_DocA]:
-        return []
+    async def run(self, documents: tuple[_DocC, ...], options: FlowOptions) -> tuple[_DocA, ...]:
+        return ()
 
 
 class _FlowDerivedOutput(PipelineFlow):
-    async def run(self, run_id: str, documents: list[_DocA], options: FlowOptions) -> list[_DocDerived]:
-        return []
+    async def run(self, documents: tuple[_DocA, ...], options: FlowOptions) -> tuple[_DocDerived, ...]:
+        return ()
 
 
 class _FlowBaseInput(PipelineFlow):
-    async def run(self, run_id: str, documents: list[_DocA], options: FlowOptions) -> list[_DocC]:
-        return []
+    async def run(self, documents: tuple[_DocA, ...], options: FlowOptions) -> tuple[_DocC, ...]:
+        return ()
 
 
 def test_single_flow_always_valid() -> None:

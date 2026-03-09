@@ -1,6 +1,6 @@
 """Centralized logging configuration for AI Pipeline Core.
 
-Provides logging configuration management that integrates with Prefect's logging system.
+Provides logging configuration management for stdlib logging.
 """
 
 import logging
@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from prefect.logging import get_logger
 
 __all__ = [
     "LoggingConfig",
@@ -32,7 +31,7 @@ _DEFAULT_LOG_LEVELS = {
 class LoggingConfig:
     """Manages logging configuration for the pipeline.
 
-    Provides centralized logging configuration with Prefect integration.
+    Provides centralized logging configuration with stdlib logging.
 
     Configuration precedence:
         1. Explicit config_path parameter
@@ -108,18 +107,19 @@ class LoggingConfig:
                 "console": {
                     "class": "logging.StreamHandler",
                     "formatter": "standard",
+                    "level": "INFO",
                     "stream": "ext://sys.stdout",
                 },
             },
             "loggers": {
                 "ai_pipeline_core": {
-                    "level": os.environ.get("AI_PIPELINE_LOG_LEVEL", "INFO"),
-                    "handlers": ["console"],
-                    "propagate": False,
+                    "level": os.environ.get("AI_PIPELINE_LOG_LEVEL", "DEBUG"),
+                    "handlers": [],
+                    "propagate": True,
                 },
             },
             "root": {
-                "level": "WARNING",
+                "level": "DEBUG",
                 "handlers": ["console"],
             },
         }
@@ -162,7 +162,7 @@ def setup_logging(config_path: Path | None = None, level: str | None = None) -> 
         if level:
             # Set for our loggers
             for logger_name in _DEFAULT_LOG_LEVELS:
-                logger = get_logger(logger_name)
+                logger = logging.getLogger(logger_name)
                 logger.setLevel(level)
 
             # Also set for Prefect
@@ -172,28 +172,14 @@ def setup_logging(config_path: Path | None = None, level: str | None = None) -> 
 def get_pipeline_logger(name: str) -> logging.Logger:
     """Get a logger for pipeline components.
 
-    Returns a Prefect-integrated logger with the OTel span-event bridge
-    attached.  Any log record at INFO+ emitted while an OTel span is
-    recording will be captured as a span event in the trace.
-
     Args:
         name: Logger name, typically __name__.
 
     Returns:
-        Prefect logger instance with bridge handler.
+        Configured stdlib logger instance.
 
     """
     if _logging_config is None:
         setup_logging()
 
-    logger = get_logger(name)
-
-    # Attach the singleton bridge handler so log records become OTel span events.
-    # The handler is a no-op when no span is recording, so early attachment is safe.
-    from ai_pipeline_core.observability._logging_bridge import get_bridge_handler  # noqa: PLC0415
-
-    handler = get_bridge_handler()
-    if handler not in logger.handlers:
-        logger.addHandler(handler)
-
-    return logger
+    return logging.getLogger(name)

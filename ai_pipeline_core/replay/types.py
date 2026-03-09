@@ -1,8 +1,8 @@
 """Pydantic models for replay payloads.
 
 Three payload types capture everything needed to re-execute an LLM call,
-pipeline task, or pipeline flow. All use YAML for human-editable serialization.
-Replay files are auto-captured by the trace writer during pipeline execution.
+pipeline task, or pipeline flow. All use YAML for human-editable serialization
+when replay payloads are written to disk.
 """
 
 from pathlib import Path
@@ -11,6 +11,9 @@ from typing import Any, Literal, Self
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from ai_pipeline_core.database._protocol import DatabaseReader
+from ai_pipeline_core.documents._context import DocumentSha256
+
 __all__ = [
     "ConversationReplay",
     "DocumentRef",
@@ -18,37 +21,33 @@ __all__ = [
     "HistoryEntry",
     "TaskReplay",
     "ToolCallEntry",
-    "_infer_store_base",
+    "_infer_db_path",
 ]
 
 
-def _infer_store_base(replay_file: Path) -> Path:
-    """Walk up from replay_file to find .trace/ directory, return its parent.
-
-    Used automatically by the CLI. Only needed programmatically when bypassing the CLI.
-    Convention: .trace/ is always a direct child of the store base directory.
-    """
+def _infer_db_path(replay_file: Path) -> Path:
+    """Walk up from replay_file to find a FilesystemDatabase root."""
     current = replay_file.resolve().parent
     while current != current.parent:
-        if current.name == ".trace":
-            return current.parent
+        if (current / "runs").is_dir() or (current / "blobs").is_dir():
+            return current
         current = current.parent
     raise FileNotFoundError(
-        f"Could not find .trace/ directory in any ancestor of {replay_file}. "
-        f"The replay file must be inside a .trace/ directory tree, or use --store to specify the store base."
+        f"Could not find a FilesystemDatabase root (directory with runs/ or blobs/) "
+        f"in any ancestor of {replay_file}. Use --db-path to specify the database directory."
     )
 
 
 class DocumentRef(BaseModel):
-    """Reference to a document stored in LocalDocumentStore by SHA256.
+    """Reference to a document stored in a database backend by SHA256.
 
     Documents are not inlined in replay YAML — they are referenced by SHA256 hash
-    and resolved from the local store at execution time.
+    and resolved from the database at execution time.
     """
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
 
-    doc_ref: str = Field(alias="$doc_ref")  # Full SHA256 hash of the document
+    doc_ref: DocumentSha256 = Field(alias="$doc_ref")  # Full SHA256 hash of the document
     class_name: str  # Document subclass name for type resolution
     name: str  # Original document name
 
@@ -87,7 +86,7 @@ class HistoryEntry(BaseModel):
 class ConversationReplay(BaseModel):
     """Replay payload for a Conversation.send() / send_structured() call.
 
-    Auto-captured in each span directory as ``conversation.yaml``.
+    Serialized to YAML files such as ``conversation.yaml`` for replay and inspection.
     """
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
@@ -96,13 +95,16 @@ class ConversationReplay(BaseModel):
     payload_type: Literal["conversation"] = "conversation"
     model: str
     model_options: dict[str, Any] = {}  # ModelOptions fields (reasoning_effort, cache_ttl, etc.)
-    prompt: str
+    prompt: str = ""
+    prompt_documents: tuple[DocumentRef, ...] = ()  # Prompt documents sent via send(Document) or send([Document, ...])
     response_format: str | None = None  # "module:ClassName" path to Pydantic model for send_structured()
-    purpose: str | None = None  # Laminar span label for tracing
+    purpose: str | None = None  # Purpose label for the LLM call
     context: tuple[DocumentRef, ...] = ()  # Context documents resolved by SHA256 at execution
     history: tuple[HistoryEntry, ...] = ()  # Prior conversation turns
     enable_substitutor: bool = True  # URL/token protection via URLSubstitutor
     extract_result_tags: bool = False  # Extract content between <result> tags
+    include_date: bool = True
+    current_date: str | None = None
     original: dict[str, Any] = {}  # Cost/tokens from original execution, for comparison
 
     def to_yaml(self) -> str:
@@ -120,17 +122,17 @@ class ConversationReplay(BaseModel):
         data = yaml.safe_load(text)
         return cls.model_validate(data)
 
-    async def execute(self, store_base: Path) -> Any:
+    async def execute(self, database: DatabaseReader) -> Any:
         """Resolve document references and re-execute the LLM call."""
         from ._execute import execute_conversation
 
-        return await execute_conversation(self, store_base)
+        return await execute_conversation(self, database)
 
 
 class TaskReplay(BaseModel):
     """Replay payload for a PipelineTask invocation.
 
-    Auto-captured in each span directory as ``task.yaml``.
+    Serialized to YAML files such as ``task.yaml`` for replay and inspection.
     """
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
@@ -156,17 +158,17 @@ class TaskReplay(BaseModel):
         data = yaml.safe_load(text)
         return cls.model_validate(data)
 
-    async def execute(self, store_base: Path) -> Any:
+    async def execute(self, database: DatabaseReader) -> Any:
         """Resolve document references and re-execute the task."""
         from ._execute import execute_task
 
-        return await execute_task(self, store_base)
+        return await execute_task(self, database)
 
 
 class FlowReplay(BaseModel):
     """Replay payload for a PipelineFlow call.
 
-    Auto-captured in each span directory as ``flow.yaml``.
+    Serialized to YAML files such as ``flow.yaml`` for replay and inspection.
     """
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
@@ -174,7 +176,7 @@ class FlowReplay(BaseModel):
     version: int = 1
     payload_type: Literal["pipeline_flow"] = "pipeline_flow"
     function_path: str  # "module:qualname" path to the flow function
-    run_id: str  # Unique run identifier for document store scoping
+    run_id: str  # Unique run identifier for database-backed replay scoping
     documents: tuple[DocumentRef, ...] = ()  # Input documents referenced by SHA256
     flow_options: dict[str, Any] = {}  # FlowOptions fields (filtered to known fields at execution)
     flow_params: dict[str, Any] = {}  # PipelineFlow constructor kwargs for replay
@@ -195,8 +197,8 @@ class FlowReplay(BaseModel):
         data = yaml.safe_load(text)
         return cls.model_validate(data)
 
-    async def execute(self, store_base: Path) -> Any:
+    async def execute(self, database: DatabaseReader) -> Any:
         """Resolve document references and re-execute the flow function."""
         from ._execute import execute_flow
 
-        return await execute_flow(self, store_base)
+        return await execute_flow(self, database)

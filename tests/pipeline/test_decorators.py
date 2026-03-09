@@ -4,12 +4,9 @@ Tests estimated_minutes validation, document persistence to store,
 persistence failure handling, and annotation extraction.
 """
 
-from unittest.mock import AsyncMock
-
 import pytest
 
 from ai_pipeline_core import Document
-from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask, collect_tasks, pipeline_test_context
 from ai_pipeline_core.pipeline.options import FlowOptions
 
@@ -33,23 +30,23 @@ class AltInputDoc(Document):
 
 class EchoTask(PipelineTask):
     @classmethod
-    async def run(cls, documents: list[InputDoc]) -> list[OutputDoc]:
+    async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
         _ = cls
-        return [
+        return tuple(
             OutputDoc.derive(
                 from_documents=(doc,),
                 name=f"out_{doc.name}",
                 content=doc.content,
             )
             for doc in documents
-        ]
+        )
 
 
 @pytest.mark.asyncio
 async def test_task_run_is_awaitable() -> None:
     doc = InputDoc.create_root(name="a.txt", content="hello", reason="test input")
     with pipeline_test_context():
-        outputs = await EchoTask.run([doc])
+        outputs = await EchoTask.run((doc,))
     assert len(outputs) == 1
     assert outputs[0].name == "out_a.txt"
 
@@ -59,7 +56,7 @@ async def test_task_handles_can_be_collected() -> None:
     first = InputDoc.create_root(name="a.txt", content="a", reason="test input")
     second = InputDoc.create_root(name="b.txt", content="b", reason="test input")
     with pipeline_test_context():
-        batch = await collect_tasks(EchoTask.run([first]), EchoTask.run([second]))
+        batch = await collect_tasks(EchoTask.run((first,)), EchoTask.run((second,)))
     flattened = [doc for docs in batch.completed for doc in docs]
     assert batch.incomplete == []
     assert {doc.name for doc in flattened} == {"out_a.txt", "out_b.txt"}
@@ -95,15 +92,15 @@ class TestEstimatedMinutes:
         class MinutesFlow(PipelineFlow):
             estimated_minutes = 30
 
-            async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
-                return []
+            async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
+                return ()
 
         assert MinutesFlow.estimated_minutes == 30
 
     def test_flow_default_estimated_minutes(self):
         class DefaultFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
-                return []
+            async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
+                return ()
 
         assert DefaultFlow.estimated_minutes == 1
 
@@ -123,8 +120,8 @@ class TestEstimatedMinutes:
             class BadFlow(PipelineFlow):
                 estimated_minutes = 0
 
-                async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
-                    return []
+                async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
+                    return ()
 
 
 # --------------------------------------------------------------------------- #
@@ -137,22 +134,22 @@ class TestFlowAnnotationExtraction:
 
     def test_extracts_input_types(self):
         class ExtractFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
-                return []
+            async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
+                return ()
 
         assert ExtractFlow.input_document_types == [InputDoc]
 
     def test_extracts_output_types(self):
         class ExtractFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
-                return []
+            async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
+                return ()
 
         assert ExtractFlow.output_document_types == [OutputDoc]
 
     def test_extracts_union_input_types(self):
         class UnionFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InputDoc | AltInputDoc], options: FlowOptions) -> list[OutputDoc]:
-                return []
+            async def run(self, documents: tuple[InputDoc | AltInputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
+                return ()
 
         assert set(UnionFlow.input_document_types) == {InputDoc, AltInputDoc}
 
@@ -166,22 +163,17 @@ class TestDocumentAutoSave:
     """Test document persistence via PipelineTask."""
 
     @pytest.mark.asyncio
-    async def test_documents_saved_to_store(self):
-        store = MemoryDocumentStore()
-
+    async def test_documents_returned_from_task(self):
         class SaveTask(PipelineTask):
             @classmethod
-            async def run(cls, source: InputDoc) -> list[OutputDoc]:
-                return [OutputDoc.derive(from_documents=(source,), name="out.txt", content="output")]
+            async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
+                return (OutputDoc.derive(from_documents=(source,), name="out.txt", content="output"),)
 
         source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
-        with pipeline_test_context(store=store) as ctx:
+        with pipeline_test_context():
             result = await SaveTask.run(source)
             assert len(result) == 1
-
-            loaded = await store.load(ctx.run_scope, [OutputDoc])
-            assert len(loaded) == 1
-            assert loaded[0].name == "out.txt"
+            assert result[0].name == "out.txt"
 
     @pytest.mark.asyncio
     async def test_no_store_works(self):
@@ -189,8 +181,8 @@ class TestDocumentAutoSave:
 
         class NoStoreTask(PipelineTask):
             @classmethod
-            async def run(cls, source: InputDoc) -> list[OutputDoc]:
-                return [OutputDoc.derive(from_documents=(source,), name="out.txt", content="output")]
+            async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
+                return (OutputDoc.derive(from_documents=(source,), name="out.txt", content="output"),)
 
         source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
         with pipeline_test_context():
@@ -199,34 +191,28 @@ class TestDocumentAutoSave:
 
     @pytest.mark.asyncio
     async def test_single_document_return_saved(self):
-        store = MemoryDocumentStore()
-
         class SingleTask(PipelineTask):
             @classmethod
             async def run(cls, source: InputDoc) -> OutputDoc:
                 return OutputDoc.derive(from_documents=(source,), name="single.txt", content="data")
 
         source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
-        with pipeline_test_context(store=store) as ctx:
-            await SingleTask.run(source)
-            loaded = await store.load(ctx.run_scope, [OutputDoc])
-            assert len(loaded) == 1
+        with pipeline_test_context():
+            result = await SingleTask.run(source)
+            assert isinstance(result, tuple)
+            assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_none_return_saves_nothing(self):
-        store = MemoryDocumentStore()
-
         class NoneTask(PipelineTask):
             @classmethod
             async def run(cls, source: InputDoc) -> None:
                 pass
 
         source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
-        with pipeline_test_context(store=store) as ctx:
+        with pipeline_test_context():
             result = await NoneTask.run(source)
-            assert result == []
-            loaded = await store.load(ctx.run_scope, [OutputDoc])
-            assert len(loaded) == 0
+            assert result == ()
 
 
 # --------------------------------------------------------------------------- #
@@ -235,22 +221,20 @@ class TestDocumentAutoSave:
 
 
 class TestPersistenceGracefulDegradation:
-    """Test that persistence failures don't crash tasks."""
+    """Test that tasks work without persistence configured."""
 
     @pytest.mark.asyncio
-    async def test_store_save_failure_logs_warning(self):
-        """A store that raises on save_batch should not crash the task."""
-        broken_store = AsyncMock(spec=MemoryDocumentStore)
-        broken_store.save_batch.side_effect = RuntimeError("store broken")
+    async def test_task_works_without_persistence(self):
+        """Task succeeds when no persistence backend is configured."""
 
-        class FailStoreTask(PipelineTask):
+        class NoPersistTask(PipelineTask):
             @classmethod
-            async def run(cls, source: InputDoc) -> list[OutputDoc]:
-                return [OutputDoc.derive(from_documents=(source,), name="out.txt", content="output")]
+            async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
+                return (OutputDoc.derive(from_documents=(source,), name="out.txt", content="output"),)
 
         source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
-        with pipeline_test_context(store=broken_store):
-            result = await FailStoreTask.run(source)
+        with pipeline_test_context():
+            result = await NoPersistTask.run(source)
             assert len(result) == 1
 
 

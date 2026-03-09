@@ -1,90 +1,78 @@
-"""Tests for replay payload execute() methods with mocked LLM.
-
-Each replay type (ConversationReplay, TaskReplay, FlowReplay) is tested for
-correct argument resolution, document reference expansion, and dispatch to
-the underlying function or Conversation.
-"""
+"""Tests for replay payload execute() methods with database-backed document resolution."""
 
 import logging
-from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm.conversation import Conversation
-from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask
-from ai_pipeline_core.replay import ConversationReplay, FlowReplay, HistoryEntry, TaskReplay
+from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask, get_run_id
+from ai_pipeline_core.replay import ConversationReplay, DocumentRef, FlowReplay, HistoryEntry, TaskReplay
 from tests.replay.conftest import (
     ReplayArgsModel,
     ReplayFlowOptions,
     ReplayResultDocument,
     ReplayTextDocument,
     doc_ref_dict,
+    store_document_in_database,
 )
 from tests.support.helpers import create_test_model_response
 
 
-# ---------------------------------------------------------------------------
-# Helpers — simple async functions used as task/flow targets
-# ---------------------------------------------------------------------------
-
-
 async def _test_task_fn(source: ReplayTextDocument, *, label: str) -> ReplayResultDocument:
-    """Minimal task function for replay testing."""
     return ReplayResultDocument(name="result.txt", content=source.content, description=label)
 
 
 async def _test_task_with_model_arg(source: ReplayTextDocument, *, config: ReplayArgsModel) -> ReplayResultDocument:
-    """Task that accepts a BaseModel keyword argument."""
     return ReplayResultDocument(name="result.txt", content=source.content, description=config.label)
 
 
 class _ReplayPipelineTask(PipelineTask):
-    """Class-based task used to verify replay of PipelineTask.run(...)."""
-
     @classmethod
-    async def run(cls, source: ReplayTextDocument, label: str) -> list[ReplayResultDocument]:
+    async def run(cls, source: ReplayTextDocument, label: str) -> tuple[ReplayResultDocument, ...]:
         _ = cls
-        return [ReplayResultDocument(name="result.txt", content=source.content, description=label)]
+        return (ReplayResultDocument(name="result.txt", content=source.content, description=label),)
 
 
 async def _test_flow_fn(
-    run_id: str,
-    documents: list[ReplayTextDocument],
+    documents: tuple[ReplayTextDocument, ...],
     flow_options: ReplayFlowOptions,
-) -> list[ReplayResultDocument]:
-    """Minimal flow function for replay testing."""
-    return [
+) -> tuple[ReplayResultDocument, ...]:
+    return (
         ReplayResultDocument(
             name="flow_result.txt",
             content=documents[0].content,
-            description=f"{flow_options.replay_label}:{flow_options.replay_mode}",
-        )
-    ]
+            description=f"{get_run_id()}:{flow_options.replay_label}:{flow_options.replay_mode}",
+        ),
+    )
 
 
 class _ReplayClassFlow(PipelineFlow):
-    """Class-based PipelineFlow for replay testing."""
-
-    async def run(self, run_id: str, documents: list[ReplayTextDocument], options: ReplayFlowOptions) -> list[ReplayResultDocument]:
-        return [ReplayResultDocument(name="flow_out.txt", content=documents[0].content if documents else b"empty")]
+    async def run(self, documents: tuple[ReplayTextDocument, ...], options: ReplayFlowOptions) -> tuple[ReplayResultDocument, ...]:
+        _ = options
+        return (
+            ReplayResultDocument(
+                name="flow_out.txt",
+                content=documents[0].content if documents else b"empty",
+                description=get_run_id(),
+            ),
+        )
 
 
 class _ParameterizedFlow(PipelineFlow):
-    """PipelineFlow with constructor params for replay testing."""
-
     model_name: str = "default-model"
 
-    async def run(self, run_id: str, documents: list[ReplayTextDocument], options: ReplayFlowOptions) -> list[ReplayResultDocument]:
-        return [ReplayResultDocument(name="parameterized.txt", content=self.model_name.encode(), description=self.model_name)]
-
-
-# ---------------------------------------------------------------------------
-# Structured output model for conversation tests
-# ---------------------------------------------------------------------------
+    async def run(self, documents: tuple[ReplayTextDocument, ...], options: ReplayFlowOptions) -> tuple[ReplayResultDocument, ...]:
+        _ = (documents, options)
+        return (
+            ReplayResultDocument(
+                name="parameterized.txt",
+                content=self.model_name.encode(),
+                description=f"{self.model_name}:{get_run_id()}",
+            ),
+        )
 
 
 class _SummaryOutput(BaseModel):
@@ -92,21 +80,13 @@ class _SummaryOutput(BaseModel):
     word_count: int
 
 
-# ---------------------------------------------------------------------------
-# ConversationReplay tests
-# ---------------------------------------------------------------------------
-
-
 class TestConversationReplayExecute:
-    """ConversationReplay.execute() builds a Conversation and sends the prompt."""
-
     @pytest.mark.asyncio
-    async def test_conversation_execute_sends_prompt(self, monkeypatch: pytest.MonkeyPatch, populated_store: Path) -> None:
-        """The rendered prompt text reaches Conversation.send()."""
+    async def test_conversation_execute_sends_prompt(self, monkeypatch: pytest.MonkeyPatch, memory_database) -> None:
         captured_content: list[str] = []
 
         async def fake_generate(messages: Any, **kwargs: Any) -> Any:
-            # Last message is the user prompt
+            _ = kwargs
             last = messages[-1]
             text = last.content if isinstance(last.content, str) else str(last.content)
             captured_content.append(text)
@@ -121,11 +101,9 @@ class TestConversationReplayExecute:
             context=[],
             history=[],
         )
-        with patch("ai_pipeline_core.llm.conversation.Laminar", MagicMock()):
-            conv = await replay.execute(populated_store)
+        conv = await replay.execute(memory_database)
 
-        assert len(captured_content) == 1
-        assert "Summarize everything." in captured_content[0]
+        assert captured_content == ["Summarize everything."]
         assert isinstance(conv, Conversation)
         assert conv.content == "mocked reply"
 
@@ -133,47 +111,45 @@ class TestConversationReplayExecute:
     async def test_conversation_execute_resolves_context_docs(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        populated_store: Path,
+        memory_database,
         sample_text_doc: ReplayTextDocument,
     ) -> None:
-        """$doc_ref entries in context are resolved to full Document instances."""
         resolved_docs: list[Document] = []
+        await store_document_in_database(memory_database, sample_text_doc)
 
         async def fake_generate(messages: Any, **kwargs: Any) -> Any:
+            _ = (messages, kwargs)
             return create_test_model_response(content="ok")
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        ref = doc_ref_dict(sample_text_doc)
         replay = ConversationReplay(
             payload_type="conversation",
             model="test-model",
             prompt="Describe the doc.",
-            context=[ref],
+            context=[doc_ref_dict(sample_text_doc)],
             history=[],
         )
 
         original_send = Conversation.send
 
-        async def capturing_send(self_conv: Conversation, content: Any, **kw: Any) -> Conversation:
+        async def capturing_send(self_conv: Conversation, content: Any, **kwargs: Any) -> Conversation:
+            _ = (content, kwargs)
             resolved_docs.extend(self_conv.context)
-            return await original_send(self_conv, content, **kw)
+            return await original_send(self_conv, content)
 
         monkeypatch.setattr(Conversation, "send", capturing_send)
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", MagicMock()):
-            await replay.execute(populated_store)
+        await replay.execute(memory_database)
 
-        assert len(resolved_docs) >= 1
-        names = [d.name for d in resolved_docs]
-        assert sample_text_doc.name in names
+        assert [doc.name for doc in resolved_docs] == [sample_text_doc.name]
 
     @pytest.mark.asyncio
-    async def test_conversation_execute_with_history(self, monkeypatch: pytest.MonkeyPatch, populated_store: Path) -> None:
-        """History entries are reconstructed as user/assistant message pairs."""
+    async def test_conversation_execute_with_history(self, monkeypatch: pytest.MonkeyPatch, memory_database) -> None:
         seen_messages: list[Any] = []
 
         async def fake_generate(messages: Any, **kwargs: Any) -> Any:
+            _ = kwargs
             seen_messages.extend(messages)
             return create_test_model_response(content="final answer")
 
@@ -190,19 +166,17 @@ class TestConversationReplayExecute:
             ],
         )
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", MagicMock()):
-            conv = await replay.execute(populated_store)
+        conv = await replay.execute(memory_database)
 
         assert conv.content == "final answer"
-        # At least 3 messages: history user, history assistant, final prompt
         assert len(seen_messages) >= 3
 
     @pytest.mark.asyncio
-    async def test_conversation_execute_structured_output(self, monkeypatch: pytest.MonkeyPatch, populated_store: Path) -> None:
-        """When response_format is a valid importable class, send_structured() is used."""
+    async def test_conversation_execute_structured_output(self, monkeypatch: pytest.MonkeyPatch, memory_database) -> None:
         structured_called = False
 
         async def fake_generate_structured(messages: Any, response_format: Any, **kwargs: Any) -> Any:
+            _ = (messages, response_format, kwargs)
             nonlocal structured_called
             structured_called = True
             from tests.support.helpers import create_test_structured_model_response
@@ -211,14 +185,10 @@ class TestConversationReplayExecute:
                 parsed=_SummaryOutput(summary="AI summary", word_count=42),
             )
 
-        monkeypatch.setattr(
-            "ai_pipeline_core.llm.conversation.core_generate_structured",
-            fake_generate_structured,
-        )
-        # Also need to mock regular generate in case fallback is tested
+        monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate_structured", fake_generate_structured)
         monkeypatch.setattr(
             "ai_pipeline_core.llm.conversation.core_generate",
-            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not be called")),
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
         )
 
         replay = ConversationReplay(
@@ -230,23 +200,94 @@ class TestConversationReplayExecute:
             response_format=f"{_SummaryOutput.__module__}:{_SummaryOutput.__qualname__}",
         )
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", MagicMock()):
-            conv = await replay.execute(populated_store)
+        conv = await replay.execute(memory_database)
 
         assert structured_called
         assert conv.parsed is not None
         assert conv.parsed.summary == "AI summary"
 
     @pytest.mark.asyncio
+    async def test_conversation_execute_resolves_single_prompt_document(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        memory_database,
+        sample_text_doc: ReplayTextDocument,
+    ) -> None:
+        await store_document_in_database(memory_database, sample_text_doc)
+        captured_content: list[Any] = []
+
+        async def fake_send(self_conv: Conversation, content: Any, **kwargs: Any) -> Conversation:
+            _ = kwargs
+            captured_content.append(content)
+            return self_conv.model_copy(update={"messages": (*self_conv.messages, create_test_model_response(content="ok"))})
+
+        monkeypatch.setattr(Conversation, "send", fake_send)
+
+        replay = ConversationReplay(
+            payload_type="conversation",
+            model="test-model",
+            prompt_documents=[DocumentRef.model_validate(doc_ref_dict(sample_text_doc))],
+            context=[],
+            history=[],
+        )
+
+        await replay.execute(memory_database)
+
+        assert len(captured_content) == 1
+        assert isinstance(captured_content[0], ReplayTextDocument)
+        assert captured_content[0].sha256 == sample_text_doc.sha256
+
+    @pytest.mark.asyncio
+    async def test_conversation_execute_resolves_prompt_document_list_and_frozen_date(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        memory_database,
+        sample_text_doc: ReplayTextDocument,
+    ) -> None:
+        await store_document_in_database(memory_database, sample_text_doc)
+        second_doc = ReplayTextDocument(name="second.txt", content=b"second replay document")
+        await store_document_in_database(memory_database, second_doc)
+
+        captured_content: list[Any] = []
+        captured_dates: list[tuple[bool, str | None]] = []
+
+        async def fake_send(self_conv: Conversation, content: Any, **kwargs: Any) -> Conversation:
+            _ = kwargs
+            captured_content.append(content)
+            captured_dates.append((self_conv.include_date, self_conv.current_date))
+            return self_conv.model_copy(update={"messages": (*self_conv.messages, create_test_model_response(content="ok"))})
+
+        monkeypatch.setattr(Conversation, "send", fake_send)
+
+        replay = ConversationReplay(
+            payload_type="conversation",
+            model="test-model",
+            prompt_documents=[
+                DocumentRef.model_validate(doc_ref_dict(sample_text_doc)),
+                DocumentRef.model_validate(doc_ref_dict(second_doc)),
+            ],
+            context=[],
+            history=[],
+            include_date=True,
+            current_date="2025-03-15",
+        )
+
+        await replay.execute(memory_database)
+
+        assert len(captured_content) == 1
+        assert isinstance(captured_content[0], list)
+        assert [doc.name for doc in captured_content[0]] == [sample_text_doc.name, second_doc.name]
+        assert captured_dates == [(True, "2025-03-15")]
+
+    @pytest.mark.asyncio
     async def test_conversation_execute_unimportable_format_falls_back(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        populated_store: Path,
+        memory_database,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """If response_format cannot be imported, fall back to send() with a warning."""
-
         async def fake_generate(messages: Any, **kwargs: Any) -> Any:
+            _ = (messages, kwargs)
             return create_test_model_response(content="fallback text")
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
@@ -260,76 +301,52 @@ class TestConversationReplayExecute:
             response_format="nonexistent.module.BogusClass",
         )
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", MagicMock()):
-            with caplog.at_level(logging.WARNING):
-                conv = await replay.execute(populated_store)
+        with caplog.at_level(logging.WARNING):
+            conv = await replay.execute(memory_database)
 
         assert conv.content == "fallback text"
-        # A warning should have been logged about the import failure
-        warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("nonexistent" in msg or "import" in msg.lower() for msg in warning_messages)
-
-
-# ---------------------------------------------------------------------------
-# TaskReplay tests
-# ---------------------------------------------------------------------------
+        assert any("import" in record.message.lower() or "nonexistent" in record.message for record in caplog.records)
 
 
 class TestTaskReplayExecute:
-    """TaskReplay.execute() imports the function, resolves args, and calls it."""
-
     @pytest.mark.asyncio
-    async def test_task_execute_calls_function(self, populated_store: Path) -> None:
-        """function_path is resolved and the function is called with given arguments."""
+    async def test_task_execute_calls_function(self, memory_database) -> None:
         fn_path = f"{_test_task_fn.__module__}:{_test_task_fn.__qualname__}"
         text_doc = ReplayTextDocument(name="src.txt", content=b"hello world")
+        await store_document_in_database(memory_database, text_doc)
 
         replay = TaskReplay(
             payload_type="pipeline_task",
             function_path=fn_path,
-            arguments={
-                "source": doc_ref_dict(text_doc),
-                "label": "test-label",
-            },
+            arguments={"source": doc_ref_dict(text_doc), "label": "test-label"},
         )
 
-        # Save the document so it can be resolved
-        from ai_pipeline_core.document_store._local import LocalDocumentStore
-        from ai_pipeline_core.documents import RunScope
-
-        store = LocalDocumentStore(base_path=populated_store)
-        await store.save(text_doc, RunScope("replay/test"))
-
-        result = await replay.execute(populated_store)
+        result = await replay.execute(memory_database)
 
         assert isinstance(result, ReplayResultDocument)
         assert result.description == "test-label"
 
     @pytest.mark.asyncio
-    async def test_task_execute_resolves_doc_refs(self, populated_store: Path, sample_text_doc: ReplayTextDocument) -> None:
-        """$doc_ref values in arguments are resolved to Document instances from the store."""
+    async def test_task_execute_resolves_doc_refs(self, memory_database, sample_text_doc: ReplayTextDocument) -> None:
         fn_path = f"{_test_task_fn.__module__}:{_test_task_fn.__qualname__}"
+        await store_document_in_database(memory_database, sample_text_doc)
 
         replay = TaskReplay(
             payload_type="pipeline_task",
             function_path=fn_path,
-            arguments={
-                "source": doc_ref_dict(sample_text_doc),
-                "label": "resolved",
-            },
+            arguments={"source": doc_ref_dict(sample_text_doc), "label": "resolved"},
         )
 
-        result = await replay.execute(populated_store)
+        result = await replay.execute(memory_database)
 
         assert isinstance(result, ReplayResultDocument)
         assert result.description == "resolved"
-        # Content should match the original document
         assert result.content == sample_text_doc.content
 
     @pytest.mark.asyncio
-    async def test_task_execute_validates_basemodel_args(self, populated_store: Path, sample_text_doc: ReplayTextDocument) -> None:
-        """Dict arguments matching BaseModel type hints are validated via model_validate."""
+    async def test_task_execute_validates_basemodel_args(self, memory_database, sample_text_doc: ReplayTextDocument) -> None:
         fn_path = f"{_test_task_with_model_arg.__module__}:{_test_task_with_model_arg.__qualname__}"
+        await store_document_in_database(memory_database, sample_text_doc)
 
         replay = TaskReplay(
             payload_type="pipeline_task",
@@ -340,68 +357,55 @@ class TestTaskReplayExecute:
             },
         )
 
-        result = await replay.execute(populated_store)
+        result = await replay.execute(memory_database)
 
         assert isinstance(result, ReplayResultDocument)
         assert result.description == "validated"
 
     @pytest.mark.asyncio
-    async def test_task_execute_pipeline_task_class(self, populated_store: Path, sample_text_doc: ReplayTextDocument) -> None:
-        """TaskReplay executes PipelineTask subclasses through the wrapped run() entry point."""
+    async def test_task_execute_pipeline_task_class(self, memory_database, sample_text_doc: ReplayTextDocument) -> None:
         fn_path = f"{_ReplayPipelineTask.__module__}:{_ReplayPipelineTask.__qualname__}"
+        await store_document_in_database(memory_database, sample_text_doc)
 
         replay = TaskReplay(
             payload_type="pipeline_task",
             function_path=fn_path,
-            arguments={
-                "source": doc_ref_dict(sample_text_doc),
-                "label": "pipeline-task",
-            },
+            arguments={"source": doc_ref_dict(sample_text_doc), "label": "pipeline-task"},
         )
 
-        result = await replay.execute(populated_store)
+        result = await replay.execute(memory_database)
 
-        assert isinstance(result, list)
+        assert isinstance(result, tuple)
         assert len(result) == 1
         assert isinstance(result[0], ReplayResultDocument)
         assert result[0].description == "pipeline-task"
 
 
-# ---------------------------------------------------------------------------
-# FlowReplay tests
-# ---------------------------------------------------------------------------
-
-
 class TestFlowReplayExecute:
-    """FlowReplay.execute() resolves documents and flow options, then calls the flow function."""
-
     @pytest.mark.asyncio
-    async def test_flow_execute_resolves_docs_and_options(self, populated_store: Path, sample_text_doc: ReplayTextDocument) -> None:
-        """Documents are resolved from $doc_ref, flow_options are reconstructed."""
+    async def test_flow_execute_resolves_docs_and_options(self, memory_database, sample_text_doc: ReplayTextDocument) -> None:
         fn_path = f"{_test_flow_fn.__module__}:{_test_flow_fn.__qualname__}"
+        await store_document_in_database(memory_database, sample_text_doc)
 
         replay = FlowReplay(
             payload_type="pipeline_flow",
             function_path=fn_path,
             run_id="run-99",
             documents=[doc_ref_dict(sample_text_doc)],
-            flow_options={
-                "replay_label": "prod",
-                "replay_mode": "deep",
-            },
+            flow_options={"replay_label": "prod", "replay_mode": "deep"},
         )
 
-        result = await replay.execute(populated_store)
+        result = await replay.execute(memory_database)
 
-        assert isinstance(result, list)
+        assert isinstance(result, tuple)
         assert len(result) == 1
         assert isinstance(result[0], ReplayResultDocument)
-        assert result[0].description is not None and "prod:deep" in result[0].description
+        assert result[0].description == "run-99:prod:deep"
 
     @pytest.mark.asyncio
-    async def test_flow_execute_handles_pipeline_flow_class(self, populated_store: Path, sample_text_doc: ReplayTextDocument) -> None:
-        """execute_flow must instantiate PipelineFlow classes, not call them directly."""
+    async def test_flow_execute_handles_pipeline_flow_class(self, memory_database, sample_text_doc: ReplayTextDocument) -> None:
         fn_path = f"{_ReplayClassFlow.__module__}:{_ReplayClassFlow.__qualname__}"
+        await store_document_in_database(memory_database, sample_text_doc)
 
         replay = FlowReplay(
             payload_type="pipeline_flow",
@@ -411,15 +415,15 @@ class TestFlowReplayExecute:
             flow_options={},
         )
 
-        # Before fix: TypeError because PipelineFlow.__init__ doesn't accept positional args
-        result = await replay.execute(populated_store)
-        assert isinstance(result, list)
+        result = await replay.execute(memory_database)
+        assert isinstance(result, tuple)
         assert len(result) == 1
+        assert result[0].description == "test-run"
 
     @pytest.mark.asyncio
-    async def test_flow_execute_preserves_constructor_params(self, populated_store: Path, sample_text_doc: ReplayTextDocument) -> None:
-        """flow_params are passed to PipelineFlow constructor during replay."""
+    async def test_flow_execute_preserves_constructor_params(self, memory_database, sample_text_doc: ReplayTextDocument) -> None:
         fn_path = f"{_ParameterizedFlow.__module__}:{_ParameterizedFlow.__qualname__}"
+        await store_document_in_database(memory_database, sample_text_doc)
 
         replay = FlowReplay(
             payload_type="pipeline_flow",
@@ -430,7 +434,7 @@ class TestFlowReplayExecute:
             flow_params={"model_name": "gpt-5"},
         )
 
-        result = await replay.execute(populated_store)
-        assert isinstance(result, list)
+        result = await replay.execute(memory_database)
+        assert isinstance(result, tuple)
         assert len(result) == 1
-        assert result[0].description == "gpt-5"
+        assert result[0].description == "gpt-5:test-run"

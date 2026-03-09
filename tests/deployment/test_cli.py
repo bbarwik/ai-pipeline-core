@@ -3,14 +3,13 @@
 # pyright: reportPrivateUsage=false
 
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ai_pipeline_core.deployment._cli import _init_debug_tracing
 from ai_pipeline_core.deployment._types import ErrorCode, _NoopPublisher
-from ai_pipeline_core.deployment.base import _classify_error, _create_publisher, _build_summary_generator, _validate_flow_chain
+from ai_pipeline_core.deployment._helpers import _classify_error, _create_publisher
+from ai_pipeline_core.deployment.base import _validate_flow_chain
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.pipeline import PipelineFlow
 from ai_pipeline_core.documents._context import _suppress_document_registration
@@ -84,60 +83,10 @@ class TestCreatePublisher:
 
 
 # ---------------------------------------------------------------------------
-# _build_summary_generator
-# ---------------------------------------------------------------------------
-
-
-class TestBuildSummaryGenerator:
-    @patch("ai_pipeline_core.deployment._helpers.settings")
-    def test_disabled_returns_none(self, mock_settings):
-        mock_settings.doc_summary_enabled = False
-        result = _build_summary_generator()
-        assert result is None
-
-    @patch("ai_pipeline_core.deployment._helpers.settings")
-    def test_enabled_returns_callable(self, mock_settings):
-        mock_settings.doc_summary_enabled = True
-        mock_settings.doc_summary_model = "gemini-3-flash"
-        result = _build_summary_generator()
-        assert result is not None
-        assert callable(result)
-
-
-# ---------------------------------------------------------------------------
-# _init_debug_tracing
-# ---------------------------------------------------------------------------
-
-
-class TestInitDebugTracing:
-    def test_creates_trace_dir(self, tmp_path: Path):
-        with patch("ai_pipeline_core.deployment._cli.otel_trace") as mock_otel:
-            provider = MagicMock()
-            provider.add_span_processor = MagicMock()
-            mock_otel.get_tracer_provider.return_value = provider
-            processor = _init_debug_tracing(tmp_path)
-        assert processor is not None
-        assert (tmp_path / ".trace").is_dir()
-        provider.add_span_processor.assert_called_once()
-
-    def test_returns_none_on_os_error(self, tmp_path: Path):
-        with patch("ai_pipeline_core.deployment._cli.TraceDebugConfig", side_effect=OSError("fail")):
-            result = _init_debug_tracing(tmp_path)
-        assert result is None
-
-    def test_no_add_span_processor(self, tmp_path: Path):
-        with patch("ai_pipeline_core.deployment._cli.otel_trace") as mock_otel:
-            provider = MagicMock(spec=[])
-            mock_otel.get_tracer_provider.return_value = provider
-            processor = _init_debug_tracing(tmp_path)
-        assert processor is not None
-
-
-# ---------------------------------------------------------------------------
 # _compute_run_scope
 # ---------------------------------------------------------------------------
 
-from ai_pipeline_core.deployment.base import _compute_run_scope, _heartbeat_loop
+from ai_pipeline_core.deployment._helpers import _compute_run_scope, _heartbeat_loop
 
 
 class ScopeDoc(Document):
@@ -192,20 +141,20 @@ class _UnrelatedInputDoc(Document):
 
 
 class _Flow1(PipelineFlow):
-    async def run(self, run_id: str, documents: list[FlowInputDoc], options: FlowOptions) -> list[FlowOutputDoc]:
-        return []
+    async def run(self, documents: tuple[FlowInputDoc, ...], options: FlowOptions) -> tuple[FlowOutputDoc, ...]:
+        return ()
 
 
 class _Flow2(PipelineFlow):
-    async def run(self, run_id: str, documents: list[FlowOutputDoc], options: FlowOptions) -> list[FlowOutputDoc2]:
-        return []
+    async def run(self, documents: tuple[FlowOutputDoc, ...], options: FlowOptions) -> tuple[FlowOutputDoc2, ...]:
+        return ()
 
 
 class _Flow2Bad(PipelineFlow):
     """Flow whose input is not produced by _Flow1 — chain validation must reject this."""
 
-    async def run(self, run_id: str, documents: list[_UnrelatedInputDoc], options: FlowOptions) -> list[FlowOutputDoc2]:
-        return []
+    async def run(self, documents: tuple[_UnrelatedInputDoc, ...], options: FlowOptions) -> tuple[FlowOutputDoc2, ...]:
+        return ()
 
 
 class TestValidateFlowChain:

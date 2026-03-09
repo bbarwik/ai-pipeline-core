@@ -1,6 +1,6 @@
 """Class-based pipeline task runtime.
 
-Rules enforced at class definition time:
+Rules enforced at class definition time for concrete tasks:
 1. Subclasses must define ``@classmethod async def run(cls, ...)`` or inherit one from a parent task.
 2. Every ``run()`` parameter after ``cls`` must use a supported annotation.
 3. ``run()`` must return ``Document``, ``None``, ``list[Document]``, ``tuple[Document, ...]``, or unions of those shapes.
@@ -8,48 +8,51 @@ Rules enforced at class definition time:
 5. Class names must not start with ``Test``.
 6. ``estimated_minutes`` must be >= 1, ``retries`` >= 0, and ``timeout_seconds`` positive when set.
 
+Classes that explicitly declare ``_abstract_task = True`` skip definition-time validation.
+Concrete subclasses of those abstract bases are validated normally.
+
 Runtime behavior:
 1. ``Task.run(...)`` returns an awaitable ``TaskHandle``.
-2. ``await Task.run(...)`` executes the full lifecycle: tracing, retries, timeout, events, persistence, summaries, and replay capture.
+2. ``await Task.run(...)`` executes the full lifecycle: retries, timeout, events, persistence, summaries, and replay capture.
 3. Tasks must run inside an active pipeline execution context (or ``pipeline_test_context()`` in tests).
 """
 
 import asyncio
-import hashlib
 import inspect
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import update_wrapper
 from types import MappingProxyType
 from typing import Any, ClassVar, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from lmnr import Laminar
 from pydantic import BaseModel
 
+from ai_pipeline_core.database import NULL_PARENT, BlobRecord, DocumentRecord, ExecutionNode, NodeKind, NodeStatus
 from ai_pipeline_core.deployment._types import DocumentRef, TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent
-from ai_pipeline_core.document_store._protocol import get_document_store
-from ai_pipeline_core.documents import Document, DocumentSha256
+from ai_pipeline_core.documents import Document, DocumentSha256, RunScope
 from ai_pipeline_core.documents._context import TaskContext, _TaskDocumentContext, reset_task_context, set_task_context
-from ai_pipeline_core.documents.document import get_inline_summary, pop_inline_summary, set_inline_summary
-from ai_pipeline_core.documents.utils import is_document_sha256
+from ai_pipeline_core.documents._hashing import compute_content_sha256
+from ai_pipeline_core.documents.document import get_inline_summary, pop_inline_summary
 from ai_pipeline_core.llm.conversation import Conversation
 from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.observability._document_tracking import track_task_io
-from ai_pipeline_core.observability.tracing import TraceLevel, set_trace_cost, trace
 from ai_pipeline_core.pipeline._execution_context import (
+    ConversationTurnData,
     ExecutionContext,
     FlowFrame,
     TaskFrame,
     get_execution_context,
+    record_lifecycle_event,
+    reset_conversation_turns,
     reset_execution_context,
+    set_conversation_turns,
     set_execution_context,
 )
 from ai_pipeline_core.pipeline._parallel import TaskHandle
 from ai_pipeline_core.pipeline._type_validation import (
-    is_already_traced,
     resolve_type_hints,
     validate_task_argument_value,
     validate_task_input_annotation,
@@ -59,21 +62,215 @@ from ai_pipeline_core.replay._capture import serialize_kwargs
 
 logger = get_pipeline_logger(__name__)
 
-SUMMARY_EXCERPT_MAX_CHARS = 6000
 MILLISECONDS_PER_SECOND = 1000
-TASK_COMPLETION_KEY_PREFIX = "__task_completion__"
-TASK_COMPLETION_HASH_CHARS = 24
 
 EVENT_PUBLISH_EXCEPTIONS = (OSError, RuntimeError, ValueError, TypeError)
-SUMMARY_GENERATION_EXCEPTIONS = (OSError, RuntimeError, ValueError, TypeError)
-TRACKING_EXCEPTIONS = (RuntimeError, ValueError, TypeError)
-SPAN_ATTRIBUTE_EXCEPTIONS = (OSError, RuntimeError, ValueError, TypeError)
-TASK_EXECUTION_EXCEPTIONS = (Exception,)
-PERSISTENCE_EXCEPTIONS = (Exception,)
+TASK_EXECUTION_EXCEPTIONS = (Exception, asyncio.CancelledError)
 REPLAY_CAPTURE_EXCEPTIONS = (Exception,)
 RETRY_CAPTURE_EXCEPTIONS = (Exception,)
 
+DATABASE_EXCEPTIONS = (Exception,)
+
 __all__ = ["PipelineTask"]
+
+
+async def _insert_db_node_safe(database: Any, node: ExecutionNode) -> None:
+    """Insert an execution node, logging warnings on failure."""
+    if database is None:
+        return
+    try:
+        await database.insert_node(node)
+    except DATABASE_EXCEPTIONS as exc:
+        logger.warning("Database node insert failed for %s %s: %s", node.node_kind, node.node_id, exc)
+
+
+async def _update_db_node_safe(database: Any, node_id: UUID, **updates: Any) -> None:
+    """Update an execution node, logging warnings on failure."""
+    if database is None:
+        return
+    try:
+        await database.update_node(node_id, **updates)
+    except DATABASE_EXCEPTIONS as exc:
+        logger.warning("Database node update failed for %s: %s", node_id, exc)
+
+
+async def _persist_documents_to_database(
+    documents: Sequence[Document],
+    database: Any,
+    deployment_id: UUID | None,
+    run_scope: RunScope,
+    producing_node_id: UUID | None,
+) -> None:
+    """Persist documents and blobs to the new database backend (fire-and-forget)."""
+    if database is None or deployment_id is None:
+        return
+
+    doc_records: list[DocumentRecord] = []
+    blob_records: list[BlobRecord] = []
+    seen_content_sha256s: set[str] = set()
+
+    for doc in documents:
+        content_sha = compute_content_sha256(doc.content)
+        doc_records.append(
+            DocumentRecord(
+                document_sha256=doc.sha256,
+                content_sha256=content_sha,
+                deployment_id=deployment_id,
+                producing_node_id=producing_node_id,
+                document_type=type(doc).__name__,
+                name=doc.name,
+                run_scope=run_scope,
+                description=doc.description or "",
+                mime_type=doc.mime_type,
+                size_bytes=doc.size,
+                publicly_visible=getattr(type(doc), "publicly_visible", False),
+                derived_from=doc.derived_from,
+                triggered_by=doc.triggered_by,
+                attachment_names=tuple(att.name for att in doc.attachments),
+                attachment_descriptions=tuple(att.description or "" for att in doc.attachments),
+                attachment_sha256s=tuple(compute_content_sha256(att.content) for att in doc.attachments),
+                attachment_mime_types=tuple(att.mime_type for att in doc.attachments),
+                attachment_sizes=tuple(att.size for att in doc.attachments),
+            )
+        )
+        if content_sha not in seen_content_sha256s:
+            seen_content_sha256s.add(content_sha)
+            blob_records.append(
+                BlobRecord(
+                    content_sha256=content_sha,
+                    content=doc.content,
+                    size_bytes=len(doc.content),
+                )
+            )
+        # Also persist attachment blobs
+        for att in doc.attachments:
+            att_sha = compute_content_sha256(att.content)
+            if att_sha not in seen_content_sha256s:
+                seen_content_sha256s.add(att_sha)
+                blob_records.append(
+                    BlobRecord(
+                        content_sha256=att_sha,
+                        content=att.content,
+                        size_bytes=len(att.content),
+                    )
+                )
+
+    try:
+        if blob_records:
+            await database.save_blob_batch(blob_records)
+        if doc_records:
+            await database.save_document_batch(doc_records)
+    except DATABASE_EXCEPTIONS as exc:
+        logger.warning("Database document persistence failed: %s", exc)
+
+
+async def _create_conversation_turn_nodes(
+    turns: list[ConversationTurnData],
+    task_node_id: UUID,
+    execution_ctx: ExecutionContext,
+) -> None:
+    """Create conversation and conversation_turn nodes from captured turn data."""
+    database = execution_ctx.database
+    if database is None or execution_ctx.deployment_id is None:
+        return
+
+    # Group turns by conversation_id (stable UUID) so two Conversation objects
+    # with the same purpose produce separate nodes, and a single Conversation
+    # that changes purpose stays unified.
+    conversations: dict[str, list[tuple[int, ConversationTurnData]]] = {}
+    for idx, turn in enumerate(turns):
+        conversations.setdefault(turn.conversation_id, []).append((idx, turn))
+
+    for conv_seq, conv_turns in enumerate(conversations.values(), start=1):
+        conv_node_id = uuid4()
+        conv_display_name = conv_turns[0][1].conversation_name
+        conversation_status = NodeStatus.FAILED if any(turn.status == "failed" for _, turn in conv_turns) else NodeStatus.COMPLETED
+
+        # Create conversation node
+        conv_node = ExecutionNode(
+            node_id=conv_node_id,
+            node_kind=NodeKind.CONVERSATION,
+            deployment_id=execution_ctx.deployment_id,
+            root_deployment_id=execution_ctx.root_deployment_id or execution_ctx.deployment_id,
+            parent_node_id=task_node_id,
+            run_id=execution_ctx.run_id,
+            run_scope=RunScope(str(execution_ctx.run_scope)),
+            deployment_name=execution_ctx.deployment_name,
+            name=conv_display_name,
+            sequence_no=conv_seq,
+            task_id=task_node_id,
+            status=conversation_status,
+            started_at=conv_turns[0][1].started_at,
+            ended_at=conv_turns[-1][1].ended_at,
+            turn_count=len(conv_turns),
+            context_document_shas=conv_turns[0][1].context_document_shas,
+            payload={
+                "model_options": conv_turns[0][1].model_options_json,
+                "response_format_class": conv_turns[0][1].response_format_class,
+                "purpose": conv_display_name,
+            },
+        )
+        await _insert_db_node_safe(database, conv_node)
+
+        # Create turn nodes
+        for turn_seq, (_, turn) in enumerate(conv_turns):
+            turn_node_id = uuid4()
+            turn_node = ExecutionNode(
+                node_id=turn_node_id,
+                node_kind=NodeKind.CONVERSATION_TURN,
+                deployment_id=execution_ctx.deployment_id,
+                root_deployment_id=execution_ctx.root_deployment_id or execution_ctx.deployment_id,
+                parent_node_id=conv_node_id,
+                run_id=execution_ctx.run_id,
+                run_scope=RunScope(str(execution_ctx.run_scope)),
+                deployment_name=execution_ctx.deployment_name,
+                name=f"{conv_display_name}:turn-{turn_seq}",
+                sequence_no=turn_seq,
+                task_id=task_node_id,
+                conversation_id=conv_node_id,
+                model=turn.model,
+                cost_usd=turn.cost_usd,
+                tokens_input=turn.tokens_input,
+                tokens_output=turn.tokens_output,
+                tokens_cache_read=turn.tokens_cache_read,
+                tokens_reasoning=turn.tokens_reasoning,
+                status=NodeStatus.FAILED if turn.status == "failed" else NodeStatus.COMPLETED,
+                started_at=turn.started_at,
+                ended_at=turn.ended_at,
+                error_type=turn.error_type,
+                error_message=turn.error_message,
+                payload={
+                    "prompt_content": turn.prompt_content,
+                    "response_content": turn.response_content,
+                    "reasoning_content": turn.reasoning_content,
+                    "response_format_class": turn.response_format_class,
+                    "response_id": turn.response_id,
+                    "citations_json": turn.citations_json,
+                    "first_token_time": turn.first_token_time,
+                    "time_taken": turn.time_taken,
+                    "replay_payload": json.loads(turn.replay_payload_json) if turn.replay_payload_json else {},
+                },
+            )
+            await _insert_db_node_safe(database, turn_node)
+
+
+def _aggregate_conversation_turn_metrics(turns: Sequence[ConversationTurnData]) -> dict[str, int | float]:
+    """Aggregate LLM usage captured during a task for task-level execution metrics."""
+    return {
+        "cost_usd": sum(turn.cost_usd for turn in turns),
+        "tokens_input": sum(turn.tokens_input for turn in turns),
+        "tokens_output": sum(turn.tokens_output for turn in turns),
+        "tokens_cache_read": sum(turn.tokens_cache_read for turn in turns),
+        "tokens_reasoning": sum(turn.tokens_reasoning for turn in turns),
+        "turn_count": len(turns),
+    }
+
+
+def _consume_log_summary(execution_ctx: ExecutionContext, node_id: UUID) -> dict[str, int | str]:
+    """Return and clear lightweight log counters for a terminal task node."""
+    if execution_ctx.log_buffer is None:
+        return {"total": 0, "warnings": 0, "errors": 0, "last_error": ""}
+    return execution_ctx.log_buffer.consume_summary(node_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,58 +302,39 @@ async def _maybe_with_timeout[T](timeout_seconds: int | None, call: Callable[[],
         return await call()
 
 
-def _collect_documents(value: Any, documents: list[Document[Any]]) -> None:
+def _collect_documents(value: Any, collected_docs: list[Document]) -> None:
     """Collect Documents nested in supported task input values."""
     if isinstance(value, Document):
-        documents.append(value)
+        collected_docs.append(cast(Document[Any], value))
         return
     if isinstance(value, Conversation):
         for document in value.context:
-            _collect_documents(document, documents)
+            _collect_documents(document, collected_docs)
         for message in value.messages:
-            _collect_documents(message, documents)
+            _collect_documents(message, collected_docs)
         return
     if isinstance(value, (list, tuple)):
         for item in cast(Sequence[Any], value):
-            _collect_documents(item, documents)
+            _collect_documents(item, collected_docs)
         return
     if isinstance(value, dict):
         for item in cast(dict[Any, Any], value).values():
-            _collect_documents(item, documents)
+            _collect_documents(item, collected_docs)
         return
     if isinstance(value, BaseModel):
         for field_name in type(value).model_fields:
-            _collect_documents(getattr(value, field_name), documents)
+            _collect_documents(getattr(value, field_name), collected_docs)
 
 
-def _input_documents(arguments: Mapping[str, Any]) -> list[Document]:
+def _input_documents(arguments: Mapping[str, Any]) -> tuple[Document, ...]:
     """Flatten Document inputs from task arguments while preserving order."""
-    documents: list[Document] = []
+    collected_docs: list[Document] = []
     for value in arguments.values():
-        _collect_documents(value, documents)
+        _collect_documents(value, collected_docs)
     deduped: dict[str, Document] = {}
-    for document in documents:
+    for document in collected_docs:
         deduped.setdefault(document.sha256, document)
-    return list(deduped.values())
-
-
-def _task_arguments_fingerprint(arguments: Mapping[str, Any]) -> str:
-    """Build a stable JSON fingerprint for task input arguments."""
-    serialized = serialize_kwargs(dict(arguments))
-    return json.dumps(serialized, sort_keys=True, separators=(",", ":"))
-
-
-def _set_task_replay_payload(task_cls: type["PipelineTask"], arguments: Mapping[str, Any]) -> None:
-    try:
-        replay_payload = {
-            "version": 1,
-            "payload_type": "pipeline_task",
-            "function_path": f"{task_cls.__module__}:{task_cls.__qualname__}",
-            "arguments": serialize_kwargs(dict(arguments)),
-        }
-        Laminar.set_span_attributes({"replay.payload": json.dumps(replay_payload)})
-    except REPLAY_CAPTURE_EXCEPTIONS:
-        logger.debug("Failed to attach task replay payload for '%s'", task_cls.__name__, exc_info=True)
+    return tuple(deduped.values())
 
 
 class PipelineTask:
@@ -164,19 +342,23 @@ class PipelineTask:
 
     Tasks are stateless units of work. Define ``run`` as a **@classmethod** because tasks
     carry no per-invocation instance state — all inputs arrive as arguments, all outputs
-    are returned documents. The framework wraps ``run`` with tracing, retries, persistence,
+    are returned documents. The framework wraps ``run`` with retries, persistence,
     and event emission automatically.
+
+    Set ``_abstract_task = True`` on an intermediate base class to skip ``run()``
+    validation on that class. Concrete subclasses do not inherit that skip; they must
+    define ``run()`` or inherit a validated implementation from a non-abstract parent.
 
     Minimal example::
 
         class SummarizeTask(PipelineTask):
             @classmethod
-            async def run(cls, documents: list[ArticleDocument]) -> list[SummaryDocument]:
+            async def run(cls, documents: tuple[ArticleDocument, ...]) -> tuple[SummaryDocument, ...]:
                 conv = Conversation(model="gemini-3-flash").with_context(documents[0])
                 conv = await conv.send("Summarize this article.")
-                return [SummaryDocument.derive(from_documents=(documents[0],), name="summary.md", content=conv.content)]
+                return (SummaryDocument.derive(from_documents=(documents[0],), name="summary.md", content=conv.content),)
 
-    Calling ``await SummarizeTask.run([doc])`` dispatches the full lifecycle. Calling without
+    Calling ``await SummarizeTask.run((doc,))`` dispatches the full lifecycle. Calling without
     ``await`` returns a ``TaskHandle`` for parallel execution via ``collect_tasks``.
     """
 
@@ -185,30 +367,21 @@ class PipelineTask:
     retries: ClassVar[int] = 0
     retry_delay_seconds: ClassVar[int] = 20
     timeout_seconds: ClassVar[int | None] = None
-    cacheable: ClassVar[bool] = False
-
-    trace_level: ClassVar[TraceLevel] = "always"
-    trace_ignore_input: ClassVar[bool] = False
-    trace_ignore_output: ClassVar[bool] = False
-    trace_ignore_inputs: ClassVar[tuple[str, ...]] = ()
-    trace_input_formatter: ClassVar[Callable[..., str] | None] = None
-    trace_output_formatter: ClassVar[Callable[..., str] | None] = None
+    _abstract_task: ClassVar[bool] = False
     expected_cost: ClassVar[float | None] = None
-    trace_trim_documents: ClassVar[bool] = True
-    trace_cost: ClassVar[float | None] = None
 
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
-    _trace_decorator: ClassVar[Callable[[Callable[..., Any]], Callable[..., Any]]]
     _run_spec: ClassVar[_TaskRunSpec]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         if cls is PipelineTask:
             return
+        if cls.__dict__.get("_abstract_task", False) is True:
+            return
 
         cls._validate_class_config()
-        cls._trace_decorator = cls._build_trace_decorator()
 
         own_run = cls.__dict__.get("run")
         if own_run is None:
@@ -245,11 +418,12 @@ class PipelineTask:
         if not isinstance(run_descriptor, classmethod):
             raise TypeError(f"PipelineTask '{cls.__name__}'.run must be declared with @classmethod.")
 
-        user_run: Callable[..., Awaitable[Any]] = run_descriptor.__func__
-        if is_already_traced(user_run):
-            raise TypeError(
-                f"PipelineTask '{cls.__name__}'.run is decorated with @trace. PipelineTask applies tracing automatically. Remove @trace from run()."
-            )
+        descriptor = cast(object, run_descriptor)
+        descriptor_func = getattr(descriptor, "__func__", None)
+        if descriptor_func is None or not callable(descriptor_func):
+            raise TypeError(f"PipelineTask '{cls.__name__}'.run descriptor is invalid. Declare it as @classmethod async def run(cls, ...).")
+
+        user_run = cast(Callable[..., Awaitable[Any]], descriptor_func)
         if not inspect.iscoroutinefunction(user_run):
             raise TypeError(f"PipelineTask '{cls.__name__}'.run must be async def. Use async operations in task code and return Documents.")
 
@@ -295,19 +469,6 @@ class PipelineTask:
         )
 
     @classmethod
-    def _build_trace_decorator(cls) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        return trace(
-            level=cls.trace_level,
-            name=cls.name,
-            ignore_input=cls.trace_ignore_input,
-            ignore_output=cls.trace_ignore_output,
-            ignore_inputs=list(cls.trace_ignore_inputs) if cls.trace_ignore_inputs else None,
-            input_formatter=cls.trace_input_formatter,
-            output_formatter=cls.trace_output_formatter,
-            trim_documents=cls.trace_trim_documents,
-        )
-
-    @classmethod
     def _public_signature(cls) -> inspect.Signature:
         parameters = tuple(cls._run_spec.signature.parameters.values())[1:]
         return cls._run_spec.signature.replace(parameters=parameters)
@@ -331,8 +492,8 @@ class PipelineTask:
         return arguments
 
     @classmethod
-    def _build_run_wrapper(cls, spec: _TaskRunSpec) -> Callable[..., TaskHandle[list[Document]]]:
-        def wrapped(task_cls: type["PipelineTask"], *args: Any, **kwargs: Any) -> TaskHandle[list[Document]]:
+    def _build_run_wrapper(cls, spec: _TaskRunSpec) -> Callable[..., TaskHandle[tuple[Document[Any], ...]]]:
+        def wrapped(task_cls: type["PipelineTask"], *args: Any, **kwargs: Any) -> TaskHandle[tuple[Document[Any], ...]]:
             arguments = task_cls._bind_run_arguments(args, kwargs)
             try:
                 asyncio.get_running_loop()
@@ -365,145 +526,34 @@ class PipelineTask:
         return update_wrapper(wrapped, spec.user_run)
 
     @classmethod
-    def _task_completion_name(cls, arguments: Mapping[str, Any]) -> str:
-        completion_hash = hashlib.sha256(f"{cls.__module__}:{cls.__qualname__}:{_task_arguments_fingerprint(arguments)}".encode()).hexdigest()
-        return f"{TASK_COMPLETION_KEY_PREFIX}:{cls.__name__}:{completion_hash[:TASK_COMPLETION_HASH_CHARS]}"
-
-    @classmethod
-    async def _load_cached_documents(
-        cls,
-        output_sha256s: tuple[str, ...],
-        store: Any,
-        run_scope: Any,
-    ) -> list[Document] | None:
-        if not output_sha256s:
-            return []
-
-        by_sha: dict[DocumentSha256, Document] = {}
-        target_sha256s = [DocumentSha256(value) for value in output_sha256s]
-        for document_type in cls.output_document_types:
-            loaded = await store.load_by_sha256s(target_sha256s, document_type, run_scope)
-            for sha256, document in loaded.items():
-                by_sha.setdefault(sha256, document)
-
-        ordered: list[Document] = []
-        for raw_sha in output_sha256s:
-            sha = DocumentSha256(raw_sha)
-            document = by_sha.get(sha)
-            if document is None:
-                logger.warning(
-                    "Task completion cache miss for '%s': cached output %s not found. Re-executing task to rebuild completion record.",
-                    cls.__name__,
-                    raw_sha[:12],
-                )
-                return None
-            ordered.append(document)
-        return ordered
-
-    @classmethod
-    async def _load_task_completion_cache(cls, arguments: Mapping[str, Any]) -> list[Document] | None:
-        if not cls.cacheable:
-            return None
-
-        execution_ctx = get_execution_context()
-        run_scope = execution_ctx.run_scope if execution_ctx is not None else None
-        store = execution_ctx.store if execution_ctx is not None else None
-        if store is None:
-            store = get_document_store()
-        if store is None or run_scope is None:
-            return None
-
-        completion_name = cls._task_completion_name(arguments)
-        completion = await store.get_flow_completion(run_scope, completion_name)
-        if completion is None:
-            return None
-        return await cls._load_cached_documents(completion.output_sha256s, store, run_scope)
-
-    @classmethod
-    async def _save_task_completion_cache(
-        cls,
-        arguments: Mapping[str, Any],
-        output_documents: list[Document],
-    ) -> None:
-        if not cls.cacheable:
-            return
-
-        execution_ctx = get_execution_context()
-        run_scope = execution_ctx.run_scope if execution_ctx is not None else None
-        store = execution_ctx.store if execution_ctx is not None else None
-        if store is None:
-            store = get_document_store()
-        if store is None or run_scope is None:
-            return
-
-        completion_name = cls._task_completion_name(arguments)
-        input_sha256s = tuple(document.sha256 for document in _input_documents(arguments))
-        output_sha256s = tuple(document.sha256 for document in output_documents)
-        try:
-            await store.save_flow_completion(run_scope, completion_name, input_sha256s, output_sha256s)
-        except PERSISTENCE_EXCEPTIONS:
-            logger.warning("Failed to save task completion cache for '%s'", cls.__name__, exc_info=True)
-
-    @staticmethod
-    def _collect_reference_sha256s(documents: list[Document]) -> set[DocumentSha256]:
-        reference_sha256s: set[DocumentSha256] = set()
-        for document in documents:
-            for source in document.derived_from:
-                if is_document_sha256(source):
-                    reference_sha256s.add(DocumentSha256(source))
-            for trigger in document.triggered_by:
-                reference_sha256s.add(DocumentSha256(trigger))
-        return reference_sha256s
-
-    @staticmethod
-    async def _persist_inline_summaries(documents: list[Document], store: Any) -> None:
-        for document in documents:
-            inline_summary = pop_inline_summary(document.sha256)
-            if inline_summary:
-                await store.update_summary(document.sha256, inline_summary)
-
-    @staticmethod
-    def _clear_inline_summaries(documents: list[Document]) -> None:
-        for document in documents:
-            pop_inline_summary(document.sha256)
-
-    @classmethod
     async def _persist_documents(
         cls,
-        documents: list[Document],
+        documents: tuple[Document, ...],
         task_ctx: TaskContext,
-        *,
-        created_by_task: str,
-    ) -> list[Document]:
-        execution_ctx = get_execution_context()
-        run_scope = execution_ctx.run_scope if execution_ctx is not None else None
-        store = execution_ctx.store if execution_ctx is not None else None
-        if store is None:
-            store = get_document_store()
-
-        deduped = _TaskDocumentContext.deduplicate(documents)
-        if run_scope is None or store is None or not deduped:
-            return deduped
+    ) -> tuple[Document, ...]:
+        """Deduplicate, validate provenance, and persist documents to the database."""
+        deduped = _TaskDocumentContext.deduplicate(list(documents))
+        if not deduped:
+            return ()
 
         lifecycle_ctx = _TaskDocumentContext(created=set(task_ctx.created))
-        reference_sha256s = cls._collect_reference_sha256s(deduped)
-        existing: set[DocumentSha256] = await store.check_existing(sorted(reference_sha256s)) if reference_sha256s else set()
-
-        for warning in lifecycle_ctx.validate_provenance(deduped, existing):
-            logger.warning("[%s] %s", cls.__name__, warning)
         for orphan in lifecycle_ctx.finalize(deduped):
             logger.warning("[%s] Orphaned document %s — created but not returned", cls.__name__, orphan[:12])
 
-        try:
-            await store.save_batch(deduped, run_scope, created_by_task=created_by_task)
-            await cls._persist_inline_summaries(deduped, store)
-        except PERSISTENCE_EXCEPTIONS:
-            cls._clear_inline_summaries(deduped)
-            logger.warning("Failed to persist documents from PipelineTask '%s'", cls.__name__, exc_info=True)
-        return deduped
+        execution_ctx = get_execution_context()
+        if execution_ctx is not None:
+            await _persist_documents_to_database(
+                deduped,
+                execution_ctx.database,
+                execution_ctx.deployment_id,
+                execution_ctx.run_scope,
+                producing_node_id=execution_ctx.current_node_id,
+            )
+
+        return tuple(deduped)
 
     @classmethod
-    async def _run_with_retries(cls, arguments: Mapping[str, Any]) -> list[Document]:
+    async def _run_with_retries(cls, arguments: Mapping[str, Any]) -> tuple[Document, ...]:
         attempts = cls.retries + 1
         last_error: Exception | None = None
 
@@ -531,37 +581,36 @@ class PipelineTask:
         raise last_error
 
     @classmethod
-    async def _run_and_normalize(cls, arguments: Mapping[str, Any]) -> list[Document]:
+    async def _run_and_normalize(cls, arguments: Mapping[str, Any]) -> tuple[Document, ...]:
         result = await cls._run_spec.user_run(cls, **dict(arguments))
         return cls._normalize_result_documents(result)
 
     @classmethod
-    def _normalize_result_documents(cls, result: Any) -> list[Document[Any]]:
-        documents: list[Document[Any]]
+    def _normalize_result_documents(cls, result: Any) -> tuple[Document[Any], ...]:
         if result is None:
-            return []
+            return ()
         if isinstance(result, Document):
-            documents = [result]
+            raw_items = cast(Sequence[Any], (result,))
         elif isinstance(result, (list, tuple)):
-            documents = list(result)
+            raw_items = cast(Sequence[Any], result)
         else:
             raise TypeError(
                 f"PipelineTask '{cls.__name__}' returned {type(result).__name__}. "
                 "run() must return Document, None, list[Document], tuple[Document, ...], or unions of those shapes."
             )
 
-        untyped_docs = cast(list[Any], documents)
-        if any(not isinstance(document, Document) for document in untyped_docs):
-            bad_types = sorted({_class_name(type(item)) for item in untyped_docs if not isinstance(item, Document)})
-            raise TypeError(f"PipelineTask '{cls.__name__}' returned non-Document items ({', '.join(bad_types)}). run() must return only Document subclasses.")
-        return documents
+        normalized_docs: list[Document[Any]] = []
+        bad_types: set[str] = set()
+        for item in raw_items:
+            if isinstance(item, Document):
+                normalized_docs.append(cast(Document[Any], item))
+                continue
+            bad_types.add(_class_name(type(item)))
 
-    @staticmethod
-    def _track_task_io(arguments: Mapping[str, Any], output_documents: list[Document], task_name: str) -> None:
-        try:
-            track_task_io((), dict(arguments), output_documents)
-        except TRACKING_EXCEPTIONS:
-            logger.debug("Failed to track task IO for '%s'", task_name, exc_info=True)
+        if bad_types:
+            bad_types_text = ", ".join(sorted(bad_types))
+            raise TypeError(f"PipelineTask '{cls.__name__}' returned non-Document items ({bad_types_text}). run() must return only Document subclasses.")
+        return tuple(normalized_docs)
 
     @staticmethod
     async def _emit_task_started(
@@ -571,9 +620,7 @@ class PipelineTask:
         step: int,
         task_name: str,
         task_class_name: str,
-        task_invocation_id: str,
-        parent_task_name: str | None,
-        task_depth: int,
+        node_id: str,
     ) -> None:
         if flow_frame is None:
             return
@@ -581,13 +628,13 @@ class PipelineTask:
             await execution_ctx.publisher.publish_task_started(
                 TaskStartedEvent(
                     run_id=execution_ctx.run_id,
+                    node_id=node_id,
+                    root_deployment_id=str(execution_ctx.root_deployment_id or ""),
+                    parent_deployment_task_id=str(execution_ctx.parent_deployment_task_id) if execution_ctx.parent_deployment_task_id else None,
                     flow_name=flow_frame.name,
                     step=step,
                     task_name=task_name,
                     task_class=task_class_name,
-                    task_invocation_id=task_invocation_id,
-                    parent_task=parent_task_name,
-                    task_depth=task_depth,
                 )
             )
         except EVENT_PUBLISH_EXCEPTIONS as exc:
@@ -601,11 +648,9 @@ class PipelineTask:
         step: int,
         task_name: str,
         task_class_name: str,
-        task_invocation_id: str,
-        parent_task_name: str | None,
-        task_depth: int,
+        node_id: str,
         start_time: float,
-        output_documents: list[DocumentRef],
+        output_documents: tuple[DocumentRef, ...],
     ) -> None:
         if flow_frame is None:
             return
@@ -613,13 +658,13 @@ class PipelineTask:
             await execution_ctx.publisher.publish_task_completed(
                 TaskCompletedEvent(
                     run_id=execution_ctx.run_id,
+                    node_id=node_id,
+                    root_deployment_id=str(execution_ctx.root_deployment_id or ""),
+                    parent_deployment_task_id=str(execution_ctx.parent_deployment_task_id) if execution_ctx.parent_deployment_task_id else None,
                     flow_name=flow_frame.name,
                     step=step,
                     task_name=task_name,
                     task_class=task_class_name,
-                    task_invocation_id=task_invocation_id,
-                    parent_task=parent_task_name,
-                    task_depth=task_depth,
                     duration_ms=int((time.monotonic() - start_time) * MILLISECONDS_PER_SECOND),
                     output_documents=output_documents,
                 )
@@ -635,9 +680,7 @@ class PipelineTask:
         step: int,
         task_name: str,
         task_class_name: str,
-        task_invocation_id: str,
-        parent_task_name: str | None,
-        task_depth: int,
+        node_id: str,
         error_message: str,
     ) -> None:
         if flow_frame is None:
@@ -646,13 +689,13 @@ class PipelineTask:
             await execution_ctx.publisher.publish_task_failed(
                 TaskFailedEvent(
                     run_id=execution_ctx.run_id,
+                    node_id=node_id,
+                    root_deployment_id=str(execution_ctx.root_deployment_id or ""),
+                    parent_deployment_task_id=str(execution_ctx.parent_deployment_task_id) if execution_ctx.parent_deployment_task_id else None,
                     flow_name=flow_frame.name,
                     step=step,
                     task_name=task_name,
                     task_class=task_class_name,
-                    task_invocation_id=task_invocation_id,
-                    parent_task=parent_task_name,
-                    task_depth=task_depth,
                     error_message=error_message,
                 )
             )
@@ -660,32 +703,21 @@ class PipelineTask:
             logger.warning("Task failed event publish failed for '%s': %s", task_name, exc)
 
     @staticmethod
-    async def _generate_summaries(
-        documents: list[Document],
-        execution_ctx: ExecutionContext,
-    ) -> dict[DocumentSha256, str]:
+    def _collect_summaries(documents: Sequence[Document]) -> dict[DocumentSha256, str]:
+        """Collect inline summaries already set on documents."""
         summary_by_sha: dict[DocumentSha256, str] = {}
         for document in documents:
             inline_summary = get_inline_summary(document.sha256)
             if inline_summary is not None:
                 summary_by_sha[document.sha256] = inline_summary
-                continue
-            if execution_ctx.summary_generator is None or not document.is_text:
-                continue
-            try:
-                generated = await execution_ctx.summary_generator(document.name, document.text[:SUMMARY_EXCERPT_MAX_CHARS])
-                set_inline_summary(document.sha256, generated)
-                summary_by_sha[document.sha256] = generated
-            except SUMMARY_GENERATION_EXCEPTIONS as exc:
-                logger.warning("Inline summary generation failed for '%s': %s", document.name, exc)
         return summary_by_sha
 
     @staticmethod
     def _build_output_refs(
-        documents: list[Document],
+        documents: Sequence[Document],
         summary_by_sha: dict[DocumentSha256, str],
-    ) -> list[DocumentRef]:
-        return [
+    ) -> tuple[DocumentRef, ...]:
+        return tuple(
             DocumentRef(
                 sha256=document.sha256,
                 class_name=type(document).__name__,
@@ -696,7 +728,7 @@ class PipelineTask:
                 triggered_by=tuple(document.triggered_by),
             )
             for document in documents
-        ]
+        )
 
     @staticmethod
     def _cleanup_task_artifacts(task_ctx: TaskContext) -> None:
@@ -712,48 +744,32 @@ class PipelineTask:
         flow_frame: FlowFrame | None,
         task_ctx: TaskContext,
         task_name: str,
-        task_invocation_id: str,
-        parent_task_name: str | None,
-        task_depth: int,
+        node_id: str,
         flow_step: int,
         start_time: float,
-    ) -> list[Document]:
+    ) -> tuple[Document, ...]:
+        """Execute task lifecycle with events and persistence."""
         await cls._emit_task_started(
             execution_ctx,
             flow_frame,
             step=flow_step,
             task_name=task_name,
             task_class_name=cls.__name__,
-            task_invocation_id=task_invocation_id,
-            parent_task_name=parent_task_name,
-            task_depth=task_depth,
+            node_id=node_id,
+        )
+        record_lifecycle_event(
+            "task.started",
+            f"Starting task {task_name}",
+            task_name=task_name,
+            task_class=cls.__name__,
+            flow_name=flow_frame.name if flow_frame is not None else "",
+            step=flow_step,
         )
         try:
-            cached_docs = await cls._load_task_completion_cache(arguments)
-            if cached_docs is not None:
-                cls._track_task_io(arguments, cached_docs, task_name)
-                summary_by_sha = {document.sha256: (get_inline_summary(document.sha256) or "") for document in cached_docs}
-                await cls._emit_task_completed(
-                    execution_ctx,
-                    flow_frame,
-                    step=flow_step,
-                    task_name=task_name,
-                    task_class_name=cls.__name__,
-                    task_invocation_id=task_invocation_id,
-                    parent_task_name=parent_task_name,
-                    task_depth=task_depth,
-                    start_time=start_time,
-                    output_documents=cls._build_output_refs(cached_docs, summary_by_sha),
-                )
-                _set_task_replay_payload(cls, arguments)
-                return cached_docs
-
             documents = await cls._run_with_retries(arguments)
-            cls._track_task_io(arguments, documents, task_name)
 
-            summary_by_sha = await cls._generate_summaries(documents, execution_ctx)
-            persisted_docs = await cls._persist_documents(documents, task_ctx, created_by_task=cls.__name__)
-            await cls._save_task_completion_cache(arguments, persisted_docs)
+            summary_by_sha = cls._collect_summaries(documents)
+            persisted_docs = await cls._persist_documents(documents, task_ctx)
 
             await cls._emit_task_completed(
                 execution_ctx,
@@ -761,13 +777,19 @@ class PipelineTask:
                 step=flow_step,
                 task_name=task_name,
                 task_class_name=cls.__name__,
-                task_invocation_id=task_invocation_id,
-                parent_task_name=parent_task_name,
-                task_depth=task_depth,
+                node_id=node_id,
                 start_time=start_time,
                 output_documents=cls._build_output_refs(persisted_docs, summary_by_sha),
             )
-            _set_task_replay_payload(cls, arguments)
+            record_lifecycle_event(
+                "task.completed",
+                f"Completed task {task_name}",
+                task_name=task_name,
+                task_class=cls.__name__,
+                flow_name=flow_frame.name if flow_frame is not None else "",
+                step=flow_step,
+                output_count=len(persisted_docs),
+            )
             return persisted_docs
         except TASK_EXECUTION_EXCEPTIONS as exc:
             cls._cleanup_task_artifacts(task_ctx)
@@ -777,16 +799,24 @@ class PipelineTask:
                 step=flow_step,
                 task_name=task_name,
                 task_class_name=cls.__name__,
-                task_invocation_id=task_invocation_id,
-                parent_task_name=parent_task_name,
-                task_depth=task_depth,
+                node_id=node_id,
+                error_message=str(exc),
+            )
+            record_lifecycle_event(
+                "task.failed",
+                f"Task {task_name} failed",
+                task_name=task_name,
+                task_class=cls.__name__,
+                flow_name=flow_frame.name if flow_frame is not None else "",
+                step=flow_step,
+                error_type=type(exc).__name__,
                 error_message=str(exc),
             )
             raise
 
     @classmethod
-    async def _execute_invocation(cls, arguments: Mapping[str, Any]) -> list[Document]:
-        """Execute task lifecycle with tracing, events, summaries, and persistence."""
+    async def _execute_invocation(cls, arguments: Mapping[str, Any]) -> tuple[Document, ...]:
+        """Execute task lifecycle with events, summaries, and persistence."""
         execution_ctx = get_execution_context()
         if execution_ctx is None:
             raise RuntimeError(
@@ -795,52 +825,120 @@ class PipelineTask:
             )
 
         parent_task = execution_ctx.task_frame
+        task_node_id = uuid4()
+        task_function_path = f"{cls.__module__}:{cls.__qualname__}"
         task_frame = TaskFrame(
             task_class_name=cls.__name__,
-            task_id=uuid4().hex,
+            task_id=str(task_node_id),
             depth=(parent_task.depth + 1) if parent_task else 0,
             parent=parent_task,
         )
-        execution_token = set_execution_context(execution_ctx.with_task(task_frame))
+        try:
+            task_replay_payload = {
+                "version": 1,
+                "payload_type": "pipeline_task",
+                "function_path": task_function_path,
+                "arguments": serialize_kwargs(dict(arguments)),
+                "original": {},
+            }
+        except REPLAY_CAPTURE_EXCEPTIONS:
+            task_replay_payload = {}
+
+        # Insert task node into execution DAG (fire-and-forget)
+        database = execution_ctx.database
+        task_payload = {
+            "function_path": task_function_path,
+            "expected_cost": cls.expected_cost,
+            "replay_payload": task_replay_payload,
+        }
+        if database is not None and execution_ctx.deployment_id is not None:
+            parent_id = execution_ctx.current_node_id or NULL_PARENT
+            task_node = ExecutionNode(
+                node_id=task_node_id,
+                node_kind=NodeKind.TASK,
+                deployment_id=execution_ctx.deployment_id,
+                root_deployment_id=execution_ctx.root_deployment_id or execution_ctx.deployment_id,
+                parent_node_id=parent_id,
+                run_id=execution_ctx.run_id,
+                run_scope=RunScope(str(execution_ctx.run_scope)),
+                deployment_name=execution_ctx.deployment_name,
+                name=cls.name,
+                sequence_no=execution_ctx.next_child_sequence(parent_id),
+                task_class=cls.__name__,
+                flow_class=execution_ctx.flow_frame.flow_class_name if execution_ctx.flow_frame else "",
+                flow_id=execution_ctx.flow_node_id,
+                status=NodeStatus.RUNNING,
+                payload=task_payload,
+            )
+            await _insert_db_node_safe(database, task_node)
+
+        # Update execution context with task node as current node
+        task_exec_ctx = execution_ctx.with_task(task_frame).with_node(task_node_id)
+        execution_token = set_execution_context(task_exec_ctx)
         task_ctx = TaskContext(task_class_name=cls.__name__)
         task_token = set_task_context(task_ctx)
+
+        # Set up conversation turn capture
+        conversation_turns: list[ConversationTurnData] = []
+        turns_token = set_conversation_turns(conversation_turns)
+
         start_time = time.monotonic()
         task_name = cls.name
-        parent_task_name = parent_task.task_class_name if parent_task else None
         flow_frame = execution_ctx.flow_frame
 
         try:
 
-            async def _execute() -> list[Document]:
-                try:
-                    Laminar.set_span_attributes({"pipeline.task_class": cls.__name__})
-                    if flow_frame is not None:
-                        Laminar.set_span_attributes({"pipeline.flow_step": flow_frame.step})
-                except SPAN_ATTRIBUTE_EXCEPTIONS:
-                    logger.debug("Failed to set task span attributes", exc_info=True)
-                if cls.expected_cost is not None:
-                    try:
-                        Laminar.set_span_attributes({"expected_cost": cls.expected_cost})
-                    except SPAN_ATTRIBUTE_EXCEPTIONS:
-                        logger.debug("Failed to set expected_cost span attribute", exc_info=True)
+            async def _execute() -> tuple[Document, ...]:
                 result = await cls._execute_lifecycle(
                     arguments,
                     execution_ctx=execution_ctx,
                     flow_frame=flow_frame,
                     task_ctx=task_ctx,
                     task_name=task_name,
-                    task_invocation_id=task_frame.task_id,
-                    parent_task_name=parent_task_name,
-                    task_depth=task_frame.depth,
+                    node_id=task_frame.task_id,
                     flow_step=flow_frame.step if flow_frame is not None else 0,
                     start_time=start_time,
                 )
-                if cls.trace_cost is not None and cls.trace_cost > 0:
-                    set_trace_cost(cls.trace_cost)
+                status = NodeStatus.COMPLETED
+                output_shas = tuple(doc.sha256 for doc in result)
+                input_docs = _input_documents(arguments)
+                input_shas = tuple(doc.sha256 for doc in input_docs)
+                task_turn_metrics = _aggregate_conversation_turn_metrics(conversation_turns)
+                await _update_db_node_safe(
+                    database,
+                    task_node_id,
+                    status=status,
+                    ended_at=datetime.now(UTC),
+                    input_document_shas=input_shas,
+                    output_document_shas=output_shas,
+                    **task_turn_metrics,
+                    payload={**task_payload, "log_summary": _consume_log_summary(execution_ctx, task_node_id)},
+                )
+
                 return result
 
-            traced_execute = cls._trace_decorator(_execute)
-            return await traced_execute()
+            try:
+                return await _execute()
+            except TASK_EXECUTION_EXCEPTIONS as exc:
+                task_turn_metrics = _aggregate_conversation_turn_metrics(conversation_turns)
+                # Update task node to FAILED
+                await _update_db_node_safe(
+                    database,
+                    task_node_id,
+                    status=NodeStatus.FAILED,
+                    ended_at=datetime.now(UTC),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    **task_turn_metrics,
+                    payload={**task_payload, "log_summary": _consume_log_summary(execution_ctx, task_node_id)},
+                )
+                raise
+            finally:
+                # Flush conversation turns on BOTH success and failure — partial
+                # conversation data on failed tasks is valuable for debugging.
+                if conversation_turns:
+                    await _create_conversation_turn_nodes(conversation_turns, task_node_id, task_exec_ctx)
         finally:
+            reset_conversation_turns(turns_token)
             reset_task_context(task_token)
             reset_execution_context(execution_token)

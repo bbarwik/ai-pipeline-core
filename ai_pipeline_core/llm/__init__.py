@@ -1,7 +1,7 @@
 """Large Language Model integration via LiteLLM proxy.
 
 This package provides the Conversation class for LLM interactions with built-in
-retry logic, LMNR tracing, and structured output generation using Pydantic models.
+retry logic and structured output generation using Pydantic models.
 
 Primary API:
     Conversation class - Immutable, Document-based, warmup+fork friendly

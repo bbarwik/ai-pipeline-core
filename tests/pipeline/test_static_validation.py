@@ -84,33 +84,33 @@ class SampleResult(DeploymentResult):
 
 
 class AlphaToBetaFlow(PipelineFlow):
-    async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions) -> list[BetaDocument]:
-        return []
+    async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> tuple[BetaDocument, ...]:
+        return ()
 
 
 class BetaToGammaFlow(PipelineFlow):
-    async def run(self, run_id: str, documents: list[BetaDocument], options: FlowOptions) -> list[GammaDocument]:
-        return []
+    async def run(self, documents: tuple[BetaDocument, ...], options: FlowOptions) -> tuple[GammaDocument, ...]:
+        return ()
 
 
 class AlphaToGammaFlow(PipelineFlow):
-    async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions) -> list[GammaDocument]:
-        return []
+    async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> tuple[GammaDocument, ...]:
+        return ()
 
 
 class GammaToDeltaFlow(PipelineFlow):
-    async def run(self, run_id: str, documents: list[GammaDocument], options: FlowOptions) -> list[DeltaDocument]:
-        return []
+    async def run(self, documents: tuple[GammaDocument, ...], options: FlowOptions) -> tuple[DeltaDocument, ...]:
+        return ()
 
 
 class NeedsDeltaFlow(PipelineFlow):
-    async def run(self, run_id: str, documents: list[DeltaDocument], options: FlowOptions) -> list[AlphaDocument]:
-        return []
+    async def run(self, documents: tuple[DeltaDocument, ...], options: FlowOptions) -> tuple[AlphaDocument, ...]:
+        return ()
 
 
 class UnionInputFlow(PipelineFlow):
-    async def run(self, run_id: str, documents: list[BetaDocument | DeltaDocument], options: FlowOptions) -> list[GammaDocument]:
-        return []
+    async def run(self, documents: tuple[BetaDocument | DeltaDocument, ...], options: FlowOptions) -> tuple[GammaDocument, ...]:
+        return ()
 
 
 # --- Existing tests (preserved from current file) ---
@@ -125,9 +125,9 @@ def test_pipeline_task_extracts_document_types_from_flexible_signature() -> None
             mode: RealInputMode,
             config: FrozenConfig,
             prompt: str,
-        ) -> list[OutputDoc]:
+        ) -> tuple[OutputDoc, ...]:
             _ = (cls, source, mode, config, prompt)
-            return []
+            return ()
 
     assert GoodTask.input_document_types == [InputDoc]
     assert GoodTask.output_document_types == [OutputDoc]
@@ -137,13 +137,31 @@ def test_pipeline_task_extracts_document_types_from_flexible_signature() -> None
 def test_pipeline_task_inherits_validated_run() -> None:
     class _BaseTask(PipelineTask):
         @classmethod
-        async def run(cls, source: InputDoc) -> list[OutputDoc]:
+        async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
             _ = (cls, source)
-            return []
+            return ()
 
     class DerivedTask(_BaseTask):
         pass
 
+    assert DerivedTask.input_document_types == [InputDoc]
+    assert DerivedTask.output_document_types == [OutputDoc]
+
+
+def test_pipeline_task_inherits_validated_run_through_abstract_base() -> None:
+    class _BaseTask(PipelineTask):
+        @classmethod
+        async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
+            _ = (cls, source)
+            return ()
+
+    class _AbstractMidTask(_BaseTask):
+        _abstract_task = True
+
+    class DerivedTask(_AbstractMidTask):
+        pass
+
+    assert DerivedTask._run_spec is not None
     assert DerivedTask.input_document_types == [InputDoc]
     assert DerivedTask.output_document_types == [OutputDoc]
 
@@ -153,18 +171,18 @@ def test_pipeline_task_rejects_bare_document() -> None:
 
         class BadTask(PipelineTask):
             @classmethod
-            async def run(cls, documents: list[Document]) -> list[OutputDoc]:
+            async def run(cls, documents: tuple[Document, ...]) -> tuple[OutputDoc, ...]:
                 _ = (cls, documents)
-                return []
+                return ()
 
 
 def test_pipeline_task_rejects_non_classmethod_run() -> None:
     with pytest.raises(TypeError, match="@classmethod"):
 
         class BadTask(PipelineTask):
-            async def run(self, source: InputDoc) -> list[OutputDoc]:
+            async def run(self, source: InputDoc) -> tuple[OutputDoc, ...]:
                 _ = (self, source)
-                return []
+                return ()
 
 
 def test_pipeline_task_rejects_sync_run() -> None:
@@ -172,23 +190,9 @@ def test_pipeline_task_rejects_sync_run() -> None:
 
         class SyncTask(PipelineTask):
             @classmethod
-            def run(cls, source: InputDoc) -> list[OutputDoc]:
+            def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
                 _ = (cls, source)
-                return []
-
-
-def test_pipeline_task_rejects_traced_run() -> None:
-    """PipelineTask with @trace on run() is rejected — tracing is automatic."""
-    from ai_pipeline_core.observability.tracing import trace
-
-    with pytest.raises(TypeError, match="@trace"):
-
-        class BadTask(PipelineTask):
-            @classmethod
-            @trace
-            async def run(cls, source: InputDoc) -> list[OutputDoc]:
-                _ = (cls, source)
-                return []
+                return ()
 
 
 def test_pipeline_task_rejects_non_frozen_basemodel_input() -> None:
@@ -199,9 +203,9 @@ def test_pipeline_task_rejects_non_frozen_basemodel_input() -> None:
 
         class BadTask(PipelineTask):
             @classmethod
-            async def run(cls, config: MutableConfig) -> list[OutputDoc]:
+            async def run(cls, config: MutableConfig) -> tuple[OutputDoc, ...]:
                 _ = (cls, config)
-                return []
+                return ()
 
 
 def test_pipeline_task_rejects_invalid_return_annotation() -> None:
@@ -216,15 +220,15 @@ def test_pipeline_task_rejects_invalid_return_annotation() -> None:
 
 class _StageTask(PipelineTask):
     @classmethod
-    async def run(cls, documents: list[InputDoc]) -> list[OutputDoc]:
+    async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
         _ = cls
-        return []
+        return ()
 
 
 def test_pipeline_flow_extracts_types_and_task_graph() -> None:
     class GoodFlow(PipelineFlow):
-        async def run(self, run_id: str, documents: list[InputDoc], options: Opts) -> list[OutputDoc]:
-            _ = (run_id, options)
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = options
             return await _StageTask.run(documents)
 
     assert GoodFlow.input_document_types == [InputDoc]
@@ -234,8 +238,8 @@ def test_pipeline_flow_extracts_types_and_task_graph() -> None:
 
 def test_pipeline_flow_ast_extracts_handle_pattern() -> None:
     class HandleFlow(PipelineFlow):
-        async def run(self, run_id: str, documents: list[InputDoc], options: Opts) -> list[OutputDoc]:
-            _ = (run_id, options)
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = options
             handle = _StageTask.run(documents)
             return await handle
 
@@ -243,19 +247,19 @@ def test_pipeline_flow_ast_extracts_handle_pattern() -> None:
 
 
 def test_pipeline_flow_rejects_wrong_signature() -> None:
-    with pytest.raises(TypeError, match="run parameter 'run_id'"):
+    with pytest.raises(TypeError, match="get_run_id\\(\\)"):
 
         class BadFlow(PipelineFlow):
-            async def run(self, run_id: int, documents: list[InputDoc], options: Opts) -> list[OutputDoc]:
+            async def run(self, run_id: int, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
                 _ = (run_id, documents, options)
-                return []
+                return ()
 
 
 def test_pipeline_flow_accepts_inherited_run() -> None:
     class _BaseFlow(PipelineFlow):
-        async def run(self, run_id: str, documents: list[InputDoc], options: Opts) -> list[OutputDoc]:
-            _ = (run_id, documents, options)
-            return []
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = (documents, options)
+            return ()
 
     class DerivedFlow(_BaseFlow):
         pass
@@ -268,17 +272,17 @@ def test_pipeline_flow_rejects_bare_document_in_return() -> None:
     with pytest.raises(TypeError, match="bare 'Document'"):
 
         class BadFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InputDoc], options: Opts) -> list[Document]:
-                _ = (run_id, documents, options)
-                return []
+            async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[Document, ...]:
+                _ = (documents, options)
+                return ()
 
 
 def test_pipeline_task_allows_conversation_input() -> None:
     class GoodTask(PipelineTask):
         @classmethod
-        async def run(cls, conv: Conversation[None], source: InputDoc) -> list[OutputDoc]:
+        async def run(cls, conv: Conversation[None], source: InputDoc) -> tuple[OutputDoc, ...]:
             _ = (cls, conv, source)
-            return []
+            return ()
 
     assert GoodTask.input_document_types == [InputDoc]
 
@@ -287,9 +291,9 @@ def test_pipeline_flow_custom_name() -> None:
     class NamedFlow(PipelineFlow):
         name = "custom-flow"
 
-        async def run(self, run_id: str, documents: list[InputDoc], options: Opts) -> list[OutputDoc]:
-            _ = (run_id, documents, options)
-            return []
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = (documents, options)
+            return ()
 
     assert NamedFlow.name == "custom-flow"
 
@@ -300,9 +304,9 @@ def test_pipeline_flow_rejects_typo_kwargs() -> None:
     class StrictFlow(PipelineFlow):
         estimated_minutes: ClassVar[float] = 5.0
 
-        async def run(self, run_id: str, documents: list[InputDoc], options: Opts) -> list[OutputDoc]:
-            _ = (run_id, documents, options)
-            return []
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = (documents, options)
+            return ()
 
     # Valid kwarg works
     flow_inst = StrictFlow(estimated_minutes=10.0)
@@ -421,28 +425,36 @@ class TestClassNameCollision:
 class TestFlowAnnotationValidation:
     """Test PipelineFlow return type and input annotation validation."""
 
-    def test_rejects_non_document_return_type(self):
-        """Flow with return annotation that has no Document subclasses is rejected."""
-        with pytest.raises(TypeError, match="must return list"):
+    def test_rejects_list_input_annotation(self):
+        """Flow input annotations must use tuple, not list."""
+        with pytest.raises(TypeError, match="tuple\\[DocumentSubclass, \\.\\.\\.\\]"):
 
             class BadFlow(PipelineFlow):
-                async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions) -> list[str]:
-                    return []
+                async def run(self, documents: list[AlphaDocument], options: FlowOptions) -> tuple[BetaDocument, ...]:
+                    return ()
+
+    def test_rejects_non_document_return_type(self):
+        """Flow with return annotation that has no Document subclasses is rejected."""
+        with pytest.raises(TypeError, match="must return tuple"):
+
+            class BadFlow(PipelineFlow):
+                async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> tuple[str, ...]:
+                    return ()
 
     def test_rejects_dict_return_type(self):
         """Flow returning dict is rejected."""
-        with pytest.raises(TypeError, match="must return list"):
+        with pytest.raises(TypeError, match="must return tuple"):
 
             class BadFlow(PipelineFlow):
-                async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions) -> dict[str, Any]:
+                async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> dict[str, Any]:
                     return {}
 
     def test_accepts_concrete_document_return_type(self):
-        """Flow returning list[ConcreteDocument] is accepted."""
+        """Flow returning tuple[ConcreteDocument, ...] is accepted."""
 
         class GoodFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions) -> list[BetaDocument]:
-                return []
+            async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> tuple[BetaDocument, ...]:
+                return ()
 
         assert GoodFlow.output_document_types == [BetaDocument]
 
@@ -451,32 +463,32 @@ class TestFlowAnnotationValidation:
         with pytest.raises(TypeError, match="missing return annotation"):
 
             class BadFlow(PipelineFlow):
-                async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions):
-                    return []
+                async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions):
+                    return ()
 
     def test_rejects_non_list_return_type(self):
         """Flow returning a non-list type is rejected."""
         with pytest.raises(TypeError):
 
             class BadFlow(PipelineFlow):
-                async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions) -> AlphaDocument:
+                async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> AlphaDocument:
                     return AlphaDocument(name="a.txt", content=b"a")
 
     def test_rejects_non_document_input(self):
-        """Flow with non-list[Document] input annotation is rejected."""
-        with pytest.raises(TypeError, match="must be annotated as list"):
+        """Flow with non-tuple[Document] input annotation is rejected."""
+        with pytest.raises(TypeError, match="must be annotated as tuple"):
 
             class BadFlow(PipelineFlow):
-                async def run(self, run_id: str, documents: str, options: FlowOptions) -> list[AlphaDocument]:
-                    return []
+                async def run(self, documents: str, options: FlowOptions) -> tuple[AlphaDocument, ...]:
+                    return ()
 
     def test_rejects_overlapping_input_output_types(self):
         """Flow that consumes and produces the same Document type is rejected."""
         with pytest.raises(TypeError, match="overlapping input/output"):
 
             class BadFlow(PipelineFlow):
-                async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions) -> list[AlphaDocument]:
-                    return []
+                async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> tuple[AlphaDocument, ...]:
+                    return ()
 
     def test_rejects_missing_task_annotation(self):
         """Task with no return annotation is rejected."""
@@ -636,38 +648,38 @@ class TestBareDocumentRejection:
     # --- PipelineFlow output ---
 
     def test_flow_rejects_bare_document_output(self):
-        """Flow returning list[Document] is rejected."""
+        """Flow returning tuple[Document, ...] is rejected."""
         with pytest.raises(TypeError, match="bare 'Document'"):
 
             class BadFlow(PipelineFlow):
-                async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions) -> list[Document]:
-                    return []
+                async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> tuple[Document, ...]:
+                    return ()
 
     def test_flow_rejects_bare_document_in_union_output(self):
-        """Flow returning list[Document | BetaDocument] is rejected."""
+        """Flow returning tuple[Document | BetaDocument, ...] is rejected."""
         with pytest.raises(TypeError, match="bare 'Document'"):
 
             class BadFlow(PipelineFlow):
-                async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions) -> list[Document | BetaDocument]:
-                    return []
+                async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> tuple[Document | BetaDocument, ...]:
+                    return ()
 
     # --- PipelineFlow input ---
 
     def test_flow_rejects_bare_document_input(self):
-        """Flow with documents: list[Document] is rejected."""
+        """Flow with documents: tuple[Document, ...] is rejected."""
         with pytest.raises(TypeError, match="bare 'Document'"):
 
             class BadFlow(PipelineFlow):
-                async def run(self, run_id: str, documents: list[Document], options: FlowOptions) -> list[AlphaDocument]:
-                    return []
+                async def run(self, documents: tuple[Document, ...], options: FlowOptions) -> tuple[AlphaDocument, ...]:
+                    return ()
 
     def test_flow_rejects_bare_document_in_union_input(self):
-        """Flow with documents: list[Document | AlphaDocument] is rejected."""
+        """Flow with documents: tuple[Document | AlphaDocument, ...] is rejected."""
         with pytest.raises(TypeError, match="bare 'Document'"):
 
             class BadFlow(PipelineFlow):
-                async def run(self, run_id: str, documents: list[Document | AlphaDocument], options: FlowOptions) -> list[BetaDocument]:
-                    return []
+                async def run(self, documents: tuple[Document | AlphaDocument, ...], options: FlowOptions) -> tuple[BetaDocument, ...]:
+                    return ()
 
     # --- PipelineTask ---
 
@@ -709,8 +721,8 @@ class TestBareDocumentRejection:
 
     def test_flow_accepts_concrete_subclasses(self):
         class GoodFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[AlphaDocument], options: FlowOptions) -> list[BetaDocument]:
-                return []
+            async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> tuple[BetaDocument, ...]:
+                return ()
 
     def test_task_accepts_concrete_subclass(self):
         class GoodTask(PipelineTask):
@@ -792,7 +804,7 @@ class TestDeploymentBuildResultRequired:
 
             class NoFlows(PipelineDeployment[FlowOptions, SampleResult]):
                 @staticmethod
-                def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+                def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> SampleResult:
                     return SampleResult(success=True)
 
     def test_concrete_parent_build_result_inherited(self):
@@ -803,7 +815,7 @@ class TestDeploymentBuildResultRequired:
                 return [AlphaToBetaFlow()]
 
             @staticmethod
-            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+            def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> SampleResult:
                 return SampleResult(success=True)
 
         class ChildDeploy(ParentDeploy):
@@ -820,7 +832,7 @@ class TestDeploymentBuildResultRequired:
                 return [AlphaToBetaFlow()]
 
             @staticmethod
-            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+            def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> SampleResult:
                 return SampleResult(success=True)
 
         assert ValidDeploy.name == "valid-deploy"
@@ -854,3 +866,88 @@ class TestNewTypeInputValidation:
             @classmethod
             async def run(cls, value: str) -> AlphaDocument:
                 return AlphaDocument(name="a.txt", content=b"a")
+
+
+def test_abstract_task_can_be_defined_without_run() -> None:
+    class AbstractBaseTask(PipelineTask):
+        _abstract_task = True
+
+    assert not hasattr(AbstractBaseTask, "_run_spec")
+
+
+def test_abstract_task_subclass_must_define_run() -> None:
+    class AbstractParentTask(PipelineTask):
+        _abstract_task = True
+
+    with pytest.raises(TypeError, match="must define"):
+
+        class MissingRunTask(AbstractParentTask):
+            pass
+
+
+def test_abstract_task_subclass_with_run_validates_normally() -> None:
+    class AbstractInputDocument(Document):
+        pass
+
+    class AbstractOutputDocument(Document):
+        pass
+
+    class AbstractParentTask(PipelineTask):
+        _abstract_task = True
+
+    class ConcreteTask(AbstractParentTask):
+        @classmethod
+        async def run(cls, documents: tuple[AbstractInputDocument, ...]) -> tuple[AbstractOutputDocument, ...]:
+            _ = (cls, documents)
+            return ()
+
+    assert ConcreteTask._run_spec is not None
+    assert ConcreteTask.input_document_types == [AbstractInputDocument]
+    assert ConcreteTask.output_document_types == [AbstractOutputDocument]
+
+
+def test_abstract_task_flag_does_not_inherit() -> None:
+    class AbstractParentTask(PipelineTask):
+        _abstract_task = True
+
+    with pytest.raises(TypeError, match="must define"):
+
+        class ChildTask(AbstractParentTask):
+            pass
+
+
+def test_abstract_task_has_no_document_types() -> None:
+    class AbstractBaseTask(PipelineTask):
+        _abstract_task = True
+
+    assert AbstractBaseTask.input_document_types == []
+    assert AbstractBaseTask.output_document_types == []
+
+
+def test_multi_level_abstract_task_chain() -> None:
+    class MultiLevelInputDocument(Document):
+        pass
+
+    class MultiLevelOutputDocument(Document):
+        pass
+
+    class LevelOneTask(PipelineTask):
+        _abstract_task = True
+
+    class LevelTwoTask(LevelOneTask):
+        _abstract_task = True
+
+    class ConcreteTask(LevelTwoTask):
+        @classmethod
+        async def run(cls, documents: tuple[MultiLevelInputDocument, ...]) -> tuple[MultiLevelOutputDocument, ...]:
+            _ = (cls, documents)
+            return ()
+
+    assert ConcreteTask._run_spec is not None
+    assert ConcreteTask.input_document_types == [MultiLevelInputDocument]
+    assert ConcreteTask.output_document_types == [MultiLevelOutputDocument]
+
+    with pytest.raises(TypeError, match="must define"):
+
+        class BadConcreteTask(LevelTwoTask):
+            pass

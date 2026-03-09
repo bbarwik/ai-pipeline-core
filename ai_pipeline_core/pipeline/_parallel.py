@@ -43,7 +43,7 @@ class TaskHandle[T]:
         self._task.cancel()
 
 
-TaskAwaitable = TaskHandle[list[Document]] | Awaitable[list[Document]]
+TaskAwaitable = TaskHandle[tuple[Document[Any], ...]] | Awaitable[tuple[Document[Any], ...]]
 TaskAwaitableGroup = TaskAwaitable | Sequence[TaskAwaitable]
 
 
@@ -51,15 +51,15 @@ TaskAwaitableGroup = TaskAwaitable | Sequence[TaskAwaitable]
 class TaskBatch:
     """Collected task results and handles that did not complete successfully."""
 
-    completed: list[list[Document]]
-    incomplete: list[TaskHandle[list[Document]]]
+    completed: list[tuple[Document[Any], ...]]
+    incomplete: list[TaskHandle[tuple[Document[Any], ...]]]
 
 
 def _empty_arguments() -> Mapping[str, Any]:
     return MappingProxyType({})
 
 
-def _to_handle(awaitable: TaskAwaitable) -> TaskHandle[list[Document]]:
+def _to_handle(awaitable: TaskAwaitable) -> TaskHandle[tuple[Document[Any], ...]]:
     if isinstance(awaitable, TaskHandle):
         return awaitable
     task = asyncio.ensure_future(awaitable)
@@ -74,7 +74,7 @@ def _is_handle_sequence(value: TaskAwaitableGroup) -> TypeGuard[Sequence[TaskAwa
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes, TaskHandle))
 
 
-def _normalize_handles(handles: tuple[TaskAwaitableGroup, ...]) -> list[TaskHandle[list[Document]]]:
+def _normalize_handles(handles: tuple[TaskAwaitableGroup, ...]) -> list[TaskHandle[tuple[Document[Any], ...]]]:
     if not handles:
         return []
     if len(handles) == 1 and _is_handle_sequence(handles[0]):
@@ -98,10 +98,10 @@ async def collect_tasks(
     if not ordered_handles:
         return TaskBatch(completed=[], incomplete=[])
 
-    completed: list[list[Document]] = []
-    incomplete: list[TaskHandle[list[Document]]] = []
-    by_task: dict[asyncio.Task[list[Document]], TaskHandle[list[Document]]] = {handle._task: handle for handle in ordered_handles}
-    pending: set[asyncio.Task[list[Document]]] = set(by_task.keys())
+    completed: list[tuple[Document[Any], ...]] = []
+    incomplete: list[TaskHandle[tuple[Document[Any], ...]]] = []
+    by_task: dict[asyncio.Task[tuple[Document[Any], ...]], TaskHandle[tuple[Document[Any], ...]]] = {handle._task: handle for handle in ordered_handles}
+    pending: set[asyncio.Task[tuple[Document[Any], ...]]] = set(by_task.keys())
     deadline_at = (time.monotonic() + deadline_seconds) if deadline_seconds is not None else None
 
     while pending:
@@ -125,14 +125,14 @@ async def collect_tasks(
     return TaskBatch(completed=completed, incomplete=incomplete)
 
 
-async def as_task_completed(*handles: TaskAwaitableGroup) -> AsyncIterator[TaskHandle[list[Document]]]:
+async def as_task_completed(*handles: TaskAwaitableGroup) -> AsyncIterator[TaskHandle[tuple[Document[Any], ...]]]:
     """Yield task handles in completion order."""
     ordered_handles = _normalize_handles(handles)
     if not ordered_handles:
         return
 
-    by_task: dict[asyncio.Task[list[Document]], TaskHandle[list[Document]]] = {handle._task: handle for handle in ordered_handles}
-    pending: set[asyncio.Task[list[Document]]] = set(by_task.keys())
+    by_task: dict[asyncio.Task[tuple[Document[Any], ...]], TaskHandle[tuple[Document[Any], ...]]] = {handle._task: handle for handle in ordered_handles}
+    pending: set[asyncio.Task[tuple[Document[Any], ...]]] = set(by_task.keys())
     while pending:
         done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
         for finished in done:

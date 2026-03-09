@@ -1,27 +1,25 @@
-"""Shared fixtures and test types for replay tests."""
+"""Shared fixtures and helpers for replay tests."""
 
+from collections.abc import Generator
+import hashlib
 import struct
 import zlib
 from enum import StrEnum
-from pathlib import Path
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from ai_pipeline_core.database import BlobRecord, DatabaseWriter, DocumentRecord, MemoryDatabase
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.pipeline.options import FlowOptions
 
 
 @pytest.fixture(autouse=True)
-def _suppress_registration():
+def _suppress_registration() -> Generator[None, None, None]:
     with _suppress_document_registration():
         yield
-
-
-# ---------------------------------------------------------------------------
-# Document types for replay tests
-# ---------------------------------------------------------------------------
 
 
 class ReplayTextDocument(Document):
@@ -29,7 +27,7 @@ class ReplayTextDocument(Document):
 
 
 class ReplayBinaryDocument(Document):
-    """Binary (image) document used by replay tests."""
+    """Binary document used by replay tests."""
 
 
 class ReplayAttachmentDocument(Document):
@@ -38,11 +36,6 @@ class ReplayAttachmentDocument(Document):
 
 class ReplayResultDocument(Document):
     """Output document returned from replay test tasks."""
-
-
-# ---------------------------------------------------------------------------
-# BaseModel / Enum types for argument serialization tests
-# ---------------------------------------------------------------------------
 
 
 class ReplayMode(StrEnum):
@@ -66,11 +59,6 @@ class ReplayFlowOptions(FlowOptions):
 
     replay_label: str = "baseline"
     replay_mode: str = "fast"
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def make_test_png_bytes() -> bytes:
@@ -98,15 +86,53 @@ def doc_ref_dict(doc: Document) -> dict[str, str]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+def _blob_record(content: bytes) -> BlobRecord:
+    sha256 = hashlib.sha256(content).hexdigest()
+    return BlobRecord(content_sha256=sha256, content=content, size_bytes=len(content))
+
+
+async def store_document_in_database(
+    database: DatabaseWriter,
+    doc: Document,
+    *,
+    deployment_id: UUID | None = None,
+    producing_node_id: UUID | None = None,
+) -> DocumentRecord:
+    """Persist a Document and its blobs into a database backend."""
+    target_deployment_id = deployment_id or uuid4()
+    main_blob = _blob_record(doc.content)
+    attachment_blobs = tuple(_blob_record(attachment.content) for attachment in doc.attachments)
+
+    record = DocumentRecord(
+        document_sha256=doc.sha256,
+        content_sha256=main_blob.content_sha256,
+        deployment_id=target_deployment_id,
+        producing_node_id=producing_node_id,
+        document_type=type(doc).__name__,
+        name=doc.name,
+        description=doc.description or "",
+        mime_type=doc.mime_type,
+        size_bytes=len(doc.content),
+        derived_from=doc.derived_from,
+        triggered_by=doc.triggered_by,
+        attachment_names=tuple(attachment.name for attachment in doc.attachments),
+        attachment_descriptions=tuple(attachment.description or "" for attachment in doc.attachments),
+        attachment_sha256s=tuple(blob.content_sha256 for blob in attachment_blobs),
+        attachment_mime_types=tuple(attachment.mime_type for attachment in doc.attachments),
+        attachment_sizes=tuple(len(attachment.content) for attachment in doc.attachments),
+    )
+
+    await database.save_document(record)
+    await database.save_blob(main_blob)
+    if attachment_blobs:
+        await database.save_blob_batch(list(attachment_blobs))
+    return record
 
 
 @pytest.fixture
-def store_base(tmp_path: Path) -> Path:
-    """Base path for LocalDocumentStore-based replay tests."""
-    return tmp_path / "output"
+def memory_database() -> MemoryDatabase:
+    """Empty MemoryDatabase used by replay tests."""
+    return MemoryDatabase()
 
 
 @pytest.fixture
@@ -166,15 +192,21 @@ def sample_documents(
 
 
 @pytest.fixture
-async def populated_store(
-    store_base: Path,
-    sample_documents: dict[str, Document],
-) -> Path:
-    """Write all sample documents into a LocalDocumentStore and return store_base."""
-    from ai_pipeline_core.document_store._local import LocalDocumentStore
-    from ai_pipeline_core.documents import RunScope
+async def stored_text_document(memory_database: MemoryDatabase, sample_text_doc: ReplayTextDocument) -> ReplayTextDocument:
+    """Persist the sample text document to the memory database."""
+    await store_document_in_database(memory_database, sample_text_doc)
+    return sample_text_doc
 
-    store = LocalDocumentStore(base_path=store_base)
-    for doc in sample_documents.values():
-        await store.save(doc, RunScope("replay/test"))
-    return store_base
+
+@pytest.fixture
+async def stored_binary_document(memory_database: MemoryDatabase, sample_binary_doc: ReplayBinaryDocument) -> ReplayBinaryDocument:
+    """Persist the sample binary document to the memory database."""
+    await store_document_in_database(memory_database, sample_binary_doc)
+    return sample_binary_doc
+
+
+@pytest.fixture
+async def stored_attachment_document(memory_database: MemoryDatabase, sample_attachment_doc: ReplayAttachmentDocument) -> ReplayAttachmentDocument:
+    """Persist the sample attachment document to the memory database."""
+    await store_document_in_database(memory_database, sample_attachment_doc)
+    return sample_attachment_doc

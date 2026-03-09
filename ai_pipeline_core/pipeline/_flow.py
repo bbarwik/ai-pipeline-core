@@ -3,7 +3,7 @@
 import ast
 import inspect
 import textwrap
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Any, ClassVar, get_origin
 
 from ai_pipeline_core.documents import Document
@@ -29,14 +29,8 @@ def _resolve_task_name(globals_dict: dict[str, Any], name: str) -> str | None:
 
 def _extract_task_name_from_call(node: ast.Call, globals_dict: dict[str, Any]) -> str | None:
     """Extract task class name from supported task call patterns."""
-    # Preferred pattern: TaskClass.run(...)
     if isinstance(node.func, ast.Attribute) and node.func.attr == "run" and isinstance(node.func.value, ast.Name):
         return _resolve_task_name(globals_dict, node.func.value.id)
-    # Legacy patterns kept for source analysis until all flows are migrated.
-    if isinstance(node.func, ast.Name):
-        return _resolve_task_name(globals_dict, node.func.id)
-    if isinstance(node.func, ast.Call) and isinstance(node.func.func, ast.Name):
-        return _resolve_task_name(globals_dict, node.func.func.id)
     return None
 
 
@@ -46,7 +40,6 @@ def _parse_task_graph_from_source(run_fn: Any) -> list[tuple[str, str]]:
     Recognizes:
     - `await TaskClass.run(...)` as sequential
     - `TaskClass.run(...)` as deferred / handle-producing
-    - legacy `await TaskClass(documents)` / `.dispatch(documents)` patterns while examples are migrated
     """
     try:
         source = textwrap.dedent(inspect.getsource(run_fn))
@@ -73,11 +66,6 @@ def _parse_task_graph_from_source(run_fn: Any) -> list[tuple[str, str]]:
                 task_name = _extract_task_name_from_call(node, globals_dict)
                 if task_name is not None:
                     graph.append((task_name, "dispatched"))
-            func = node.func
-            if isinstance(func, ast.Attribute) and func.attr == "dispatch" and isinstance(func.value, ast.Name):
-                task_name = _resolve_task_name(globals_dict, func.value.id)
-                if task_name is not None:
-                    graph.append((task_name, "dispatched"))
             self.generic_visit(node)
 
     _Visitor().visit(tree)
@@ -94,7 +82,7 @@ class PipelineFlow:
         class TranslateFlow(PipelineFlow):
             target_language: str = "en"
 
-            async def run(self, run_id: str, documents: list[SourceDoc], options: FlowOptions) -> list[TranslatedDoc]:
+            async def run(self, documents: tuple[SourceDoc, ...], options: FlowOptions) -> tuple[TranslatedDoc, ...]:
                 return await TranslateTask.run(documents, language=self.target_language)
 
     The deployment creates flow instances with constructor kwargs::
@@ -105,8 +93,9 @@ class PipelineFlow:
     Each instance runs independently with its own parameters, resume record, and progress.
     Constructor kwargs are captured for replay serialization via ``get_params()``.
 
-    Signature must be exactly ``(self, run_id: str, documents: list[DocType], options: FlowOptions)``
+    Signature must be exactly ``(self, documents: tuple[DocType, ...], options: FlowOptions)``
     and is validated at class definition time by ``__init_subclass__``.
+    Use ``get_run_id()`` from ``ai_pipeline_core.pipeline`` to access the run ID inside a flow.
     """
 
     name: ClassVar[str]
@@ -115,8 +104,13 @@ class PipelineFlow:
     output_document_types: ClassVar[list[type[Document]]] = []
     task_graph: ClassVar[list[tuple[str, str]]] = []
 
-    async def run(self, run_id: str, documents: Any, options: Any) -> Sequence[Document]:
-        """Execute the flow. Must be overridden by subclasses (enforced at class definition time by ``__init_subclass__``)."""
+    async def run(self, documents: tuple[Any, ...], options: Any) -> tuple[Any, ...]:
+        """Execute the flow.
+
+        Subclasses must provide concrete ``tuple[MyDocument, ...]`` and ``FlowOptions``
+        annotations. The base stub stays broad so static type checkers accept
+        narrower overrides; ``__init_subclass__`` enforces the real signature.
+        """
         raise NotImplementedError
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -154,16 +148,18 @@ class PipelineFlow:
                     run_fn = parent.__dict__["run"]
                     break
         if run_fn is None:
-            raise TypeError(f"PipelineFlow '{cls.__name__}' must define async run(self, run_id, documents, options) -> list[Document].")
+            raise TypeError(f"PipelineFlow '{cls.__name__}' must define async run(self, documents, options) -> tuple[Document, ...].")
         if not inspect.iscoroutinefunction(run_fn):
-            raise TypeError(f"PipelineFlow '{cls.__name__}'.run must be async def. Use async operations in flow code and return list[Document].")
+            raise TypeError(f"PipelineFlow '{cls.__name__}'.run must be async def. Use async operations in flow code and return tuple[Document, ...].")
 
         sig = inspect.signature(run_fn)
         params = list(sig.parameters.values())
-        if len(params) != 4:
+        if len(params) != 3:
             raise TypeError(
-                f"PipelineFlow '{cls.__name__}'.run must have signature (self, run_id, documents, options). "
-                f"Found parameters: {', '.join(p.name for p in params)}."
+                f"PipelineFlow '{cls.__name__}'.run must have signature "
+                f"(self, documents: tuple[DocType, ...], options: FlowOptions) -> tuple[DocType, ...]. "
+                f"Found parameters: {', '.join(p.name for p in params)}. "
+                f"run_id is no longer a parameter — use get_run_id() from ai_pipeline_core.pipeline."
             )
         hints = resolve_type_hints(run_fn)
         return run_fn, hints, params
@@ -174,40 +170,49 @@ class PipelineFlow:
         hints: dict[str, Any],
         params: list[inspect.Parameter],
     ) -> tuple[list[type[Document]], list[type[Document]]]:
-        run_id_param = params[1].name
-        run_id_type = hints.get(run_id_param)
-        if run_id_type is not str:
-            raise TypeError(f"PipelineFlow '{cls.__name__}'.run parameter '{run_id_param}' must be annotated as str (run_id).")
-
-        documents_param = params[2].name
+        documents_param = params[1].name
         documents_annotation = hints.get(documents_param)
         if documents_annotation is None:
-            raise TypeError(f"PipelineFlow '{cls.__name__}'.run is missing type annotation for '{documents_param}'. Use list[MyDocument] or list[DocA | DocB].")
+            raise TypeError(
+                f"PipelineFlow '{cls.__name__}'.run is missing type annotation for '{documents_param}'. Use tuple[MyDocument, ...] or tuple[DocA | DocB, ...]."
+            )
         if contains_bare_document(documents_annotation):
-            raise TypeError(f"PipelineFlow '{cls.__name__}' uses bare 'Document' in run() input. Use specific Document subclasses in list[...] annotations.")
-        if get_origin(documents_annotation) is not list:
-            raise TypeError(f"PipelineFlow '{cls.__name__}'.run input must be annotated as list[DocumentSubclass | ...]. Got: {documents_annotation!r}.")
+            raise TypeError(f"PipelineFlow '{cls.__name__}' uses bare 'Document' in run() input. Use specific Document subclasses in tuple[...] annotations.")
+        if get_origin(documents_annotation) is not tuple:
+            raise TypeError(
+                f"PipelineFlow '{cls.__name__}'.run input must be annotated as "
+                f"tuple[DocumentSubclass, ...] or tuple[DocA | DocB, ...]. "
+                f"Got: {documents_annotation!r}."
+            )
         input_types = collect_document_types(documents_annotation)
         if not input_types:
-            raise TypeError(f"PipelineFlow '{cls.__name__}'.run input must be annotated as list[DocumentSubclass | ...]. Got: {documents_annotation!r}.")
+            raise TypeError(
+                f"PipelineFlow '{cls.__name__}'.run input must be annotated as "
+                f"tuple[DocumentSubclass, ...] or tuple[DocA | DocB, ...]. "
+                f"Got: {documents_annotation!r}."
+            )
 
-        options_param = params[3].name
+        options_param = params[2].name
         options_type = hints.get(options_param)
         if not (isinstance(options_type, type) and issubclass(options_type, FlowOptions)):
             raise TypeError(f"PipelineFlow '{cls.__name__}'.run parameter '{options_param}' must be FlowOptions or subclass. Got: {options_type!r}.")
 
         return_annotation = hints.get("return")
         if return_annotation is None:
-            raise TypeError(f"PipelineFlow '{cls.__name__}'.run is missing return annotation. Use list[MyDocument] or list[DocA | DocB].")
+            raise TypeError(f"PipelineFlow '{cls.__name__}'.run is missing return annotation. Use tuple[MyDocument, ...] or tuple[DocA | DocB, ...].")
         if contains_bare_document(return_annotation):
             raise TypeError(
-                f"PipelineFlow '{cls.__name__}' uses bare 'Document' in run() return type. Use specific Document subclasses in list[...] annotations."
+                f"PipelineFlow '{cls.__name__}' uses bare 'Document' in run() return type. Use specific Document subclasses in tuple[...] annotations."
             )
-        if get_origin(return_annotation) is not list:
-            raise TypeError(f"PipelineFlow '{cls.__name__}'.run must return list[DocumentSubclass | ...]. Got: {return_annotation!r}.")
+        if get_origin(return_annotation) is not tuple:
+            raise TypeError(
+                f"PipelineFlow '{cls.__name__}'.run must return tuple[DocumentSubclass, ...] or tuple[DocA | DocB, ...]. Got: {return_annotation!r}."
+            )
         output_types = collect_document_types(return_annotation)
         if not output_types:
-            raise TypeError(f"PipelineFlow '{cls.__name__}'.run must return list[DocumentSubclass | ...]. Got: {return_annotation!r}.")
+            raise TypeError(
+                f"PipelineFlow '{cls.__name__}'.run must return tuple[DocumentSubclass, ...] or tuple[DocA | DocB, ...]. Got: {return_annotation!r}."
+            )
         overlap = set(input_types) & set(output_types)
         if overlap:
             raise TypeError(

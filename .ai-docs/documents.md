@@ -2,7 +2,7 @@
 # CLASSES: Attachment, Document, RunContext
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.13.0
+# VERSION: 0.14.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -509,61 +509,6 @@ Attachments:
         return cast(TContent, self.as_pydantic_model(content_type))
 
     @final
-    def retype(
-        self,
-        new_type: type[TDocument],
-        *,
-        preserve_provenance: bool,
-        update: dict[str, Any] | None = None,
-    ) -> TDocument:
-        """Convert to a different Document subclass.
-
-        Must specify preserve_provenance:
-        - True: keep existing derived_from/triggered_by
-        - False: clear provenance fields (caller sets new provenance via update)
-        """
-        try:
-            if not isinstance(new_type, type):  # pyright: ignore[reportUnnecessaryIsInstance]
-                raise TypeError(f"new_type must be a class, got {new_type}")  # pyright: ignore[reportUnreachable]
-            if not issubclass(new_type, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
-                raise TypeError(f"new_type must be a subclass of Document, got {new_type}")  # pyright: ignore[reportUnreachable]
-        except (TypeError, AttributeError) as err:
-            raise TypeError(f"new_type must be a subclass of Document, got {new_type}") from err
-
-        if new_type is Document:
-            raise TypeError("Cannot instantiate Document directly — use a concrete subclass")
-
-        data: dict[str, Any] = {  # nosemgrep: mutable-field-on-frozen-pydantic-model
-            "name": self.name,
-            "content": self.content,
-            "description": self.description,
-            "attachments": self.attachments,
-        }
-        if preserve_provenance:
-            data["derived_from"] = self.derived_from
-            data["triggered_by"] = self.triggered_by
-
-        if update:
-            data.update(update)
-
-        if new_type._content_type is not None:
-            content = data["content"]
-            if isinstance(content, bytes):
-                _validate_content_schema(new_type._content_type, content, content, data["name"])
-            else:
-                content_bytes = _convert_content(data["name"], content)
-                _validate_content_schema(new_type._content_type, content, content_bytes, data["name"])
-
-        return new_type(
-            name=data["name"],
-            content=data["content"],
-            description=data.get("description"),
-            derived_from=data.get("derived_from"),
-            triggered_by=data.get("triggered_by"),
-            attachments=data.get("attachments"),
-        )
-
-    @final
     def serialize_model(self) -> dict[str, Any]:
         """Serialize to JSON-compatible dict for storage/transmission. Roundtrips with from_dict().
 
@@ -770,31 +715,6 @@ def test_document_creation_outside_context_raises() -> None:
         _EnforcementDoc(name="test.txt", content=b"data")
 ```
 
-**Cannot convert to document** (`tests/documents/test_document_model_convert.py:152`)
-
-```python
-def test_cannot_convert_to_document(self):
-    """Test that converting to base Document class raises error."""
-    doc = SampleTaskDoc.create_root(name="test.json", content={}, reason="test input")
-
-    with pytest.raises(TypeError):
-        doc.retype(Document, preserve_provenance=True)
-```
-
-**Cannot convert to non document** (`tests/documents/test_document_model_convert.py:159`)
-
-```python
-def test_cannot_convert_to_non_document(self):
-    """Test that converting to non-Document class raises error."""
-    doc = SampleTaskDoc.create_root(name="test.json", content={}, reason="test input")
-
-    with pytest.raises(TypeError, match="must be a subclass of Document"):
-        doc.retype(dict, preserve_provenance=True)  # type: ignore
-
-    with pytest.raises(TypeError, match="must be a subclass of Document"):
-        doc.retype(str, preserve_provenance=True)  # type: ignore
-```
-
 **Cannot instantiate document** (`tests/documents/test_document_core.py:126`)
 
 ```python
@@ -802,4 +722,30 @@ def test_cannot_instantiate_document(self):
     """Test that Document cannot be instantiated directly."""
     with pytest.raises(TypeError, match="Cannot instantiate Document directly"):
         Document(name="test.txt", content=b"test")
+```
+
+**Content plus attachments exceeding limit** (`tests/documents/test_document_core.py:1024`)
+
+```python
+def test_content_plus_attachments_exceeding_limit(self):
+    """Content + attachments exceeding MAX_CONTENT_SIZE is rejected by model_validator."""
+    # Content is 7 bytes (under 10-byte limit), but total with attachment is 12
+    with pytest.raises(DocumentSizeError, match="including attachments"):
+        SmallDocument(
+            name="test.txt",
+            content=b"1234567",  # 7 bytes
+            attachments=(Attachment(name="a.txt", content=b"12345"),),  # 5 bytes => total 12
+        )
+```
+
+**Content plus attachments exceeding limit rejected** (`tests/documents/test_document_attachments.py:144`)
+
+```python
+def test_content_plus_attachments_exceeding_limit_rejected(self):
+    with pytest.raises(DocumentSizeError, match="including attachments"):
+        SmallLimitDoc(
+            name="test.txt",
+            content=b"A" * 30,  # 30 bytes
+            attachments=(Attachment(name="a.txt", content=b"B" * 25),),  # total 55 > 50
+        )
 ```

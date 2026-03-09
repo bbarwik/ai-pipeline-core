@@ -16,8 +16,8 @@ SOURCE_DIR = REPO_ROOT / "ai_pipeline_core"
 # Symbols mentioned in CLAUDE.md that are external or conceptual (not in our codebase)
 KNOWN_EXTERNAL = frozenset({
     "BaseModel", "BaseSettings", "StrEnum", "Protocol", "NewType",
-    "Pydantic", "Prefect", "LiteLLM", "OpenRouter", "ClickHouse", "Laminar",
-    "LMNR", "OpenTelemetry", "OWASP", "GDPR", "SOC2", "RBAC",
+    "Pydantic", "Prefect", "LiteLLM", "OpenRouter", "ClickHouse",
+    "OpenTelemetry", "OWASP", "GDPR", "SOC2", "RBAC",
     "AsyncOpenAI", "Redis",
 })
 

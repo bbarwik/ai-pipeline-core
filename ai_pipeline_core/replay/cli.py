@@ -1,33 +1,28 @@
-"""CLI tool for replaying captured pipeline conversations, tasks, and flows.
-
-Usage:
-    python -m ai_pipeline_core.replay run conversation.yaml --import examples.showcase
-    python -m ai_pipeline_core.replay run task.yaml --set model=grok-4.1-fast --import my_app.tasks
-    python -m ai_pipeline_core.replay show flow.yaml
-"""
+"""CLI tool for replaying captured pipeline conversations, tasks, and flows."""
 
 import argparse
 import asyncio
 import importlib
 import re
-import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from uuid import UUID
 
 import yaml
-from opentelemetry import trace as otel_trace
 from pydantic import BaseModel
 
-from ai_pipeline_core.deployment._helpers import init_observability_best_effort
+from ai_pipeline_core.database import create_database_from_settings
+from ai_pipeline_core.database._factory import Database
+from ai_pipeline_core.database._filesystem import FilesystemDatabase
+from ai_pipeline_core.database._protocol import DatabaseReader
+from ai_pipeline_core.database._types import NodeKind
 from ai_pipeline_core.documents.document import Document
 from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.observability._debug import FilesystemBackend, TraceDebugConfig
-from ai_pipeline_core.observability._initialization import register_pipeline_processor
-from ai_pipeline_core.observability._tracking._processor import PipelineSpanProcessor
+from ai_pipeline_core.settings import Settings
 
-from .types import ConversationReplay, FlowReplay, TaskReplay, _infer_store_base
+from .types import ConversationReplay, FlowReplay, TaskReplay, _infer_db_path
 
 logger = get_pipeline_logger(__name__)
 
@@ -37,43 +32,25 @@ _PAYLOAD_CLASSES: dict[str, type[ConversationReplay | TaskReplay | FlowReplay]] 
     "pipeline_flow": FlowReplay,
 }
 
-_CONTENT_PREVIEW_LENGTH = 200
+_NODE_KIND_TO_PAYLOAD_TYPE: dict[NodeKind, str] = {
+    NodeKind.CONVERSATION_TURN: "conversation",
+    NodeKind.TASK: "pipeline_task",
+    NodeKind.FLOW: "pipeline_flow",
+}
 
+_CONTENT_PREVIEW_LENGTH = 200
 _MAIN_MODULE_PATTERN = re.compile(r"__main__:")
 
 
-def _init_replay_tracing(output_dir: Path) -> tuple[PipelineSpanProcessor, FilesystemBackend] | None:
-    """Initialize debug tracing for replay execution, writing to output_dir/.trace/.
-
-    Sets up the OTel TracerProvider (via Laminar), then registers a
-    PipelineSpanProcessor with FilesystemBackend so all spans produced
-    during replay are captured.
-    Returns the processor and backend for shutdown, or None if setup fails.
-    """
-    # Ensure OTel TracerProvider is initialized
-    try:
-        init_observability_best_effort()
-    except (OSError, RuntimeError, ImportError) as e:
-        logger.debug("Observability init skipped: %s", e)
-
-    trace_path = output_dir / ".trace"
-    if trace_path.exists():
-        shutil.rmtree(trace_path)
-    trace_path.mkdir(parents=True, exist_ok=True)
-
-    config = TraceDebugConfig(path=trace_path)
-    fs_backend = FilesystemBackend(config)
-    processor = PipelineSpanProcessor(backends=(fs_backend,), verbose=config.verbose)
-
-    provider: Any = otel_trace.get_tracer_provider()
-    if hasattr(provider, "add_span_processor"):
-        provider.add_span_processor(processor)
-        register_pipeline_processor(processor)
-        return processor, fs_backend
-
-    logger.debug("TracerProvider has no add_span_processor — tracing disabled")
-    fs_backend.shutdown()
-    return None
+def _string_key_dict(data: Any) -> dict[str, Any]:
+    """Normalize arbitrary YAML/object mappings to ``dict[str, Any]``."""
+    if not isinstance(data, dict):
+        return {}
+    mapping = cast(dict[Any, Any], data)
+    normalized: dict[str, Any] = {}
+    for key, value in mapping.items():
+        normalized[str(key)] = value
+    return normalized
 
 
 def _import_modules(modules: list[str]) -> None:
@@ -81,22 +58,17 @@ def _import_modules(modules: list[str]) -> None:
     for module_name in modules:
         try:
             importlib.import_module(module_name)
-        except ImportError as e:
-            print(f"Warning: Could not import '{module_name}': {e}", file=sys.stderr)
+        except ImportError as exc:
+            print(f"Warning: Could not import '{module_name}': {exc}", file=sys.stderr)
 
 
 def _remap_main_references(payload: ConversationReplay | TaskReplay | FlowReplay, imported_modules: list[str]) -> ConversationReplay | TaskReplay | FlowReplay:
-    """Remap __main__:X references to the actual module path.
-
-    When a script is run as __main__, all function/class paths use __main__ as the module.
-    During replay, __main__ is the replay CLI, so we search imported modules for the symbol.
-    """
+    """Remap __main__:X references to the actual module path."""
     if not imported_modules:
         return payload
 
     updates: dict[str, Any] = {}
 
-    # Remap function_path for task/flow payloads
     if isinstance(payload, (TaskReplay, FlowReplay)) and _MAIN_MODULE_PATTERN.match(payload.function_path):
         qualname = payload.function_path.split(":", 1)[1]
         resolved = _find_symbol_in_modules(qualname, imported_modules)
@@ -104,7 +76,6 @@ def _remap_main_references(payload: ConversationReplay | TaskReplay | FlowReplay
             updates["function_path"] = resolved
             logger.debug("Remapped function_path: __main__:%s -> %s", qualname, resolved)
 
-    # Remap response_format for conversation payloads
     if isinstance(payload, ConversationReplay) and payload.response_format and _MAIN_MODULE_PATTERN.match(payload.response_format):
         qualname = payload.response_format.split(":", 1)[1]
         resolved = _find_symbol_in_modules(qualname, imported_modules)
@@ -116,7 +87,7 @@ def _remap_main_references(payload: ConversationReplay | TaskReplay | FlowReplay
 
 
 def _find_symbol_in_modules(qualname: str, modules: list[str]) -> str | None:
-    """Search imported modules for a symbol by qualname, return 'module:qualname' if found."""
+    """Search imported modules for a symbol by qualname."""
     top_name = qualname.split(".", maxsplit=1)[0]
     for module_name in modules:
         module = sys.modules.get(module_name)
@@ -132,23 +103,62 @@ def _load_payload(path: Path) -> ConversationReplay | TaskReplay | FlowReplay:
     if not isinstance(raw, dict):
         raise TypeError(f"Expected a YAML mapping in {path}, got {type(raw).__name__}")
 
-    data = cast(dict[str, Any], raw)
-    payload_type = data.get("payload_type")
+    data = _string_key_dict(raw)
+    payload_type_raw = data.get("payload_type")
+    payload_type = payload_type_raw if isinstance(payload_type_raw, str) else None
     if payload_type not in _PAYLOAD_CLASSES:
         valid = ", ".join(sorted(_PAYLOAD_CLASSES))
-        raise ValueError(
-            f"Unknown payload_type '{payload_type}' in {path}. Valid types: {valid}. Check that the file is a replay YAML produced by the trace writer."
-        )
+        raise ValueError(f"Unknown payload_type '{payload_type}' in {path}. Valid types: {valid}. Check that the file is a supported replay YAML payload.")
 
     cls = _PAYLOAD_CLASSES[payload_type]
     return cls.from_yaml(text)
+
+
+async def _load_payload_from_database(database: DatabaseReader, node_id: UUID) -> ConversationReplay | TaskReplay | FlowReplay:
+    """Load a replay payload from an execution node."""
+    node = await database.get_node(node_id)
+    if node is None:
+        raise FileNotFoundError(
+            f"Execution node {node_id} was not found in the database. Use ai-trace list/show to inspect available deployment and node identifiers."
+        )
+
+    payload_data = node.payload.get("replay_payload")
+    if not isinstance(payload_data, dict):
+        fallback_type = _NODE_KIND_TO_PAYLOAD_TYPE.get(node.node_kind)
+        if fallback_type is None:
+            raise ValueError(
+                f"Execution node {node_id} ({node.node_kind.value}) does not carry a replay payload. "
+                f"Replay is supported for conversation_turn, task, and flow nodes."
+            )
+        raise TypeError(
+            f"Execution node {node_id} ({node.node_kind.value}, status={node.status.value}) has no replay payload and cannot be replayed. "
+            "Replay requires payload['replay_payload'] to be persisted on the conversation_turn/task/flow node, "
+            "including failed nodes that recorded replay data."
+        )
+    payload_data = _string_key_dict(payload_data)
+
+    payload_type_raw = payload_data.get("payload_type")
+    payload_type = payload_type_raw if isinstance(payload_type_raw, str) else None
+    if payload_type not in _PAYLOAD_CLASSES:
+        fallback_type = _NODE_KIND_TO_PAYLOAD_TYPE.get(node.node_kind)
+        if fallback_type is None:
+            raise ValueError(
+                f"Execution node {node_id} has an unsupported replay payload_type={payload_type!r}. "
+                f"Replay is supported for conversation, pipeline_task, and pipeline_flow payloads."
+            )
+        payload_type = fallback_type
+        payload_data = dict(payload_data)
+        payload_data["payload_type"] = payload_type
+
+    payload_cls = _PAYLOAD_CLASSES[payload_type]
+    return payload_cls.model_validate(payload_data)
 
 
 def _apply_overrides(
     payload: ConversationReplay | TaskReplay | FlowReplay,
     overrides: list[str],
 ) -> ConversationReplay | TaskReplay | FlowReplay:
-    """Apply --set KEY=VALUE overrides to a payload via model_copy."""
+    """Apply --set KEY=VALUE overrides with YAML parsing and Pydantic validation."""
     if not overrides:
         return payload
 
@@ -160,15 +170,16 @@ def _apply_overrides(
         field_names = set(type(payload).model_fields)
         if key not in field_names:
             raise ValueError(f"Unknown field '{key}' for {type(payload).__name__}. Valid fields: {', '.join(sorted(field_names))}.")
-        updates[key] = value
+        updates[key] = yaml.safe_load(value)
 
-    return payload.model_copy(update=updates)
+    updated_data = payload.model_dump(mode="python")
+    updated_data.update(updates)
+    return type(payload).model_validate(updated_data)
 
 
 def _format_result(result: Any) -> str:
     """Format an execution result for terminal output."""
     if hasattr(result, "content") and hasattr(result, "usage"):
-        # Conversation result
         content = result.content or ""
         preview = content[:_CONTENT_PREVIEW_LENGTH] + ("..." if len(content) > _CONTENT_PREVIEW_LENGTH else "")
         lines = [preview]
@@ -182,15 +193,15 @@ def _format_result(result: Any) -> str:
         doc = cast("Document[Any]", result)
         return f"[Document: {type(doc).__name__}] {doc.name} ({len(doc.content)} bytes)"
 
-    if isinstance(result, list):
-        results = cast(list[Any], result)
+    if isinstance(result, (list, tuple)):
+        results = cast("list[Any] | tuple[Any, ...]", result)
         items: list[str] = []
-        for d in results:
-            if isinstance(d, Document):
-                typed_d = cast("Document[Any]", d)
-                items.append(f"  {type(typed_d).__name__}: {typed_d.name}")
-            else:
-                items.append(f"  {d!r}")
+        for item in results:
+            if isinstance(item, Document):
+                typed_doc = cast("Document[Any]", item)
+                items.append(f"  {type(typed_doc).__name__}: {typed_doc.name}")
+                continue
+            items.append(f"  {item!r}")
         return f"[{len(results)} result(s)]\n" + "\n".join(items)
 
     return repr(result)
@@ -221,18 +232,23 @@ def _serialize_result(result: Any) -> dict[str, Any]:
         output["sha256"] = doc.sha256
         return output
 
-    if isinstance(result, list):
-        results = cast(list[Any], result)
+    if isinstance(result, (list, tuple)):
+        results = cast("list[Any] | tuple[Any, ...]", result)
         output["type"] = "document_list"
         output["count"] = len(results)
-        docs_list: list[dict[str, Any]] = []
-        for d in results:
-            if isinstance(d, Document):
-                typed_d = cast("Document[Any]", d)
-                docs_list.append({"class_name": type(typed_d).__name__, "name": typed_d.name, "content_bytes": len(typed_d.content), "sha256": typed_d.sha256})
-            else:
-                docs_list.append({"value": repr(d)})
-        output["documents"] = docs_list
+        documents: list[dict[str, Any]] = []
+        for item in results:
+            if isinstance(item, Document):
+                typed_doc = cast("Document[Any]", item)
+                documents.append({
+                    "class_name": type(typed_doc).__name__,
+                    "name": typed_doc.name,
+                    "content_bytes": len(typed_doc.content),
+                    "sha256": typed_doc.sha256,
+                })
+                continue
+            documents.append({"value": repr(item)})
+        output["documents"] = documents
         return output
 
     output["type"] = "unknown"
@@ -254,86 +270,117 @@ def _write_output(output_dir: Path, result: Any) -> Path:
 
 def _print_run_header(
     payload: ConversationReplay | TaskReplay | FlowReplay,
-    replay_file: Path,
-    store_base: Path,
+    source_label: str,
+    database_label: str,
     output_dir: Path | None,
 ) -> None:
     """Print replay execution header with payload details."""
-    print(f"Replaying {type(payload).__name__} from {replay_file.name}")
+    print(f"Replaying {type(payload).__name__} from {source_label}")
     if isinstance(payload, ConversationReplay):
         print(f"  model: {payload.model}")
     else:
         print(f"  function: {payload.function_path}")
-    print(f"  store: {store_base}")
+    print(f"  database: {database_label}")
     if output_dir is not None:
         print(f"  output: {output_dir}")
     print()
 
 
-# ---------------------------------------------------------------------------
-# Subcommands
-# ---------------------------------------------------------------------------
+def _resolve_database_for_file(replay_file: Path, db_path: str | None) -> tuple[Database, str]:
+    """Open the database used to resolve document refs for a replay YAML file."""
+    resolved_path = Path(db_path).resolve() if db_path else _infer_db_path(replay_file)
+    return FilesystemDatabase(resolved_path), str(resolved_path)
+
+
+def _resolve_database_for_node(db_path: str | None) -> tuple[Database, str]:
+    """Open the database used to load a replay payload by node id."""
+    if db_path is not None:
+        resolved_path = Path(db_path).resolve()
+        return FilesystemDatabase(resolved_path), str(resolved_path)
+
+    settings = Settings()
+    if not settings.clickhouse_host:
+        raise ValueError(
+            "--from-db without --db-path requires ClickHouse settings. Set CLICKHOUSE_HOST or provide --db-path pointing at a FilesystemDatabase snapshot."
+        )
+    return create_database_from_settings(settings), "clickhouse"
+
+
+async def _execute_with_database(
+    payload: ConversationReplay | TaskReplay | FlowReplay,
+    database: Database,
+) -> Any:
+    """Execute a replay payload and always close the database."""
+    try:
+        return await payload.execute(database)
+    finally:
+        await database.shutdown()
+
+
+def _default_output_dir(replay_file: Path | None, from_db: str | None) -> Path:
+    """Compute the default output directory for a replay run."""
+    if replay_file is not None:
+        return replay_file.parent / f"{replay_file.stem}_replay"
+    if from_db is not None:
+        return Path.cwd() / f"node_{from_db[:8]}_replay"
+    return Path.cwd() / "replay_output"
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    """Execute a replay YAML file."""
-    replay_file = Path(args.replay_file).resolve()
-    if not replay_file.exists():
-        print(f"Error: File not found: {replay_file}", file=sys.stderr)
-        return 1
-
+    """Execute a replay YAML file or a replay payload loaded from the database."""
     imported_modules: list[str] = args.modules or []
     _import_modules(imported_modules)
 
+    replay_file = Path(args.replay_file).resolve() if args.replay_file else None
+    payload: ConversationReplay | TaskReplay | FlowReplay
+    database: Database | None = None
+    source_label: str
+    database_label: str
+
     try:
-        payload = _load_payload(replay_file)
+        if args.from_db:
+            node_id = UUID(args.from_db)
+            database, database_label = _resolve_database_for_node(args.db_path)
+            try:
+                payload = asyncio.run(_load_payload_from_database(database, node_id))
+            except Exception:
+                asyncio.run(database.shutdown())
+                raise
+            source_label = f"database node {node_id}"
+        else:
+            if replay_file is None:
+                raise ValueError("Replay file is required unless --from-db is used.")
+            if not replay_file.exists():
+                print(f"Error: File not found: {replay_file}", file=sys.stderr)
+                return 1
+            payload = _load_payload(replay_file)
+            database, database_label = _resolve_database_for_file(replay_file, args.db_path)
+            source_label = replay_file.name
+
         payload = _remap_main_references(payload, imported_modules)
         payload = _apply_overrides(payload, args.set or [])
-    except (ValueError, yaml.YAMLError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+    except (FileNotFoundError, TypeError, ValueError, yaml.YAMLError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    store_base: Path
-    if args.store:
-        store_base = Path(args.store).resolve()
-    else:
-        try:
-            store_base = _infer_store_base(replay_file)
-        except FileNotFoundError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            return 1
-
-    # Determine output directory
-    if args.output_dir:
-        output_dir = Path(args.output_dir).resolve()
-    else:
-        output_dir = replay_file.parent / f"{replay_file.stem}_replay"
-
-    # Initialize tracing
-    tracing_pair: tuple[PipelineSpanProcessor, FilesystemBackend] | None = None
-    if not args.no_trace:
-        tracing_pair = _init_replay_tracing(output_dir)
-
-    _print_run_header(payload, replay_file, store_base, output_dir if not args.no_trace else None)
+    output_dir = Path(args.output_dir).resolve() if args.output_dir else _default_output_dir(replay_file, args.from_db)
+    _print_run_header(payload, source_label, database_label, output_dir)
+    assert database is not None
 
     try:
-        result = asyncio.run(payload.execute(store_base))
-    except Exception as e:
-        print(f"Error during execution: {e}", file=sys.stderr)
+        result = asyncio.run(_execute_with_database(payload, database))
+    except Exception as exc:
+        print(f"Error during execution: {exc}", file=sys.stderr)
         logger.debug("Replay execution failed", exc_info=True)
         return 1
-    finally:
-        if tracing_pair is not None:
-            _processor, fs_backend = tracing_pair
-            fs_backend.shutdown()
 
     print(_format_result(result))
 
     try:
         _write_output(output_dir, result)
-        print(f"\n[output: {output_dir.relative_to(replay_file.parent)}]")
-    except OSError as e:
-        print(f"Warning: Could not save output: {e}", file=sys.stderr)
+        print(f"\n[output: {output_dir}]")
+    except OSError as exc:
+        print(f"Warning: Could not save output: {exc}", file=sys.stderr)
 
     return 0
 
@@ -347,8 +394,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     try:
         payload = _load_payload(replay_file)
-    except (ValueError, yaml.YAMLError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+    except (TypeError, ValueError, yaml.YAMLError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
     print(f"Type: {type(payload).__name__}")
@@ -362,18 +409,15 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"Context docs: {len(payload.context)}")
         print(f"History entries: {len(payload.history)}")
         print(f"\nPrompt:\n  {payload.prompt}")
-
     elif isinstance(payload, TaskReplay):
         print(f"Function: {payload.function_path}")
-        task_args: dict[str, Any] = payload.arguments
-        print(f"Arguments: {len(task_args)}")
-        for key, value in task_args.items():
+        print(f"Arguments: {len(payload.arguments)}")
+        for key, value in payload.arguments.items():
             preview = str(value)[:80]
             if isinstance(value, dict) and "$doc_ref" in value:
                 print(f"  {key}: [doc_ref {value['$doc_ref'][:12]}...]")
-            else:
-                print(f"  {key}: {preview}")
-
+                continue
+            print(f"  {key}: {preview}")
     else:
         print(f"Function: {payload.function_path}")
         print(f"Run ID: {payload.run_id}")
@@ -384,30 +428,15 @@ def _cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point for replay operations.
-
-    ``--import MODULE`` also remaps ``__main__:X`` references to ``MODULE:X`` in replay
-    payloads — required when replaying scripts originally run as ``python script.py``.
-
-    Usage:
-        ai-replay show conversation.yaml
-        ai-replay run conversation.yaml --store ./output
-        ai-replay run task.yaml --set model=grok-4.1-fast --import my_app
-        ai-replay run flow.yaml --output-dir ./replay_out --import my_app
-    """
-    parser = argparse.ArgumentParser(prog="ai-replay", description="Execute or inspect replay YAML files")
+    """CLI entry point for replay operations."""
+    parser = argparse.ArgumentParser(prog="ai-replay", description="Execute or inspect replay payloads")
     subparsers = parser.add_subparsers(dest="command")
 
-    # run
-    run_parser = subparsers.add_parser("run", help="Execute a replay YAML file")
-    run_parser.add_argument("replay_file", help="Path to replay YAML file (conversation.yaml, task.yaml, flow.yaml)")
-    run_parser.add_argument("--store", type=str, help="Override store base path (default: inferred from .trace/ ancestor)")
+    run_parser = subparsers.add_parser("run", help="Execute a replay payload")
+    run_parser.add_argument("replay_file", nargs="?", help="Path to replay YAML file (conversation.yaml, task.yaml, flow.yaml)")
+    run_parser.add_argument("--from-db", type=str, help="Load replay payload from an execution node ID in the database")
+    run_parser.add_argument("--db-path", type=str, help="Use a FilesystemDatabase at this path instead of ClickHouse or auto-discovery")
     run_parser.add_argument("--set", action="append", metavar="KEY=VALUE", help="Override a field before execution (repeatable)")
     run_parser.add_argument(
         "--import",
@@ -420,20 +449,19 @@ def main(argv: list[str] | None = None) -> int:
         "--output-dir",
         type=str,
         default=None,
-        help="Output directory for results and traces (default: {replay_file_stem}_replay/ next to replay file)",
-    )
-    run_parser.add_argument(
-        "--no-trace",
-        action="store_true",
-        default=False,
-        help="Skip tracing setup — only print result without producing .trace/ output",
+        help="Output directory for replay results",
     )
 
-    # show
     show_parser = subparsers.add_parser("show", help="Pretty-print a replay YAML file")
     show_parser.add_argument("replay_file", help="Path to replay YAML file")
 
     args = parser.parse_args(argv)
+
+    if args.command == "run":
+        if args.replay_file is None and args.from_db is None:
+            parser.error("run requires either a replay_file or --from-db <node_id>")
+        if args.replay_file is not None and args.from_db is not None:
+            parser.error("run accepts a replay_file or --from-db <node_id>, not both")
 
     handlers: dict[str, Any] = {"run": _cmd_run, "show": _cmd_show}
     handler = handlers.get(args.command)

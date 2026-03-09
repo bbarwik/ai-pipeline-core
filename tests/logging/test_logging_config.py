@@ -56,6 +56,11 @@ handlers:
         assert "formatters" in loaded
         assert "handlers" in loaded
         assert "loggers" in loaded
+        assert loaded["root"]["level"] == "DEBUG"
+        assert loaded["handlers"]["console"]["level"] == "INFO"
+        assert loaded["loggers"]["ai_pipeline_core"]["level"] == "DEBUG"
+        assert loaded["loggers"]["ai_pipeline_core"]["propagate"] is True
+        assert loaded["loggers"]["ai_pipeline_core"]["handlers"] == []
 
     @patch("logging.config.dictConfig")
     def test_apply_config(self, mock_dict_config: Mock) -> None:
@@ -90,7 +95,7 @@ class TestSetupLogging:
         setup_logging()
         mock_apply.assert_called_once()
 
-    @patch("ai_pipeline_core.logging.logging_config.get_logger")
+    @patch("ai_pipeline_core.logging.logging_config.logging.getLogger")
     @patch("ai_pipeline_core.logging.logging_config.LoggingConfig.apply")
     def test_setup_logging_with_level(self, mock_apply: Mock, mock_get_logger: Mock) -> None:
         """Test setup_logging with custom level."""
@@ -123,7 +128,7 @@ class TestGetPipelineLogger:
     """Test get_pipeline_logger function."""
 
     @patch("ai_pipeline_core.logging.logging_config.setup_logging")
-    @patch("ai_pipeline_core.logging.logging_config.get_logger")
+    @patch("ai_pipeline_core.logging.logging_config.logging.getLogger")
     def test_get_pipeline_logger_ensures_setup(self, mock_get_logger: Mock, mock_setup: Mock) -> None:
         """Test that get_pipeline_logger ensures logging is setup."""
         mock_logger = MagicMock()
@@ -140,7 +145,7 @@ class TestGetPipelineLogger:
         mock_get_logger.assert_called_with("test.module")
         assert logger == mock_logger
 
-    @patch("ai_pipeline_core.logging.logging_config.get_logger")
+    @patch("ai_pipeline_core.logging.logging_config.logging.getLogger")
     def test_get_pipeline_logger_reuses_config(self, mock_get_logger: Mock) -> None:
         """Test that subsequent calls don't re-setup logging."""
         mock_logger = MagicMock()

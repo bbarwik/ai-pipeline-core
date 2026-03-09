@@ -22,6 +22,10 @@ Usage:
   python examples/showcase_prompt_compiler.py
 """
 
+from collections.abc import Callable
+from types import new_class
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from ai_pipeline_core.documents import Document
@@ -326,6 +330,35 @@ class FinalVerdictSpec(PromptSpec):
 
 
 # =============================================================================
+# Demo helpers
+# =============================================================================
+
+
+def _build_prompt_spec_class(
+    name: str,
+    *,
+    attrs: dict[str, Any],
+    bases: tuple[Any, ...] = (PromptSpec,),
+    kwds: dict[str, Any] | None = None,
+) -> type[Any]:
+    """Create a PromptSpec subclass dynamically so validation errors are still demonstrated."""
+
+    def _exec_body(namespace: dict[str, Any]) -> None:
+        namespace["__module__"] = __name__
+        namespace.update(attrs)
+
+    return new_class(name, bases, kwds or {}, _exec_body)
+
+
+def _capture_validation_error(errors: list[tuple[str, str]], label: str, build: Callable[[], object]) -> None:
+    """Append the validation error raised while defining a PromptSpec subclass."""
+    try:
+        build()
+    except TypeError as error:
+        errors.append((label, str(error)))
+
+
+# =============================================================================
 # Demo execution
 # =============================================================================
 
@@ -335,104 +368,124 @@ def _show_validation_examples() -> None:
     errors: list[tuple[str, str]] = []
 
     # Missing docstring
-    try:
-
-        class _NoDocSpec(PromptSpec):
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-
-    except TypeError as e:
-        errors.append(("Missing docstring", str(e)))
+    _capture_validation_error(
+        errors,
+        "Missing docstring",
+        lambda: _build_prompt_spec_class(
+            "NoDocSpec",
+            attrs={
+                "input_documents": (),
+                "role": SeniorVCAnalyst,
+                "task": "do it",
+            },
+        ),
+    )
 
     # Missing role (standalone spec)
-    try:
-
-        class _NoRoleSpec(PromptSpec):
-            """Test."""
-
-            input_documents = ()
-            task = "do it"
-
-    except TypeError as e:
-        errors.append(("Missing role", str(e)))
+    _capture_validation_error(
+        errors,
+        "Missing role",
+        lambda: _build_prompt_spec_class(
+            "NoRoleSpec",
+            attrs={
+                "__doc__": "Test.",
+                "input_documents": (),
+                "task": "do it",
+            },
+        ),
+    )
 
     # Bare field without Field(description=...)
-    try:
-
-        class _BareFieldSpec(PromptSpec):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-            item: str
-
-    except TypeError as e:
-        errors.append(("Bare field (no description)", str(e)))
+    _capture_validation_error(
+        errors,
+        "Bare field (no description)",
+        lambda: _build_prompt_spec_class(
+            "BareFieldSpec",
+            attrs={
+                "__doc__": "Test.",
+                "__annotations__": {"item": str},
+                "input_documents": (),
+                "role": SeniorVCAnalyst,
+                "task": "do it",
+            },
+        ),
+    )
 
     # OutputRule in rules (wrong tuple)
-    try:
-
-        class _WrongRuleSpec(PromptSpec):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-            rules = (StartWithOptimisticAnalyst,)  # OutputRule in rules!
-
-    except TypeError as e:
-        errors.append(("OutputRule in rules", str(e)))
+    _capture_validation_error(
+        errors,
+        "OutputRule in rules",
+        lambda: _build_prompt_spec_class(
+            "WrongRuleSpec",
+            attrs={
+                "__doc__": "Test.",
+                "input_documents": (),
+                "role": SeniorVCAnalyst,
+                "task": "do it",
+                "rules": (StartWithOptimisticAnalyst,),
+            },
+        ),
+    )
 
     # output_structure with BaseModel output_type
-    try:
-
-        class _BadStructSpec(PromptSpec[RiskVerdict]):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-            output_structure = "## Section"
-
-    except TypeError as e:
-        errors.append(("output_structure with BaseModel", str(e)))
+    _capture_validation_error(
+        errors,
+        "output_structure with BaseModel",
+        lambda: _build_prompt_spec_class(
+            "BadStructSpec",
+            bases=(PromptSpec[RiskVerdict],),
+            attrs={
+                "__doc__": "Test.",
+                "input_documents": (),
+                "role": SeniorVCAnalyst,
+                "task": "do it",
+                "output_structure": "## Section",
+            },
+        ),
+    )
 
     # Empty task
-    try:
-
-        class _EmptyTaskSpec(PromptSpec):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "   "
-
-    except TypeError as e:
-        errors.append(("Empty task", str(e)))
+    _capture_validation_error(
+        errors,
+        "Empty task",
+        lambda: _build_prompt_spec_class(
+            "EmptyTaskSpec",
+            attrs={
+                "__doc__": "Test.",
+                "input_documents": (),
+                "role": SeniorVCAnalyst,
+                "task": "   ",
+            },
+        ),
+    )
 
     # follows must be a PromptSpec subclass
-    try:
-
-        class _BadFollowsSpec(PromptSpec, follows=str):  # type: ignore[arg-type]
-            """Test."""
-
-            task = "do it"
-
-    except TypeError as e:
-        errors.append(("follows=str", str(e)))
+    _capture_validation_error(
+        errors,
+        "follows=str",
+        lambda: _build_prompt_spec_class(
+            "BadFollowsSpec",
+            kwds={"follows": str},
+            attrs={
+                "__doc__": "Test.",
+                "task": "do it",
+            },
+        ),
+    )
 
     # follows must not be PromptSpec itself
-    try:
-
-        class _FollowsBaseSpec(PromptSpec, follows=PromptSpec):
-            """Test."""
-
-            task = "do it"
-
-    except TypeError as e:
-        errors.append(("follows=PromptSpec", str(e)))
+    _capture_validation_error(
+        errors,
+        "follows=PromptSpec",
+        lambda: _build_prompt_spec_class(
+            "FollowsBaseSpec",
+            kwds={"follows": PromptSpec},
+            attrs={
+                "__doc__": "Test.",
+                "task": "do it",
+            },
+        ),
+    )
 
     for label, msg in errors:
         print(f"  [{label}]")
@@ -493,7 +546,10 @@ def main() -> None:
     print("\n--- 7. Follow-up spec (follows=DraftReportSpec) ---\n")
     revision = DraftRevisionSpec(feedback="Add more quantitative evidence and specific metrics.")
     print(render_text(revision))
-    print(f"\n[follows = {DraftRevisionSpec._follows.__name__}]")
+    follows_spec = DraftRevisionSpec._follows
+    if follows_spec is None:
+        raise RuntimeError("DraftRevisionSpec should define follows=DraftReportSpec.")
+    print(f"\n[follows = {follows_spec.__name__}]")
     print(f"[role = {DraftRevisionSpec.role}]")  # None — inherited from conversation
 
     # --- Feature: render_preview without documents ---
@@ -578,18 +634,20 @@ def main() -> None:
     xml_errors: list[tuple[str, str]] = []
 
     # H1 header in output_structure
-    try:
-
-        class _H1OutputSpec(PromptSpec):
-            """Test."""
-
-            input_documents = ()
-            role = SeniorVCAnalyst
-            task = "do it"
-            output_structure = "# Bad Header"
-
-    except TypeError as e:
-        xml_errors.append(("H1 in output_structure", str(e)))
+    _capture_validation_error(
+        xml_errors,
+        "H1 in output_structure",
+        lambda: _build_prompt_spec_class(
+            "H1OutputSpec",
+            attrs={
+                "__doc__": "Test.",
+                "input_documents": (),
+                "role": SeniorVCAnalyst,
+                "task": "do it",
+                "output_structure": "# Bad Header",
+            },
+        ),
+    )
 
     for label, msg in xml_errors:
         print(f"  [{label}]")

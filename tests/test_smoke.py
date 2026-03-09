@@ -8,11 +8,11 @@ def test_showcase_imports() -> None:
     assert hasattr(m, "ShowcasePipeline")
 
 
-def test_showcase_document_store_imports() -> None:
-    """examples/showcase_document_store.py imports without errors."""
-    import examples.showcase_document_store as m
+def test_showcase_database_imports() -> None:
+    """examples/showcase_database.py imports without errors."""
+    import examples.showcase_database as m
 
-    assert hasattr(m, "StoreShowcasePipeline")
+    assert hasattr(m, "DatabaseShowcasePipeline")
 
 
 def test_showcase_builds_flows() -> None:
@@ -26,12 +26,12 @@ def test_showcase_builds_flows() -> None:
     assert all(isinstance(f, PipelineFlow) for f in flows)
 
 
-def test_store_showcase_builds_flows() -> None:
-    """StoreShowcasePipeline.build_flows() returns PipelineFlow instances."""
-    from examples.showcase_document_store import StoreShowcasePipeline
+def test_database_showcase_builds_flows() -> None:
+    """DatabaseShowcasePipeline.build_flows() returns PipelineFlow instances."""
+    from examples.showcase_database import DatabaseShowcasePipeline
     from ai_pipeline_core.pipeline import PipelineFlow, FlowOptions
 
-    deployment = StoreShowcasePipeline()
+    deployment = DatabaseShowcasePipeline()
     flows = deployment.build_flows(FlowOptions())
     assert len(flows) >= 1
     assert all(isinstance(f, PipelineFlow) for f in flows)

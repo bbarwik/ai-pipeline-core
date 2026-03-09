@@ -1,4 +1,4 @@
-"""Entry point for: python -m ai_pipeline_core.observability download <execution_id>."""
+"""Entry point for ``python -m ai_pipeline_core.observability``."""
 
 from .cli import main
 

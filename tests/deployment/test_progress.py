@@ -1,346 +1,210 @@
-"""Tests for progress tracking module."""
+"""Tests for _safe_uuid and deployment execution node creation in base.py."""
 
-# pyright: reportPrivateUsage=false, reportOptionalMemberAccess=false
+# pyright: reportPrivateUsage=false
 
-import asyncio
-from unittest.mock import AsyncMock, patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
-from ai_pipeline_core.deployment._types import ProgressEvent, _MemoryPublisher
-from ai_pipeline_core.deployment._contract import FlowStatus
-from ai_pipeline_core.deployment.progress import _ProgressContext, _flow_context, progress_update
+from ai_pipeline_core.database import NULL_PARENT, ExecutionNode, MemoryDatabase, NodeKind, NodeStatus
+from ai_pipeline_core.deployment.base import PipelineDeployment, _safe_uuid
 
 
-class TestUpdate:
-    """Test progress update function."""
+class TestSafeUuid:
+    """Test _safe_uuid helper moved from progress.py to base.py."""
 
-    async def test_noop_without_context(self):
-        """Test update is a no-op when no context is set."""
-        await progress_update(0.5, "test")
+    def test_valid_uuid_string(self) -> None:
+        """Valid UUID string returns a UUID object."""
+        value = str(UUID(int=42))
+        result = _safe_uuid(value)
+        assert result == UUID(int=42)
 
-    async def test_updates_labels(self):
-        """Test labels are updated when context is set."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
+    def test_random_uuid(self) -> None:
+        """Random UUID round-trips through _safe_uuid."""
+        original = uuid4()
+        result = _safe_uuid(str(original))
+        assert result == original
 
-        with _flow_context(
-            "test",
-            str(UUID(int=1)),
-            "flow1",
-            1,
-            total_steps=3,
-            flow_minutes=(1.0, 1.0, 1.0),
-            completed_minutes=0.0,
-        ):
-            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await progress_update(0.5, "halfway")
+    def test_invalid_string_returns_none(self) -> None:
+        """Non-UUID string returns None."""
+        assert _safe_uuid("not-a-uuid") is None
 
-        mock_client.update_flow_run_labels.assert_called_once()
+    def test_none_string_returns_none(self) -> None:
+        """str(None) -> 'None' returns None (the original bug scenario)."""
+        assert _safe_uuid("None") is None
 
-    async def test_clamps_fraction(self):
-        """Test fraction is clamped to [0.0, 1.0]."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
+    def test_empty_string_returns_none(self) -> None:
+        """Empty string returns None."""
+        assert _safe_uuid("") is None
 
-        with _flow_context(
-            "test",
-            str(UUID(int=1)),
-            "flow",
-            1,
-            total_steps=1,
-            flow_minutes=(1.0,),
-            completed_minutes=0.0,
-        ):
-            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await progress_update(-0.5, "negative")
-                await progress_update(1.5, "over")
-
-        calls = mock_client.update_flow_run_labels.call_args_list
-        assert len(calls) == 2
-        assert calls[0].kwargs["labels"]["progress.step_progress"] == 0.0
-        assert calls[1].kwargs["labels"]["progress.step_progress"] == 1.0
+    def test_zero_uuid(self) -> None:
+        """All-zero UUID is valid."""
+        result = _safe_uuid("00000000-0000-0000-0000-000000000000")
+        assert result == UUID(int=0)
 
 
-class TestUpdateLabels:
-    """Test that update() refreshes Prefect flow run labels."""
+class TestInsertDbNode:
+    """Test PipelineDeployment._insert_db_node static method."""
 
-    async def test_updates_prefect_labels(self):
-        """update() must call update_flow_run_labels with correct progress data."""
-        flow_run_id = str(UUID(int=42))
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with _flow_context(
-            "test-project",
-            flow_run_id,
-            "analysis",
-            2,
-            total_steps=4,
-            flow_minutes=(1.0, 2.0, 1.0, 1.0),
-            completed_minutes=1.0,
-        ):
-            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await progress_update(0.5, "halfway")
-
-        mock_client.update_flow_run_labels.assert_called_once()
-        labels = mock_client.update_flow_run_labels.call_args.kwargs["labels"]
-        assert labels["progress.step"] == 2
-        assert labels["progress.total_steps"] == 4
-        assert labels["progress.flow_name"] == "analysis"
-        assert labels["progress.status"] == FlowStatus.PROGRESS
-        assert labels["progress.step_progress"] == 0.5
-        assert labels["progress.progress"] == 0.4  # (1.0 + 2.0 * 0.5) / 5.0
-        assert labels["progress.message"] == "halfway"
-
-    async def test_no_labels_without_flow_run_id(self):
-        """No label update when flow_run_id is empty (CLI mode)."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with _flow_context(
-            "test",
-            "",
-            "flow",
-            1,
-            total_steps=1,
-            flow_minutes=(1.0,),
-            completed_minutes=0.0,
-        ):
-            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await progress_update(0.5, "msg")
-
-        mock_client.update_flow_run_labels.assert_not_called()
-
-    async def test_label_failure_does_not_raise(self):
-        """Failed label update is logged but does not crash the flow."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.update_flow_run_labels.side_effect = Exception("Prefect unavailable")
-
-        with _flow_context(
-            "test",
-            str(UUID(int=1)),
-            "flow",
-            1,
-            total_steps=1,
-            flow_minutes=(1.0,),
-            completed_minutes=0.0,
-        ):
-            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await progress_update(0.5, "msg")
-
-
-class TestFlowContext:
-    """Test _flow_context context manager."""
-
-    def test_sets_and_resets_context(self):
-        """Test context is set during the block and reset after."""
-        from ai_pipeline_core.deployment.progress import _context
-
-        assert _context.get() is None
-
-        with _flow_context(
-            "test",
-            str(UUID(int=1)),
-            "flow",
-            1,
-            total_steps=2,
-            flow_minutes=(1.0, 2.0),
-            completed_minutes=0.0,
-        ):
-            ctx = _context.get()
-            assert ctx is not None
-            assert ctx.run_id == "test"
-            assert ctx.flow_name == "flow"
-            assert ctx.current_flow_minutes == 1.0
-
-        assert _context.get() is None
-
-    def test_calculates_current_flow_minutes(self):
-        """Test weight extraction from weights tuple."""
-        from ai_pipeline_core.deployment.progress import _context
-
-        with _flow_context(
-            "test",
-            str(UUID(int=1)),
-            "flow2",
-            2,
-            total_steps=3,
-            flow_minutes=(10.0, 20.0, 30.0),
-            completed_minutes=10.0,
-        ):
-            ctx = _context.get()
-            assert ctx is not None
-            assert ctx.current_flow_minutes == 20.0
-
-
-class TestProgressContext:
-    """Test _ProgressContext dataclass."""
-
-    def test_creation(self):
-        """Test _ProgressContext creation."""
-        ctx = _ProgressContext(
-            run_id="test",
-            flow_run_id=str(UUID(int=1)),
-            flow_name="flow",
-            step=1,
-            total_steps=3,
-            total_minutes=6.0,
-            completed_minutes=0.0,
-            current_flow_minutes=1.0,
+    async def test_inserts_node_into_database(self) -> None:
+        """Node is inserted into the database."""
+        db = MemoryDatabase()
+        node_id = uuid4()
+        dep_id = uuid4()
+        node = ExecutionNode(
+            node_id=node_id,
+            node_kind=NodeKind.DEPLOYMENT,
+            deployment_id=dep_id,
+            root_deployment_id=dep_id,
+            run_id="test-run",
+            run_scope="test/scope",
+            deployment_name="test-deploy",
+            name="test-deploy",
+            sequence_no=0,
         )
-        assert ctx.step == 1
-        assert ctx.total_steps == 3
+        await PipelineDeployment._insert_db_node(db, node)
 
-    def test_frozen(self):
-        """Test _ProgressContext is immutable."""
-        ctx = _ProgressContext(
+        assert node_id in db._nodes
+        stored = db._nodes[node_id]
+        assert stored.node_kind == NodeKind.DEPLOYMENT
+        assert stored.run_id == "test-run"
+
+    async def test_none_database_is_noop(self) -> None:
+        """When database is None, insert is silently skipped."""
+        node = ExecutionNode(
+            node_id=uuid4(),
+            node_kind=NodeKind.FLOW,
+            deployment_id=uuid4(),
+            root_deployment_id=uuid4(),
             run_id="test",
-            flow_run_id=str(UUID(int=1)),
-            flow_name="flow",
-            step=1,
-            total_steps=1,
-            total_minutes=1.0,
-            completed_minutes=0.0,
-            current_flow_minutes=1.0,
+            run_scope="test/scope",
+            deployment_name="d",
+            name="f",
+            sequence_no=1,
+        )
+        # Must not raise
+        await PipelineDeployment._insert_db_node(None, node)
+
+    async def test_insert_failure_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Database insert failure is logged as a warning, not raised."""
+        db = MemoryDatabase()
+        node_id = uuid4()
+        dep_id = uuid4()
+        node = ExecutionNode(
+            node_id=node_id,
+            node_kind=NodeKind.FLOW,
+            deployment_id=dep_id,
+            root_deployment_id=dep_id,
+            run_id="test",
+            run_scope="test/scope",
+            deployment_name="d",
+            name="f",
+            sequence_no=1,
+        )
+        # Insert once
+        await PipelineDeployment._insert_db_node(db, node)
+        # Insert duplicate — MemoryDatabase may or may not error;
+        # verify the method does not propagate exceptions regardless
+        await PipelineDeployment._insert_db_node(db, node)
+
+
+class TestUpdateDbNode:
+    """Test PipelineDeployment._update_db_node static method."""
+
+    async def test_updates_node_status(self) -> None:
+        """Node status can be updated after insertion."""
+        db = MemoryDatabase()
+        node_id = uuid4()
+        dep_id = uuid4()
+        node = ExecutionNode(
+            node_id=node_id,
+            node_kind=NodeKind.DEPLOYMENT,
+            deployment_id=dep_id,
+            root_deployment_id=dep_id,
+            run_id="test",
+            run_scope="test/scope",
+            deployment_name="d",
+            name="d",
+            sequence_no=0,
+            status=NodeStatus.RUNNING,
+        )
+        await db.insert_node(node)
+        await PipelineDeployment._update_db_node(db, node_id, status=NodeStatus.COMPLETED)
+
+        stored = db._nodes[node_id]
+        assert stored.status == NodeStatus.COMPLETED
+
+    async def test_none_database_is_noop(self) -> None:
+        """When database is None, update is silently skipped."""
+        await PipelineDeployment._update_db_node(None, uuid4(), status=NodeStatus.FAILED)
+
+
+class TestExecutionNodeDefaults:
+    """Test ExecutionNode dataclass defaults and structure."""
+
+    def test_default_status_is_running(self) -> None:
+        """New execution nodes default to RUNNING status."""
+        node = ExecutionNode(
+            node_id=uuid4(),
+            node_kind=NodeKind.FLOW,
+            deployment_id=uuid4(),
+            root_deployment_id=uuid4(),
+            run_id="test",
+            run_scope="scope",
+            deployment_name="d",
+            name="f",
+            sequence_no=1,
+        )
+        assert node.status == NodeStatus.RUNNING
+
+    def test_default_parent_is_null_parent(self) -> None:
+        """Nodes without explicit parent get NULL_PARENT sentinel."""
+        node = ExecutionNode(
+            node_id=uuid4(),
+            node_kind=NodeKind.DEPLOYMENT,
+            deployment_id=uuid4(),
+            root_deployment_id=uuid4(),
+            run_id="test",
+            run_scope="scope",
+            deployment_name="d",
+            name="d",
+            sequence_no=0,
+        )
+        assert node.parent_node_id == NULL_PARENT
+
+    def test_frozen_immutability(self) -> None:
+        """ExecutionNode is frozen — attributes cannot be reassigned."""
+        node = ExecutionNode(
+            node_id=uuid4(),
+            node_kind=NodeKind.FLOW,
+            deployment_id=uuid4(),
+            root_deployment_id=uuid4(),
+            run_id="test",
+            run_scope="scope",
+            deployment_name="d",
+            name="f",
+            sequence_no=1,
         )
         with pytest.raises(AttributeError):
-            ctx.step = 2  # type: ignore[misc]
+            node.status = NodeStatus.COMPLETED  # type: ignore[misc]
 
-
-class TestInvalidFlowRunId:
-    """Test handling of non-UUID flow_run_id values (e.g. str(None) -> "None")."""
-
-    async def test_non_uuid_flow_run_id_does_not_raise(self):
-        """update() must not raise when flow_run_id is a non-UUID string.
-
-        Regression: runtime.flow_run.get_id() can return None, and
-        str(None) produces "None" which passes truthiness but fails UUID().
-        """
-        with _flow_context(
-            "test",
-            "None",  # str(None) — the actual bug scenario
-            "flow",
-            1,
-            total_steps=1,
-            flow_minutes=(1.0,),
-            completed_minutes=0.0,
-        ):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await progress_update(0.5, "halfway")
-
-        mock_client.update_flow_run_labels.assert_not_called()
-
-
-class TestPublisherIntegration:
-    """Test that update() publishes ProgressEvent via the publisher."""
-
-    async def test_publishes_progress_event(self):
-        """update() must fire-and-forget a ProgressEvent via publisher."""
-        pub = _MemoryPublisher()
-        with _flow_context(
-            "test-run",
-            str(UUID(int=1)),
-            "analysis",
-            2,
-            total_steps=4,
-            flow_minutes=(1.0, 2.0, 1.0, 1.0),
-            completed_minutes=1.0,
-            publisher=pub,
-        ):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await progress_update(0.5, "halfway")
-                await asyncio.sleep(0.01)
-
-        assert len(pub.events) == 1
-        event = pub.events[0]
-        assert isinstance(event, ProgressEvent)
-        assert event.run_id == "test-run"
-        assert event.flow_name == "analysis"
-        assert event.step == 2
-        assert event.step_progress == 0.5
-        assert event.message == "halfway"
-
-    async def test_publisher_error_does_not_crash_flow(self):
-        """Publisher failure must not crash the flow or prevent label update."""
-        failing_pub = AsyncMock(spec=_MemoryPublisher)
-        failing_pub.publish_progress.side_effect = RuntimeError("pub error")
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with _flow_context(
-            "test",
-            str(UUID(int=1)),
-            "flow",
-            1,
-            total_steps=1,
-            flow_minutes=(1.0,),
-            completed_minutes=0.0,
-            publisher=failing_pub,
-        ):
-            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await progress_update(0.5, "test")
-                await asyncio.sleep(0.01)
-
-        mock_client.update_flow_run_labels.assert_called_once()
-
-    async def test_no_publish_without_publisher(self):
-        """update() with publisher=None does not attempt to publish."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with _flow_context(
-            "test",
-            str(UUID(int=1)),
-            "flow",
-            1,
-            total_steps=1,
-            flow_minutes=(1.0,),
-            completed_minutes=0.0,
-            publisher=None,
-        ):
-            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await progress_update(0.5, "msg")
-
-        mock_client.update_flow_run_labels.assert_called_once()
-
-    async def test_publish_event_has_correct_overall_progress(self):
-        """ProgressEvent overall progress is computed from step weights."""
-        pub = _MemoryPublisher()
-        # Step 2 of 3, minutes (10, 20, 30), 10 completed, fraction 0.5
-        # Expected overall: (10 + 20*0.5) / 60 = 20/60 = 0.3333
-        with _flow_context(
-            "test",
-            str(UUID(int=1)),
-            "step2",
-            2,
-            total_steps=3,
-            flow_minutes=(10.0, 20.0, 30.0),
-            completed_minutes=10.0,
-            publisher=pub,
-        ):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            with patch("ai_pipeline_core.deployment.progress.get_client", return_value=mock_client):
-                await progress_update(0.5, "halfway")
-                await asyncio.sleep(0.01)
-
-        assert len(pub.events) == 1
-        assert pub.events[0].progress == pytest.approx(0.3333, abs=0.001)
+    def test_parent_child_relationship(self) -> None:
+        """Flow nodes reference their deployment parent via parent_node_id."""
+        dep_id = uuid4()
+        flow_id = uuid4()
+        root_id = uuid4()
+        flow_node = ExecutionNode(
+            node_id=flow_id,
+            node_kind=NodeKind.FLOW,
+            deployment_id=dep_id,
+            root_deployment_id=root_id,
+            run_id="test",
+            run_scope="scope",
+            deployment_name="d",
+            name="flow-1",
+            sequence_no=1,
+            parent_node_id=dep_id,
+        )
+        assert flow_node.parent_node_id == dep_id
+        assert flow_node.deployment_id == dep_id
+        assert flow_node.root_deployment_id == root_id

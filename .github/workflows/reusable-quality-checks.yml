@@ -144,7 +144,6 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
         run: |
           if [ -n "$OPENAI_API_KEY" ]; then
             echo "Running integration tests with configured API keys..."

@@ -95,6 +95,30 @@ class TestConversationReplayRoundTrip:
         assert restored.model_options["reasoning_effort"] == "high"
         assert restored.model_options["temperature"] == 0.7
 
+    def test_prompt_documents_and_frozen_date_round_trip(
+        self,
+        sample_text_doc: ReplayTextDocument,
+        sample_binary_doc: ReplayBinaryDocument,
+    ) -> None:
+        payload = ConversationReplay(
+            model="gemini-3-flash",
+            prompt_documents=[
+                DocumentRef.model_validate(doc_ref_dict(sample_text_doc)),
+                DocumentRef.model_validate(doc_ref_dict(sample_binary_doc)),
+            ],
+            context=[],
+            history=[],
+            include_date=True,
+            current_date="2025-03-15",
+        )
+
+        yaml_text = payload.to_yaml()
+        restored = ConversationReplay.from_yaml(yaml_text)
+
+        assert restored == payload
+        assert len(restored.prompt_documents) == 2
+        assert restored.current_date == "2025-03-15"
+
 
 class TestTaskReplayRoundTrip:
     def test_with_document_and_basemodel(

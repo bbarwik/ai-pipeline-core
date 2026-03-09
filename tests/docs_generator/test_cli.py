@@ -212,7 +212,7 @@ def test_module_auto_discovery():
     src_dir = Path(__file__).resolve().parent.parent.parent / "ai_pipeline_core"
     discovered = _discover_modules(src_dir)
     assert "documents" in discovered
-    assert "document_store" in discovered
+    assert "database" in discovered
     assert "llm" in discovered
     assert "observability" in discovered
     assert "pipeline" in discovered

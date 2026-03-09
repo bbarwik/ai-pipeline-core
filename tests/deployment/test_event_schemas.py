@@ -1,13 +1,14 @@
 """Tests for deployment event payload schemas and field structure."""
 
-from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment
+from ai_pipeline_core.database import MemoryDatabase, NodeKind, NodeStatus
 from ai_pipeline_core.deployment._types import (
     FlowCompletedEvent,
+    FlowFailedEvent,
     RunCompletedEvent,
     RunStartedEvent,
     TaskCompletedEvent,
@@ -15,8 +16,6 @@ from ai_pipeline_core.deployment._types import (
     TaskStartedEvent,
     _MemoryPublisher,
 )
-from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-from ai_pipeline_core.document_store._protocol import set_document_store
 from ai_pipeline_core.pipeline import PipelineFlow
 
 
@@ -35,17 +34,33 @@ class _GapResult(DeploymentResult):
 class _GapFlow(PipelineFlow):
     name = "gap-flow"
 
-    async def run(self, run_id: str, documents: list[_GapInputDoc], options: FlowOptions) -> list[_GapOutputDoc]:
-        _ = (run_id, options)
-        return [_GapOutputDoc.derive(from_documents=documents, name="gap-out.txt", content="ok")]
+    async def run(self, documents: tuple[_GapInputDoc, ...], options: FlowOptions) -> tuple[_GapOutputDoc, ...]:
+        _ = options
+        return (_GapOutputDoc.derive(from_documents=documents, name="gap-out.txt", content="ok"),)
 
 
 class _FailingGapFlow(PipelineFlow):
     name = "failing-gap-flow"
 
-    async def run(self, run_id: str, documents: list[_GapInputDoc], options: FlowOptions) -> list[_GapOutputDoc]:
-        _ = (run_id, documents, options)
+    async def run(self, documents: tuple[_GapInputDoc, ...], options: FlowOptions) -> tuple[_GapOutputDoc, ...]:
+        _ = (documents, options)
         raise RuntimeError("intentional flow failure")
+
+
+class _WrongShapeGapFlow(PipelineFlow):
+    name = "wrong-shape-gap-flow"
+
+    async def run(self, documents: tuple[_GapInputDoc, ...], options: FlowOptions) -> tuple[_GapOutputDoc, ...]:
+        _ = options
+        return cast(Any, [_GapOutputDoc.derive(from_documents=documents, name="gap-out.txt", content="ok")])
+
+
+class _WrongItemGapFlow(PipelineFlow):
+    name = "wrong-item-gap-flow"
+
+    async def run(self, documents: tuple[_GapInputDoc, ...], options: FlowOptions) -> tuple[_GapOutputDoc, ...]:
+        _ = (documents, options)
+        return cast(Any, ("not-a-document",))
 
 
 class _GapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
@@ -54,7 +69,7 @@ class _GapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
         return [_GapFlow()]
 
     @staticmethod
-    def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> _GapResult:
+    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> _GapResult:
         _ = (run_id, documents, options)
         return _GapResult(success=True)
 
@@ -65,50 +80,31 @@ class _FailingGapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
         return [_FailingGapFlow()]
 
     @staticmethod
-    def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> _GapResult:
+    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> _GapResult:
         _ = (run_id, documents, options)
         return _GapResult(success=False, error="failed")
 
 
-class _FakeClickHouseBackend:
-    def __init__(self, total_cost: float) -> None:
-        self._total_cost = total_cost
+class _WrongShapeGapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        _ = options
+        return [_WrongShapeGapFlow()]
 
-    @property
-    def run_total_cost(self) -> float:
-        return self._total_cost
+    @staticmethod
+    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> _GapResult:
+        _ = (run_id, documents, options)
+        return _GapResult(success=False, error="failed")
 
-    def track_run_start(
-        self,
-        *,
-        execution_id: Any,
-        run_id: str,
-        flow_name: str,
-        run_scope: str,
-        parent_execution_id: Any,
-        parent_span_id: str | None,
-        metadata: dict[str, object] | None,
-    ) -> datetime:
-        _ = (execution_id, run_id, flow_name, run_scope, parent_execution_id, parent_span_id, metadata)
-        return datetime.now(UTC)
 
-    def track_run_end(
-        self,
-        *,
-        execution_id: Any,
-        run_id: str,
-        flow_name: str,
-        run_scope: str,
-        status: Any,
-        start_time: datetime,
-        total_cost: float = 0.0,
-        total_tokens: int = 0,
-        metadata: dict[str, object] | None = None,
-    ) -> None:
-        _ = (execution_id, run_id, flow_name, run_scope, status, start_time, total_cost, total_tokens, metadata)
+class _WrongItemGapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        _ = options
+        return [_WrongItemGapFlow()]
 
-    def flush(self) -> None:
-        return
+    @staticmethod
+    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> _GapResult:
+        _ = (run_id, documents, options)
+        return _GapResult(success=False, error="failed")
 
 
 def _make_input_doc() -> _GapInputDoc:
@@ -118,13 +114,7 @@ def _make_input_doc() -> _GapInputDoc:
 @pytest.mark.asyncio
 async def test_flow_plan_uses_flow_class_key() -> None:
     publisher = _MemoryPublisher()
-    store = MemoryDocumentStore()
-    set_document_store(store)
-    try:
-        await _GapDeployment().run("gap-run", [_make_input_doc()], FlowOptions(), publisher=publisher)
-    finally:
-        set_document_store(None)
-        store.shutdown()
+    await _GapDeployment().run("gap-run", [_make_input_doc()], FlowOptions(), publisher=publisher)
 
     started = [event for event in publisher.events if isinstance(event, RunStartedEvent)]
     assert len(started) == 1
@@ -135,45 +125,38 @@ async def test_flow_plan_uses_flow_class_key() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_completed_carries_accumulated_cost(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_backend = _FakeClickHouseBackend(total_cost=12.5)
-    monkeypatch.setattr("ai_pipeline_core.deployment.base.get_clickhouse_backend", lambda: fake_backend)
-
+async def test_run_completed_has_output_sha256s() -> None:
     publisher = _MemoryPublisher()
-    store = MemoryDocumentStore()
-    set_document_store(store)
-    try:
-        await _GapDeployment().run("cost-run", [_make_input_doc()], FlowOptions(), publisher=publisher)
-    finally:
-        set_document_store(None)
-        store.shutdown()
+    await _GapDeployment().run("sha-run", [_make_input_doc()], FlowOptions(), publisher=publisher)
 
     completed = [event for event in publisher.events if isinstance(event, RunCompletedEvent)]
     assert len(completed) == 1
-    assert completed[0].actual_cost == 12.5
+    assert isinstance(completed[0].output_document_sha256s, tuple)
 
 
 def test_flow_failed_event_type_exists() -> None:
     from ai_pipeline_core.deployment._types import EventType, FlowFailedEvent
 
     assert hasattr(EventType, "FLOW_FAILED")
-    event = FlowFailedEvent(run_id="r1", flow_name="a", flow_class="A", step=1, total_steps=3, error_message="boom")
+    event = FlowFailedEvent(
+        run_id="r1",
+        node_id="n1",
+        root_deployment_id="root1",
+        parent_deployment_task_id=None,
+        flow_name="a",
+        flow_class="A",
+        step=1,
+        total_steps=3,
+        error_message="boom",
+    )
     assert event.error_message == "boom"
 
 
 @pytest.mark.asyncio
 async def test_flow_failed_event_emitted_on_flow_exception() -> None:
-    from ai_pipeline_core.deployment._types import FlowFailedEvent
-
     publisher = _MemoryPublisher()
-    store = MemoryDocumentStore()
-    set_document_store(store)
-    try:
-        with pytest.raises(RuntimeError, match="intentional flow failure"):
-            await _FailingGapDeployment().run("flow-failed-run", [_make_input_doc()], FlowOptions(), publisher=publisher)
-    finally:
-        set_document_store(None)
-        store.shutdown()
+    with pytest.raises(RuntimeError, match="intentional flow failure"):
+        await _FailingGapDeployment().run("flow-failed-run", [_make_input_doc()], FlowOptions(), publisher=publisher)
 
     flow_failed_events = [event for event in publisher.events if isinstance(event, FlowFailedEvent)]
     assert len(flow_failed_events) == 1
@@ -182,37 +165,62 @@ async def test_flow_failed_event_emitted_on_flow_exception() -> None:
     assert flow_failed_events[0].error_message == "intentional flow failure"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("deployment", "error_pattern"),
+    [
+        (_WrongShapeGapDeployment(), "must return tuple\\[Document, \\.\\.\\.\\]"),
+        (_WrongItemGapDeployment(), "returned non-Document items in tuple"),
+    ],
+)
+async def test_invalid_flow_returns_emit_failed_event_and_fail_flow_node(
+    deployment: PipelineDeployment[FlowOptions, _GapResult],
+    error_pattern: str,
+) -> None:
+    publisher = _MemoryPublisher()
+    database = MemoryDatabase()
+
+    with pytest.raises(TypeError, match=error_pattern):
+        await deployment.run("invalid-flow-return", [_make_input_doc()], FlowOptions(), publisher=publisher, database=database)
+
+    flow_failed_events = [event for event in publisher.events if isinstance(event, FlowFailedEvent)]
+    assert len(flow_failed_events) == 1
+    flow_nodes = [node for node in database._nodes.values() if node.node_kind == NodeKind.FLOW]
+    assert len(flow_nodes) == 1
+    assert flow_nodes[0].status == NodeStatus.FAILED
+
+
 def test_task_events_have_step() -> None:
     started = TaskStartedEvent(
         run_id="r1",
+        node_id="n1",
+        root_deployment_id="root1",
+        parent_deployment_task_id=None,
         flow_name="f",
         step=2,
         task_name="t",
         task_class="T",
-        task_invocation_id="inv-1",
-        parent_task=None,
-        task_depth=0,
     )
     completed = TaskCompletedEvent(
         run_id="r1",
+        node_id="n1",
+        root_deployment_id="root1",
+        parent_deployment_task_id=None,
         flow_name="f",
         step=2,
         task_name="t",
         task_class="T",
-        task_invocation_id="inv-1",
-        parent_task=None,
-        task_depth=0,
         duration_ms=10,
     )
     failed = TaskFailedEvent(
         run_id="r1",
+        node_id="n1",
+        root_deployment_id="root1",
+        parent_deployment_task_id=None,
         flow_name="f",
         step=2,
         task_name="t",
         task_class="T",
-        task_invocation_id="inv-1",
-        parent_task=None,
-        task_depth=0,
         error_message="boom",
     )
     assert started.step == 2
@@ -220,46 +228,56 @@ def test_task_events_have_step() -> None:
     assert failed.step == 2
 
 
-def test_task_events_have_invocation_id() -> None:
+def test_task_events_have_node_id() -> None:
     started = TaskStartedEvent(
         run_id="r1",
+        node_id="abc123",
+        root_deployment_id="root1",
+        parent_deployment_task_id=None,
         flow_name="f",
         step=1,
         task_name="t",
         task_class="T",
-        task_invocation_id="abc123",
-        parent_task=None,
-        task_depth=0,
     )
     completed = TaskCompletedEvent(
         run_id="r1",
+        node_id="abc123",
+        root_deployment_id="root1",
+        parent_deployment_task_id=None,
         flow_name="f",
         step=1,
         task_name="t",
         task_class="T",
-        task_invocation_id="abc123",
-        parent_task=None,
-        task_depth=0,
         duration_ms=10,
     )
     failed = TaskFailedEvent(
         run_id="r1",
+        node_id="abc123",
+        root_deployment_id="root1",
+        parent_deployment_task_id=None,
         flow_name="f",
         step=1,
         task_name="t",
         task_class="T",
-        task_invocation_id="abc123",
-        parent_task=None,
-        task_depth=0,
         error_message="boom",
     )
-    assert started.task_invocation_id == "abc123"
-    assert completed.task_invocation_id == "abc123"
-    assert failed.task_invocation_id == "abc123"
+    assert started.node_id == "abc123"
+    assert completed.node_id == "abc123"
+    assert failed.node_id == "abc123"
 
 
 def test_flow_completed_has_flow_class() -> None:
-    event = FlowCompletedEvent(run_id="r1", flow_name="f", flow_class="F", step=1, total_steps=2, duration_ms=100)
+    event = FlowCompletedEvent(
+        run_id="r1",
+        node_id="n1",
+        root_deployment_id="root1",
+        parent_deployment_task_id=None,
+        flow_name="f",
+        flow_class="F",
+        step=1,
+        total_steps=2,
+        duration_ms=100,
+    )
     assert event.flow_class == "F"
 
 

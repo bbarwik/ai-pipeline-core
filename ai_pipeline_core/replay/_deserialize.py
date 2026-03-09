@@ -9,13 +9,13 @@ import inspect
 import types
 import typing
 from enum import Enum
-from pathlib import Path
 from typing import Annotated, Any, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import ModelOptions, RawToolCall, TokenUsage
+from ai_pipeline_core.database._protocol import DatabaseReader
 from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.documents.document import Document
 from ai_pipeline_core.llm.conversation import AssistantMessage, Conversation, ToolResultMessage, UserMessage
@@ -49,6 +49,15 @@ def _import_by_path(path: str) -> Any:
     return obj
 
 
+def _unwrap_prefect_callable(candidate: Any) -> typing.Callable[..., Any]:
+    """Return the underlying callable, unwrapping Prefect ``.fn`` wrappers when present."""
+    wrapped = getattr(candidate, "fn", None)
+    target = candidate if wrapped is None else wrapped
+    if not callable(target):
+        raise TypeError(f"Replay target {target!r} is not callable. Capture a task/flow function or PipelineTask class path instead.")
+    return cast(typing.Callable[..., Any], target)
+
+
 def _create_inline_document(data: dict[str, Any]) -> Document:
     """Create an ephemeral Document from inline content (no ``$doc_ref``)."""
     class_name = data["class_name"]
@@ -65,7 +74,7 @@ def _create_inline_document(data: dict[str, Any]) -> Document:
         )
 
 
-def _deserialize_history_entry(entry: HistoryEntry, store_base: Path) -> Any:
+async def _deserialize_history_entry(entry: HistoryEntry, database: DatabaseReader) -> Any:
     """Deserialize one Conversation history entry."""
     if entry.type == "user_text":
         return UserMessage(entry.text or "")
@@ -96,21 +105,21 @@ def _deserialize_history_entry(entry: HistoryEntry, store_base: Path) -> Any:
             "class_name": entry.class_name or "",
             "name": entry.name or "",
         })
-        return resolve_document_ref(ref, store_base)
+        return await resolve_document_ref(ref, database)
     raise TypeError(f"Unsupported conversation history entry: {entry!r}")
 
 
-def _deserialize_conversation(data: dict[str, Any], store_base: Path) -> Conversation[Any]:
+async def _deserialize_conversation(data: dict[str, Any], database: DatabaseReader) -> Conversation[Any]:
     """Deserialize a Conversation sentinel dict used in task replay arguments."""
     payload = cast(dict[str, Any], data["$conversation"])
     model_options = ModelOptions.model_validate(payload["model_options"]) if payload.get("model_options") else None
-    context = tuple(resolve_document_ref(DocumentRef.model_validate(ref), store_base) for ref in payload.get("context", []))
+    context_docs = [await resolve_document_ref(DocumentRef.model_validate(ref), database) for ref in payload.get("context", [])]
     history_entries = [HistoryEntry.model_validate(entry) for entry in payload.get("history", [])]
-    messages = tuple(_deserialize_history_entry(entry, store_base) for entry in history_entries)
+    messages_list = [await _deserialize_history_entry(entry, database) for entry in history_entries]
     return Conversation(
         model=payload["model"],
-        context=context,
-        messages=messages,
+        context=tuple(context_docs),
+        messages=tuple(messages_list),
         model_options=model_options,
         enable_substitutor=payload.get("enable_substitutor", True),
         extract_result_tags=payload.get("extract_result_tags", False),
@@ -119,20 +128,23 @@ def _deserialize_conversation(data: dict[str, Any], store_base: Path) -> Convers
     )
 
 
-def resolve_doc_refs(data: Any, store_base: Path) -> Any:
+async def resolve_doc_refs(data: Any, database: DatabaseReader) -> Any:
     """Recursively walk parsed YAML data, replacing replay sentinel dicts with runtime objects."""
     if isinstance(data, dict):
         mapping = cast(dict[str, Any], data)
         if "$doc_ref" in mapping:
             ref = DocumentRef.model_validate(mapping)
-            return resolve_document_ref(ref, store_base)
+            return await resolve_document_ref(ref, database)
         if "$conversation" in mapping:
-            return _deserialize_conversation(mapping, store_base)
+            return await _deserialize_conversation(mapping, database)
         if "class_name" in mapping and "content" in mapping and "$doc_ref" not in mapping:
             return _create_inline_document(mapping)
-        return {key: resolve_doc_refs(value, store_base) for key, value in mapping.items()}
+        resolved: dict[str, Any] = {}
+        for key, value in mapping.items():
+            resolved[key] = await resolve_doc_refs(value, database)
+        return resolved
     if isinstance(data, list):
-        return [resolve_doc_refs(item, store_base) for item in cast(list[Any], data)]
+        return [await resolve_doc_refs(item, database) for item in cast(list[Any], data)]
     return data
 
 
@@ -168,10 +180,12 @@ def _coerce_list_value(value: Any, annotation: Any) -> Any | object:
 
     args = get_args(annotation)
     if len(args) != 1:
-        return value
+        return cast(Any, value)
 
     item_annotation = args[0]
-    return [_coerce_value_for_annotation(item, item_annotation) for item in cast(list[Any], value)]
+    items = cast(list[Any], value)
+    coerced_items: list[Any] = [_coerce_value_for_annotation(item, item_annotation) for item in items]
+    return cast(Any, coerced_items)
 
 
 def _coerce_tuple_value(value: Any, annotation: Any) -> Any | object:
@@ -197,11 +211,14 @@ def _coerce_dict_value(value: Any, annotation: Any) -> Any | object:
 
     args = get_args(annotation)
     if len(args) != 2:
-        return value
+        return cast(Any, value)
 
     key_annotation, value_annotation = args
     typed_items = cast(dict[Any, Any], value)
-    return {_coerce_value_for_annotation(key, key_annotation): _coerce_value_for_annotation(item, value_annotation) for key, item in typed_items.items()}
+    coerced_items: dict[Any, Any] = {}
+    for key, item in typed_items.items():
+        coerced_items[_coerce_value_for_annotation(key, key_annotation)] = _coerce_value_for_annotation(item, value_annotation)
+    return cast(Any, coerced_items)
 
 
 def _coerce_basemodel_value(value: Any, annotation: Any) -> Any | object:
@@ -234,19 +251,19 @@ def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
     return value
 
 
-def _task_target(function_path: str) -> Any:
+def _task_target(function_path: str) -> typing.Callable[..., Any]:
     """Resolve the callable whose signature should be used for task replay kwargs."""
     fn = _import_by_path(function_path)
     if isinstance(fn, type) and issubclass(fn, PipelineTask):
         return fn._run_spec.user_run
-    return cast(Any, getattr(fn, "fn", fn))
+    return _unwrap_prefect_callable(fn)
 
 
-def resolve_task_kwargs(function_path: str, raw_kwargs: dict[str, Any], store_base: Path) -> dict[str, Any]:
+async def resolve_task_kwargs(function_path: str, raw_kwargs: dict[str, Any], database: DatabaseReader) -> dict[str, Any]:
     """Resolve task kwargs: replay sentinels -> runtime objects -> annotated model coercion."""
     target = _task_target(function_path)
     hints = typing.get_type_hints(target, include_extras=True)
-    resolved = cast(dict[str, Any], resolve_doc_refs(raw_kwargs, store_base))
+    resolved = cast(dict[str, Any], await resolve_doc_refs(raw_kwargs, database))
 
     signature = inspect.signature(target)
     parameter_names = [name for name in signature.parameters if name != "cls"]

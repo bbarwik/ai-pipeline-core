@@ -195,39 +195,6 @@ class TestYamlContent:
 
 
 # ---------------------------------------------------------------------------
-# Retype
-# ---------------------------------------------------------------------------
-
-
-class TestRetype:
-    def test_retype_to_typed_doc_with_valid_content(self):
-        model = SampleModel(goal="retype", score=7)
-        raw = UntypedDoc.create_root(name="data.json", content=model, reason="test")
-        retyped = raw.retype(SampleTypedDoc, preserve_provenance=True)
-        assert retyped.parsed.goal == "retype"
-
-    def test_retype_to_typed_doc_rejects_invalid_content(self):
-        raw = UntypedDoc.create_root(name="data.json", content={"invalid": "schema"}, reason="test")
-        with pytest.raises(TypeError, match="Content does not validate against SampleModel"):
-            raw.retype(SampleTypedDoc, preserve_provenance=True)
-
-    def test_retype_from_typed_to_untyped(self):
-        model = SampleModel(goal="to untyped", score=3)
-        typed = SampleTypedDoc.create_root(name="data.json", content=model, reason="test")
-        untyped = typed.retype(UntypedDoc, preserve_provenance=True)
-        assert untyped.as_json() == {"goal": "to untyped", "score": 3}
-
-    def test_retype_between_typed_docs_with_same_schema(self):
-        class AnotherTypedDoc(Document[SampleModel]):
-            pass
-
-        model = SampleModel(goal="cross retype", score=11)
-        doc = SampleTypedDoc.create_root(name="data.json", content=model, reason="test")
-        retyped = doc.retype(AnotherTypedDoc, preserve_provenance=True)
-        assert retyped.parsed.goal == "cross retype"
-
-
-# ---------------------------------------------------------------------------
 # List content via RootModel
 # ---------------------------------------------------------------------------
 
@@ -501,29 +468,6 @@ class TestFilesEnumInteraction:
 
 
 # ---------------------------------------------------------------------------
-# Retype with content update (dict/model in update)
-# ---------------------------------------------------------------------------
-
-
-class TestRetypeWithContentUpdate:
-    def test_retype_update_content_dict(self):
-        raw = UntypedDoc.create_root(name="data.json", content={"goal": "old", "score": 1}, reason="test")
-        retyped = raw.retype(SampleTypedDoc, preserve_provenance=True, update={"content": {"goal": "new", "score": 2}})
-        assert retyped.parsed.goal == "new"
-        assert retyped.parsed.score == 2
-
-    def test_retype_update_content_model(self):
-        raw = UntypedDoc.create_root(name="data.json", content={"goal": "old", "score": 1}, reason="test")
-        retyped = raw.retype(SampleTypedDoc, preserve_provenance=True, update={"content": SampleModel(goal="model", score=9)})
-        assert retyped.parsed.goal == "model"
-
-    def test_retype_update_content_wrong_model_rejected(self):
-        raw = UntypedDoc.create_root(name="data.json", content={"goal": "old", "score": 1}, reason="test")
-        with pytest.raises(TypeError, match="Expected content of type SampleModel"):
-            raw.retype(SampleTypedDoc, preserve_provenance=True, update={"content": OtherModel(foo="bad")})
-
-
-# ---------------------------------------------------------------------------
 # Concurrent parsed access
 # ---------------------------------------------------------------------------
 
@@ -538,43 +482,6 @@ class TestConcurrentAccess:
         with ThreadPoolExecutor(max_workers=8) as pool:
             goals = list(pool.map(read_goal, range(64)))
         assert goals == ["g"] * 64
-
-
-# ---------------------------------------------------------------------------
-# Model evolution
-# ---------------------------------------------------------------------------
-
-
-class TestModelEvolution:
-    def test_additive_field_with_default_is_backward_compatible(self):
-        """Existing content (without new field) still validates when retyped to updated schema."""
-
-        class V2Model(BaseModel, frozen=True):
-            goal: str = Field(description="goal")
-            score: int = Field(description="score")
-            note: str = Field(default="", description="added in v2")
-
-        class V2Doc(Document[V2Model]):
-            pass
-
-        raw = UntypedDoc.create_root(name="data.json", content={"goal": "g", "score": 1}, reason="test")
-        evolved = raw.retype(V2Doc, preserve_provenance=True)
-        assert evolved.parsed.note == ""
-
-    def test_new_required_field_is_breaking(self):
-        """Content missing a required field fails retype validation."""
-
-        class BreakingModel(BaseModel, frozen=True):
-            goal: str = Field(description="goal")
-            score: int = Field(description="score")
-            required_new: str = Field(description="new required field")
-
-        class BreakingDoc(Document[BreakingModel]):
-            pass
-
-        raw = UntypedDoc.create_root(name="data.json", content={"goal": "g", "score": 1}, reason="test")
-        with pytest.raises(TypeError):
-            raw.retype(BreakingDoc, preserve_provenance=True)
 
 
 # ---------------------------------------------------------------------------

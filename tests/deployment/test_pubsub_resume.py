@@ -1,7 +1,7 @@
 """Tests for resume/cached flow behavior with real Pub/Sub emulator.
 
-Verifies that resumed (cached) flows still publish correct progress events
-with status=CACHED and proper step numbering.
+Verifies that resumed (cached) flows publish correct flow.skipped events
+with proper step numbering.
 """
 
 # pyright: reportPrivateUsage=false, reportArgumentType=false
@@ -9,11 +9,9 @@ with status=CACHED and proper step numbering.
 import pytest
 from google.api_core.exceptions import GoogleAPICallError
 
-from ai_pipeline_core import FlowOptions
+from ai_pipeline_core.database import create_database
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
 from ai_pipeline_core.deployment._types import EventType, _NoopPublisher
-from ai_pipeline_core.deployment._contract import FlowStatus
-from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 
 from .conftest import (
     CollectedEvent,
@@ -31,9 +29,9 @@ from .conftest import (
 pytestmark = pytest.mark.pubsub
 
 
-def _progress_events(events: list[CollectedEvent]) -> list[CollectedEvent]:
-    """Filter to only progress events."""
-    return [e for e in events if e.event_type == EventType.PROGRESS]
+def _skipped_events(events: list[CollectedEvent]) -> list[CollectedEvent]:
+    """Filter to only flow.skipped events."""
+    return [e for e in events if e.event_type == EventType.FLOW_SKIPPED]
 
 
 def _make_fresh_publisher(pubsub_test_resources: PubsubTestResources) -> PublisherWithStore:
@@ -48,19 +46,19 @@ def _make_fresh_publisher(pubsub_test_resources: PubsubTestResources) -> Publish
 
 
 class TestResumedFlowCachedStatus:
-    """Verify that resumed flows publish progress events with status=CACHED."""
+    """Verify that resumed flows publish flow.skipped events."""
 
     async def test_resumed_flow_publishes_cached_status(
         self,
         pubsub_emulator: str,
-        pubsub_memory_store: MemoryDocumentStore,
     ):
-        """Run TwoStageDeployment twice; second run's progress events all have status=CACHED."""
+        """Run TwoStageDeployment twice; second run's skipped events have correct step numbering."""
         deployment = TwoStageDeployment()
         doc = make_input_doc()
+        db = create_database(backend="memory")
 
         # First run: use _NoopPublisher (we don't care about its events)
-        await run_pipeline(deployment, _NoopPublisher(), pubsub_memory_store, docs=[doc])
+        await run_pipeline(deployment, _NoopPublisher(), docs=[doc], database=db)
         assert len(_flow_executions) == 2  # both flows executed
 
         # Create a fresh topic + subscription for the second run
@@ -88,21 +86,19 @@ class TestResumedFlowCachedStatus:
         try:
             second_pub = _make_fresh_publisher(resources)
 
-            # Second run: same run_id, same docs, same store (flows should be cached)
+            # Second run: same run_id, same docs, same database (flows should be cached)
             _flow_executions.clear()
-            await run_pipeline(deployment, second_pub.publisher, pubsub_memory_store, docs=[doc])
+            await run_pipeline(deployment, second_pub.publisher, docs=[doc], database=db)
             assert len(_flow_executions) == 0  # no flows executed (all cached)
 
-            # 2 cached flows: 1 run.started + 2*(flow.skipped + progress.CACHED) + 1 run.completed = 6
-            events = pull_events(resources, expected_count=6)
-            progress = _progress_events(events)
+            # 2 cached flows: 1 run.started + 2*flow.skipped + 1 run.completed = 4
+            events = pull_events(resources, expected_count=4)
+            skipped = _skipped_events(events)
 
-            assert len(progress) == 2
-            for evt in progress:
-                assert evt.data["status"] == FlowStatus.CACHED
+            assert len(skipped) == 2
 
             # Step numbering is correct
-            steps = sorted(evt.data["step"] for evt in progress)
+            steps = sorted(evt.data["step"] for evt in skipped)
             assert steps == [1, 2]
         finally:
             try:
@@ -121,14 +117,14 @@ class TestResumedPipelineLifecycle:
     async def test_resumed_pipeline_still_publishes_started_and_completed(
         self,
         pubsub_emulator: str,
-        pubsub_memory_store: MemoryDocumentStore,
     ):
         """SingleStageDeployment run twice: second run still has run.started and run.completed."""
         deployment = SingleStageDeployment()
         doc = make_input_doc()
+        db = create_database(backend="memory")
 
         # First run: use _NoopPublisher
-        await run_pipeline(deployment, _NoopPublisher(), pubsub_memory_store, docs=[doc])
+        await run_pipeline(deployment, _NoopPublisher(), docs=[doc], database=db)
         assert len(_flow_executions) == 1
 
         # Create fresh topic for second run
@@ -157,20 +153,19 @@ class TestResumedPipelineLifecycle:
             second_pub = _make_fresh_publisher(resources)
 
             _flow_executions.clear()
-            await run_pipeline(deployment, second_pub.publisher, pubsub_memory_store, docs=[doc])
+            await run_pipeline(deployment, second_pub.publisher, docs=[doc], database=db)
             assert len(_flow_executions) == 0  # cached
 
-            # 1 cached flow: 1 run.started + (flow.skipped + progress.CACHED) + 1 run.completed = 4
-            events = pull_events(resources, expected_count=4)
+            # 1 cached flow: 1 run.started + flow.skipped + 1 run.completed = 3
+            events = pull_events(resources, expected_count=3)
 
             started = [e for e in events if e.event_type == EventType.RUN_STARTED]
             completed = [e for e in events if e.event_type == EventType.RUN_COMPLETED]
-            progress = _progress_events(events)
+            skipped = _skipped_events(events)
 
             assert len(started) == 1
             assert len(completed) == 1
-            assert len(progress) == 1
-            assert progress[0].data["status"] == FlowStatus.CACHED
+            assert len(skipped) == 1
         finally:
             try:
                 sub_client.delete_subscription(subscription=sub_path)
@@ -183,29 +178,22 @@ class TestResumedPipelineLifecycle:
 
 
 class TestPartialResumeMix:
-    """Verify mixed cached + executed flows publish correct statuses."""
+    """Verify fully cached multi-flow pipelines publish correct skipped events."""
 
     async def test_partial_resume_mix_of_cached_and_executed(
         self,
         pubsub_emulator: str,
-        pubsub_memory_store: MemoryDocumentStore,
     ):
-        """3-flow deployment: flows A and B have pre-saved FlowCompletion records,
-        flow C executes. Assert A+B progress events are CACHED, C has STARTED -> COMPLETED.
+        """3-flow deployment: all flows have completion records from first run,
+        all get flow.skipped on second run.
         """
         deployment = ThreeStageDeployment()
         doc = make_input_doc()
+        db = create_database(backend="memory")
 
-        # First run to populate the store with documents and completions
-        await run_pipeline(deployment, _NoopPublisher(), pubsub_memory_store, docs=[doc])
+        # First run to populate the database with documents and completions
+        await run_pipeline(deployment, _NoopPublisher(), docs=[doc], database=db)
         assert set(_flow_executions) == {"flow_a", "flow_b", "flow_c"}
-
-        # Delete flow_c's completion record so it re-executes on second run
-        # completion_name format: f"{flow_name}:{step}" where flow_c is step 3
-        from ai_pipeline_core.deployment.base import _compute_run_scope
-
-        run_scope = _compute_run_scope("test-run", [doc], FlowOptions())
-        del pubsub_memory_store._flow_completions[run_scope, "chain_output_to_final:3"]
 
         # Create fresh topic for second run
         from uuid import uuid4
@@ -233,35 +221,28 @@ class TestPartialResumeMix:
             second_pub = _make_fresh_publisher(resources)
 
             _flow_executions.clear()
-            await run_pipeline(deployment, second_pub.publisher, pubsub_memory_store, docs=[doc])
+            await run_pipeline(deployment, second_pub.publisher, docs=[doc], database=db)
 
-            # Only flow_c should have re-executed
-            assert _flow_executions == ["flow_c"]
+            # All flows should be cached (no re-execution)
+            assert _flow_executions == []
 
-            # 2 cached + 1 executed:
-            # 1 run.started + 2*(flow.skipped + progress.CACHED) + (flow.started + progress.STARTED
-            # + progress.COMPLETED + flow.completed) + 1 run.completed = 10
-            events = pull_events(resources, expected_count=10)
-            progress = _progress_events(events)
+            # 3 cached flows: 1 run.started + 3*flow.skipped + 1 run.completed = 5
+            events = pull_events(resources, expected_count=5)
 
-            assert len(progress) == 4
+            skipped = _skipped_events(events)
+            assert len(skipped) == 3
 
-            # Group by flow_name
-            by_flow: dict[str, list[CollectedEvent]] = {}
-            for evt in progress:
-                by_flow.setdefault(evt.data["flow_name"], []).append(evt)
+            # All three flows: skipped
+            skipped_names = sorted(evt.data["flow_name"] for evt in skipped)
+            assert "chain_input_to_middle" in skipped_names
+            assert "chain_middle_to_output" in skipped_names
+            assert "chain_output_to_final" in skipped_names
 
-            # Flows A and B: single CACHED event each
-            for name in ("chain_input_to_middle", "chain_middle_to_output"):
-                flow_events = by_flow[name]
-                assert len(flow_events) == 1
-                assert flow_events[0].data["status"] == FlowStatus.CACHED
-
-            # Flow C: STARTED then COMPLETED
-            flow_c_events = by_flow["chain_output_to_final"]
-            assert len(flow_c_events) == 2
-            statuses = [evt.data["status"] for evt in flow_c_events]
-            assert statuses == [FlowStatus.STARTED, FlowStatus.COMPLETED]
+            # No flow.started or flow.completed events
+            flow_started = [e for e in events if e.event_type == EventType.FLOW_STARTED]
+            flow_completed = [e for e in events if e.event_type == EventType.FLOW_COMPLETED]
+            assert len(flow_started) == 0
+            assert len(flow_completed) == 0
         finally:
             try:
                 sub_client.delete_subscription(subscription=sub_path)

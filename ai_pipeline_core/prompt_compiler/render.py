@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Sequence
+from typing import Any
 
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logging import get_pipeline_logger
@@ -49,7 +50,7 @@ def _render_document_listing(items: list[tuple[str, str]]) -> str:
     return "Documents provided in context:\n\n" + "\n\n".join(blocks)
 
 
-def _render_documents_preview(spec_cls: type[PromptSpec]) -> str:
+def _render_documents_preview(spec_cls: type[PromptSpec[Any]]) -> str:
     """Render document listing from class-level info (for preview / no-documents mode)."""
     items = [
         (doc_cls.__name__, (doc_cls.__doc__ or "").strip().splitlines()[0] if (doc_cls.__doc__ or "").strip() else "No description")
@@ -109,7 +110,7 @@ def _render_context_fields(spec: PromptSpec) -> list[str]:
 
 
 def render_text(
-    spec: PromptSpec,
+    spec: PromptSpec[Any],
     *,
     documents: Sequence[Document] | None = None,
     include_input_documents: bool = True,
@@ -174,7 +175,7 @@ def render_text(
     return "\n\n".join(sections)
 
 
-def render_multi_line_messages(spec: PromptSpec) -> list[tuple[str, str]]:
+def render_multi_line_messages(spec: PromptSpec[Any]) -> list[tuple[str, str]]:
     """Return XML-tagged message blocks for multi-line fields.
 
     Each entry is ``(field_name, "<field_name>value</field_name>")``.
@@ -192,7 +193,7 @@ def render_multi_line_messages(spec: PromptSpec) -> list[tuple[str, str]]:
     return result
 
 
-def render_preview(spec_class: type[PromptSpec], *, include_input_documents: bool = True) -> str:
+def render_preview(spec_class: type[PromptSpec[Any]], *, include_input_documents: bool = True) -> str:
     """Render a spec CLASS with placeholder values for dynamic fields.
 
     Uses `model_construct()` to bypass validation, allowing placeholder strings

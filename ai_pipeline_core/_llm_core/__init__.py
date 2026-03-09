@@ -1,7 +1,7 @@
 """Primitive LLM layer with NO Document dependency.
 
 This internal module provides low-level LLM access for modules that cannot
-depend on Documents (document_store, observability). App code should use
+depend on Documents (database, observability). App code should use
 the llm module's Conversation class instead.
 
 Exports:

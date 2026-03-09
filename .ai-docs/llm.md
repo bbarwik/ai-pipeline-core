@@ -2,7 +2,7 @@
 # CLASSES: Citation, TokenUsage, ModelOptions, UserMessage, AssistantMessage, ToolResultMessage, Conversation, ToolOutput, Tool, ToolCallRecord
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.13.0
+# VERSION: 0.14.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -598,7 +598,7 @@ def generate_tool_schema(tool: Tool) -> dict[str, Any]:
 
 ## Examples
 
-**Warmup then parallel forks** (`tests/llm/test_conversation_patterns.py:28`)
+**Warmup then parallel forks** (`tests/llm/test_conversation_patterns.py:18`)
 
 ```python
 @pytest.mark.asyncio
@@ -615,14 +615,13 @@ async def test_warmup_then_parallel_forks(monkeypatch):
 
     monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-    with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-        shared_doc = ConcreteDocument(name="shared_context.md", content=b"Shared context for all forks.")
-        base = Conversation(model="test-model", enable_substitutor=False).with_context(shared_doc)
-        warmed = await base.send("Acknowledge the context.")
-        fork_a, fork_b = await asyncio.gather(
-            warmed.send("Question A"),
-            warmed.send("Question B"),
-        )
+    shared_doc = ConcreteDocument(name="shared_context.md", content=b"Shared context for all forks.")
+    base = Conversation(model="test-model", enable_substitutor=False).with_context(shared_doc)
+    warmed = await base.send("Acknowledge the context.")
+    fork_a, fork_b = await asyncio.gather(
+        warmed.send("Question A"),
+        warmed.send("Question B"),
+    )
 
     assert warmed.content == "Answer: Acknowledge the context."
     assert fork_a.content == "Answer: Question A"
@@ -636,7 +635,7 @@ async def test_warmup_then_parallel_forks(monkeypatch):
         assert any("Answer: Acknowledge the context." in m.content for m in assistant_msgs if isinstance(m.content, str))
 ```
 
-**Context is cached prefix messages are dynamic suffix** (`tests/llm/test_conversation_patterns.py:64`)
+**Context is cached prefix messages are dynamic suffix** (`tests/llm/test_conversation_patterns.py:53`)
 
 ```python
 @pytest.mark.asyncio
@@ -650,19 +649,18 @@ async def test_context_is_cached_prefix_messages_are_dynamic_suffix(monkeypatch)
 
     monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-    with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-        context_doc = ConcreteDocument(name="cached.md", content=b"Cached context")
-        message_doc = ConcreteDocument(name="dynamic.md", content=b"Dynamic data")
-        conv = Conversation(model="test-model", enable_substitutor=False)
-        conv = conv.with_context(context_doc)
-        conv = conv.with_document(message_doc)
-        await conv.send("Question")
+    context_doc = ConcreteDocument(name="cached.md", content=b"Cached context")
+    message_doc = ConcreteDocument(name="dynamic.md", content=b"Dynamic data")
+    conv = Conversation(model="test-model", enable_substitutor=False)
+    conv = conv.with_context(context_doc)
+    conv = conv.with_document(message_doc)
+    await conv.send("Question")
 
     # context_count tells the provider how many leading messages form the cached prefix
     assert captured_kwargs[0]["context_count"] == 1
 ```
 
-**Document wrapped in xml tags** (`tests/llm/test_conversation_patterns.py:87`)
+**Document wrapped in xml tags** (`tests/llm/test_conversation_patterns.py:75`)
 
 ```python
 def test_document_wrapped_in_xml_tags():
@@ -688,7 +686,7 @@ def test_document_wrapped_in_xml_tags():
     assert "</document>" in content
 ```
 
-**Send with tools auto loop** (`tests/llm/test_conversation_patterns.py:112`)
+**Send with tools auto loop** (`tests/llm/test_conversation_patterns.py:100`)
 
 ```python
 @pytest.mark.asyncio
@@ -726,9 +724,8 @@ async def test_send_with_tools_auto_loop(monkeypatch):
     monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
     # 3. Send with tools — auto-loop handles tool execution transparently
-    with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-        conv = Conversation(model="test-model", enable_substitutor=False)
-        result = await conv.send("What's the weather in Paris?", tools=[GetWeather()])
+    conv = Conversation(model="test-model", enable_substitutor=False)
+    result = await conv.send("What's the weather in Paris?", tools=[GetWeather()])
 
     # 4. Final response text from the LLM
     assert result.content == "It's sunny and 22°C in Paris!"
@@ -790,7 +787,7 @@ def test_tool_call_record_frozen() -> None:
     assert record.round == 1
 ```
 
-**Tool calls for empty when no match** (`tests/llm/test_conversation_tools.py:338`)
+**Tool calls for empty when no match** (`tests/llm/test_conversation_tools.py:318`)
 
 ```python
 def test_tool_calls_for_empty_when_no_match() -> None:
@@ -801,7 +798,7 @@ def test_tool_calls_for_empty_when_no_match() -> None:
     assert conv.tool_calls_for(ToolB) == ()
 ```
 
-**Tool calls for returns tuple** (`tests/llm/test_conversation_tools.py:346`)
+**Tool calls for returns tuple** (`tests/llm/test_conversation_tools.py:326`)
 
 ```python
 def test_tool_calls_for_returns_tuple() -> None:

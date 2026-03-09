@@ -6,10 +6,8 @@ Tests: cache TTL, option/input change invalidation, crash-retry resume, complete
 import pytest
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, PipelineFlow, PipelineTask
+from ai_pipeline_core.database import create_database
 from ai_pipeline_core.deployment import FlowAction, FlowDirective
-from ai_pipeline_core.deployment.base import _compute_run_scope
-from ai_pipeline_core.document_store._memory import MemoryDocumentStore
-from ai_pipeline_core.document_store._protocol import set_document_store
 
 from .conftest import OutputDoc, StageOne, StageTwo, _TestOptions, _TestResult
 
@@ -38,29 +36,17 @@ class SkipDeployment(ResumeDeployment):
 
 @pytest.mark.asyncio
 async def test_resume_uses_flow_completion_cache(input_documents):
-    store = MemoryDocumentStore()
-    set_document_store(store)
-    try:
-        deployment = ResumeDeployment()
-        first = await deployment.run("resume-run", input_documents, _TestOptions())
-        second = await deployment.run("resume-run", input_documents, _TestOptions())
-    finally:
-        set_document_store(None)
-        store.shutdown()
+    deployment = ResumeDeployment()
+    first = await deployment.run("resume-run", input_documents, _TestOptions())
+    second = await deployment.run("resume-run", input_documents, _TestOptions())
 
     assert first.success and second.success
 
 
 @pytest.mark.asyncio
 async def test_plan_next_flow_can_skip_class(input_documents):
-    store = MemoryDocumentStore()
-    set_document_store(store)
-    try:
-        deployment = SkipDeployment()
-        result = await deployment.run("skip-run", input_documents, _TestOptions())
-    finally:
-        set_document_store(None)
-        store.shutdown()
+    deployment = SkipDeployment()
+    result = await deployment.run("skip-run", input_documents, _TestOptions())
 
     assert result.success is True
 
@@ -84,38 +70,38 @@ class SucceedTask(PipelineTask):
     """Task 1: produces docs that get saved incrementally."""
 
     @classmethod
-    async def run(cls, inputs: list[ResumeInputDoc]) -> list[ResumeOutputDoc]:
-        return [
+    async def run(cls, inputs: tuple[ResumeInputDoc, ...]) -> tuple[ResumeOutputDoc, ...]:
+        return (
             ResumeOutputDoc.derive(from_documents=(inputs[0],), name="out1.txt", content="output 1"),
             ResumeOutputDoc.derive(from_documents=(inputs[0],), name="out2.txt", content="output 2"),
-        ]
+        )
 
 
 class CrashTask(PipelineTask):
     """Task 2: crashes before returning, so its docs are never saved."""
 
     @classmethod
-    async def run(cls, docs: list[ResumeOutputDoc]) -> list[ResumeOutputDoc]:
+    async def run(cls, docs: tuple[ResumeOutputDoc, ...]) -> tuple[ResumeOutputDoc, ...]:
         if _should_crash:
             raise RuntimeError("Simulated crash in task 2")
-        return [
+        return (
             ResumeOutputDoc.derive(from_documents=(docs[0],), name="out3.txt", content="output 3"),
             ResumeOutputDoc.derive(from_documents=(docs[0],), name="out4.txt", content="output 4"),
-        ]
+        )
 
 
 class ProduceAllTask(PipelineTask):
     """Task that produces all 4 output documents in one go."""
 
     @classmethod
-    async def run(cls, inputs: list[ResumeInputDoc]) -> list[ResumeOutputDoc]:
-        return [ResumeOutputDoc.derive(from_documents=(inputs[0],), name=f"out{i}.txt", content=f"output {i}") for i in range(1, 5)]
+    async def run(cls, inputs: tuple[ResumeInputDoc, ...]) -> tuple[ResumeOutputDoc, ...]:
+        return tuple(ResumeOutputDoc.derive(from_documents=(inputs[0],), name=f"out{i}.txt", content=f"output {i}") for i in range(1, 5))
 
 
 class CrashingFlow(PipelineFlow):
     """Flow with 2 tasks: task 1 succeeds (docs saved), task 2 may crash."""
 
-    async def run(self, run_id: str, documents: list[ResumeInputDoc], options: FlowOptions) -> list[ResumeOutputDoc]:
+    async def run(self, documents: tuple[ResumeInputDoc, ...], options: FlowOptions) -> tuple[ResumeOutputDoc, ...]:
         global _flow_call_count
         _flow_call_count += 1
         partial = await SucceedTask.run(documents)
@@ -126,7 +112,7 @@ class CrashingFlow(PipelineFlow):
 class NormalFlow(PipelineFlow):
     """Flow that always succeeds."""
 
-    async def run(self, run_id: str, documents: list[ResumeInputDoc], options: FlowOptions) -> list[ResumeOutputDoc]:
+    async def run(self, documents: tuple[ResumeInputDoc, ...], options: FlowOptions) -> tuple[ResumeOutputDoc, ...]:
         global _flow_call_count
         _flow_call_count += 1
         return await ProduceAllTask.run(documents)
@@ -147,7 +133,7 @@ class CrashingDeployment(PipelineDeployment[Resume_TestOptions, Resume_TestResul
         return [CrashingFlow()]
 
     @staticmethod
-    def build_result(run_id: str, documents: list[Document], options: Resume_TestOptions) -> Resume_TestResult:
+    def build_result(run_id: str, documents: tuple[Document, ...], options: Resume_TestOptions) -> Resume_TestResult:
         return Resume_TestResult(success=True)
 
 
@@ -158,7 +144,7 @@ class NormalDeployment(PipelineDeployment[Resume_TestOptions, Resume_TestResult]
         return [NormalFlow()]
 
     @staticmethod
-    def build_result(run_id: str, documents: list[Document], options: Resume_TestOptions) -> Resume_TestResult:
+    def build_result(run_id: str, documents: tuple[Document, ...], options: Resume_TestOptions) -> Resume_TestResult:
         return Resume_TestResult(success=True)
 
 
@@ -176,7 +162,7 @@ class TestResumeAfterCrash:
     """Regression: partial outputs from a crashed flow must not skip re-execution."""
 
     @pytest.mark.asyncio
-    async def test_partial_outputs_do_not_cause_false_resume(self, memory_store: MemoryDocumentStore):
+    async def test_partial_outputs_do_not_cause_false_resume(self):
         """Flow with 2 tasks: task 1 completes (docs saved), task 2 crashes.
 
         On retry, the flow must re-run because it never completed.
@@ -193,11 +179,6 @@ class TestResumeAfterCrash:
 
         assert _flow_call_count == 1
 
-        # Verify partial outputs exist (task 1's docs were saved by PipelineTask)
-        run_scope = _compute_run_scope("test-project", [input_doc], options)
-        has_partial = await memory_store.has_documents(run_scope, ResumeOutputDoc)
-        assert has_partial is True, "Task 1's outputs should exist in store from the crashed run"
-
         # Second run: no crash this time
         _should_crash = False
         await deployment.run("test-project", [input_doc], options)
@@ -213,18 +194,19 @@ class TestResumeAfterSuccess:
     """Completed flows should be skipped on re-run."""
 
     @pytest.mark.asyncio
-    async def test_completed_flow_is_skipped(self, memory_store: MemoryDocumentStore):
+    async def test_completed_flow_is_skipped(self):
         """A flow that completed successfully should be skipped on second run."""
         input_doc = ResumeInputDoc.create_root(name="input.txt", content="test input", reason="test")
         deployment = NormalDeployment()
         options = Resume_TestOptions()
+        db = create_database(backend="memory")
 
         # First run — flow executes fully
-        await deployment.run("test-project", [input_doc], options)
+        await deployment.run("test-project", [input_doc], options, database=db)
         assert _flow_call_count == 1
 
         # Second run — flow should be skipped (resume from cache)
-        await deployment.run("test-project", [input_doc], options)
+        await deployment.run("test-project", [input_doc], options, database=db)
         assert _flow_call_count == 1, f"Flow executed {_flow_call_count} times — expected 1. Completed flow should be skipped on resume."
 
 
@@ -232,7 +214,7 @@ class TestResumeWithDifferentOptions:
     """Different options should produce a different run_scope, bypassing cache."""
 
     @pytest.mark.asyncio
-    async def test_different_options_bypass_cache(self, memory_store: MemoryDocumentStore):
+    async def test_different_options_bypass_cache(self):
         """Changing options produces a different run_scope, so flow re-executes."""
         input_doc = ResumeInputDoc.create_root(name="input.txt", content="test input", reason="test")
 
@@ -251,16 +233,17 @@ class TestResumeWithDifferentOptions:
                 return OptionedResult(success=True)
 
         deployment = OptionedDeployment()
+        db = create_database(backend="memory")
 
-        await deployment.run("test-project", [input_doc], OptionedOptions(flavor="vanilla"))
+        await deployment.run("test-project", [input_doc], OptionedOptions(flavor="vanilla"), database=db)
         assert _flow_call_count == 1
 
         # Same options → skipped
-        await deployment.run("test-project", [input_doc], OptionedOptions(flavor="vanilla"))
+        await deployment.run("test-project", [input_doc], OptionedOptions(flavor="vanilla"), database=db)
         assert _flow_call_count == 1
 
         # Different options → new scope → re-executes
-        await deployment.run("test-project", [input_doc], OptionedOptions(flavor="chocolate"))
+        await deployment.run("test-project", [input_doc], OptionedOptions(flavor="chocolate"), database=db)
         assert _flow_call_count == 2
 
 
@@ -268,21 +251,22 @@ class TestResumeWithDifferentInputs:
     """Different input documents should produce a different run_scope."""
 
     @pytest.mark.asyncio
-    async def test_different_inputs_bypass_cache(self, memory_store: MemoryDocumentStore):
+    async def test_different_inputs_bypass_cache(self):
         """Changing input documents produces a different run_scope, so flow re-executes."""
         input_doc_a = ResumeInputDoc.create_root(name="a.txt", content="input A", reason="test")
         input_doc_b = ResumeInputDoc.create_root(name="b.txt", content="input B", reason="test")
 
         deployment = NormalDeployment()
         options = Resume_TestOptions()
+        db = create_database(backend="memory")
 
-        await deployment.run("test-project", [input_doc_a], options)
+        await deployment.run("test-project", [input_doc_a], options, database=db)
         assert _flow_call_count == 1
 
         # Same input → skipped
-        await deployment.run("test-project", [input_doc_a], options)
+        await deployment.run("test-project", [input_doc_a], options, database=db)
         assert _flow_call_count == 1
 
         # Different input → new scope → re-executes
-        await deployment.run("test-project", [input_doc_b], options)
+        await deployment.run("test-project", [input_doc_b], options, database=db)
         assert _flow_call_count == 2

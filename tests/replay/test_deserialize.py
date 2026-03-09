@@ -1,22 +1,13 @@
 """Tests for replay deserialization: resolve_doc_refs and resolve_task_kwargs."""
 
-from pathlib import Path
-
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from ai_pipeline_core.document_store._local import LocalDocumentStore
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents import RunScope
 from ai_pipeline_core.llm.conversation import Conversation
 from ai_pipeline_core.replay._deserialize import resolve_doc_refs, resolve_task_kwargs
 
-from .conftest import ReplayTextDocument, doc_ref_dict
-
-
-# ---------------------------------------------------------------------------
-# Test types for deserialization
-# ---------------------------------------------------------------------------
+from .conftest import ReplayTextDocument, doc_ref_dict, store_document_in_database
 
 
 class DeserializeDocument(Document):
@@ -37,20 +28,13 @@ async def deserialization_target(
 ) -> DeserializeDocument: ...
 
 
-# ---------------------------------------------------------------------------
-# resolve_doc_refs
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
-async def test_resolve_doc_refs_replaces_doc_ref_dict(store_base: Path) -> None:
-    """A $doc_ref dict pointing at a saved document resolves to the Document."""
+async def test_resolve_doc_refs_replaces_doc_ref_dict(memory_database) -> None:
     doc = ReplayTextDocument(name="source.txt", content=b"hello replay")
-    store = LocalDocumentStore(base_path=store_base)
-    await store.save(doc, RunScope("replay/test"))
+    await store_document_in_database(memory_database, doc)
 
     ref = doc_ref_dict(doc)
-    result = resolve_doc_refs(ref, store_base)
+    result = await resolve_doc_refs(ref, memory_database)
 
     assert isinstance(result, Document)
     assert result.content == b"hello replay"
@@ -58,14 +42,13 @@ async def test_resolve_doc_refs_replaces_doc_ref_dict(store_base: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_doc_refs_inline_content_escape_hatch() -> None:
-    """Inline content dict (no $doc_ref) creates an ephemeral Document without store access."""
+async def test_resolve_doc_refs_inline_content_escape_hatch(memory_database) -> None:
     data = {
         "class_name": "DeserializeDocument",
         "name": "inline.txt",
         "content": "ephemeral content",
     }
-    result = resolve_doc_refs(data, Path("/nonexistent"))
+    result = await resolve_doc_refs(data, memory_database)
 
     assert isinstance(result, Document)
     assert result.name == "inline.txt"
@@ -73,18 +56,16 @@ async def test_resolve_doc_refs_inline_content_escape_hatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_doc_refs_nested_in_list_and_dict(store_base: Path) -> None:
-    """$doc_ref dicts inside lists and nested dicts are all resolved."""
+async def test_resolve_doc_refs_nested_in_list_and_dict(memory_database) -> None:
     doc = ReplayTextDocument(name="nested.txt", content=b"nested content")
-    store = LocalDocumentStore(base_path=store_base)
-    await store.save(doc, RunScope("replay/test"))
+    await store_document_in_database(memory_database, doc)
 
     ref = doc_ref_dict(doc)
     data = {
         "items": [ref, "plain_string"],
         "nested": {"inner": ref},
     }
-    result = resolve_doc_refs(data, store_base)
+    result = await resolve_doc_refs(data, memory_database)
 
     assert isinstance(result["items"][0], Document)
     assert result["items"][0].name == "nested.txt"
@@ -93,22 +74,15 @@ async def test_resolve_doc_refs_nested_in_list_and_dict(store_base: Path) -> Non
     assert result["nested"]["inner"].content == b"nested content"
 
 
-def test_resolve_doc_refs_primitives_unchanged() -> None:
-    """Plain dict with str/int/bool/None values passes through unchanged."""
+@pytest.mark.asyncio
+async def test_resolve_doc_refs_primitives_unchanged(memory_database) -> None:
     data = {"name": "test", "count": 42, "active": True, "extra": None}
-    result = resolve_doc_refs(data, Path("/nonexistent"))
-
+    result = await resolve_doc_refs(data, memory_database)
     assert result == {"name": "test", "count": 42, "active": True, "extra": None}
 
 
-# ---------------------------------------------------------------------------
-# resolve_task_kwargs
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
-async def test_resolve_task_kwargs_validates_basemodel() -> None:
-    """A dict arg whose type hint is a BaseModel subclass gets model_validate'd."""
+async def test_resolve_task_kwargs_validates_basemodel(memory_database) -> None:
     raw = {
         "source": {
             "class_name": "DeserializeDocument",
@@ -120,7 +94,7 @@ async def test_resolve_task_kwargs_validates_basemodel() -> None:
         "enabled": True,
     }
     function_path = f"{__name__}:deserialization_target"
-    result = resolve_task_kwargs(function_path, raw, Path("/nonexistent"))
+    result = await resolve_task_kwargs(function_path, raw, memory_database)
 
     assert isinstance(result["options"], DeserializeOptions)
     assert result["options"].max_items == 5
@@ -128,11 +102,9 @@ async def test_resolve_task_kwargs_validates_basemodel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_task_kwargs_validates_document(store_base: Path) -> None:
-    """A $doc_ref arg whose type hint is a Document subclass resolves correctly."""
+async def test_resolve_task_kwargs_validates_document(memory_database) -> None:
     doc = DeserializeDocument(name="task-source.txt", content=b"doc for kwargs")
-    store = LocalDocumentStore(base_path=store_base)
-    await store.save(doc, RunScope("replay/test"))
+    await store_document_in_database(memory_database, doc)
 
     raw = {
         "source": doc_ref_dict(doc),
@@ -141,7 +113,7 @@ async def test_resolve_task_kwargs_validates_document(store_base: Path) -> None:
         "enabled": False,
     }
     function_path = f"{__name__}:deserialization_target"
-    result = resolve_task_kwargs(function_path, raw, store_base)
+    result = await resolve_task_kwargs(function_path, raw, memory_database)
 
     assert isinstance(result["source"], Document)
     assert result["source"].name == "task-source.txt"
@@ -149,11 +121,9 @@ async def test_resolve_task_kwargs_validates_document(store_base: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_task_kwargs_mixed_args(store_base: Path) -> None:
-    """Document, BaseModel, and primitive args all resolve in one call."""
+async def test_resolve_task_kwargs_mixed_args(memory_database) -> None:
     doc = DeserializeDocument(name="mixed.txt", content=b"mixed content")
-    store = LocalDocumentStore(base_path=store_base)
-    await store.save(doc, RunScope("replay/test"))
+    await store_document_in_database(memory_database, doc)
 
     raw = {
         "source": doc_ref_dict(doc),
@@ -162,7 +132,7 @@ async def test_resolve_task_kwargs_mixed_args(store_base: Path) -> None:
         "enabled": True,
     }
     function_path = f"{__name__}:deserialization_target"
-    result = resolve_task_kwargs(function_path, raw, store_base)
+    result = await resolve_task_kwargs(function_path, raw, memory_database)
 
     assert isinstance(result["source"], Document)
     assert result["source"].content == b"mixed content"
@@ -173,11 +143,9 @@ async def test_resolve_task_kwargs_mixed_args(store_base: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_doc_refs_conversation_sentinel(store_base: Path) -> None:
-    """A $conversation payload resolves to a Conversation with context and history."""
+async def test_resolve_doc_refs_conversation_sentinel(memory_database) -> None:
     doc = ReplayTextDocument(name="conversation.txt", content=b"conversation context")
-    store = LocalDocumentStore(base_path=store_base)
-    await store.save(doc, RunScope("replay/test"))
+    await store_document_in_database(memory_database, doc)
 
     raw = {
         "$conversation": {
@@ -192,7 +160,7 @@ async def test_resolve_doc_refs_conversation_sentinel(store_base: Path) -> None:
         }
     }
 
-    result = resolve_doc_refs(raw, store_base)
+    result = await resolve_doc_refs(raw, memory_database)
 
     assert isinstance(result, Conversation)
     assert result.model == "test-model"
@@ -201,21 +169,16 @@ async def test_resolve_doc_refs_conversation_sentinel(store_base: Path) -> None:
     assert len(result.messages) == 1
 
 
-# ---------------------------------------------------------------------------
-# Tuple deserialization
-# ---------------------------------------------------------------------------
-
-
 async def _fixed_tuple_target(pair: tuple[int, int]) -> None:
     """Target function with fixed-length tuple annotation."""
 
 
-def test_fixed_tuple_replay_rejects_length_mismatch() -> None:
-    """Fixed-length tuple deserialization must reject mismatched lengths."""
+@pytest.mark.asyncio
+async def test_fixed_tuple_replay_rejects_length_mismatch(memory_database) -> None:
     function_path = f"{__name__}:_fixed_tuple_target"
     with pytest.raises(ValueError, match="expects 2 items but replay data has 3"):
-        resolve_task_kwargs(
+        await resolve_task_kwargs(
             function_path,
             {"pair": [1, 2, 3]},
-            Path("/nonexistent"),
+            memory_database,
         )

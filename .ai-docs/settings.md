@@ -1,7 +1,7 @@
 # MODULE: settings
 # CLASSES: Settings
 # DEPENDS: BaseSettings
-# VERSION: 0.13.0
+# VERSION: 0.14.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -34,8 +34,6 @@ Inherit to add application-specific fields::
     prefect_work_pool_name: str = 'default'
     prefect_work_queue_name: str = 'default'
     prefect_gcs_bucket: str = ''
-    lmnr_project_api_key: str = ''
-    lmnr_debug: str = ''
     gcs_service_account_file: str = ''  # Path to GCS service account JSON file
     clickhouse_host: str = ''
     clickhouse_port: int = 8443
@@ -56,7 +54,7 @@ Inherit to add application-specific fields::
 
 ## Examples
 
-**Settings singleton** (`tests/test_settings.py:52`)
+**Settings singleton** (`tests/test_settings.py:50`)
 
 ```python
 def test_settings_singleton(self):
@@ -70,7 +68,7 @@ def test_settings_singleton(self):
     assert settings is settings2
 ```
 
-**Model config attributes** (`tests/test_settings.py:114`)
+**Model config attributes** (`tests/test_settings.py:110`)
 
 ```python
 def test_model_config_attributes(self):
@@ -81,7 +79,7 @@ def test_model_config_attributes(self):
     assert Settings.model_config.get("frozen") is True
 ```
 
-**Partial configuration** (`tests/test_settings.py:96`)
+**Partial configuration** (`tests/test_settings.py:92`)
 
 ```python
 def test_partial_configuration(self):
@@ -94,7 +92,7 @@ def test_partial_configuration(self):
         assert s.openai_base_url == ""  # Default
 ```
 
-**Env variable loading** (`tests/test_settings.py:26`)
+**Env variable loading** (`tests/test_settings.py:25`)
 
 ```python
 @patch.dict(
@@ -104,7 +102,6 @@ def test_partial_configuration(self):
         "OPENAI_API_KEY": "sk-test123",
         "PREFECT_API_URL": "https://api.prefect.io",
         "PREFECT_API_KEY": "pf-key456",
-        "LMNR_PROJECT_API_KEY": "lmnr-key789",
     },
 )
 def test_env_variable_loading(self):
@@ -114,10 +111,9 @@ def test_env_variable_loading(self):
     assert s.openai_api_key == "sk-test123"
     assert s.prefect_api_url == "https://api.prefect.io"
     assert s.prefect_api_key == "pf-key456"
-    assert s.lmnr_project_api_key == "lmnr-key789"
 ```
 
-**Extra env ignored** (`tests/test_settings.py:43`)
+**Extra env ignored** (`tests/test_settings.py:41`)
 
 ```python
 @patch.dict(
@@ -138,7 +134,7 @@ def test_extra_env_ignored(self):
     assert not hasattr(s, "random_var")
 ```
 
-**Env file loading** (`tests/test_settings.py:62`)
+**Env file loading** (`tests/test_settings.py:60`)
 
 ```python
 def test_env_file_loading(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -148,7 +144,6 @@ def test_env_file_loading(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     env_file.write_text("""
 OPENAI_API_KEY=from-env-file
 PREFECT_API_URL=http://localhost:4200
-LMNR_PROJECT_API_KEY=lmnr-from-file
 """)
 
     # Change to temp directory
@@ -159,10 +154,9 @@ LMNR_PROJECT_API_KEY=lmnr-from-file
 
     assert s.openai_api_key == "from-env-file"
     assert s.prefect_api_url == "http://localhost:4200"
-    assert s.lmnr_project_api_key == "lmnr-from-file"
 ```
 
-**Env var overrides env file** (`tests/test_settings.py:83`)
+**Env var overrides env file** (`tests/test_settings.py:79`)
 
 ```python
 @patch.dict(os.environ, {"OPENAI_API_KEY": "from-env-var"})
@@ -183,7 +177,7 @@ def test_env_var_overrides_env_file(self, tmp_path: Path, monkeypatch: pytest.Mo
 
 ## Error Examples
 
-**Settings immutable config** (`tests/test_settings.py:105`)
+**Settings immutable config** (`tests/test_settings.py:101`)
 
 ```python
 def test_settings_immutable_config(self):

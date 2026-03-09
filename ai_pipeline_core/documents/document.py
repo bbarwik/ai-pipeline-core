@@ -63,7 +63,6 @@ __all__ = [
 logger = get_pipeline_logger(__name__)
 
 TModel = TypeVar("TModel", bound=BaseModel)
-TDocument = TypeVar("TDocument", bound="Document")
 TContent = TypeVarWithDefault("TContent", bound=BaseModel, default=Any)
 
 _STRUCTURED_EXTENSIONS: frozenset[str] = frozenset({".json", ".yaml", ".yml"})
@@ -847,58 +846,3 @@ class Document(BaseModel, Generic[TContent]):
     def __deepcopy__(self, _memo: dict[int, Any] | None = None) -> Self:
         """Blocked: copy.deepcopy() is not supported for Documents."""
         raise TypeError("Document copying is not supported. Use derive() for content transformations or create() for new documents.")
-
-    @final
-    def retype(
-        self,
-        new_type: type[TDocument],
-        *,
-        preserve_provenance: bool,
-        update: dict[str, Any] | None = None,
-    ) -> TDocument:
-        """Convert to a different Document subclass.
-
-        Must specify preserve_provenance:
-        - True: keep existing derived_from/triggered_by
-        - False: clear provenance fields (caller sets new provenance via update)
-        """
-        try:
-            if not isinstance(new_type, type):  # pyright: ignore[reportUnnecessaryIsInstance]
-                raise TypeError(f"new_type must be a class, got {new_type}")  # pyright: ignore[reportUnreachable]
-            if not issubclass(new_type, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
-                raise TypeError(f"new_type must be a subclass of Document, got {new_type}")  # pyright: ignore[reportUnreachable]
-        except (TypeError, AttributeError) as err:
-            raise TypeError(f"new_type must be a subclass of Document, got {new_type}") from err
-
-        if new_type is Document:
-            raise TypeError("Cannot instantiate Document directly — use a concrete subclass")
-
-        data: dict[str, Any] = {  # nosemgrep: mutable-field-on-frozen-pydantic-model
-            "name": self.name,
-            "content": self.content,
-            "description": self.description,
-            "attachments": self.attachments,
-        }
-        if preserve_provenance:
-            data["derived_from"] = self.derived_from
-            data["triggered_by"] = self.triggered_by
-
-        if update:
-            data.update(update)
-
-        if new_type._content_type is not None:
-            content = data["content"]
-            if isinstance(content, bytes):
-                _validate_content_schema(new_type._content_type, content, content, data["name"])
-            else:
-                content_bytes = _convert_content(data["name"], content)
-                _validate_content_schema(new_type._content_type, content, content_bytes, data["name"])
-
-        return new_type(
-            name=data["name"],
-            content=data["content"],
-            description=data.get("description"),
-            derived_from=data.get("derived_from"),
-            triggered_by=data.get("triggered_by"),
-            attachments=data.get("attachments"),
-        )

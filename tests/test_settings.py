@@ -20,7 +20,6 @@ class TestSettings:
             "OPENAI_API_KEY": "sk-test123",
             "PREFECT_API_URL": "https://api.prefect.io",
             "PREFECT_API_KEY": "pf-key456",
-            "LMNR_PROJECT_API_KEY": "lmnr-key789",
         },
     )
     def test_env_variable_loading(self):
@@ -30,7 +29,6 @@ class TestSettings:
         assert s.openai_api_key == "sk-test123"
         assert s.prefect_api_url == "https://api.prefect.io"
         assert s.prefect_api_key == "pf-key456"
-        assert s.lmnr_project_api_key == "lmnr-key789"
 
     @patch.dict(
         os.environ,
@@ -66,7 +64,6 @@ class TestSettings:
         env_file.write_text("""
 OPENAI_API_KEY=from-env-file
 PREFECT_API_URL=http://localhost:4200
-LMNR_PROJECT_API_KEY=lmnr-from-file
 """)
 
         # Change to temp directory
@@ -77,7 +74,6 @@ LMNR_PROJECT_API_KEY=lmnr-from-file
 
         assert s.openai_api_key == "from-env-file"
         assert s.prefect_api_url == "http://localhost:4200"
-        assert s.lmnr_project_api_key == "lmnr-from-file"
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "from-env-var"})
     def test_env_var_overrides_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -69,9 +69,9 @@ def test_create_root_inside_test_context_succeeds() -> None:
 
 class _SlowTask(PipelineTask):
     @classmethod
-    async def run(cls, documents: list[LowInputDoc], delay: float) -> list[LowOutputDoc]:
+    async def run(cls, documents: tuple[LowInputDoc, ...], delay: float) -> tuple[LowOutputDoc, ...]:
         await asyncio.sleep(delay)
-        return [LowOutputDoc.derive(from_documents=(documents[0],), name="slow.txt", content="done")]
+        return (LowOutputDoc.derive(from_documents=(documents[0],), name="slow.txt", content="done"),)
 
 
 @pytest.mark.asyncio
@@ -80,8 +80,8 @@ async def test_collect_tasks_deadline_zero_returns_all_incomplete() -> None:
     doc = LowInputDoc.create_root(name="in.txt", content="x", reason="gap23")
     with pipeline_test_context():
         batch = await collect_tasks(
-            _SlowTask.run([doc], delay=1.0),
-            _SlowTask.run([doc], delay=1.0),
+            _SlowTask.run((doc,), delay=1.0),
+            _SlowTask.run((doc,), delay=1.0),
             deadline_seconds=0,
         )
 
@@ -103,8 +103,8 @@ async def test_collect_tasks_completed_within_deadline() -> None:
     doc = LowInputDoc.create_root(name="in.txt", content="x", reason="gap23c")
     with pipeline_test_context():
         batch = await collect_tasks(
-            _SlowTask.run([doc], delay=0.01),
-            _SlowTask.run([doc], delay=0.01),
+            _SlowTask.run((doc,), delay=0.01),
+            _SlowTask.run((doc,), delay=0.01),
             deadline_seconds=5.0,
         )
 
@@ -119,9 +119,9 @@ async def test_collect_tasks_completed_within_deadline() -> None:
 
 class _TimedTask(PipelineTask):
     @classmethod
-    async def run(cls, documents: list[LowInputDoc], delay: float, label: str) -> list[LowOutputDoc]:
+    async def run(cls, documents: tuple[LowInputDoc, ...], delay: float, label: str) -> tuple[LowOutputDoc, ...]:
         await asyncio.sleep(delay)
-        return [LowOutputDoc.derive(from_documents=(documents[0],), name=f"{label}.txt", content=label)]
+        return (LowOutputDoc.derive(from_documents=(documents[0],), name=f"{label}.txt", content=label),)
 
 
 @pytest.mark.asyncio
@@ -130,8 +130,8 @@ async def test_collect_tasks_returns_in_completion_order() -> None:
     doc = LowInputDoc.create_root(name="in.txt", content="x", reason="gap24")
     with pipeline_test_context():
         batch = await collect_tasks(
-            _TimedTask.run([doc], delay=0.15, label="slow"),
-            _TimedTask.run([doc], delay=0.01, label="fast"),
+            _TimedTask.run((doc,), delay=0.15, label="slow"),
+            _TimedTask.run((doc,), delay=0.01, label="fast"),
         )
 
     assert len(batch.completed) == 2
@@ -151,8 +151,8 @@ def test_flow_rejects_test_prefix_name() -> None:
     with pytest.raises(TypeError, match="cannot start with 'Test'"):
 
         class TestBadFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[LowInputDoc], options: FlowOptions) -> list[LowOutputDoc]:
-                return []
+            async def run(self, documents: tuple[LowInputDoc, ...], options: FlowOptions) -> tuple[LowOutputDoc, ...]:
+                return ()
 
 
 def test_flow_rejects_sync_run() -> None:
@@ -160,8 +160,8 @@ def test_flow_rejects_sync_run() -> None:
     with pytest.raises(TypeError, match="must be async def"):
 
         class SyncFlow(PipelineFlow):
-            def run(self, run_id: str, documents: list[LowInputDoc], options: FlowOptions) -> list[LowOutputDoc]:  # type: ignore[override]
-                return []
+            def run(self, documents: tuple[LowInputDoc, ...], options: FlowOptions) -> tuple[LowOutputDoc, ...]:  # type: ignore[override]
+                return ()
 
 
 def test_flow_rejects_wrong_param_count() -> None:
@@ -169,8 +169,8 @@ def test_flow_rejects_wrong_param_count() -> None:
     with pytest.raises(TypeError, match="must have signature"):
 
         class BadParamFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[LowInputDoc]) -> list[LowOutputDoc]:  # type: ignore[override]
-                return []
+            async def run(self, documents: tuple[LowInputDoc, ...]) -> tuple[LowOutputDoc, ...]:  # type: ignore[override]
+                return ()
 
 
 def test_flow_rejects_low_estimated_minutes() -> None:
@@ -180,5 +180,5 @@ def test_flow_rejects_low_estimated_minutes() -> None:
         class FastFlow(PipelineFlow):
             estimated_minutes = 0.5
 
-            async def run(self, run_id: str, documents: list[LowInputDoc], options: FlowOptions) -> list[LowOutputDoc]:
-                return []
+            async def run(self, documents: tuple[LowInputDoc, ...], options: FlowOptions) -> tuple[LowOutputDoc, ...]:
+                return ()

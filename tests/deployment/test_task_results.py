@@ -1,232 +1,261 @@
-"""Task result store unit tests.
+"""Database node operation tests.
 
-Covers: CRUD, serialization, protocol conformance, concurrent writes, large payloads,
-special characters, and store isolation.
+Covers: insert_node, query_node, update_node, status transitions,
+node isolation, and hierarchy queries.
 """
 
-import json
+from uuid import uuid4
 
 import pytest
 
-from ai_pipeline_core.deployment._task_results import MemoryTaskResultStore
-from ai_pipeline_core.deployment._types import TaskResultRecord, TaskResultStore
+from ai_pipeline_core.database import NULL_PARENT, ExecutionNode, MemoryDatabase, NodeKind, NodeStatus
 
 
-class TestMemoryTaskResultStore:
-    """Core MemoryTaskResultStore CRUD tests."""
+def _make_node(
+    *,
+    node_kind: NodeKind = NodeKind.TASK,
+    status: NodeStatus = NodeStatus.RUNNING,
+    name: str = "test-node",
+    parent_node_id=NULL_PARENT,
+    deployment_id=None,
+    sequence_no: int = 0,
+) -> ExecutionNode:
+    """Create an ExecutionNode with sensible defaults for testing."""
+    dep_id = deployment_id or uuid4()
+    return ExecutionNode(
+        node_id=uuid4(),
+        node_kind=node_kind,
+        deployment_id=dep_id,
+        root_deployment_id=dep_id,
+        run_id=f"run-{uuid4().hex[:8]}",
+        run_scope=f"scope-{uuid4().hex[:8]}",
+        deployment_name="test-deployment",
+        name=name,
+        sequence_no=sequence_no,
+        parent_node_id=parent_node_id,
+        status=status,
+    )
 
-    async def test_roundtrip(self) -> None:
-        store = MemoryTaskResultStore()
-        await store.write_result("run-1", '{"success": true}', '{"version": 1}')
-        record = await store.read_result("run-1")
-        assert record is not None
-        assert record.run_id == "run-1"
-        assert record.result == '{"success": true}'
-        assert record.chain_context == '{"version": 1}'
 
-    async def test_read_nonexistent_returns_none(self) -> None:
-        store = MemoryTaskResultStore()
-        record = await store.read_result("does-not-exist")
-        assert record is None
+class TestInsertAndQueryNode:
+    """MemoryDatabase insert_node and get_node operations."""
 
-    async def test_overwrite_replaces_record(self) -> None:
-        store = MemoryTaskResultStore()
-        await store.write_result("run-1", '{"v": 1}', '{"ctx": 1}')
-        await store.write_result("run-1", '{"v": 2}', '{"ctx": 2}')
-        record = await store.read_result("run-1")
-        assert record is not None
-        assert record.result == '{"v": 2}'
-        assert record.chain_context == '{"ctx": 2}'
+    async def test_insert_and_retrieve(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node(name="my-task")
+        await db.insert_node(node)
+        result = await db.get_node(node.node_id)
+        assert result is not None
+        assert result.node_id == node.node_id
+        assert result.name == "my-task"
 
-    async def test_multiple_run_ids(self) -> None:
-        store = MemoryTaskResultStore()
-        await store.write_result("run-a", '{"a": true}', "{}")
-        await store.write_result("run-b", '{"b": true}', "{}")
-        a = await store.read_result("run-a")
-        b = await store.read_result("run-b")
-        assert a is not None and a.result == '{"a": true}'
-        assert b is not None and b.result == '{"b": true}'
+    async def test_get_nonexistent_returns_none(self) -> None:
+        db = MemoryDatabase()
+        result = await db.get_node(uuid4())
+        assert result is None
 
-    async def test_stored_at_populated(self) -> None:
-        store = MemoryTaskResultStore()
-        await store.write_result("run-1", "{}", "{}")
-        record = await store.read_result("run-1")
-        assert record is not None
-        assert record.stored_at is not None
-        assert record.stored_at.tzinfo is not None  # timezone-aware
+    async def test_multiple_nodes_independent(self) -> None:
+        db = MemoryDatabase()
+        node_a = _make_node(name="task-a")
+        node_b = _make_node(name="task-b")
+        await db.insert_node(node_a)
+        await db.insert_node(node_b)
 
-    async def test_chain_context_stored(self) -> None:
-        store = MemoryTaskResultStore()
-        chain = '{"parent_run_id": "parent-1", "depth": 2}'
-        await store.write_result("run-1", '{"ok": true}', chain)
-        record = await store.read_result("run-1")
-        assert record is not None
-        assert record.chain_context == chain
+        result_a = await db.get_node(node_a.node_id)
+        result_b = await db.get_node(node_b.node_id)
+        assert result_a is not None and result_a.name == "task-a"
+        assert result_b is not None and result_b.name == "task-b"
 
-    async def test_empty_strings(self) -> None:
-        store = MemoryTaskResultStore()
-        await store.write_result("run-1", "", "")
-        record = await store.read_result("run-1")
-        assert record is not None
-        assert record.result == ""
-        assert record.chain_context == ""
+    async def test_insert_preserves_all_fields(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node(
+            node_kind=NodeKind.FLOW,
+            status=NodeStatus.RUNNING,
+            name="full-field-test",
+            sequence_no=7,
+        )
+        await db.insert_node(node)
+        result = await db.get_node(node.node_id)
+        assert result is not None
+        assert result.node_kind == NodeKind.FLOW
+        assert result.status == NodeStatus.RUNNING
+        assert result.sequence_no == 7
+        assert result.deployment_id == node.deployment_id
+        assert result.run_id == node.run_id
+
+    async def test_get_children_returns_child_nodes(self) -> None:
+        db = MemoryDatabase()
+        dep_id = uuid4()
+        parent = _make_node(node_kind=NodeKind.FLOW, name="parent", deployment_id=dep_id)
+        child_1 = _make_node(name="child-1", parent_node_id=parent.node_id, deployment_id=dep_id, sequence_no=1)
+        child_2 = _make_node(name="child-2", parent_node_id=parent.node_id, deployment_id=dep_id, sequence_no=2)
+        await db.insert_node(parent)
+        await db.insert_node(child_1)
+        await db.insert_node(child_2)
+
+        children = await db.get_children(parent.node_id)
+        assert len(children) == 2
+        assert children[0].name == "child-1"
+        assert children[1].name == "child-2"
+
+    async def test_get_children_empty_when_no_children(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node(name="leaf")
+        await db.insert_node(node)
+
+        children = await db.get_children(node.node_id)
+        assert children == []
+
+
+class TestUpdateNode:
+    """MemoryDatabase update_node operations."""
+
+    async def test_update_status(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node(status=NodeStatus.RUNNING)
+        await db.insert_node(node)
+
+        await db.update_node(node.node_id, status=NodeStatus.COMPLETED)
+        result = await db.get_node(node.node_id)
+        assert result is not None
+        assert result.status == NodeStatus.COMPLETED
+
+    async def test_update_sets_updated_at(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node()
+        await db.insert_node(node)
+        original_updated = node.updated_at
+
+        await db.update_node(node.node_id, status=NodeStatus.COMPLETED)
+        result = await db.get_node(node.node_id)
+        assert result is not None
+        assert result.updated_at >= original_updated
+
+    async def test_update_nonexistent_raises(self) -> None:
+        db = MemoryDatabase()
+        with pytest.raises(KeyError):
+            await db.update_node(uuid4(), status=NodeStatus.FAILED)
+
+    async def test_update_error_fields(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node(status=NodeStatus.RUNNING)
+        await db.insert_node(node)
+
+        await db.update_node(
+            node.node_id,
+            status=NodeStatus.FAILED,
+            error_type="ValueError",
+            error_message="something went wrong",
+        )
+        result = await db.get_node(node.node_id)
+        assert result is not None
+        assert result.status == NodeStatus.FAILED
+        assert result.error_type == "ValueError"
+        assert result.error_message == "something went wrong"
+
+    async def test_update_preserves_unchanged_fields(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node(name="keep-this", node_kind=NodeKind.TASK)
+        await db.insert_node(node)
+
+        await db.update_node(node.node_id, status=NodeStatus.COMPLETED)
+        result = await db.get_node(node.node_id)
+        assert result is not None
+        assert result.name == "keep-this"
+        assert result.node_kind == NodeKind.TASK
+        assert result.run_id == node.run_id
+
+    async def test_update_does_not_affect_other_nodes(self) -> None:
+        db = MemoryDatabase()
+        node_a = _make_node(name="node-a")
+        node_b = _make_node(name="node-b")
+        await db.insert_node(node_a)
+        await db.insert_node(node_b)
+
+        await db.update_node(node_a.node_id, status=NodeStatus.FAILED)
+        result_b = await db.get_node(node_b.node_id)
+        assert result_b is not None
+        assert result_b.status == NodeStatus.RUNNING
+
+
+class TestNodeStatusTransitions:
+    """Node status transitions via update_node."""
+
+    async def test_running_to_completed(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node(status=NodeStatus.RUNNING)
+        await db.insert_node(node)
+
+        await db.update_node(node.node_id, status=NodeStatus.COMPLETED)
+        result = await db.get_node(node.node_id)
+        assert result is not None
+        assert result.status == NodeStatus.COMPLETED
+
+    async def test_running_to_failed(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node(status=NodeStatus.RUNNING)
+        await db.insert_node(node)
+
+        await db.update_node(node.node_id, status=NodeStatus.FAILED)
+        result = await db.get_node(node.node_id)
+        assert result is not None
+        assert result.status == NodeStatus.FAILED
+
+    async def test_running_to_skipped(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node(status=NodeStatus.RUNNING)
+        await db.insert_node(node)
+
+        await db.update_node(node.node_id, status=NodeStatus.SKIPPED)
+        result = await db.get_node(node.node_id)
+        assert result is not None
+        assert result.status == NodeStatus.SKIPPED
+
+    async def test_insert_with_cached_status(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node(status=NodeStatus.CACHED)
+        await db.insert_node(node)
+
+        result = await db.get_node(node.node_id)
+        assert result is not None
+        assert result.status == NodeStatus.CACHED
+
+    async def test_all_status_values_accepted(self) -> None:
+        db = MemoryDatabase()
+        for status in NodeStatus:
+            node = _make_node(status=status, name=f"node-{status.value}")
+            await db.insert_node(node)
+            result = await db.get_node(node.node_id)
+            assert result is not None
+            assert result.status == status
+
+
+class TestDatabaseIsolation:
+    """Separate MemoryDatabase instances are independent."""
+
+    async def test_separate_databases_independent(self) -> None:
+        db1 = MemoryDatabase()
+        db2 = MemoryDatabase()
+        node = _make_node(name="only-in-db1")
+        await db1.insert_node(node)
+
+        result = await db2.get_node(node.node_id)
+        assert result is None
 
     async def test_shutdown_is_noop(self) -> None:
-        store = MemoryTaskResultStore()
-        store.shutdown()  # should not raise
+        db = MemoryDatabase()
+        node = _make_node()
+        await db.insert_node(node)
+        await db.shutdown()
 
-    async def test_read_after_shutdown(self) -> None:
-        store = MemoryTaskResultStore()
-        await store.write_result("run-1", '{"ok": true}', "{}")
-        store.shutdown()
-        record = await store.read_result("run-1")
-        assert record is not None
-        assert record.result == '{"ok": true}'
+        result = await db.get_node(node.node_id)
+        assert result is not None
 
+    async def test_flush_is_noop(self) -> None:
+        db = MemoryDatabase()
+        node = _make_node()
+        await db.insert_node(node)
+        await db.flush()
 
-class TestTaskResultStoreProtocol:
-    """Verify MemoryTaskResultStore conforms to the TaskResultStore protocol."""
-
-    def test_memory_store_satisfies_protocol(self) -> None:
-        """MemoryTaskResultStore must be a runtime-checkable TaskResultStore."""
-        store = MemoryTaskResultStore()
-        assert isinstance(store, TaskResultStore)
-
-    def test_task_result_record_fields(self) -> None:
-        """TaskResultRecord must have run_id, result, chain_context, stored_at."""
-        from datetime import UTC, datetime
-
-        record = TaskResultRecord(
-            run_id="test-run",
-            result='{"success": true}',
-            chain_context='{"version": 1}',
-            stored_at=datetime.now(UTC),
-        )
-        assert record.run_id == "test-run"
-        assert record.result == '{"success": true}'
-        assert record.chain_context == '{"version": 1}'
-        assert record.stored_at is not None
-
-    def test_task_result_record_is_frozen(self) -> None:
-        """TaskResultRecord is a frozen dataclass."""
-        from datetime import UTC, datetime
-
-        record = TaskResultRecord(
-            run_id="run-1",
-            result="{}",
-            chain_context="{}",
-            stored_at=datetime.now(UTC),
-        )
-        with pytest.raises(AttributeError):
-            record.run_id = "changed"  # type: ignore[misc]
-
-
-class TestTaskResultSerialization:
-    """Test JSON serialization round-trips via the store."""
-
-    async def test_complex_result_json_roundtrip(self) -> None:
-        """Complex JSON with nested structures round-trips correctly."""
-        store = MemoryTaskResultStore()
-        result_data = {
-            "success": True,
-            "documents": [
-                {"sha256": "ABC123", "name": "report.md"},
-                {"sha256": "DEF456", "name": "analysis.json"},
-            ],
-            "metadata": {"flow_count": 3, "elapsed_seconds": 42.5},
-        }
-        chain_data = {
-            "version": 1,
-            "run_scope": "project:abc123",
-            "output_document_refs": ["SHA1", "SHA2"],
-        }
-        result_json = json.dumps(result_data)
-        chain_json = json.dumps(chain_data)
-
-        await store.write_result("run-complex", result_json, chain_json)
-        record = await store.read_result("run-complex")
-        assert record is not None
-
-        parsed_result = json.loads(record.result)
-        parsed_chain = json.loads(record.chain_context)
-        assert parsed_result["success"] is True
-        assert len(parsed_result["documents"]) == 2
-        assert parsed_chain["version"] == 1
-        assert len(parsed_chain["output_document_refs"]) == 2
-
-    async def test_unicode_content_preserved(self) -> None:
-        """Unicode characters in result/chain_context are preserved."""
-        store = MemoryTaskResultStore()
-        result_json = json.dumps({"message": "Résumé análysis 日本語"})
-        chain_json = json.dumps({"scope": "project:日本"})
-
-        await store.write_result("run-unicode", result_json, chain_json)
-        record = await store.read_result("run-unicode")
-        assert record is not None
-
-        parsed = json.loads(record.result)
-        assert parsed["message"] == "Résumé análysis 日本語"
-
-    async def test_large_payload_stored(self) -> None:
-        """Large JSON payloads are handled correctly."""
-        store = MemoryTaskResultStore()
-        large_data = {"items": [{"id": i, "data": "x" * 100} for i in range(1000)]}
-        result_json = json.dumps(large_data)
-
-        await store.write_result("run-large", result_json, "{}")
-        record = await store.read_result("run-large")
-        assert record is not None
-
-        parsed = json.loads(record.result)
-        assert len(parsed["items"]) == 1000
-
-    async def test_special_characters_in_run_id(self) -> None:
-        """Run IDs with hyphens and underscores work correctly."""
-        store = MemoryTaskResultStore()
-        run_ids = ["run-with-dashes", "run_with_underscores", "RUN-123_abc"]
-
-        for run_id in run_ids:
-            await store.write_result(run_id, f'{{"id": "{run_id}"}}', "{}")
-
-        for run_id in run_ids:
-            record = await store.read_result(run_id)
-            assert record is not None, f"Failed to read run_id={run_id}"
-            assert record.run_id == run_id
-
-
-class TestTaskResultStoreIsolation:
-    """Test store isolation and concurrent behavior."""
-
-    async def test_separate_stores_are_independent(self) -> None:
-        """Different MemoryTaskResultStore instances don't share data."""
-        store1 = MemoryTaskResultStore()
-        store2 = MemoryTaskResultStore()
-
-        await store1.write_result("run-1", '{"store": 1}', "{}")
-        record = await store2.read_result("run-1")
-        assert record is None
-
-    async def test_overwrite_updates_stored_at(self) -> None:
-        """Overwriting a result updates the stored_at timestamp."""
-        store = MemoryTaskResultStore()
-        await store.write_result("run-1", '{"v": 1}', "{}")
-        record1 = await store.read_result("run-1")
-        assert record1 is not None
-
-        await store.write_result("run-1", '{"v": 2}', "{}")
-        record2 = await store.read_result("run-1")
-        assert record2 is not None
-        assert record2.stored_at >= record1.stored_at
-
-    async def test_write_does_not_affect_other_run_ids(self) -> None:
-        """Writing to one run_id does not affect another."""
-        store = MemoryTaskResultStore()
-        await store.write_result("run-a", '{"a": true}', '{"ctx": "a"}')
-        await store.write_result("run-b", '{"b": true}', '{"ctx": "b"}')
-        await store.write_result("run-a", '{"a": false}', '{"ctx": "a2"}')
-
-        a = await store.read_result("run-a")
-        b = await store.read_result("run-b")
-        assert a is not None and a.result == '{"a": false}'
-        assert b is not None and b.result == '{"b": true}'
-        assert b.chain_context == '{"ctx": "b"}'
+        result = await db.get_node(node.node_id)
+        assert result is not None

@@ -30,7 +30,7 @@ async def test_task_failure_still_emits_failed_event(monkeypatch: pytest.MonkeyP
 
     class AlwaysFailTask(PipelineTask):
         @classmethod
-        async def run(cls, documents: list[FailInputDoc]) -> list[FailOutputDoc]:
+        async def run(cls, documents: tuple[FailInputDoc, ...]) -> tuple[FailOutputDoc, ...]:
             raise ValueError("intentional task failure")
 
     publisher = _MemoryPublisher()
@@ -50,7 +50,7 @@ async def test_task_failure_still_emits_failed_event(monkeypatch: pytest.MonkeyP
         token = set_execution_context(ctx.with_flow(flow_frame))
         try:
             with pytest.raises(ValueError, match="intentional task failure"):
-                await AlwaysFailTask.run([doc])
+                await AlwaysFailTask.run((doc,))
         finally:
             reset_execution_context(token)
 

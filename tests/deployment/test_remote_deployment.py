@@ -1,25 +1,24 @@
 """Tests for RemoteDeployment class.
 
-Covers __init_subclass__ validation, run() behavior, union generics,
-tracing integration, serialization round-trips, and edge cases.
+Covers __init_subclass__ validation, run() behavior, inline/remote mode,
+deployment_class resolution, and edge cases.
 """
 
 # pyright: reportPrivateUsage=false
 
-import json
-import types
-from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions
+from ai_pipeline_core.database import MemoryDatabase
+from ai_pipeline_core.database._filesystem import FilesystemDatabase
 from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
-from ai_pipeline_core.deployment._resolve import OutputDocument
-from ai_pipeline_core.deployment.remote import RemoteDeployment, _get_completed_result, _read_from_task_results
-from ai_pipeline_core.observability._span_data import ATTR_INPUT_DOC_SHA256S, ATTR_OUTPUT_DOC_SHA256S
-from ai_pipeline_core.observability.tracing import TraceLevel
+from ai_pipeline_core.deployment._resolve import DocumentInput
+from ai_pipeline_core.deployment.remote import RemoteDeployment, _derive_remote_run_id
+from ai_pipeline_core.pipeline import pipeline_test_context
 
 
 # ---------------------------------------------------------------------------
@@ -56,105 +55,51 @@ class NestedDocResult(DeploymentResult):
 
 class TestNameDerivation:
     def test_auto_derives_kebab_case(self):
-        class MyResearchPipeline(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        class MyResearchPipeline(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         assert MyResearchPipeline.name == "my-research-pipeline"
 
     def test_single_word(self):
-        class Research(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        class Research(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         assert Research.name == "research"
 
     def test_explicit_name_override(self):
-        class CustomNamed(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        class CustomNamed(RemoteDeployment[FlowOptions, SimpleResult]):
             name = "my-explicit-name"
-            trace_level: ClassVar[TraceLevel] = "off"
 
         assert CustomNamed.name == "my-explicit-name"
 
     def test_auto_derived_matches_pipeline_deployment_convention(self):
-        class SamplePipeline(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        class SamplePipeline(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         assert SamplePipeline.name == class_name_to_deployment_name("SamplePipeline")
 
 
 class TestGenericExtraction:
     def test_extracts_options_type(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         assert Foo.options_type is FlowOptions
 
     def test_extracts_result_type(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         assert Foo.result_type is SimpleResult
 
-    def test_three_args_returned_by_helper(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+    def test_two_args_returned_by_helper(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         args = extract_generic_params(Foo, RemoteDeployment)
-        assert len(args) == 3
-        assert args[0] is AlphaDoc
-        assert args[1] is FlowOptions
-        assert args[2] is SimpleResult
-
-    def test_union_doc_arg_is_union_type(self):
-        class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        args = extract_generic_params(Foo, RemoteDeployment)
-        assert isinstance(args[0], types.UnionType)
-        assert set(args[0].__args__) == {AlphaDoc, BetaDoc}
-
-
-class TestTDocValidation:
-    def test_single_document_type_accepted(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        assert Foo.result_type is SimpleResult
-
-    def test_union_of_two_documents_accepted(self):
-        class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        assert Foo.name == "foo"
-
-    def test_union_of_three_documents_accepted(self):
-        class Foo(RemoteDeployment[AlphaDoc | BetaDoc | GammaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        assert Foo.result_type is SimpleResult
-
-    def test_base_document_accepted(self):
-        class Foo(RemoteDeployment[Document, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        assert Foo.name == "foo"
-
-    def test_rejects_non_document_type(self):
-        with pytest.raises(TypeError, match="Document subclass"):
-
-            class Bad(RemoteDeployment[str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[TraceLevel] = "off"
-
-    def test_rejects_non_document_in_union(self):
-        with pytest.raises(TypeError, match="Document subclass"):
-
-            class Bad(RemoteDeployment[AlphaDoc | str, FlowOptions, SimpleResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[TraceLevel] = "off"
-
-    def test_rejects_int(self):
-        with pytest.raises(TypeError, match="Document subclass"):
-
-            class Bad(RemoteDeployment[int, FlowOptions, SimpleResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[TraceLevel] = "off"
+        assert len(args) == 2
+        assert args[0] is FlowOptions
+        assert args[1] is SimpleResult
 
 
 class TestTOptionsValidation:
@@ -164,8 +109,17 @@ class TestTOptionsValidation:
 
         with pytest.raises(TypeError, match="FlowOptions subclass"):
 
-            class Bad(RemoteDeployment[AlphaDoc, NotFlowOptions, SimpleResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[TraceLevel] = "off"
+            class Bad(RemoteDeployment[NotFlowOptions, SimpleResult]):  # type: ignore[type-var]
+                pass
+
+    def test_accepts_flow_options_subclass(self):
+        class CustomOpts(FlowOptions):
+            budget: float = 10.0
+
+        class Good(RemoteDeployment[CustomOpts, SimpleResult]):
+            pass
+
+        assert Good.options_type is CustomOpts
 
 
 class TestTResultValidation:
@@ -175,22 +129,28 @@ class TestTResultValidation:
 
         with pytest.raises(TypeError, match="DeploymentResult subclass"):
 
-            class Bad(RemoteDeployment[AlphaDoc, FlowOptions, NotAResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[TraceLevel] = "off"
+            class Bad(RemoteDeployment[FlowOptions, NotAResult]):  # type: ignore[type-var]
+                pass
+
+    def test_accepts_deployment_result_subclass(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        assert Foo.result_type is SimpleResult
 
 
 class TestMissingGenerics:
     def test_rejects_no_generic_params(self):
-        with pytest.raises(TypeError, match="must specify 3 Generic parameters"):
+        with pytest.raises(TypeError, match="must specify 2 Generic parameters"):
 
             class Bad(RemoteDeployment):  # type: ignore[type-arg]
-                trace_level: ClassVar[TraceLevel] = "off"
+                pass
 
-    def test_rejects_two_generic_params(self):
+    def test_rejects_one_generic_param(self):
         with pytest.raises(TypeError):
 
-            class Bad(RemoteDeployment[FlowOptions, SimpleResult]):  # type: ignore[type-arg]
-                trace_level: ClassVar[TraceLevel] = "off"
+            class Bad(RemoteDeployment[FlowOptions]):  # type: ignore[type-arg]
+                pass
 
 
 # ===================================================================
@@ -200,21 +160,20 @@ class TestMissingGenerics:
 
 class TestDeploymentPath:
     def test_auto_derived(self):
-        class AiResearch(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        class AiResearch(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         assert AiResearch().deployment_path == "ai-research/ai_research"
 
     def test_explicit_name(self):
-        class CustomName(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
+        class CustomName(RemoteDeployment[FlowOptions, SimpleResult]):
             name = "my-pipeline"
-            trace_level: ClassVar[TraceLevel] = "off"
 
         assert CustomName().deployment_path == "my-pipeline/my_pipeline"
 
     def test_path_format_matches_deployer(self):
-        class SamplePipeline(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        class SamplePipeline(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         path = SamplePipeline().deployment_path
         flow_name, deployment_name = path.split("/")
@@ -224,258 +183,429 @@ class TestDeploymentPath:
 
 
 # ===================================================================
-# 3. run() behavior
+# 3. deployment_class and _resolve_deployment_class
 # ===================================================================
 
 
-_REMOTE_RUN = "ai_pipeline_core.deployment.remote._run_remote_deployment"
+class TestDeploymentClass:
+    def test_default_deployment_class_is_empty(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        assert Foo.deployment_class == ""
+
+    def test_deployment_class_set_inline(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            deployment_class = "my_module:MyDeployment"
+
+        assert Foo.deployment_class == "my_module:MyDeployment"
 
 
-class TestRunBasic:
-    async def test_returns_typed_result(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+class TestResolveDeploymentClass:
+    def test_raises_when_deployment_class_not_set(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True, report="done")
-            result = await Foo().run("project", [], FlowOptions())
+        with pytest.raises(ValueError, match="deployment_class is not set"):
+            Foo()._resolve_deployment_class()
 
-        assert isinstance(result, SimpleResult)
-        assert result.report == "done"
+    def test_imports_class_from_module_path(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            deployment_class = "ai_pipeline_core.deployment.base:DeploymentResult"
 
-    async def test_deployment_path_used_in_prefect_call(self):
-        class MyPipeline(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        resolved = Foo()._resolve_deployment_class()
+        assert resolved is DeploymentResult
 
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await MyPipeline().run("project", [], FlowOptions())
+    def test_raises_on_invalid_module(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            deployment_class = "nonexistent.module:SomeClass"
 
-        deployment_name = mock_run.call_args[0][0]
-        assert deployment_name == "my-pipeline/my_pipeline"
+        with pytest.raises(ModuleNotFoundError):
+            Foo()._resolve_deployment_class()
 
-    async def test_options_passed_through(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+    def test_raises_on_invalid_class_name(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            deployment_class = "ai_pipeline_core.deployment.base:NonexistentClass"
 
-        opts = FlowOptions()
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", [], opts)
-
-        params = mock_run.call_args[0][1]
-        assert params["options"] is opts
+        with pytest.raises(AttributeError):
+            Foo()._resolve_deployment_class()
 
 
-class TestRunDocumentSerialization:
-    async def test_documents_serialized_via_serialize_model(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+# ===================================================================
+# 4. run() — inline vs remote mode detection
+# ===================================================================
 
-        doc = AlphaDoc.create_root(name="test.txt", content="hello world", reason="test input")
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", [doc], FlowOptions())
 
-        params = mock_run.call_args[0][1]
-        assert len(params["documents"]) == 1
-        serialized = params["documents"][0]
-        assert serialized["class_name"] == "AlphaDoc"
-        assert serialized["content"] == "hello world"
-        # Metadata keys must be stripped for Prefect JSON schema validation
-        for key in ("id", "sha256", "content_sha256", "size", "mime_type"):
-            assert key not in serialized
+_EXEC_CTX_PATH = "ai_pipeline_core.deployment.remote.get_execution_context"
 
-    async def test_multiple_union_docs_serialized(self):
-        class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
 
-        docs = [
-            AlphaDoc.create_root(name="a.txt", content="alpha", reason="test input"),
-            BetaDoc.create_root(name="b.txt", content="beta", reason="test input"),
-        ]
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", docs, FlowOptions())
+class TestInlineModeDetection:
+    """run() uses inline mode when the active backend does not support remote execution."""
 
-        params = mock_run.call_args[0][1]
-        assert len(params["documents"]) == 2
-        class_names = {d["class_name"] for d in params["documents"]}
-        assert class_names == {"AlphaDoc", "BetaDoc"}
+    async def test_inline_mode_with_memory_database(self):
+        """MemoryDatabase triggers inline mode."""
 
-    async def test_empty_documents_list(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", [], FlowOptions())
+        mock_ctx = MagicMock()
+        mock_ctx.database = MemoryDatabase()
+        mock_ctx.deployment_id = uuid4()
+        mock_ctx.root_deployment_id = uuid4()
+        mock_ctx.current_node_id = uuid4()
+        mock_ctx.deployment_name = "test"
+        mock_ctx.run_scope = "test"
+        mock_ctx.next_child_sequence.return_value = 0
 
-        params = mock_run.call_args[0][1]
-        assert params["documents"] == []
+        foo = Foo()
+        with (
+            patch(_EXEC_CTX_PATH, return_value=mock_ctx),
+            patch.object(Foo, "_run_inline", new_callable=AsyncMock) as mock_inline,
+            patch.object(Foo, "_run_remote", new_callable=AsyncMock),
+        ):
+            mock_inline.return_value = SimpleResult(success=True)
+            with pipeline_test_context(run_id="project"):
+                await foo.run((), FlowOptions())
+
+        mock_inline.assert_awaited_once()
+
+    async def test_inline_mode_with_filesystem_database(self, tmp_path):
+        """FilesystemDatabase triggers inline mode via supports_remote=False."""
+
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        mock_ctx = MagicMock()
+        mock_ctx.database = FilesystemDatabase(tmp_path)
+        mock_ctx.deployment_id = uuid4()
+        mock_ctx.root_deployment_id = uuid4()
+        mock_ctx.current_node_id = uuid4()
+        mock_ctx.deployment_name = "test"
+        mock_ctx.run_scope = "test"
+        mock_ctx.next_child_sequence.return_value = 0
+
+        foo = Foo()
+        with (
+            patch(_EXEC_CTX_PATH, return_value=mock_ctx),
+            patch.object(Foo, "_run_inline", new_callable=AsyncMock) as mock_inline,
+            patch.object(Foo, "_run_remote", new_callable=AsyncMock) as mock_remote,
+        ):
+            mock_inline.return_value = SimpleResult(success=True)
+            with pipeline_test_context(run_id="project"):
+                await foo.run((), FlowOptions())
+
+        mock_inline.assert_awaited_once()
+        mock_remote.assert_not_awaited()
+
+    async def test_remote_mode_with_remote_capable_database(self):
+        """Backends advertising supports_remote=True use Prefect remote execution."""
+
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        class RemoteCapableDatabase:
+            supports_remote = True
+
+            async def insert_node(self, _node):
+                return None
+
+            async def update_node(self, _node_id, **_updates):
+                return None
+
+        mock_ctx = MagicMock()
+        mock_ctx.database = RemoteCapableDatabase()
+        mock_ctx.deployment_id = uuid4()
+        mock_ctx.root_deployment_id = uuid4()
+        mock_ctx.current_node_id = uuid4()
+        mock_ctx.deployment_name = "test"
+        mock_ctx.run_scope = "test"
+        mock_ctx.next_child_sequence.return_value = 0
+
+        foo = Foo()
+        with (
+            patch(_EXEC_CTX_PATH, return_value=mock_ctx),
+            patch.object(Foo, "_run_inline", new_callable=AsyncMock) as mock_inline,
+            patch.object(Foo, "_run_remote", new_callable=AsyncMock) as mock_remote,
+        ):
+            mock_remote.return_value = SimpleResult(success=True)
+            with pipeline_test_context(run_id="project"):
+                await foo.run((), FlowOptions())
+
+        mock_remote.assert_awaited_once()
+        mock_inline.assert_not_awaited()
+
+    async def test_inline_mode_with_no_context_logs_warning(self, caplog):
+        """A remote deployment falling back to inline execution must emit a warning."""
+
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        foo = Foo()
+        with (
+            patch(_EXEC_CTX_PATH, return_value=None),
+            patch.object(Foo, "_run_inline", new_callable=AsyncMock) as mock_inline,
+        ):
+            mock_inline.return_value = SimpleResult(success=True)
+            with pipeline_test_context(run_id="project"):
+                await foo.run((), FlowOptions())
+
+        assert "inline" in caplog.text.lower()
+        mock_inline.assert_awaited_once()
+
+    async def test_inline_mode_with_no_context(self):
+        """When no execution context exists, database is None => inline mode."""
+
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        foo = Foo()
+        with (
+            patch(_EXEC_CTX_PATH, return_value=None),
+            patch.object(Foo, "_run_inline", new_callable=AsyncMock) as mock_inline,
+        ):
+            mock_inline.return_value = SimpleResult(success=True)
+            with pipeline_test_context(run_id="project"):
+                await foo.run((), FlowOptions())
+
+        mock_inline.assert_awaited_once()
+
+    async def test_inline_mode_propagates_publisher_and_parent_execution_id(self):
+        """Inline remote execution should preserve lineage and publisher from the active context."""
+
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        publisher = MagicMock()
+        execution_id = uuid4()
+        mock_ctx = MagicMock()
+        mock_ctx.database = MemoryDatabase()
+        mock_ctx.deployment_id = uuid4()
+        mock_ctx.root_deployment_id = uuid4()
+        mock_ctx.current_node_id = uuid4()
+        mock_ctx.deployment_name = "test"
+        mock_ctx.run_scope = "test"
+        mock_ctx.publisher = publisher
+        mock_ctx.execution_id = execution_id
+        mock_ctx.next_child_sequence.return_value = 0
+
+        foo = Foo()
+        with (
+            patch(_EXEC_CTX_PATH, return_value=mock_ctx),
+            patch.object(Foo, "_run_inline", new_callable=AsyncMock) as mock_inline,
+        ):
+            mock_inline.return_value = SimpleResult(success=True)
+            with pipeline_test_context(run_id="project"):
+                await foo.run((), FlowOptions())
+
+        assert mock_inline.await_args.kwargs["publisher"] is publisher
+        assert mock_inline.await_args.kwargs["parent_execution_id"] == execution_id
+
+
+# ===================================================================
+# 5. run() validation
+# ===================================================================
+
+
+class TestRunValidation:
+    async def test_rejects_outside_execution_context(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        with pytest.raises(RuntimeError, match="pipeline_test_context"):
+            await Foo().run((), FlowOptions())
+
+    async def test_rejects_invalid_run_id(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        with pytest.raises(ValueError, match="contains invalid characters"):
+            with pipeline_test_context(run_id="invalid run id with spaces"):
+                await Foo().run((), FlowOptions())
+
+    async def test_rejects_empty_run_id(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        with pytest.raises(ValueError, match="must not be empty"):
+            with pipeline_test_context(run_id=""):
+                await Foo().run((), FlowOptions())
+
+    async def test_rejects_too_long_derived_run_id(self):
+        """A 92+ char base run_id produces a derived run_id exceeding 100 chars."""
+
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
+        long_run_id = "a" * 92  # 92 + 1 ('-') + 8 (fingerprint) = 101 > 100
+        with pytest.raises(ValueError, match="Shorten the base run_id"):
+            with pipeline_test_context(run_id=long_run_id):
+                await Foo().run((doc,), FlowOptions())
+
+
+# ===================================================================
+# 6. run() result handling
+# ===================================================================
+
+
+_RUN_REMOTE = "ai_pipeline_core.deployment.remote._run_remote_deployment"
 
 
 class TestRunResultDeserialization:
-    async def test_deployment_result_instance_returned_directly(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+    async def test_run_remote_uses_document_inputs_parameter_name(self):
+        """Remote calls must match the Prefect wrapper's document_inputs parameter."""
 
-        expected = SimpleResult(success=True, report="direct")
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = expected
-            result = await Foo().run("project", [], FlowOptions())
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
-        assert result is expected
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test input")
+        foo = Foo()
+        with patch(_RUN_REMOTE) as mock_prefect:
+            mock_prefect.return_value = {"success": True, "report": "from dict"}
+            await foo._run_remote(
+                "project",
+                [doc],
+                FlowOptions(),
+                child_deployment_id=uuid4(),
+                root_deployment_id=uuid4(),
+                parent_deployment_task_id=uuid4(),
+            )
 
-    async def test_dict_result_deserialized_via_model_validate(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        parameters = mock_prefect.await_args.args[1]
+        assert "document_inputs" in parameters
+        assert "documents" not in parameters
 
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = {"success": True, "report": "from dict"}
-            result = await Foo().run("project", [], FlowOptions())
+    async def test_run_remote_normalizes_document_payloads_to_document_input_schema(self):
+        """Remote parameters must be serialized as DocumentInput-compatible payloads."""
+
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test input")
+        foo = Foo()
+        with patch(_RUN_REMOTE) as mock_prefect:
+            mock_prefect.return_value = {"success": True, "report": "from dict"}
+            await foo._run_remote(
+                "project",
+                [doc],
+                FlowOptions(),
+                child_deployment_id=uuid4(),
+                root_deployment_id=uuid4(),
+                parent_deployment_task_id=uuid4(),
+            )
+
+        parameters = mock_prefect.await_args.args[1]
+        serialized = parameters["document_inputs"][0]
+        validated = DocumentInput.model_validate(serialized)
+        assert validated.class_name == "AlphaDoc"
+        assert "sha256" not in serialized
+
+    async def test_run_remote_uses_parent_execution_id_in_parameters(self):
+        """Remote Prefect calls should receive the caller execution_id, not the root deployment id."""
+
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        parent_execution_id = uuid4()
+        root_deployment_id = uuid4()
+        foo = Foo()
+        with patch(_RUN_REMOTE) as mock_prefect:
+            mock_prefect.return_value = {"success": True, "report": "from dict"}
+            await foo._run_remote(
+                "project",
+                [],
+                FlowOptions(),
+                child_deployment_id=uuid4(),
+                root_deployment_id=root_deployment_id,
+                parent_deployment_task_id=uuid4(),
+                parent_execution_id=parent_execution_id,
+            )
+
+        parameters = mock_prefect.await_args.args[1]
+        assert parameters["parent_execution_id"] == str(parent_execution_id)
+        assert parameters["root_deployment_id"] == str(root_deployment_id)
+
+    async def test_dict_result_deserialized_in_run_remote(self):
+        """_run_remote deserializes dict results via result_type.model_validate."""
+
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
+
+        foo = Foo()
+        with patch(_RUN_REMOTE) as mock_prefect:
+            mock_prefect.return_value = {"success": True, "report": "from dict"}
+            result = await foo._run_remote(
+                "project",
+                [],
+                FlowOptions(),
+                child_deployment_id=uuid4(),
+                root_deployment_id=uuid4(),
+                parent_deployment_task_id=uuid4(),
+            )
 
         assert isinstance(result, SimpleResult)
         assert result.report == "from dict"
 
-    async def test_nested_document_in_result_deserialized(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, NestedDocResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+    async def test_deployment_result_returned_directly_in_run_remote(self):
+        """_run_remote returns DeploymentResult instances directly."""
 
-        original_doc = AlphaDoc.create_root(name="output.txt", content="result data", reason="test input")
-        original_result = NestedDocResult(success=True, output_doc=original_doc)
-        result_dict = original_result.model_dump(mode="json")
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = result_dict
-            result = await Foo().run("project", [], FlowOptions())
+        expected = SimpleResult(success=True, report="direct")
+        foo = Foo()
+        with patch(_RUN_REMOTE) as mock_prefect:
+            mock_prefect.return_value = expected
+            result = await foo._run_remote(
+                "project",
+                [],
+                FlowOptions(),
+                child_deployment_id=uuid4(),
+                root_deployment_id=uuid4(),
+                parent_deployment_task_id=uuid4(),
+            )
 
-        assert isinstance(result, NestedDocResult)
-        assert result.output_doc is not None
-        assert isinstance(result.output_doc, AlphaDoc)
+        assert result is expected
 
-    async def test_invalid_result_type_raises(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+    async def test_invalid_result_type_raises_in_run_remote(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = "invalid string"
+        foo = Foo()
+        with patch(_RUN_REMOTE) as mock_prefect:
+            mock_prefect.return_value = "invalid string"
             with pytest.raises(TypeError, match="unexpected type"):
-                await Foo().run("project", [], FlowOptions())
-
-
-class TestRunProgress:
-    async def test_on_progress_forwarded(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        callback = AsyncMock()
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", [], FlowOptions(), on_progress=callback)
-
-        assert mock_run.call_args.kwargs["on_progress"] is callback
-
-    async def test_on_progress_none_by_default(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", [], FlowOptions())
-
-        assert mock_run.call_args.kwargs["on_progress"] is None
+                await foo._run_remote(
+                    "project",
+                    [],
+                    FlowOptions(),
+                    child_deployment_id=uuid4(),
+                    root_deployment_id=uuid4(),
+                    parent_deployment_task_id=uuid4(),
+                )
 
 
 class TestRunErrorPropagation:
-    async def test_deployment_not_found_propagates(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+    async def test_error_propagates_from_run_remote(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.side_effect = ValueError("deployment not found")
+        foo = Foo()
+        with patch(_RUN_REMOTE) as mock_prefect:
+            mock_prefect.side_effect = ValueError("deployment not found")
             with pytest.raises(ValueError, match="deployment not found"):
-                await Foo().run("project", [], FlowOptions())
+                await foo._run_remote(
+                    "project",
+                    [],
+                    FlowOptions(),
+                    child_deployment_id=uuid4(),
+                    root_deployment_id=uuid4(),
+                    parent_deployment_task_id=uuid4(),
+                )
 
 
 # ===================================================================
-# 4. Tracing integration
-# ===================================================================
-
-
-class TestTracing:
-    def test_execute_is_traced_by_default(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            pass
-
-        assert getattr(Foo._execute, "__is_traced__", False) is True
-
-    def test_trace_level_off_skips_tracing(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        assert getattr(Foo._execute, "__is_traced__", False) is False
-
-    def test_subclass_specific_trace_names(self):
-        class PipelineA(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            pass
-
-        class PipelineB(RemoteDeployment[BetaDoc, FlowOptions, SimpleResult]):
-            pass
-
-        assert PipelineA._execute is not PipelineB._execute
-
-    async def test_trace_cost_set_when_configured(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-            trace_cost: ClassVar[float | None] = 0.05
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.set_trace_cost") as mock_cost,
-        ):
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", [], FlowOptions())
-            mock_cost.assert_called_once_with(0.05)
-
-    async def test_trace_cost_none_not_set(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.set_trace_cost") as mock_cost,
-        ):
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", [], FlowOptions())
-            mock_cost.assert_not_called()
-
-
-class TestTraceCombinedGuard:
-    def test_user_traced_execute_not_double_wrapped(self):
-        """If _execute already has __is_traced__, __init_subclass__ skips re-wrapping."""
-
-        def already_traced(fn: Any) -> Any:
-            fn.__is_traced__ = True
-            return fn
-
-        class UserTraced(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            @already_traced
-            async def _execute(self, *args: Any, **kwargs: Any) -> SimpleResult:  # type: ignore[override]
-                return SimpleResult(success=True)
-
-        # Should still be the user's function, not double-wrapped
-        assert getattr(UserTraced._execute, "__is_traced__", False) is True
-
-    def test_trace_level_off_with_untraced_execute(self):
-        class NoTrace(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        assert getattr(NoTrace._execute, "__is_traced__", False) is False
-
-
-# ===================================================================
-# 5. Serialization round-trip
+# 7. Serialization round-trip
 # ===================================================================
 
 
@@ -503,48 +633,24 @@ class TestSerializationRoundTrip:
             assert type(restored) is type(original)
             assert restored.sha256 == original.sha256
 
-    async def test_full_run_serialization_path(self):
-        class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        docs = [
-            AlphaDoc.create_root(name="input.txt", content="input data", reason="test input"),
-            BetaDoc.create_root(name="context.md", content="context info", reason="test input"),
-        ]
-
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("project", docs, FlowOptions())
-
-        params = mock_run.call_args[0][1]
-        raw_docs = params["documents"]
-
-        type_map = {cls.__name__: cls for cls in [AlphaDoc, BetaDoc]}
-        restored = [type_map[d["class_name"]].from_dict(d) for d in raw_docs]
-        assert len(restored) == 2
-        assert isinstance(restored[0], AlphaDoc)
-        assert isinstance(restored[1], BetaDoc)
-        assert restored[0].sha256 == docs[0].sha256
-        assert restored[1].sha256 == docs[1].sha256
-
 
 # ===================================================================
-# 6. Edge cases
+# 8. Edge cases
 # ===================================================================
 
 
 class TestEdgeCases:
     def test_module_level_instantiation_no_event_loop(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         instance = Foo()
         assert instance.name == "foo"
         assert instance.deployment_path == "foo/foo"
 
     def test_multiple_instances_share_class_state(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         a = Foo()
         b = Foo()
@@ -552,59 +658,21 @@ class TestEdgeCases:
         assert a.deployment_path == b.deployment_path
         assert a.result_type is b.result_type
 
-    def test_union_with_three_plus_doc_types(self):
-        class Foo(RemoteDeployment[AlphaDoc | BetaDoc | GammaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        args = extract_generic_params(Foo, RemoteDeployment)
-        assert isinstance(args[0], types.UnionType)
-        assert len(args[0].__args__) == 3
-
-    async def test_concurrent_instances_independent(self):
-        class ClientA(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        class ClientB(RemoteDeployment[BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        a = ClientA()
-        b = ClientB()
-
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-
-            await a.run("proj-a", [], FlowOptions())
-            await b.run("proj-b", [], FlowOptions())
-
-        calls = mock_run.call_args_list
-        assert calls[0][0][0] == "client-a/client_a"
-        assert calls[1][0][0] == "client-b/client_b"
-
 
 # ===================================================================
-# 7. extract_generic_params helper (updated)
+# 9. extract_generic_params helper
 # ===================================================================
 
 
-class TestExtractGenericParamsUpdated:
-    def test_three_params_from_remote_deployment(self):
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
+class TestExtractGenericParams:
+    def test_two_params_from_remote_deployment(self):
+        class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
         result = extract_generic_params(Foo, RemoteDeployment)
-        assert len(result) == 3
-        assert result[0] is AlphaDoc
-        assert result[1] is FlowOptions
-        assert result[2] is SimpleResult
-
-    def test_union_in_first_position(self):
-        class Foo(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        result = extract_generic_params(Foo, RemoteDeployment)
-        assert isinstance(result[0], types.UnionType)
-        assert result[1] is FlowOptions
-        assert result[2] is SimpleResult
+        assert len(result) == 2
+        assert result[0] is FlowOptions
+        assert result[1] is SimpleResult
 
     def test_no_match_returns_empty_tuple(self):
         result = extract_generic_params(SimpleResult, RemoteDeployment)
@@ -612,61 +680,15 @@ class TestExtractGenericParamsUpdated:
 
 
 # ===================================================================
-# 8. Bug reproduction tests (from agent review)
+# 10. Deterministic remote run_id
 # ===================================================================
-
-
-class TestReportedBugs:
-    """Tests to prove/disprove bugs found during code review."""
-
-    def test_trace_level_inherited_from_parent(self):
-        """Bug report: cls.__dict__.get('trace_level') ignores inherited values.
-
-        If a parent sets trace_level='off', a child that doesn't override it
-        should also be untraced.
-        """
-
-        class ParentOff(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        class ChildInherits(ParentOff):
-            pass
-
-        # Child should inherit trace_level="off" and NOT be traced
-        assert getattr(ChildInherits._execute, "__is_traced__", False) is False
-
-    def test_typing_union_syntax(self):
-        """Bug report: typing.Union[A, B] is rejected by _validate_document_type.
-
-        Project bans Union syntax per CLAUDE.md, but should it raise a clear error?
-        """
-        # This tests whether PEP 604 union syntax is handled
-        try:
-
-            class UnionSyntax(RemoteDeployment[AlphaDoc | BetaDoc, FlowOptions, SimpleResult]):  # type: ignore[type-var]
-                trace_level: ClassVar[TraceLevel] = "off"
-
-            accepted = True
-        except TypeError:
-            accepted = False
-
-        # Whether accepted or rejected, this documents the behavior
-        # The project uses PEP 604 syntax (A | B), so typing.Union is not required
-        assert isinstance(accepted, bool)  # always passes — documents behavior
-
-
-# ===================================================================
-# 9. Deterministic remote run_id
-# ===================================================================
-
-from ai_pipeline_core.deployment.remote import _derive_remote_run_id
 
 
 class TestDeriveRemoteRunId:
     """Tests for deterministic run_id generation from inputs."""
 
     def test_deterministic_same_inputs(self):
-        """Same documents + options → same derived run_id."""
+        """Same documents + options produce same derived run_id."""
         doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
         opts = FlowOptions()
         id1 = _derive_remote_run_id("base-run", [doc], opts)
@@ -674,7 +696,7 @@ class TestDeriveRemoteRunId:
         assert id1 == id2
 
     def test_different_docs_different_id(self):
-        """Different document content → different derived run_id."""
+        """Different document content produces different derived run_id."""
         doc_a = AlphaDoc.create_root(name="a.txt", content="aaa", reason="test")
         doc_b = AlphaDoc.create_root(name="b.txt", content="bbb", reason="test")
         opts = FlowOptions()
@@ -683,7 +705,7 @@ class TestDeriveRemoteRunId:
         assert id_a != id_b
 
     def test_different_options_different_id(self):
-        """Different options → different derived run_id."""
+        """Different options produce different derived run_id."""
         doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
 
         class CustomOptions(FlowOptions):
@@ -719,32 +741,12 @@ class TestDeriveRemoteRunId:
         assert id1.startswith("base-")
 
     def test_different_base_run_ids(self):
-        """Different base run_id → different derived run_id even with same inputs."""
+        """Different base run_id produces different derived run_id even with same inputs."""
         doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
         opts = FlowOptions()
         id_a = _derive_remote_run_id("project-a", [doc], opts)
         id_b = _derive_remote_run_id("project-b", [doc], opts)
         assert id_a != id_b
-
-    @pytest.mark.ai_docs
-    async def test_execute_passes_derived_run_id_to_prefect(self):
-        """_execute() passes derived (not raw) run_id in Prefect parameters."""
-
-        class Foo(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        doc = AlphaDoc.create_root(name="test.txt", content="hello world", reason="test input")
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Foo().run("my-project", [doc], FlowOptions())
-
-        params = mock_run.call_args[0][1]
-        # run_id in parameters should NOT be the raw "my-project" but derived
-        assert params["run_id"] != "my-project"
-        assert params["run_id"].startswith("my-project-")
-        assert len(params["run_id"]) > len("my-project-")
-        # run_id kwarg must also be passed for ClickHouse fallback wiring
-        assert mock_run.call_args.kwargs["run_id"] == params["run_id"]
 
     def test_cli_fields_excluded_from_fingerprint(self):
         """CLI-specific fields (working_directory, start, end) don't affect the derived run_id."""
@@ -765,401 +767,23 @@ class TestDeriveRemoteRunId:
 
 
 # ===================================================================
-# 10. ClickHouse fallback in remote polling
+# 11. Bug reproduction tests
 # ===================================================================
 
 
-class TestGetCompletedResult:
-    """Tests for _get_completed_result ClickHouse fallback logic."""
+class TestReportedBugs:
+    """Tests to prove/disprove bugs found during code review."""
 
-    async def test_returns_state_result_on_success(self):
-        """When state.result() succeeds, return its value directly."""
-        state = AsyncMock()
-        state.result.return_value = {"success": True}
-        result = await _get_completed_result(state, run_id="run-1", deployment_name="test")
-        assert result == {"success": True}
+    def test_typing_union_syntax(self):
+        """Bug report: typing.Union[A, B] is rejected by _validate_document_type.
 
-    async def test_fallback_to_clickhouse_on_state_failure(self):
-        """When state.result() fails and ClickHouse has data, return ClickHouse data."""
-        state = AsyncMock()
-        state.result.side_effect = RuntimeError("GCS credentials error")
+        Project bans Union syntax per CLAUDE.md, but should it raise a clear error?
+        """
+        # RemoteDeployment now takes 2 params (options, result), no doc type param
+        # This test documents that the class accepts valid 2-param generics
 
-        ch_data = {"success": True, "report": "from-clickhouse"}
-        with (
-            patch("ai_pipeline_core.deployment.remote.settings") as mock_settings,
-            patch("ai_pipeline_core.deployment.remote._read_from_task_results", return_value=ch_data) as mock_read,
-        ):
-            mock_settings.clickhouse_host = "clickhouse.local"
-            result = await _get_completed_result(state, run_id="run-1", deployment_name="test")
+        class UnionSyntax(RemoteDeployment[FlowOptions, SimpleResult]):
+            pass
 
-        assert result == ch_data
-        mock_read.assert_awaited_once_with("run-1")
-
-    async def test_re_raises_when_no_run_id(self):
-        """When state.result() fails and run_id is None, re-raise original error."""
-        state = AsyncMock()
-        state.result.side_effect = RuntimeError("GCS error")
-
-        with pytest.raises(RuntimeError, match="GCS error"):
-            await _get_completed_result(state, run_id=None, deployment_name="test")
-
-    async def test_re_raises_when_no_clickhouse(self):
-        """When state.result() fails and clickhouse_host is empty, re-raise original error."""
-        state = AsyncMock()
-        state.result.side_effect = RuntimeError("GCS error")
-
-        with (
-            patch("ai_pipeline_core.deployment.remote.settings") as mock_settings,
-        ):
-            mock_settings.clickhouse_host = ""
-            with pytest.raises(RuntimeError, match="GCS error"):
-                await _get_completed_result(state, run_id="run-1", deployment_name="test")
-
-    async def test_re_raises_when_clickhouse_returns_none(self):
-        """When ClickHouse fallback returns None, re-raise original error."""
-        state = AsyncMock()
-        state.result.side_effect = RuntimeError("GCS error")
-
-        with (
-            patch("ai_pipeline_core.deployment.remote.settings") as mock_settings,
-            patch("ai_pipeline_core.deployment.remote._read_from_task_results", return_value=None),
-        ):
-            mock_settings.clickhouse_host = "clickhouse.local"
-            with pytest.raises(RuntimeError, match="GCS error"):
-                await _get_completed_result(state, run_id="run-1", deployment_name="test")
-
-
-class TestReadFromTaskResults:
-    """Tests for _read_from_task_results best-effort ClickHouse read."""
-
-    async def test_returns_parsed_result(self):
-        """Returns parsed JSON when record exists."""
-        mock_record = MagicMock()
-        mock_record.result = json.dumps({"success": True})
-
-        mock_store = MagicMock()
-        mock_store.read_result = AsyncMock(return_value=mock_record)
-        mock_store.shutdown = MagicMock()
-
-        with patch("ai_pipeline_core.deployment.remote.ClickHouseTaskResultStore", return_value=mock_store):
-            result = await _read_from_task_results("run-1")
-
-        assert result == {"success": True}
-        mock_store.shutdown.assert_called_once()
-
-    async def test_returns_none_when_no_record(self):
-        """Returns None when ClickHouse has no record."""
-        mock_store = MagicMock()
-        mock_store.read_result = AsyncMock(return_value=None)
-        mock_store.shutdown = MagicMock()
-
-        with patch("ai_pipeline_core.deployment.remote.ClickHouseTaskResultStore", return_value=mock_store):
-            result = await _read_from_task_results("run-1")
-
-        assert result is None
-        mock_store.shutdown.assert_called_once()
-
-    async def test_returns_none_on_exception(self):
-        """Returns None and logs warning when ClickHouse read fails."""
-        with patch("ai_pipeline_core.deployment.remote.ClickHouseTaskResultStore", side_effect=OSError("connection refused")):
-            result = await _read_from_task_results("run-1")
-
-        assert result is None
-
-    async def test_shuts_down_store_even_on_read_error(self):
-        """Store is shut down even when read_result raises."""
-        mock_store = MagicMock()
-        mock_store.read_result = AsyncMock(side_effect=RuntimeError("query failed"))
-        mock_store.shutdown = MagicMock()
-
-        with patch("ai_pipeline_core.deployment.remote.ClickHouseTaskResultStore", return_value=mock_store):
-            result = await _read_from_task_results("run-1")
-
-        assert result is None
-        mock_store.shutdown.assert_called_once()
-
-
-# ===================================================================
-# 11. validate_run_id wiring at entry points
-# ===================================================================
-
-
-class TestValidateRunIdWiring:
-    """Verify validate_run_id is actually called at entry points."""
-
-    async def test_remote_deployment_rejects_invalid_base_run_id(self):
-        """RemoteDeployment._execute validates the base run_id before derivation."""
-
-        class Wired(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
-        with pytest.raises(ValueError, match="contains invalid characters"):
-            await Wired().run("invalid run id with spaces", [doc], FlowOptions())
-
-    async def test_remote_deployment_rejects_empty_run_id(self):
-        """RemoteDeployment._execute validates empty run_id."""
-
-        class Wired2(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
-        with pytest.raises(ValueError, match="must not be empty"):
-            await Wired2().run("", [doc], FlowOptions())
-
-    async def test_remote_deployment_rejects_too_long_derived_run_id(self):
-        """A 92+ char base run_id produces a derived run_id exceeding 100 chars."""
-
-        class Wired3(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
-        long_run_id = "a" * 92  # 92 + 1 ('-') + 8 (fingerprint) = 101 > 100
-        with pytest.raises(ValueError, match="Shorten the base run_id"):
-            await Wired3().run(long_run_id, [doc], FlowOptions())
-
-
-# ===================================================================
-# 12. Document lineage tracking
-# ===================================================================
-
-
-class TestDocumentLineageTracking:
-    """Tests for automatic document lineage tracking in _execute."""
-
-    async def test_input_sha256s_set_on_span(self):
-        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
-        mock_span = MagicMock()
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
-        ):
-            mock_run.return_value = SimpleResult(success=True)
-            await Tracked().run("project", [doc], FlowOptions())
-
-        mock_span.set_attribute.assert_any_call(ATTR_INPUT_DOC_SHA256S, [doc.sha256])
-
-    async def test_output_sha256s_set_on_span(self):
-        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        output_doc = OutputDocument(sha256="ABCDEF123456", name="out.txt", class_name="AlphaDoc", mime_type="text/plain", size=5)
-        result_with_docs = SimpleResult(success=True, documents=(output_doc,))
-        mock_span = MagicMock()
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
-        ):
-            mock_run.return_value = result_with_docs
-            await Tracked().run("project", [], FlowOptions())
-
-        mock_span.set_attribute.assert_any_call(ATTR_OUTPUT_DOC_SHA256S, ["ABCDEF123456"])
-
-    async def test_both_input_and_output_tracked(self):
-        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
-        output_doc = OutputDocument(sha256="OUT123", name="out.txt", class_name="AlphaDoc", mime_type="text/plain", size=5)
-        result_with_docs = SimpleResult(success=True, documents=(output_doc,))
-        mock_span = MagicMock()
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
-        ):
-            mock_run.return_value = result_with_docs
-            await Tracked().run("project", [doc], FlowOptions())
-
-        calls = {call.args[0]: call.args[1] for call in mock_span.set_attribute.call_args_list}
-        assert calls[ATTR_INPUT_DOC_SHA256S] == [doc.sha256]
-        assert calls[ATTR_OUTPUT_DOC_SHA256S] == ["OUT123"]
-
-    async def test_empty_documents_no_attributes_set(self):
-        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        mock_span = MagicMock()
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
-        ):
-            mock_run.return_value = SimpleResult(success=True)
-            await Tracked().run("project", [], FlowOptions())
-
-        mock_span.set_attribute.assert_not_called()
-
-    async def test_tracking_failure_does_not_propagate(self):
-        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", side_effect=RuntimeError("broken")),
-        ):
-            mock_run.return_value = SimpleResult(success=True)
-            result = await Tracked().run("project", [doc], FlowOptions())
-
-        assert result.success
-
-    async def test_dict_result_also_tracked(self):
-        """Document lineage works when remote returns a dict (deserialized via model_validate)."""
-
-        class Tracked(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
-        mock_span = MagicMock()
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
-        ):
-            mock_run.return_value = {"success": True, "report": "done"}
-            await Tracked().run("project", [doc], FlowOptions())
-
-        mock_span.set_attribute.assert_called_once_with(ATTR_INPUT_DOC_SHA256S, [doc.sha256])
-
-
-# ===================================================================
-# 13. run_traced()
-# ===================================================================
-
-
-class TestRunTraced:
-    """Tests for run_traced() standalone tracing."""
-
-    async def test_run_traced_calls_init_and_shutdown(self, tmp_path):
-        class Traced(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        mock_fs_backend = MagicMock()
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.init_observability_best_effort") as mock_init,
-            patch("ai_pipeline_core.deployment._cli._init_debug_tracing", return_value=mock_fs_backend) as mock_debug,
-            patch("ai_pipeline_core.observability._initialization.get_clickhouse_backend", return_value=None),
-        ):
-            mock_run.return_value = SimpleResult(success=True)
-            result = await Traced().run_traced("project", [], FlowOptions(), output_dir=tmp_path)
-
-        assert result.success
-        mock_init.assert_called_once()
-        mock_debug.assert_called_once_with(tmp_path)
-        mock_fs_backend.shutdown.assert_called_once()
-
-    async def test_run_traced_shuts_down_on_failure(self, tmp_path):
-        class Traced(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        mock_fs_backend = MagicMock()
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.init_observability_best_effort"),
-            patch("ai_pipeline_core.deployment._cli._init_debug_tracing", return_value=mock_fs_backend),
-            patch("ai_pipeline_core.observability._initialization.get_clickhouse_backend", return_value=None),
-        ):
-            mock_run.side_effect = RuntimeError("remote failed")
-            with pytest.raises(RuntimeError, match="remote failed"):
-                await Traced().run_traced("project", [], FlowOptions(), output_dir=tmp_path)
-
-        mock_fs_backend.shutdown.assert_called_once()
-
-    async def test_run_traced_shuts_down_clickhouse_backend(self, tmp_path):
-        class Traced(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        mock_fs_backend = MagicMock()
-        mock_ch_backend = MagicMock()
-
-        with (
-            patch(_REMOTE_RUN) as mock_run,
-            patch("ai_pipeline_core.deployment.remote.init_observability_best_effort"),
-            patch("ai_pipeline_core.deployment._cli._init_debug_tracing", return_value=mock_fs_backend),
-            patch("ai_pipeline_core.observability._initialization.get_clickhouse_backend", return_value=mock_ch_backend),
-        ):
-            mock_run.return_value = SimpleResult(success=True)
-            await Traced().run_traced("project", [], FlowOptions(), output_dir=tmp_path)
-
-        mock_ch_backend.shutdown.assert_called_once()
-        mock_fs_backend.shutdown.assert_called_once()
-
-
-# ===================================================================
-# Parent lineage propagation in _execute
-# ===================================================================
-
-
-class TestParentLineagePropagation:
-    """Verify _execute extracts parent context and passes it in Prefect parameters."""
-
-    async def test_execute_passes_parent_execution_id_from_run_context(self):
-        """When RunContext has execution_id, it appears in parameters as parent_execution_id."""
-        from uuid import uuid4
-
-        from ai_pipeline_core.documents._context import RunScope, RunContext, _set_run_context, _reset_run_context
-
-        class Lineage(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        parent_uid = uuid4()
-        token = _set_run_context(RunContext(run_scope=RunScope("test"), execution_id=parent_uid))
-        try:
-            with patch(_REMOTE_RUN) as mock_run:
-                mock_run.return_value = SimpleResult(success=True)
-                await Lineage().run("proj", [], FlowOptions())
-            params = mock_run.call_args[0][1]
-            assert params["parent_execution_id"] == str(parent_uid)
-        finally:
-            _reset_run_context(token)
-
-    async def test_execute_passes_parent_span_id_from_otel(self):
-        """When an OTel span is active, its span_id appears in parameters as parent_span_id."""
-        from uuid import uuid4
-
-        from ai_pipeline_core.documents._context import RunScope, RunContext, _set_run_context, _reset_run_context
-
-        class Lineage2(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        token = _set_run_context(RunContext(run_scope=RunScope("test"), execution_id=uuid4()))
-        try:
-            mock_span_ctx = MagicMock()
-            mock_span_ctx.span_id = 0xABCDEF0123456789
-            mock_span = MagicMock()
-            mock_span.get_span_context.return_value = mock_span_ctx
-
-            with (
-                patch(_REMOTE_RUN) as mock_run,
-                patch("ai_pipeline_core.deployment.remote.otel_trace.get_current_span", return_value=mock_span),
-            ):
-                mock_run.return_value = SimpleResult(success=True)
-                await Lineage2().run("proj", [], FlowOptions())
-            params = mock_run.call_args[0][1]
-            assert params["parent_span_id"] == format(0xABCDEF0123456789, "016x")
-        finally:
-            _reset_run_context(token)
-
-    async def test_execute_omits_parent_when_no_run_context(self):
-        """Without RunContext, parent_execution_id is None in parameters."""
-        from ai_pipeline_core.documents._context import _get_run_context
-
-        class Lineage3(RemoteDeployment[AlphaDoc, FlowOptions, SimpleResult]):
-            trace_level: ClassVar[TraceLevel] = "off"
-
-        assert _get_run_context() is None
-        with patch(_REMOTE_RUN) as mock_run:
-            mock_run.return_value = SimpleResult(success=True)
-            await Lineage3().run("proj", [], FlowOptions())
-        params = mock_run.call_args[0][1]
-        assert params["parent_execution_id"] is None
+        assert UnionSyntax.options_type is FlowOptions
+        assert UnionSyntax.result_type is SimpleResult

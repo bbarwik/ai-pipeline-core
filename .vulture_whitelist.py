@@ -22,10 +22,6 @@ from ai_pipeline_core.llm.tools import Tool
 Tool.execute
 input  # parameter of Tool.execute base method — used by subclass implementations
 
-# OTel SpanProcessor overrides — parameter signature required by base class
-from ai_pipeline_core.observability._tracking._processor import PipelineSpanProcessor
-
-PipelineSpanProcessor.force_flush
-
-# Prefect/deployment hooks
-# Add more as vulture reports false positives
+# Prefect/deployment hooks — parameters in Prefect deployment function signatures
+input_document_sha256s  # Prefect deployment parameter — passed by RemoteDeployment caller
+created_by_task  # keyword-only parameter for _persist_documents — reserved for future use

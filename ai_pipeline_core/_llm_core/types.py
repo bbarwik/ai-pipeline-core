@@ -1,7 +1,7 @@
 """Primitive types and constants for LLM interactions.
 
 This module provides low-level types for LLM communication that have NO dependency
-on the Document class. These types are used by internal modules (document_store,
+on the Document class. These types are used by internal modules (database,
 observability) that need LLM access but cannot depend on Documents.
 
 All types are frozen Pydantic models for immutability and JSON serialization.

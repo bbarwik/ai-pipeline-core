@@ -11,7 +11,7 @@ import inspect
 import re
 from dataclasses import dataclass
 from textwrap import dedent
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -119,27 +119,29 @@ def _make_strict_schema(schema: dict[str, Any]) -> None:
     for providers that don't support it (Gemini, xAI).
     """
     empty_dict: dict[str, Any] = {}
-    empty_list: list[Any] = []
     if schema.get("type") == "object":
         schema["additionalProperties"] = False
+        properties = cast(dict[str, Any], schema.get("properties", empty_dict))
         # Strict mode requires ALL properties in the required list
-        if "properties" in schema:
-            schema["required"] = list(schema["properties"].keys())
-        for prop in schema.get("properties", empty_dict).values():
+        schema["required"] = [str(key) for key in properties]
+        for prop in properties.values():
             if isinstance(prop, dict):
-                _make_strict_schema(prop)
+                _make_strict_schema(cast(dict[str, Any], prop))
     # Handle $defs for nested models
-    for definition in schema.get("$defs", empty_dict).values():
+    definitions = cast(dict[str, Any], schema.get("$defs", empty_dict))
+    for definition in definitions.values():
         if isinstance(definition, dict):
-            _make_strict_schema(definition)
+            _make_strict_schema(cast(dict[str, Any], definition))
     # Handle allOf, anyOf, oneOf
     for key in ("allOf", "anyOf", "oneOf"):
-        for item in schema.get(key, empty_list):
+        branch_items = cast(list[Any], schema.get(key, []))
+        for item in branch_items:
             if isinstance(item, dict):
-                _make_strict_schema(item)
+                _make_strict_schema(cast(dict[str, Any], item))
     # Handle items for arrays
-    if "items" in schema and isinstance(schema["items"], dict):
-        _make_strict_schema(schema["items"])
+    items = schema.get("items")
+    if isinstance(items, dict):
+        _make_strict_schema(cast(dict[str, Any], items))
 
 
 def generate_tool_schema(tool: Tool) -> dict[str, Any]:

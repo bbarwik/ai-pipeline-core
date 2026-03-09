@@ -16,5 +16,5 @@ rules:
     languages: [python]
     paths:
       exclude:
-        - "ai_pipeline_core/**"
+        - "**/ai_pipeline_core/**"
         - "**/tests/**"

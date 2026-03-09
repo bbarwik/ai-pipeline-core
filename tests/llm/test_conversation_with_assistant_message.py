@@ -1,7 +1,5 @@
 """Tests for Conversation.with_assistant_message()."""
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 
 from ai_pipeline_core._llm_core.types import CoreMessage, Role
@@ -16,16 +14,6 @@ def _make_fake_generate(content: str = "response"):
         return create_test_model_response(content=content)
 
     return fake_generate
-
-
-def _mock_laminar():
-    """Minimal Laminar mock for send() calls."""
-    mock_span = MagicMock()
-    mock_span.__enter__ = MagicMock(return_value=mock_span)
-    mock_span.__exit__ = MagicMock(return_value=None)
-    mock_laminar = MagicMock()
-    mock_laminar.start_as_current_span.return_value = mock_span
-    return mock_laminar
 
 
 class TestWithAssistantMessage:
@@ -109,10 +97,9 @@ class TestWithAssistantMessage:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-            conv = Conversation(model="test-model", enable_substitutor=False)
-            conv = conv.with_assistant_message("Prior analysis: X is Y")
-            conv = await conv.send("Based on your analysis, what is X?")
+        conv = Conversation(model="test-model", enable_substitutor=False)
+        conv = conv.with_assistant_message("Prior analysis: X is Y")
+        conv = await conv.send("Based on your analysis, what is X?")
 
         # Model should see: assistant message, then user question
         roles = [m.role for m in captured_messages]
@@ -137,14 +124,13 @@ class TestWithAssistantMessage:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-            # Conv A does analysis
-            conv_a = Conversation(model="test-model", enable_substitutor=False)
-            conv_a = await conv_a.send("Analyze this")
+        # Conv A does analysis
+        conv_a = Conversation(model="test-model", enable_substitutor=False)
+        conv_a = await conv_a.send("Analyze this")
 
-            # Conv B receives the analysis
-            conv_b = Conversation(model="test-model", enable_substitutor=False)
-            conv_b = conv_b.with_assistant_message(conv_a.content)
-            conv_b = await conv_b.send("What did you find?")
+        # Conv B receives the analysis
+        conv_b = Conversation(model="test-model", enable_substitutor=False)
+        conv_b = conv_b.with_assistant_message(conv_a.content)
+        conv_b = await conv_b.send("What did you find?")
 
         assert conv_b.content == "Based on the analysis, Z is important"

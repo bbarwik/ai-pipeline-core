@@ -7,8 +7,6 @@ import warnings
 
 import pytest
 
-from ai_pipeline_core.document_store._protocol import set_document_store
-from ai_pipeline_core.document_store._memory import MemoryDocumentStore
 from ai_pipeline_core.documents import RunContext
 from ai_pipeline_core.documents._context import _reset_run_context, _set_run_context
 from prefect.logging import disable_run_logger
@@ -50,18 +48,6 @@ def disable_prefect_logging():
     """Disable Prefect run logger to prevent RuntimeError from missing flow context."""
     with disable_run_logger():
         yield
-
-
-@pytest.fixture
-def memory_store():
-    """Provide a MemoryDocumentStore and set it as the process-global singleton.
-
-    Automatically cleans up the global singleton after the test.
-    """
-    store = MemoryDocumentStore()
-    set_document_store(store)
-    yield store
-    set_document_store(None)
 
 
 @pytest.fixture

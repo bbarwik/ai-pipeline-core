@@ -8,13 +8,13 @@ instances with response properties derived from the last ModelResponse.
 import asyncio
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from itertools import chain
 from typing import Any, Generic, Literal, cast, overload
+from uuid import uuid4
 
-from lmnr import Laminar
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from typing_extensions import TypeVar
 
@@ -23,7 +23,7 @@ from ai_pipeline_core._llm_core import generate as core_generate
 from ai_pipeline_core._llm_core import generate_structured as core_generate_structured
 from ai_pipeline_core._llm_core._validation import validate_text
 from ai_pipeline_core._llm_core.model_response import Citation
-from ai_pipeline_core._llm_core.types import TOKENS_PER_IMAGE, ContentPart, ImageContent, PDFContent, TextContent
+from ai_pipeline_core._llm_core.types import TOKENS_PER_IMAGE, ContentPart, TextContent
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm._images import validated_binary_parts
 from ai_pipeline_core.logging import get_pipeline_logger
@@ -251,6 +251,7 @@ class Conversation(BaseModel, Generic[T]):
     extract_result_tags: bool = False
     include_date: bool = True
     current_date: str | None = None
+    _conversation_id: str = ""
     _tool_call_records: tuple[ToolCallRecord, ...] = ()
 
     @model_validator(mode="before")
@@ -273,6 +274,16 @@ class Conversation(BaseModel, Generic[T]):
             d = cast(dict[str, Any], data)
             if d.get("include_date", True) and "current_date" not in d:
                 d["current_date"] = date.today().isoformat()
+        return data  # pyright: ignore[reportUnknownVariableType]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _initialize_conversation_id(cls, data: Any) -> Any:
+        """Auto-generate a stable conversation UUID on construction."""
+        if isinstance(data, dict):
+            d = cast(dict[str, Any], data)
+            if not d.get("_conversation_id"):
+                d["_conversation_id"] = uuid4().hex
         return data  # pyright: ignore[reportUnknownVariableType]
 
     @field_validator("model")
@@ -407,36 +418,6 @@ class Conversation(BaseModel, Generic[T]):
 
         return core_messages
 
-    @staticmethod
-    def _core_messages_to_span_input(messages: list[CoreMessage]) -> list[dict[str, Any]]:
-        """Convert CoreMessages to Laminar-compatible chat format, replacing binary content with placeholders."""
-        result: list[dict[str, Any]] = []
-        for msg in messages:
-            role = msg.role.value
-            if msg.role == Role.TOOL:
-                entry: dict[str, Any] = {"role": role, "content": msg.content if isinstance(msg.content, str) else ""}
-                if msg.tool_call_id:
-                    entry["tool_call_id"] = msg.tool_call_id
-                result.append(entry)
-            elif isinstance(msg.content, str):
-                entry = {"role": role, "content": msg.content}
-                if msg.tool_calls:
-                    entry["tool_calls"] = [{"id": tc.id, "function": tc.function_name, "arguments": tc.arguments} for tc in msg.tool_calls]
-                result.append(entry)
-            elif isinstance(msg.content, tuple):
-                parts: list[dict[str, str]] = []
-                for part in msg.content:
-                    if isinstance(part, TextContent):
-                        parts.append({"type": "text", "text": part.text})
-                    elif isinstance(part, ImageContent):
-                        parts.append({"type": "text", "text": "[image]"})
-                    elif isinstance(part, PDFContent):  # pyright: ignore[reportUnnecessaryIsInstance]
-                        parts.append({"type": "text", "text": "[pdf]"})
-                result.append({"role": role, "content": parts})
-            else:
-                result.append({"role": role, "content": str(msg.content)})
-        return result
-
     # --- Substitution ---
 
     @staticmethod
@@ -523,7 +504,62 @@ class Conversation(BaseModel, Generic[T]):
             messages=self.messages,
             enable_substitutor=self.enable_substitutor,
             extract_result_tags=self.extract_result_tags,
+            include_date=self.include_date,
+            current_date=self.current_date,
         )
+
+    @staticmethod
+    def _metadata_float(metadata: Mapping[str, Any], key: str) -> float:
+        """Read numeric timing metadata defensively, defaulting missing or invalid values to zero."""
+        raw_value = metadata.get(key, 0.0)
+        try:
+            return float(raw_value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _build_failed_replay_payload(
+        self,
+        content: ConversationContent,
+        response_format: type[BaseModel] | None,
+        purpose: str | None,
+        *,
+        error_type: str,
+        error_message: str,
+    ) -> dict[str, Any]:
+        """Build a replay payload for a failed LLM call without a response object."""
+        from ai_pipeline_core.replay._capture import _serialize_send_content, serialize_prior_messages
+
+        response_format_path = f"{response_format.__module__}:{response_format.__qualname__}" if response_format else None
+        model_options = self.model_options.model_dump(exclude_defaults=True) if self.model_options else {}
+        prompt, prompt_documents = _serialize_send_content(content)
+        return {
+            "version": 1,
+            "payload_type": "conversation",
+            "model": self.model,
+            "model_options": model_options,
+            "prompt": prompt,
+            "prompt_documents": prompt_documents,
+            "response_format": response_format_path,
+            "purpose": purpose,
+            "context": [{"$doc_ref": doc.sha256, "class_name": type(doc).__name__, "name": doc.name} for doc in self.context],
+            "history": serialize_prior_messages(self.messages),
+            "enable_substitutor": self.enable_substitutor,
+            "extract_result_tags": self.extract_result_tags,
+            "include_date": self.include_date,
+            "current_date": self.current_date,
+            "original": {
+                "status": "failed",
+                "error_type": error_type,
+                "error_message": error_message,
+                "cost": 0.0,
+                "tokens": {
+                    "input": 0,
+                    "output": 0,
+                    "cached": 0,
+                    "reasoning": 0,
+                },
+            },
+        }
 
     # --- Send methods ---
 
@@ -632,16 +668,18 @@ class Conversation(BaseModel, Generic[T]):
                     raise ValueError(f"Duplicate tool name '{name}'. Tool names must be unique after snake_case conversion.")
                 tool_lookup[name] = t
 
-        # Trace the full send operation — input captures pre-substitution content
         span_name = purpose or f"conversation.{'send_structured' if response_format else 'send'}"
-        span_input = self._core_messages_to_span_input(core_messages)
-        with Laminar.start_as_current_span(f"{span_name}:{self.model}", input=span_input) as span:
-            if substitutor:
-                core_messages = self._apply_substitution(core_messages, substitutor)
+        if substitutor:
+            core_messages = self._apply_substitution(core_messages, substitutor)
 
-            tool_records: tuple[ToolCallRecord, ...] = ()
-            accumulated_tool_messages: list[Any] = []
+        tool_records: tuple[ToolCallRecord, ...] = ()
+        accumulated_tool_messages: list[Any] = []
+        send_started_at = datetime.now(tz=UTC)
+        context_shas = tuple(doc.sha256 for doc in self.context)
+        model_options_json = self.model_options.model_dump_json() if self.model_options else "{}"
+        response_format_class = f"{response_format.__module__}.{response_format.__qualname__}" if response_format else ""
 
+        try:
             if tools and tool_schemas and tool_lookup:
                 # Tool loop — response_format is passed through so the LLM produces structured
                 # output on its final response (whether natural or forced).
@@ -669,46 +707,110 @@ class Conversation(BaseModel, Generic[T]):
                     purpose=purpose,
                     expected_cost=expected_cost,
                 )
+        except (Exception, asyncio.CancelledError) as exc:
+            from ai_pipeline_core.pipeline._execution_context import ConversationTurnData, get_conversation_turns
 
-            if substitutor:
-                response = self._restore_response(response, substitutor, response_format)
-                if accumulated_tool_messages:
-                    accumulated_tool_messages[-1] = response
-
-            Laminar.set_span_output([response.content])
-
-            span_attrs = response.get_laminar_metadata()
-            if response.reasoning_content:
-                span_attrs["reasoning_content"] = response.reasoning_content
-            if response.citations:
-                span_attrs["citations"] = json.dumps(
-                    [{"title": c.title, "url": c.url} for c in response.citations],
-                    indent=2,
+            turns_list = get_conversation_turns()
+            if turns_list is not None:
+                ended_at = datetime.now(tz=UTC)
+                error_type = type(exc).__name__
+                error_message = str(exc)
+                failed_replay_payload_json = ""
+                try:
+                    failed_replay_payload_json = json.dumps(
+                        self._build_failed_replay_payload(
+                            content,
+                            response_format,
+                            purpose,
+                            error_type=error_type,
+                            error_message=error_message,
+                        ),
+                        default=str,
+                    )
+                except Exception:
+                    logger.debug("Failed to build replay payload for failed LLM call", exc_info=True)
+                turns_list.append(
+                    ConversationTurnData(
+                        conversation_id=self._conversation_id,
+                        conversation_name=span_name,
+                        model=self.model,
+                        cost_usd=0.0,
+                        tokens_input=0,
+                        tokens_output=0,
+                        tokens_cache_read=0,
+                        tokens_reasoning=0,
+                        prompt_content=str(content),
+                        response_content="",
+                        reasoning_content="",
+                        started_at=send_started_at,
+                        ended_at=ended_at,
+                        time_taken=(ended_at - send_started_at).total_seconds(),
+                        first_token_time=0.0,
+                        context_document_shas=context_shas,
+                        model_options_json=model_options_json,
+                        response_format_class=response_format_class,
+                        response_id="",
+                        citations_json="",
+                        replay_payload_json=failed_replay_payload_json,
+                        status="failed",
+                        error_type=error_type,
+                        error_message=error_message,
+                    )
                 )
-            if purpose:
-                span_attrs["purpose"] = purpose
-            if tool_records:
-                span_attrs["tool_call_count"] = len(tool_records)
-            span.set_attributes(span_attrs)  # pyright: ignore[reportArgumentType]
+            raise
 
-            # Build and attach replay payload for trace-based replay
+        if substitutor:
+            response = self._restore_response(response, substitutor, response_format)
+            if accumulated_tool_messages:
+                accumulated_tool_messages[-1] = response
+
+        from ai_pipeline_core.pipeline._execution_context import ConversationTurnData, get_conversation_turns
+
+        turns_list = get_conversation_turns()
+        if turns_list is not None:
+            replay_payload_json = ""
             try:
-                span.set_attribute(
-                    "replay.payload",
-                    json.dumps(
-                        self._build_replay_payload(content, response_format, purpose, response),
-                    ),
+                replay_payload_json = json.dumps(
+                    self._build_replay_payload(content, response_format, purpose, response),
+                    default=str,
                 )
             except Exception:
                 logger.debug("Failed to build replay payload", exc_info=True)
+            turns_list.append(
+                ConversationTurnData(
+                    conversation_id=self._conversation_id,
+                    conversation_name=span_name,
+                    model=response.model or self.model,
+                    cost_usd=response.cost or 0.0,
+                    tokens_input=response.usage.prompt_tokens,
+                    tokens_output=response.usage.completion_tokens,
+                    tokens_cache_read=response.usage.cached_tokens,
+                    tokens_reasoning=response.usage.reasoning_tokens,
+                    prompt_content=str(content),
+                    response_content=response.content,
+                    reasoning_content=response.reasoning_content or "",
+                    started_at=send_started_at,
+                    ended_at=datetime.now(tz=UTC),
+                    time_taken=self._metadata_float(response.metadata, "time_taken"),
+                    first_token_time=self._metadata_float(response.metadata, "first_token_time"),
+                    context_document_shas=context_shas,
+                    model_options_json=model_options_json,
+                    response_format_class=response_format_class,
+                    response_id=response.response_id,
+                    citations_json=json.dumps(
+                        [{"title": c.title, "url": c.url, "start_index": c.start_index, "end_index": c.end_index} for c in response.citations],
+                        default=str,
+                    ),
+                    replay_payload_json=replay_payload_json,
+                )
+            )
 
-            # Build final messages tuple
-            if accumulated_tool_messages:
-                final_messages = new_messages + tuple(accumulated_tool_messages)
-            else:
-                final_messages = new_messages + (response,)
+        if accumulated_tool_messages:
+            final_messages = new_messages + tuple(accumulated_tool_messages)
+        else:
+            final_messages = new_messages + (response,)
 
-            return final_messages, response, tool_records
+        return final_messages, response, tool_records
 
     async def send(
         self,

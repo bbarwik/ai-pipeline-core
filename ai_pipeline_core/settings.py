@@ -42,10 +42,6 @@ class Settings(BaseSettings):
     prefect_work_queue_name: str = "default"
     prefect_gcs_bucket: str = ""
 
-    # Observability
-    lmnr_project_api_key: str = ""
-    lmnr_debug: str = ""
-
     # GCS (for Prefect deployment bundles)
     gcs_service_account_file: str = ""  # Path to GCS service account JSON file
 

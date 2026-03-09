@@ -28,7 +28,6 @@ from .conftest import (
     PubsubOutputDoc,
     PublisherWithStore,
     TwoStageDeployment,
-    assert_seq_monotonic,
     assert_valid_cloudevent,
     make_input_doc,
     pull_events,
@@ -37,8 +36,8 @@ from .conftest import (
 
 pytestmark = pytest.mark.pubsub
 
-# 2-flow success: 1 run.started + 2*(flow.started + task.started + task.completed + progress.STARTED + progress.COMPLETED + flow.completed) + 1 run.completed
-TWO_FLOW_SUCCESS_EVENT_COUNT = 14
+# 2-flow success: 1 run.started + 2*(flow.started + task.started + task.completed + flow.completed) + 1 run.completed
+TWO_FLOW_SUCCESS_EVENT_COUNT = 10
 
 
 class TestCloudEventsFormat:
@@ -48,11 +47,10 @@ class TestCloudEventsFormat:
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store,
     ):
         """Every event has required CloudEvents 1.0 fields."""
         deployment = TwoStageDeployment()
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ce-fields-test")
+        await run_pipeline(deployment, real_publisher.publisher, run_id="ce-fields-test")
 
         events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
         for event in events:
@@ -62,11 +60,10 @@ class TestCloudEventsFormat:
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store,
     ):
         """Pub/Sub message attributes match corresponding CloudEvents envelope fields."""
         deployment = TwoStageDeployment()
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ce-attrs-test")
+        await run_pipeline(deployment, real_publisher.publisher, run_id="ce-attrs-test")
 
         events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
         for event in events:
@@ -80,11 +77,10 @@ class TestCloudEventsFormat:
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store,
     ):
         """All CloudEvents id fields are unique valid UUIDs."""
         deployment = TwoStageDeployment()
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ce-ids-test")
+        await run_pipeline(deployment, real_publisher.publisher, run_id="ce-ids-test")
 
         events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
         ids = set()
@@ -97,31 +93,31 @@ class TestCloudEventsFormat:
 
         assert len(ids) == TWO_FLOW_SUCCESS_EVENT_COUNT, f"Expected {TWO_FLOW_SUCCESS_EVENT_COUNT} unique event IDs, got {len(ids)}"
 
-    async def test_seq_is_monotonically_increasing(
+    async def test_timestamps_are_monotonically_increasing(
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store,
     ):
-        """All events have strictly increasing seq values when sorted by seq."""
+        """All event timestamps are non-decreasing when sorted by time."""
         deployment = TwoStageDeployment()
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ce-seq-test")
+        await run_pipeline(deployment, real_publisher.publisher, run_id="ce-seq-test")
 
         events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_SUCCESS_EVENT_COUNT)
-        assert_seq_monotonic(events)
+        timestamps = [datetime.fromisoformat(e.envelope["time"]) for e in events]
+        for i in range(1, len(timestamps)):
+            assert timestamps[i] >= timestamps[i - 1], f"Timestamps not monotonic at index {i}: {timestamps[i].isoformat()} < {timestamps[i - 1].isoformat()}"
 
     async def test_timestamps_are_parseable_iso8601(
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store,
     ):
         """All event timestamps are valid ISO 8601 and fall within the test execution window."""
         margin = timedelta(seconds=30)
         test_start = datetime.now(UTC) - margin
 
         deployment = TwoStageDeployment()
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ce-time-test")
+        await run_pipeline(deployment, real_publisher.publisher, run_id="ce-time-test")
 
         test_end = datetime.now(UTC) + margin
 
@@ -159,11 +155,10 @@ class _SerializationFlow(PipelineFlow):
 
     async def run(
         self,
-        run_id: str,
-        documents: list[PubsubInputDoc],
+        documents: tuple[PubsubInputDoc, ...],
         options: FlowOptions,
-    ) -> list[PubsubOutputDoc]:
-        return [PubsubOutputDoc.derive(from_documents=(documents[0],), name="ser_out.json", content={"serialized": True})]
+    ) -> tuple[PubsubOutputDoc, ...]:
+        return (PubsubOutputDoc.derive(from_documents=(documents[0],), name="ser_out.json", content={"serialized": True}),)
 
 
 class _SerializationDeployment(PipelineDeployment[FlowOptions, _SerializationResult]):
@@ -173,7 +168,7 @@ class _SerializationDeployment(PipelineDeployment[FlowOptions, _SerializationRes
         return [_SerializationFlow()]
 
     @staticmethod
-    def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> _SerializationResult:
+    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> _SerializationResult:
         return _SerializationResult(success=True)
 
 
@@ -184,15 +179,14 @@ class TestNonPrimitiveTypeSerialization:
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store,
     ):
         """datetime, UUID, and Enum fields in DeploymentResult are stringified in the completed event."""
-        # Single-flow: 1 run.started + (flow.started + progress.STARTED + progress.COMPLETED + flow.completed) + 1 run.completed = 6
-        expected_count = 6
+        # Single-flow: 1 run.started + (flow.started + flow.completed) + 1 run.completed = 4
+        expected_count = 4
 
         deployment = _SerializationDeployment()
         doc = make_input_doc()
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, run_id="ser-test", docs=[doc])
+        await run_pipeline(deployment, real_publisher.publisher, run_id="ser-test", docs=[doc])
 
         events = pull_events(pubsub_test_resources, expected_count=expected_count)
         completed_events = [e for e in events if e.event_type == EventType.RUN_COMPLETED]

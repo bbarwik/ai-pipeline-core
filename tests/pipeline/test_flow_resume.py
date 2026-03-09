@@ -16,10 +16,10 @@ class OutputDoc(Document):
 
 class EchoTask(PipelineTask):
     @classmethod
-    async def run(cls, documents: list[InputDoc]) -> list[OutputDoc]:
+    async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
         _ = cls
         source = documents[0]
-        return [OutputDoc.derive(from_documents=(source,), name=f"out_{source.name}", content=source.content)]
+        return (OutputDoc.derive(from_documents=(source,), name=f"out_{source.name}", content=source.content),)
 
 
 @pytest.mark.asyncio
@@ -29,7 +29,7 @@ async def test_as_task_completed_yields_results() -> None:
 
     names: list[str] = []
     with pipeline_test_context():
-        async for handle in as_task_completed(EchoTask.run([first]), EchoTask.run([second])):
+        async for handle in as_task_completed(EchoTask.run((first,)), EchoTask.run((second,))):
             docs = await handle.result()
             names.extend(doc.name for doc in docs)
 

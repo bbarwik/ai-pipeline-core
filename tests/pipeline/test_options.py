@@ -158,9 +158,9 @@ class ChildOptions(FlowOptions):
 
 def test_pipeline_flow_accepts_flowoptions_subclass() -> None:
     class MyFlow(PipelineFlow):
-        async def run(self, run_id: str, documents: list[InDoc], options: ChildOptions) -> list[OutDoc]:
-            _ = (run_id, documents, options)
-            return []
+        async def run(self, documents: tuple[InDoc, ...], options: ChildOptions) -> tuple[OutDoc, ...]:
+            _ = (documents, options)
+            return ()
 
     assert MyFlow.input_document_types == [InDoc]
     assert MyFlow.output_document_types == [OutDoc]
@@ -173,10 +173,9 @@ class TestPipelineFlowWithInheritedOptions:
         """Test PipelineFlow with base FlowOptions."""
 
         class BaseOptionsFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InDoc], options: FlowOptions) -> list[OutDoc]:
-                assert isinstance(run_id, str)
+            async def run(self, documents: tuple[InDoc, ...], options: FlowOptions) -> tuple[OutDoc, ...]:
                 assert isinstance(options, FlowOptions)
-                return []
+                return ()
 
         assert BaseOptionsFlow.input_document_types == [InDoc]
         assert BaseOptionsFlow.output_document_types == [OutDoc]
@@ -190,10 +189,10 @@ class TestPipelineFlowWithInheritedOptions:
             enable_logging: bool = Field(default=True)
 
         class CustomOptionsFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InDoc], options: CustomFlowOptions) -> list[OutDoc]:
+            async def run(self, documents: tuple[InDoc, ...], options: CustomFlowOptions) -> tuple[OutDoc, ...]:
                 assert isinstance(options, CustomFlowOptions)
                 assert isinstance(options, FlowOptions)
-                return []
+                return ()
 
         assert CustomOptionsFlow.input_document_types == [InDoc]
         assert CustomOptionsFlow.output_document_types == [OutDoc]
@@ -214,8 +213,8 @@ class TestPipelineFlowWithInheritedOptions:
             metadata: dict[str, Any] = Field(default_factory=dict)
 
         class AdvancedFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InDoc], options: AdvancedFlowOptions) -> list[OutDoc]:
-                return []
+            async def run(self, documents: tuple[InDoc, ...], options: AdvancedFlowOptions) -> tuple[OutDoc, ...]:
+                return ()
 
         assert AdvancedFlow.input_document_types == [InDoc]
         assert AdvancedFlow.output_document_types == [OutDoc]
@@ -227,9 +226,9 @@ class TestPipelineFlowWithInheritedOptions:
             required_field: str  # No default - required field
 
         class StrictFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InDoc], options: StrictFlowOptions) -> list[OutDoc]:
+            async def run(self, documents: tuple[InDoc, ...], options: StrictFlowOptions) -> tuple[OutDoc, ...]:
                 assert options.required_field == "test-value"
-                return []
+                return ()
 
         assert StrictFlow.input_document_types == [InDoc]
 
@@ -248,8 +247,8 @@ class TestPipelineFlowWithInheritedOptions:
             feature_flags: dict[str, bool] = Field(default_factory=dict)
 
         class MultiLevelFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InDoc], options: SpecificProjectOptions) -> list[OutDoc]:
-                return []
+            async def run(self, documents: tuple[InDoc, ...], options: SpecificProjectOptions) -> tuple[OutDoc, ...]:
+                return ()
 
         assert MultiLevelFlow.input_document_types == [InDoc]
         assert MultiLevelFlow.output_document_types == [OutDoc]
@@ -266,8 +265,8 @@ class TestPipelineFlowWithInheritedOptions:
             search_models: list[str] = Field(default_factory=lambda: SEARCH_MODELS.copy())
 
         class FieldFlow(PipelineFlow):
-            async def run(self, run_id: str, documents: list[InDoc], options: ProjectFlowOptions) -> list[OutDoc]:
-                return []
+            async def run(self, documents: tuple[InDoc, ...], options: ProjectFlowOptions) -> tuple[OutDoc, ...]:
+                return ()
 
         assert FieldFlow.input_document_types == [InDoc]
         assert FieldFlow.output_document_types == [OutDoc]

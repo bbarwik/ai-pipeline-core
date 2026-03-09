@@ -1,14 +1,4 @@
 """Observability system for AI pipelines.
 
-Contains local debug tracing, ClickHouse-based tracking, initialization utilities,
-and the ``ai-trace`` CLI for trace listing, inspection, and download.
+Contains the ``ai-trace`` CLI entry points backed by the database execution tree.
 """
-
-from ai_pipeline_core.observability.tracing import TraceInfo, TraceLevel, set_trace_cost, trace
-
-__all__ = [
-    "TraceInfo",
-    "TraceLevel",
-    "set_trace_cost",
-    "trace",
-]

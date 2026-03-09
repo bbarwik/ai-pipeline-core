@@ -5,7 +5,6 @@
 import pytest
 
 from ai_pipeline_core import (
-    Document,
     FlowOptions,
     PipelineDeployment,
     RemoteDeployment,
@@ -48,11 +47,7 @@ class SampleResult(DeploymentResult):
     report: str = ""
 
 
-class SampleInputDoc(Document):
-    """Input for testing extract_generic_params."""
-
-
-class SampleRemote(RemoteDeployment[SampleInputDoc, FlowOptions, SampleResult]):
+class SampleRemote(RemoteDeployment[FlowOptions, SampleResult]):
     """Remote deployment for testing extract_generic_params."""
 
 
@@ -60,12 +55,11 @@ class TestExtractGenericParams:
     """Test extraction of generic type parameters from Generic subclasses."""
 
     def test_extracts_remote_deployment_params(self):
-        """Test correct extraction from RemoteDeployment subclass (3 params)."""
+        """Test correct extraction from RemoteDeployment subclass (2 params)."""
         params = extract_generic_params(SampleRemote, RemoteDeployment)
-        assert len(params) == 3
-        assert params[0] is SampleInputDoc
-        assert params[1] is FlowOptions
-        assert params[2] is SampleResult
+        assert len(params) == 2
+        assert params[0] is FlowOptions
+        assert params[1] is SampleResult
 
     def test_returns_empty_for_non_generic(self):
         """Test returns empty tuple for class without generic params."""
@@ -75,37 +69,6 @@ class TestExtractGenericParams:
 
         result = extract_generic_params(Plain, PipelineDeployment)
         assert result == ()
-
-
-# ---------------------------------------------------------------------------
-# Tests for init_observability_best_effort (coverage for _helpers.py lines 13-23)
-# ---------------------------------------------------------------------------
-
-from unittest.mock import patch
-
-
-class TestInitObservabilityBestEffort:
-    @patch("ai_pipeline_core.observability._initialization.initialize_observability")
-    def test_success(self, mock_init):
-        from ai_pipeline_core.deployment._helpers import init_observability_best_effort
-
-        init_observability_best_effort()
-        mock_init.assert_called_once()
-
-    @patch("ai_pipeline_core.observability.tracing._initialise_laminar")
-    @patch("ai_pipeline_core.observability._initialization.initialize_observability", side_effect=RuntimeError("fail"))
-    def test_fallback_to_laminar(self, mock_init, mock_laminar):
-        from ai_pipeline_core.deployment._helpers import init_observability_best_effort
-
-        init_observability_best_effort()
-        mock_laminar.assert_called_once()
-
-    @patch("ai_pipeline_core.observability.tracing._initialise_laminar", side_effect=ImportError("no lmnr"))
-    @patch("ai_pipeline_core.observability._initialization.initialize_observability", side_effect=RuntimeError("fail"))
-    def test_both_fail_swallowed(self, mock_init, mock_laminar):
-        from ai_pipeline_core.deployment._helpers import init_observability_best_effort
-
-        init_observability_best_effort()  # should not raise
 
 
 # ---------------------------------------------------------------------------

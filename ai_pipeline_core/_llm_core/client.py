@@ -14,7 +14,6 @@ import json
 import time
 from typing import Any, TypeVar
 
-from lmnr import Laminar
 from openai import AsyncOpenAI
 from openai.lib.streaming.chat import ChunkEvent, ContentDeltaEvent, ContentDoneEvent
 from openai.types.chat import ChatCompletionMessageParam
@@ -438,31 +437,28 @@ async def _generate_impl(
     for attempt in range(total_attempts):
         try:
             async with AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url) as client:
-                with Laminar.start_as_current_span(f"{purpose}:{model}" if purpose else model, span_type="LLM", input=api_messages) as span:
-                    if model_options.stream:
-                        response, metadata, stream_usage = await _generate_streaming(client, model, api_messages, completion_kwargs)
-                    else:
-                        response, metadata, stream_usage = await _generate_non_streaming(client, model, api_messages, completion_kwargs)
+                if model_options.stream:
+                    response, metadata, stream_usage = await _generate_streaming(client, model, api_messages, completion_kwargs)
+                else:
+                    response, metadata, stream_usage = await _generate_non_streaming(client, model, api_messages, completion_kwargs)
 
-                    model_response = _build_model_response(response, metadata, stream_usage, model, response_format)
+                model_response = _build_model_response(response, metadata, stream_usage, model, response_format)
 
-                    span_attrs = model_response.get_laminar_metadata()
+                if expected_cost is not None or purpose:
+                    metadata_update: dict[str, Any] = dict(model_response.metadata)
                     if expected_cost is not None:
-                        span_attrs["expected_cost"] = expected_cost
+                        metadata_update["expected_cost"] = expected_cost
                     if purpose:
-                        span_attrs["purpose"] = purpose
-                    span.set_attributes(span_attrs)  # pyright: ignore[reportArgumentType]
+                        metadata_update["purpose"] = purpose
+                    model_response = model_response.model_copy(update={"metadata": metadata_update})
 
-                    # Detect output degeneration (token repetition loops) — skip for tool call responses
-                    if not model_response.has_tool_calls and (explanation := detect_output_degeneration(model_response.content)):
-                        raise OutputDegenerationError(
-                            f"model={model}, tokens={model_response.usage.completion_tokens}, content_length={len(model_response.content)}: {explanation}"
-                        )
+                # Detect output degeneration (token repetition loops) — skip for tool call responses
+                if not model_response.has_tool_calls and (explanation := detect_output_degeneration(model_response.content)):
+                    raise OutputDegenerationError(
+                        f"model={model}, tokens={model_response.usage.completion_tokens}, content_length={len(model_response.content)}: {explanation}"
+                    )
 
-                    outputs = [o for o in (model_response.reasoning_content, model_response.content) if o]
-                    Laminar.set_span_output(outputs if len(outputs) > 1 else model_response.content)
-
-                    return model_response
+                return model_response
 
         except TimeoutError:
             logger.warning("LLM generation timeout (attempt %d/%d)", attempt + 1, total_attempts)

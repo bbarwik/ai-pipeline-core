@@ -1,4 +1,4 @@
-"""Tests for PubSubPublisher, TimestampSequencer, _classify_error, and CloudEvents envelope."""
+"""Tests for PubSubPublisher, _classify_error, and CloudEvents envelope."""
 
 # pyright: reportPrivateUsage=false
 
@@ -10,56 +10,20 @@ import pytest
 
 from ai_pipeline_core.deployment._pubsub import (
     CLOUDEVENTS_SPEC_VERSION,
-    CRITICAL_MAX_RETRIES,
     MAX_PUBSUB_MESSAGE_BYTES,
+    MAX_RETRIES,
     PubSubPublisher,
     ResultTooLargeError,
-    TimestampSequencer,
 )
 from ai_pipeline_core.deployment._types import (
     ErrorCode,
     EventType,
-    ProgressEvent,
     RunCompletedEvent,
     RunFailedEvent,
     RunStartedEvent,
 )
 from ai_pipeline_core.deployment.base import _classify_error
-from ai_pipeline_core.deployment._contract import FlowStatus
 from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
-
-
-class TestTimestampSequencer:
-    """Test monotonic microsecond sequencer."""
-
-    def test_monotonically_increasing(self):
-        """Successive calls produce strictly increasing values."""
-        seq = TimestampSequencer()
-        values = [seq.next() for _ in range(100)]
-        assert values == sorted(values)
-        assert len(set(values)) == 100
-
-    def test_microsecond_resolution(self):
-        """Values are in microsecond range (>10^15)."""
-        seq = TimestampSequencer()
-        value = seq.next()
-        assert value > 10**15
-
-    def test_restart_safe(self):
-        """A new sequencer produces values >= prior ones (wall clock provides ordering)."""
-        seq1 = TimestampSequencer()
-        val1 = seq1.next()
-        seq2 = TimestampSequencer()
-        val2 = seq2.next()
-        assert val2 >= val1
-
-    def test_rapid_calls_dont_collide(self):
-        """Rapid successive calls never produce duplicates."""
-        seq = TimestampSequencer()
-        values = set()
-        for _ in range(1000):
-            values.add(seq.next())
-        assert len(values) == 1000
 
 
 class TestClassifyError:
@@ -116,7 +80,7 @@ def _make_pubsub_publisher() -> tuple[PubSubPublisher, MagicMock]:
     pub._client = mock_client
     pub._topic_path = "projects/test/topics/events"
     pub._service_type = "research"
-    pub._sequencer = TimestampSequencer()
+    pub._seq = 0
 
     return pub, mock_client
 
@@ -127,7 +91,7 @@ class TestPubSubPublisher:
     def test_build_envelope_structure(self):
         """_build_envelope produces a valid CloudEvents 1.0 envelope."""
         pub, _ = _make_pubsub_publisher()
-        data_bytes = pub._build_envelope(EventType.RUN_STARTED, "run-1", {"flow_run_id": "fr-1"})
+        data_bytes = pub._build_envelope(EventType.RUN_STARTED, "run-1", {"node_id": "node-1"})
         envelope = json.loads(data_bytes)
 
         assert envelope["specversion"] == CLOUDEVENTS_SPEC_VERSION
@@ -140,20 +104,18 @@ class TestPubSubPublisher:
 
         data = envelope["data"]
         assert data["run_id"] == "run-1"
-        assert "seq" in data
-        assert data["flow_run_id"] == "fr-1"
+        assert data["node_id"] == "node-1"
 
-    def test_build_envelope_seq_is_monotonic(self):
-        """Sequential envelopes have strictly increasing seq values."""
-        pub, _ = _make_pubsub_publisher()
-        env1 = json.loads(pub._build_envelope(EventType.RUN_STARTED, "run-1", {}))
-        env2 = json.loads(pub._build_envelope(EventType.PROGRESS, "run-1", {}))
-        assert env2["data"]["seq"] > env1["data"]["seq"]
-
-    async def test_publish_started_is_critical(self):
-        """publish_run_started uses critical publish path."""
+    async def test_publish_started(self):
+        """publish_run_started publishes run.started event."""
         pub, mock_client = _make_pubsub_publisher()
-        event = RunStartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
+        event = RunStartedEvent(
+            run_id="run-1",
+            node_id="node-1",
+            root_deployment_id="root-1",
+            parent_deployment_task_id=None,
+            run_scope="run-1:abc",
+        )
 
         mock_future = asyncio.Future()
         mock_future.set_result("msg-id")
@@ -163,28 +125,6 @@ class TestPubSubPublisher:
         mock_client.publish.assert_called_once()
         call_kwargs = mock_client.publish.call_args
         assert call_kwargs[1]["event_type"] == "run.started"
-
-    async def test_publish_progress_is_noncritical(self):
-        """publish_progress uses non-critical publish path."""
-        pub, mock_client = _make_pubsub_publisher()
-        event = ProgressEvent(
-            run_id="run-1",
-            flow_run_id="fr-1",
-            flow_name="extract",
-            step=1,
-            total_steps=3,
-            progress=0.33,
-            step_progress=0.5,
-            status=FlowStatus.STARTED,
-            message="test",
-        )
-
-        mock_future = asyncio.Future()
-        mock_future.set_result("msg-id")
-        mock_client.publish.return_value = mock_future
-
-        await pub.publish_progress(event)
-        mock_client.publish.assert_called_once()
 
     async def test_publish_heartbeat(self):
         """publish_heartbeat publishes run.heartbeat event."""
@@ -221,10 +161,10 @@ class TestPubSubPublisher:
         huge_result = {"data": "x" * (MAX_PUBSUB_MESSAGE_BYTES + 1)}
         event = RunCompletedEvent(
             run_id="run-1",
-            flow_run_id="fr-1",
+            node_id="node-1",
+            root_deployment_id="root-1",
+            parent_deployment_task_id=None,
             result=huge_result,
-            chain_context={"version": 1},
-            actual_cost=0.0,
         )
 
         with pytest.raises(ResultTooLargeError):
@@ -232,12 +172,14 @@ class TestPubSubPublisher:
 
         mock_client.publish.assert_not_called()
 
-    async def test_publish_failed_is_critical(self):
-        """publish_run_failed uses critical publish path."""
+    async def test_publish_failed(self):
+        """publish_run_failed publishes run.failed event."""
         pub, mock_client = _make_pubsub_publisher()
         event = RunFailedEvent(
             run_id="run-1",
-            flow_run_id="fr-1",
+            node_id="node-1",
+            root_deployment_id="root-1",
+            parent_deployment_task_id=None,
             error_code=ErrorCode.PIPELINE_ERROR,
             error_message="something broke",
         )
@@ -261,8 +203,8 @@ class TestPubSubPublisher:
             "run_id": "run-1",
         }
 
-    async def test_noncritical_failure_logs_warning(self):
-        """Non-critical publish failure is logged but does not raise."""
+    async def test_publish_failure_logs_warning(self):
+        """Publish failure is logged but does not raise (fire-and-forget)."""
         pub, mock_client = _make_pubsub_publisher()
 
         mock_future = asyncio.Future()
@@ -270,10 +212,11 @@ class TestPubSubPublisher:
         mock_client.publish.return_value = mock_future
 
         # Should not raise
-        await pub.publish_heartbeat("run-1")
+        with patch("ai_pipeline_core.deployment._pubsub.asyncio.sleep", new_callable=AsyncMock):
+            await pub.publish_heartbeat("run-1")
 
-    async def test_critical_retries_on_failure(self):
-        """Critical publish retries with exponential backoff."""
+    async def test_retries_on_failure(self):
+        """Publish retries with exponential backoff."""
         pub, mock_client = _make_pubsub_publisher()
 
         # First call fails, second succeeds
@@ -283,15 +226,21 @@ class TestPubSubPublisher:
         success_future.set_result("msg-id")
         mock_client.publish.side_effect = [fail_future, success_future]
 
-        event = RunStartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
+        event = RunStartedEvent(
+            run_id="run-1",
+            node_id="node-1",
+            root_deployment_id="root-1",
+            parent_deployment_task_id=None,
+            run_scope="run-1:abc",
+        )
 
         with patch("ai_pipeline_core.deployment._pubsub.asyncio.sleep", new_callable=AsyncMock):
             await pub.publish_run_started(event)
 
         assert mock_client.publish.call_count == 2
 
-    async def test_critical_exhausts_retries(self):
-        """Critical publish raises after exhausting all retries."""
+    async def test_exhausts_retries_without_raising(self):
+        """Publish logs warning after exhausting all retries (fire-and-forget)."""
         pub, mock_client = _make_pubsub_publisher()
 
         # All calls fail
@@ -302,10 +251,16 @@ class TestPubSubPublisher:
 
         mock_client.publish.side_effect = make_fail_future
 
-        event = RunStartedEvent(run_id="run-1", flow_run_id="fr-1", run_scope="run-1:abc")
+        event = RunStartedEvent(
+            run_id="run-1",
+            node_id="node-1",
+            root_deployment_id="root-1",
+            parent_deployment_task_id=None,
+            run_scope="run-1:abc",
+        )
 
         with patch("ai_pipeline_core.deployment._pubsub.asyncio.sleep", new_callable=AsyncMock):
-            with pytest.raises(RuntimeError, match=f"failed after {CRITICAL_MAX_RETRIES} attempts"):
-                await pub.publish_run_started(event)
+            # Should not raise — fire-and-forget on final failure
+            await pub.publish_run_started(event)
 
-        assert mock_client.publish.call_count == CRITICAL_MAX_RETRIES
+        assert mock_client.publish.call_count == MAX_RETRIES

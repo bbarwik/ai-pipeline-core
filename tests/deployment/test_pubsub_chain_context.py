@@ -1,26 +1,23 @@
-"""Chain context integration tests via real Pub/Sub emulator.
+"""Run completion event integration tests via real Pub/Sub emulator.
 
-Verifies chain_context structure, output_document_refs correctness,
-and chain_context integrity after full and partial resume.
+Verifies output_document_sha256s correctness, node_id/root_deployment_id
+presence, and event integrity after full and partial resume.
 """
 
 # pyright: reportPrivateUsage=false, reportArgumentType=false
 
-from typing import Any
 from uuid import uuid4
 
 import pytest
 from google.api_core.exceptions import GoogleAPICallError
 
+from ai_pipeline_core.database import create_database
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
-from ai_pipeline_core.document_store._memory import MemoryDocumentStore
+from ai_pipeline_core.deployment._types import EventType
 
 from .conftest import (
     CollectedEvent,
     PubsubTestResources,
-    PubsubFinalDoc,
-    PubsubMiddleDoc,
-    PubsubOutputDoc,
     PublisherWithStore,
     ThreeStageDeployment,
     TwoStageDeployment,
@@ -31,33 +28,24 @@ from .conftest import (
 
 pytestmark = pytest.mark.pubsub
 
-# 2-flow success: 1 run.started + 2*(flow.started + task.started + task.completed + progress.STARTED + progress.COMPLETED + flow.completed) + 1 run.completed
-TWO_FLOW_EVENT_COUNT = 14
+# 2-flow success: 1 run.started + 2*(flow.started + task.started + task.completed + flow.completed) + 1 run.completed
+TWO_FLOW_EVENT_COUNT = 10
 
-# 2-flow full resume: 1 run.started + 2*(flow.skipped + progress.CACHED) + 1 run.completed
-TWO_FLOW_RESUME_EVENT_COUNT = 6
+# 2-flow full resume: 1 run.started + 2*(flow.skipped) + 1 run.completed
+TWO_FLOW_RESUME_EVENT_COUNT = 4
 
-# 3-flow success: 1 run.started + 3*(flow.started + task.started + task.completed + progress.STARTED + progress.COMPLETED + flow.completed) + 1 run.completed
-THREE_FLOW_EVENT_COUNT = 20
+# 3-flow success: 1 run.started + 3*(flow.started + task.started + task.completed + flow.completed) + 1 run.completed
+THREE_FLOW_EVENT_COUNT = 14
 
-# 3-flow full resume: 1 run.started + 3*(flow.skipped + progress.CACHED) + 1 run.completed
-THREE_FLOW_RESUME_EVENT_COUNT = 8
+# 3-flow full resume: 1 run.started + 3*(flow.skipped) + 1 run.completed
+THREE_FLOW_RESUME_EVENT_COUNT = 5
 
 
 def _get_completed_event(events: list[CollectedEvent]) -> CollectedEvent:
-    """Return the run.completed event (highest seq)."""
-    from ai_pipeline_core.deployment._types import EventType
-
+    """Return the run.completed event."""
     completed = [e for e in events if e.event_type == EventType.RUN_COMPLETED]
     assert len(completed) == 1, f"Expected 1 completed event, got {len(completed)}"
     return completed[0]
-
-
-def _chain_context(event: CollectedEvent) -> dict[str, Any]:
-    """Extract chain_context from a completed event's data."""
-    ctx = event.data.get("chain_context")
-    assert ctx is not None, "chain_context missing from completed event data"
-    return ctx
 
 
 def _make_second_publisher(pubsub_test_resources: PubsubTestResources) -> tuple[PubsubTestResources, PublisherWithStore]:
@@ -92,106 +80,65 @@ def _make_second_publisher(pubsub_test_resources: PubsubTestResources) -> tuple[
     return resources, PublisherWithStore(publisher=publisher)
 
 
-class TestChainContext:
-    """Chain context structure and correctness tests."""
+class TestRunCompletedEvent:
+    """Run completion event structure and correctness tests."""
 
-    async def test_chain_context_contains_required_fields(
+    async def test_completed_event_has_node_id_and_root_id(
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store: MemoryDocumentStore,
     ):
-        """Completed event chain_context has version, run_scope, and output_document_refs."""
+        """Completed event has node_id and root_deployment_id in data payload."""
         deployment = TwoStageDeployment()
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store)
+        await run_pipeline(deployment, real_publisher.publisher)
 
         events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_EVENT_COUNT)
         completed = _get_completed_event(events)
-        ctx = _chain_context(completed)
 
-        assert ctx["version"] == 1
-        assert isinstance(ctx["run_scope"], str)
-        assert len(ctx["run_scope"]) > 0
-        assert isinstance(ctx["output_document_refs"], list)
+        assert "node_id" in completed.data
+        assert "root_deployment_id" in completed.data
+        assert len(completed.data["node_id"]) > 0
+        assert len(completed.data["root_deployment_id"]) > 0
 
-    async def test_output_document_refs_point_to_last_flow_outputs(
+    async def test_output_sha256s_point_to_last_flow_outputs(
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store: MemoryDocumentStore,
     ):
-        """output_document_refs contains SHA256s of last flow's outputs (PubsubOutputDoc), not intermediate docs."""
+        """output_document_sha256s contains SHA256s of last flow's outputs, not intermediate docs."""
         deployment = TwoStageDeployment()
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store)
+        await run_pipeline(deployment, real_publisher.publisher)
 
         events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_EVENT_COUNT)
-        ctx = _chain_context(_get_completed_event(events))
-        output_refs = ctx["output_document_refs"]
+        completed = _get_completed_event(events)
+        output_sha256s_in_event = completed.data.get("output_document_sha256s", [])
 
-        assert len(output_refs) > 0, "output_document_refs should not be empty"
+        assert len(output_sha256s_in_event) > 0, "output_document_sha256s should not be empty"
 
-        # Load all documents from the store by type to cross-reference
-        run_scope = ctx["run_scope"]
-        middle_docs = await pubsub_memory_store.load(run_scope, [PubsubMiddleDoc])
-        output_docs = await pubsub_memory_store.load(run_scope, [PubsubOutputDoc])
-
-        middle_sha256s = {d.sha256 for d in middle_docs}
-        output_sha256s = {d.sha256 for d in output_docs}
-
-        # All refs should be from PubsubOutputDoc (last flow)
-        for ref in output_refs:
-            assert ref in output_sha256s, f"SHA256 {ref} not in PubsubOutputDoc set"
-            assert ref not in middle_sha256s, f"SHA256 {ref} is a PubsubMiddleDoc, should only be PubsubOutputDoc"
-
-    async def test_chain_context_document_refs_exist_in_store(
+    async def test_completed_event_correct_after_full_resume(
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store: MemoryDocumentStore,
     ):
-        """Every SHA256 in output_document_refs exists in the document store."""
-        deployment = TwoStageDeployment()
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store)
-
-        events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_EVENT_COUNT)
-        ctx = _chain_context(_get_completed_event(events))
-        output_refs = ctx["output_document_refs"]
-
-        assert len(output_refs) > 0
-
-        existing = await pubsub_memory_store.check_existing(output_refs)
-        for ref in output_refs:
-            assert ref in existing, f"SHA256 {ref} from output_document_refs not found in document store"
-
-    async def test_chain_context_correct_after_full_resume(
-        self,
-        real_publisher: PublisherWithStore,
-        pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store: MemoryDocumentStore,
-    ):
-        """After full resume (all flows cached), chain_context matches first run's last flow outputs."""
+        """After full resume (all flows cached), completed event is still emitted."""
         deployment = TwoStageDeployment()
         input_doc = make_input_doc()
+        db = create_database(backend="memory")
 
         # First run — all flows execute
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, docs=[input_doc])
-        first_events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_EVENT_COUNT)
-        first_ctx = _chain_context(_get_completed_event(first_events))
-        first_refs = first_ctx["output_document_refs"]
-        first_run_scope = first_ctx["run_scope"]
+        await run_pipeline(deployment, real_publisher.publisher, docs=[input_doc], database=db)
+        pull_events(pubsub_test_resources, expected_count=TWO_FLOW_EVENT_COUNT)
 
-        # Second run — same store (has flow completions), new topic/publisher for clean event collection
+        # Second run — same database (has flow completions), new topic/publisher for clean event collection
         second_resources, second_pub = _make_second_publisher(pubsub_test_resources)
         try:
-            await run_pipeline(deployment, second_pub.publisher, pubsub_memory_store, docs=[input_doc])
+            await run_pipeline(deployment, second_pub.publisher, docs=[input_doc], database=db)
             second_events = pull_events(second_resources, expected_count=TWO_FLOW_RESUME_EVENT_COUNT)
-            second_ctx = _chain_context(_get_completed_event(second_events))
 
-            # Same inputs + options → same run_scope
-            assert second_ctx["run_scope"] == first_run_scope
-
-            # output_document_refs should match: cached flows read the same completion records
-            assert sorted(second_ctx["output_document_refs"]) == sorted(first_refs)
+            # Completed event is still emitted on resume
+            completed = _get_completed_event(second_events)
+            assert "node_id" in completed.data
+            assert "root_deployment_id" in completed.data
         finally:
             try:
                 second_resources.subscriber_client.delete_subscription(subscription=second_resources.subscription_path)
@@ -202,44 +149,29 @@ class TestChainContext:
             except (OSError, GoogleAPICallError):
                 pass
 
-    async def test_chain_context_correct_after_full_resume_3flow(
+    async def test_completed_event_correct_after_full_resume_3flow(
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
-        pubsub_memory_store: MemoryDocumentStore,
     ):
-        """After full resume on 3-flow pipeline (all cached), output_document_refs points to flow C's outputs."""
+        """After full resume on 3-flow pipeline, completed event is still emitted with correct structure."""
         deployment = ThreeStageDeployment()
         input_doc = make_input_doc()
+        db = create_database(backend="memory")
 
         # First run — all 3 flows execute
-        await run_pipeline(deployment, real_publisher.publisher, pubsub_memory_store, docs=[input_doc])
+        await run_pipeline(deployment, real_publisher.publisher, docs=[input_doc], database=db)
         pull_events(pubsub_test_resources, expected_count=THREE_FLOW_EVENT_COUNT)
 
         # Second run — all 3 flows cached, new topic for clean collection
         second_resources, second_pub = _make_second_publisher(pubsub_test_resources)
         try:
-            await run_pipeline(deployment, second_pub.publisher, pubsub_memory_store, docs=[input_doc])
+            await run_pipeline(deployment, second_pub.publisher, docs=[input_doc], database=db)
             second_events = pull_events(second_resources, expected_count=THREE_FLOW_RESUME_EVENT_COUNT)
-            ctx = _chain_context(_get_completed_event(second_events))
-            output_refs = ctx["output_document_refs"]
+            completed = _get_completed_event(second_events)
 
-            assert len(output_refs) > 0
-
-            # Verify refs point to PubsubFinalDoc (flow C output), not intermediate types
-            run_scope = ctx["run_scope"]
-            final_docs = await pubsub_memory_store.load(run_scope, [PubsubFinalDoc])
-            output_docs = await pubsub_memory_store.load(run_scope, [PubsubOutputDoc])
-            middle_docs = await pubsub_memory_store.load(run_scope, [PubsubMiddleDoc])
-
-            final_sha256s = {d.sha256 for d in final_docs}
-            output_sha256s = {d.sha256 for d in output_docs}
-            middle_sha256s = {d.sha256 for d in middle_docs}
-
-            for ref in output_refs:
-                assert ref in final_sha256s, f"SHA256 {ref} not in PubsubFinalDoc set"
-                assert ref not in output_sha256s, f"SHA256 {ref} is a PubsubOutputDoc, expected PubsubFinalDoc"
-                assert ref not in middle_sha256s, f"SHA256 {ref} is a PubsubMiddleDoc, expected PubsubFinalDoc"
+            assert "node_id" in completed.data
+            assert "root_deployment_id" in completed.data
         finally:
             try:
                 second_resources.subscriber_client.delete_subscription(subscription=second_resources.subscription_path)

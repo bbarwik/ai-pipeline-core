@@ -8,15 +8,12 @@ import pytest
 from ai_pipeline_core.deployment._resolve import (
     AttachmentInput,
     DocumentInput,
-    OutputDocument,
     _derive_name,
     _is_ip_private,
-    build_output_document,
     resolve_document_inputs,
 )
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._context import _suppress_document_registration
-from ai_pipeline_core.documents.attachment import Attachment
 
 
 class ResolveDoc(Document):
@@ -133,7 +130,7 @@ class TestDeriveName:
 class TestResolveDocumentInputs:
     async def test_empty_inputs(self):
         result = await resolve_document_inputs([], [ResolveDoc])
-        assert result == []
+        assert result == ()
 
     async def test_inline_content(self):
         inputs = [DocumentInput(content="hello", name="doc.txt", class_name="ResolveDoc")]
@@ -209,35 +206,6 @@ class TestResolveDocumentInputs:
                 [ResolveDoc],
                 start_step_input_types=[ResolveDoc],
             )
-
-
-# ---------------------------------------------------------------------------
-# build_output_document
-# ---------------------------------------------------------------------------
-
-
-class TestBuildOutputDocument:
-    def test_text_document(self):
-        doc = ResolveDoc(name="out.txt", content=b"result text")
-        out = build_output_document(doc)
-        assert isinstance(out, OutputDocument)
-        assert out.name == "out.txt"
-        assert out.class_name == "ResolveDoc"
-        assert out.content == "result text"
-
-    def test_with_text_attachment(self):
-        att = Attachment(name="notes.txt", content=b"notes here")
-        doc = ResolveDoc(name="out.txt", content=b"main", attachments=(att,))
-        out = build_output_document(doc)
-        assert len(out.attachments) == 1
-        assert out.attachments[0].name == "notes.txt"
-        assert out.attachments[0].content == "notes here"
-
-    def test_binary_document_content_none(self):
-        doc = ResolveDoc(name="image.png", content=b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
-        out = build_output_document(doc)
-        # Binary (non-text) documents have content=None in output
-        assert out.content is None or isinstance(out.content, str)
 
 
 # ---------------------------------------------------------------------------

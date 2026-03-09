@@ -32,8 +32,9 @@ rules:
   # PromptManager was removed — use PromptSpec + send_spec() from prompt_compiler
   - id: no-prompt-manager-import
     pattern-either:
-      - pattern: from ai_pipeline_core import ..., PromptManager, ...
-      - pattern: from ai_pipeline_core.prompt_manager import ...
+      - pattern: from ai_pipeline_core import PromptManager
+      - pattern: from ai_pipeline_core import PromptManager as $ALIAS
+      - pattern-regex: 'from\s+ai_pipeline_core\.prompt_manager\s+import\s+.+'
     message: "PromptManager was removed. Use PromptSpec + send_spec() from prompt_compiler instead."
     severity: ERROR
     languages: [python]

@@ -13,7 +13,6 @@ from ai_pipeline_core import (
     FlowOptions,
     PipelineDeployment,
 )
-from ai_pipeline_core.observability.tracing import trace
 from ai_pipeline_core.pipeline import PipelineFlow
 
 # --- Module-level test infrastructure ---
@@ -30,8 +29,8 @@ class SampleOutputDoc(Document):
 class SampleFlow(PipelineFlow):
     """Sample flow for testing."""
 
-    async def run(self, run_id: str, documents: list[SampleInputDoc], options: FlowOptions) -> list[SampleOutputDoc]:
-        return []
+    async def run(self, documents: tuple[SampleInputDoc, ...], options: FlowOptions) -> tuple[SampleOutputDoc, ...]:
+        return ()
 
 
 class SampleResult(DeploymentResult):
@@ -47,7 +46,7 @@ class SamplePipeline(PipelineDeployment[FlowOptions, SampleResult]):
         return [SampleFlow()]
 
     @staticmethod
-    def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> SampleResult:
         return SampleResult(success=True, report="done")
 
 
@@ -121,23 +120,13 @@ class TestIsAlreadyTraced:
         assert is_already_traced(my_func) is False
 
     def test_true_for_traced(self):
-        """Test returns True for traced function."""
+        """Test returns True for function with __is_traced__ attribute."""
         from ai_pipeline_core.pipeline._type_validation import is_already_traced
 
-        @trace(level="always")
         async def my_func() -> None:
             pass
 
-        assert is_already_traced(my_func) is True
-
-    def test_detects_nested_trace(self):
-        """Test detects trace with double decoration."""
-        from ai_pipeline_core.pipeline._type_validation import is_already_traced
-
-        @trace(level="always")
-        @trace(level="always")
-        async def my_func() -> None:
-            pass
+        my_func.__is_traced__ = True  # type: ignore[attr-defined]
 
         assert is_already_traced(my_func) is True
 
@@ -145,9 +134,10 @@ class TestIsAlreadyTraced:
         """Test detects trace through __wrapped__ chain."""
         from ai_pipeline_core.pipeline._type_validation import is_already_traced
 
-        @trace(level="always")
         async def base_func() -> None:
             pass
+
+        base_func.__is_traced__ = True  # type: ignore[attr-defined]
 
         @wraps(base_func)
         async def wrapper() -> None:
@@ -180,115 +170,38 @@ def _make_flow_run(
     return fr
 
 
-def _progress_labels(progress: float, flow_name: str = "", message: str = "") -> dict[str, Any]:
-    """Build progress.* labels matching what PipelineDeployment writes."""
-    return {
-        "progress.progress": progress,
-        "progress.flow_name": flow_name,
-        "progress.message": message,
-    }
-
-
 class TestPollRemoteFlowRun:
-    """Test _poll_remote_flow_run with and without callback."""
+    """Test _poll_remote_flow_run polls until final state."""
 
-    async def test_callback_receives_progress(self):
-        """Callback is called with fractions from remote labels."""
+    async def test_returns_result_on_completion(self):
+        """Poll returns result when flow run completes."""
         from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
 
         client = AsyncMock()
         client.read_flow_run = AsyncMock(
             side_effect=[
-                _make_flow_run(labels=_progress_labels(0.3, "plan", "Planning")),
-                _make_flow_run(labels=_progress_labels(0.7, "execute", "Executing")),
+                _make_flow_run(),
                 _make_flow_run(is_final=True, is_completed=True, result={"success": True}),
             ]
         )
 
-        callback = AsyncMock()
-        result = await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
-
+        result = await _poll_remote_flow_run(client, UUID(int=1), poll_interval=0)
         assert result == {"success": True}
-        assert callback.call_count == 3
-        fractions = [call.args[0] for call in callback.call_args_list]
-        assert fractions == [0.3, 0.7, 1.0]
+        assert client.read_flow_run.call_count == 2
 
-    async def test_no_completion_on_failure(self):
-        """Callback does NOT receive 1.0 when run fails."""
+    async def test_raises_on_failure(self):
+        """Poll raises when flow run fails."""
         from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
 
         client = AsyncMock()
         client.read_flow_run = AsyncMock(
             side_effect=[
-                _make_flow_run(labels=_progress_labels(0.5, "step1", "Working")),
                 _make_flow_run(is_final=True, is_completed=False, error=RuntimeError("Crashed")),
             ]
         )
 
-        callback = AsyncMock()
         with pytest.raises(RuntimeError, match="Crashed"):
-            await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
-
-        fractions = [call.args[0] for call in callback.call_args_list]
-        assert 0.5 in fractions
-        assert 1.0 not in fractions
-
-    async def test_progress_never_regresses(self):
-        """Max guard prevents fraction from going backwards."""
-        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
-
-        client = AsyncMock()
-        client.read_flow_run = AsyncMock(
-            side_effect=[
-                _make_flow_run(labels=_progress_labels(0.8, "s1", "high")),
-                _make_flow_run(labels=_progress_labels(0.3, "s2", "lower")),
-                _make_flow_run(is_final=True, is_completed=True, result="ok"),
-            ]
-        )
-
-        callback = AsyncMock()
-        await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
-
-        fractions = [call.args[0] for call in callback.call_args_list]
-        assert fractions == [0.8, 0.8, 1.0]
-
-    async def test_no_callback_result_still_returned(self):
-        """Without callback, result is returned and no progress is reported."""
-        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
-
-        client = AsyncMock()
-        client.read_flow_run = AsyncMock(
-            side_effect=[
-                _make_flow_run(labels=_progress_labels(0.5, "step1", "Working")),
-                _make_flow_run(is_final=True, is_completed=True, result=42),
-            ]
-        )
-
-        result = await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0)
-
-        assert result == 42
-        assert client.read_flow_run.call_count == 2
-
-    async def test_no_labels_sends_waiting(self):
-        """No progress labels → callback receives 'Waiting to start' message."""
-        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
-
-        client = AsyncMock()
-        client.read_flow_run = AsyncMock(
-            side_effect=[
-                _make_flow_run(labels={}),
-                _make_flow_run(is_final=True, is_completed=True, result="done"),
-            ]
-        )
-
-        callback = AsyncMock()
-        await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
-
-        # First call: waiting (0.0), second call: completion (1.0)
-        assert callback.call_count == 2
-        assert callback.call_args_list[0].args[0] == pytest.approx(0.0)
-        assert "Waiting to start" in callback.call_args_list[0].args[1]
-        assert callback.call_args_list[1].args[0] == pytest.approx(1.0)
+            await _poll_remote_flow_run(client, UUID(int=1), poll_interval=0)
 
     async def test_api_error_retries(self):
         """Prefect API error on poll → logged, continues polling, returns result."""
@@ -297,36 +210,11 @@ class TestPollRemoteFlowRun:
         client = AsyncMock()
         client.read_flow_run = AsyncMock(
             side_effect=[
-                _make_flow_run(labels=_progress_labels(0.3, "s1", "Starting")),
                 ConnectionError("API unavailable"),
                 _make_flow_run(is_final=True, is_completed=True, result="recovered"),
             ]
         )
 
-        callback = AsyncMock()
-        result = await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
-
+        result = await _poll_remote_flow_run(client, UUID(int=1), poll_interval=0)
         assert result == "recovered"
-        assert client.read_flow_run.call_count == 3
-        fractions = [call.args[0] for call in callback.call_args_list]
-        assert fractions == [0.3, 1.0]
-
-    async def test_display_includes_flow_name(self):
-        """Progress message includes flow_name from labels when available."""
-        from ai_pipeline_core.deployment.remote import _poll_remote_flow_run
-
-        client = AsyncMock()
-        client.read_flow_run = AsyncMock(
-            side_effect=[
-                _make_flow_run(labels=_progress_labels(0.5, "research", "Analyzing sources")),
-                _make_flow_run(is_final=True, is_completed=True, result="ok"),
-            ]
-        )
-
-        callback = AsyncMock()
-        await _poll_remote_flow_run(client, UUID(int=1), "test-deploy", poll_interval=0, on_progress=callback)
-
-        display = callback.call_args_list[0].args[1]
-        assert "[test-deploy]" in display
-        assert "research" in display
-        assert "Analyzing sources" in display
+        assert client.read_flow_run.call_count == 2

@@ -9,25 +9,25 @@ Production framework for building type-safe AI pipelines — designed to be deve
 
 ## Overview
 
-AI Pipeline Core is a production-ready framework that combines document processing, LLM integration, and workflow orchestration into a unified system. Built with strong typing (Pydantic), automatic retries, cost tracking, and distributed tracing, it enforces best practices while keeping application code minimal and straightforward.
+AI Pipeline Core is a production-ready framework that combines document processing, LLM integration, and workflow orchestration into a unified system. Built with strong typing (Pydantic), automatic retries, cost tracking, and database-backed execution tracking, it enforces best practices while keeping application code minimal and straightforward.
 
 This framework is the foundation of AI projects at [research.tech](https://research.tech). It is an internal-first solution, open-sourced because we believe in sharing production infrastructure publicly. The design prioritizes **strictness over flexibility** — all data structures are immutable, all inputs are validated at definition time, and all prompts are typed Python classes. These constraints exist because the framework is primarily developed and maintained by AI coding agents, which require rigid guardrails rather than flexible guidelines.
 
 ### Key Features
 
 - **Document System**: Single `Document` base class with immutable content, SHA256-based identity, automatic MIME type detection, provenance tracking, multi-part attachments, and optional typed content via `Document[ModelType]`
-- **Document Store**: Pluggable storage backends (ClickHouse production, local filesystem CLI/debug, in-memory testing) with automatic deduplication
+- **Database Storage**: Unified database backends (ClickHouse production, filesystem CLI/download/replay, in-memory testing) with automatic deduplication
 - **Conversation Class**: Immutable, stateful multi-turn LLM conversations with context caching, automatic URL/address shortening, and eager response restoration
 - **LLM Integration**: Unified interface to any model via LiteLLM proxy (OpenRouter compatible) with context caching (default 300s TTL)
 - **Tool Calling**: Define tools as typed Python classes with import-time validation, automatic schema generation, and a built-in auto-loop that executes tools and re-sends results until the LLM produces a final answer
 - **Structured Output**: Type-safe generation with Pydantic model validation via `Conversation.send_structured()`
 - **Workflow Orchestration**: Class-based `PipelineTask`, `PipelineFlow`, and `PipelineDeployment` with annotation-driven document types and import-time validation
-- **Auto-Persistence**: `PipelineTask` saves returned documents to `DocumentStore` automatically with provenance tracking
+- **Auto-Persistence**: `PipelineTask` saves returned documents to the active database backend automatically with provenance tracking
 - **Image Processing**: Automatic image tiling/splitting for LLM vision models with model-specific presets
-- **Observability**: Built-in distributed tracing via Laminar (LMNR) with cost tracking, local trace debugging, ClickHouse-based tracking, and remote trace download/reconstruction
+- **Observability**: Database-backed execution DAGs, logs, replay payloads, and `ai-trace` download support
 - **Prompt Compiler**: Type-safe prompt specifications replacing Jinja2 templates — typed Python classes for roles, rules, guides, and output formats with definition-time validation and a CLI tool for inspection
 - **Replay**: Capture and re-execute any LLM conversation, pipeline task, or flow from human-editable YAML files with document resolution via SHA256 references
-- **Deployment**: Unified pipeline execution for local, CLI, and production environments with per-flow resume and dual-store support
+- **Deployment**: Unified pipeline execution for local, CLI, and production environments with per-flow resume and remote deployment support
 
 ## Installation
 
@@ -38,8 +38,8 @@ pip install ai-pipeline-core
 This installs four CLI commands:
 - `ai-prompt-compiler` — discover, inspect, render, and compile prompt specifications
 - `ai-pipeline-deploy` — build and deploy pipelines to Prefect Cloud
-- `ai-replay` — execute or inspect replay YAML files from trace output
-- `ai-trace` — list, show, and download pipeline traces from ClickHouse
+- `ai-replay` — execute or inspect replay YAML files, or replay directly from database-backed runs
+- `ai-trace` — list, show, and download execution data from the database
 
 ### Requirements
 
@@ -98,40 +98,42 @@ class AnalysisSummary(BaseModel):
     top_keywords: list[str] = Field(default_factory=list)
 
 
-# 3. Pipeline task -- class-based, auto-saves returned documents to DocumentStore
+# 3. Pipeline task -- class-based, auto-saves returned documents to the active database backend
 class AnalyzeDocument(PipelineTask):
     """Analyze a single document."""
 
-    async def run(self, documents: list[InputDocument]) -> list[AnalysisDocument]:
+    @classmethod
+    async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[AnalysisDocument, ...]:
+        _ = cls
         doc = documents[0]
-        return [AnalysisDocument.create(
+        return (AnalysisDocument.create(
             name=f"analysis_{doc.sha256[:12]}.json",
             content=AnalysisSummary(word_count=42, top_keywords=["ai", "pipeline"]),
             derived_from=(doc.sha256,),
-        )]
+        ),)
 
 
 # 4. Pipeline flow -- type contract is in the run() annotations
 class AnalysisFlow(PipelineFlow):
     """Analyze all input documents."""
 
-    async def run(self, run_id: str, documents: list[InputDocument], options: FlowOptions) -> list[AnalysisDocument]:
+    async def run(self, documents: tuple[InputDocument, ...], options: FlowOptions) -> tuple[AnalysisDocument, ...]:
         results: list[AnalysisDocument] = []
         for doc in documents:
-            results.extend(await AnalyzeDocument.run([doc]))
-        return results
+            results.extend(await AnalyzeDocument.run((doc,)))
+        return tuple(results)
 
 
 class ReportFlow(PipelineFlow):
     """Generate final report from analyses."""
 
-    async def run(self, run_id: str, documents: list[AnalysisDocument], options: FlowOptions) -> list[ReportDocument]:
+    async def run(self, documents: tuple[AnalysisDocument, ...], options: FlowOptions) -> tuple[ReportDocument, ...]:
         report = ReportDocument.create(
             name="report.md",
             content="# Report\n\nAnalysis complete.",
             derived_from=tuple(doc.sha256 for doc in documents),
         )
-        return [report]
+        return (report,)
 
 
 # 5. Deployment -- ties flows together with type chain validation
@@ -146,7 +148,7 @@ class MyPipeline(PipelineDeployment[FlowOptions, MyResult]):
     @staticmethod
     def build_result(
         run_id: str,
-        documents: list[Document],
+        documents: tuple[Document, ...],
         options: FlowOptions,
     ) -> MyResult:
         reports = [d for d in documents if isinstance(d, ReportDocument)]
@@ -154,16 +156,16 @@ class MyPipeline(PipelineDeployment[FlowOptions, MyResult]):
 
 
 # 6. CLI initializer provides run ID and initial documents
-def initialize(options: FlowOptions) -> tuple[str, list[Document]]:
-    docs: list[Document] = [
+def initialize(options: FlowOptions) -> tuple[str, tuple[Document, ...]]:
+    docs: tuple[Document, ...] = (
         InputDocument.create_root(name="input.txt", content="Sample data", reason="CLI input"),
-    ]
+    )
     return "my-project", docs
 
 
 # Run from CLI (requires positional working_directory arg: python script.py ./output)
 pipeline = MyPipeline()
-pipeline.run_cli(initializer=initialize, trace_name="my-pipeline")
+pipeline.run_cli(initializer=initialize)
 ```
 
 ### Conversation (Multi-Turn LLM)
@@ -374,9 +376,6 @@ if doc.is_text:
 data = doc.as_json()  # or as_yaml()
 model = doc.as_pydantic_model(MyModel)  # Requires model_type argument
 
-# Convert between document types
-other = doc.retype(OtherDocType, preserve_provenance=True)
-
 # Content-addressed identity
 print(doc.sha256)  # Full SHA256 hash (base32)
 print(doc.id)      # Short 6-char identifier
@@ -408,39 +407,42 @@ Documents support:
 - SHA256-based identity and deduplication
 - Provenance tracking (`derived_from` for content sources, `triggered_by` for causal lineage)
 - `FILES` enum for filename restrictions (definition-time validation)
-- `retype(new_type, preserve_provenance=True|False)` for type conversion between document subclasses
 - `derive(from_documents=..., name=..., content=...)` convenience method for creating documents from other documents (extracts SHA256 hashes automatically)
 - Token count estimation via `approximate_tokens_count`
 
-### Document Store
+### Database-backed Persistence
 
-Documents are automatically persisted by `PipelineTask` to a document store. The framework provides four backend implementations (ClickHouse, local filesystem, in-memory, dual), all managed internally — application code interacts only through the read-only `DocumentReader` protocol.
+Documents are automatically persisted by `PipelineTask` to the active database backend. Application code typically reads through `DatabaseReader`; write operations stay framework-internal.
 
 **Backend implementations** (internal, auto-selected by execution mode):
-- **ClickHouse**: Production backend (selected when `CLICKHOUSE_HOST` is configured)
-- **Local filesystem**: CLI/debug mode (browsable files on disk, collision-safe filenames)
-- **In-memory**: Testing (zero I/O, used by `run_local()`)
-- **Dual**: Wraps primary (ClickHouse) + secondary (local). Saves to both, reads from primary only
+- **ClickHouseDatabase**: Production backend
+- **FilesystemDatabase**: CLI, download, and replay-friendly filesystem snapshot backend
+- **MemoryDatabase**: Testing and local in-memory execution
 
-**Store selection depends on the execution mode:**
-- `run_cli()`: Uses dual store (ClickHouse + local) when `CLICKHOUSE_HOST` is configured, local otherwise
-- `run_local()`: Always uses in-memory store (no persistence)
-- `as_prefect_flow()`: Auto-selects based on settings
+**Backend selection depends on the execution mode:**
+- `run_cli()`: Uses `FilesystemDatabase` by default, or `ClickHouseDatabase` when ClickHouse is configured
+- `run_local()`: Uses `MemoryDatabase`
+- `as_prefect_flow()`: Auto-selects the configured production backend
 
-**Public API — `DocumentReader`** (read-only protocol; `get_document_store()` returns the full `DocumentStore | None` for framework-internal use):
-- `load(run_scope, document_types)` -- Load documents by type from a run scope
-- `has_documents(run_scope, document_type, *, max_age=None)` -- Check if documents of a type exist
-- `check_existing(sha256s)` -- Check which SHA256 hashes exist globally
-- `find_by_source(source_values, document_type, *, max_age=None)` -- Find most recent document per source value
-- `load_summaries(document_sha256s)` -- Load summaries by SHA256 (global)
-- `load_by_sha256s(sha256s, document_type, run_scope=None)` -- Batch-load full documents by SHA256
-- `load_nodes_by_sha256s(sha256s)` -- Batch-load lightweight `DocumentNode` metadata (global, cross-scope)
-- `load_scope_metadata(run_scope)` -- Load `DocumentNode` metadata for all documents in a scope
-- `get_flow_completion(run_scope, flow_name, *, max_age=None)` -- Check flow completion record (returns `FlowCompletion | None`)
+**Public API — `DatabaseReader`** (read-only protocol):
+- `get_document(document_sha256)` — Load a document record by SHA256
+- `find_document_by_name(name)` — Find a document by name
+- `get_document_ancestry(sha256)` — Get all source documents for a given document
+- `search_documents(name, document_type, run_scope, limit, offset)` — Search documents by metadata
+- `get_documents_by_deployment(deployment_id)` — Load documents for a deployment chain
+- `get_documents_by_node(node_id)` — Load documents for an execution node
+- `get_deployment_tree(deployment_id)` — Load execution nodes for a deployment
+- `get_deployment_by_run_id(run_id)` — Find a deployment node by run ID
+- `get_node_logs(node_id)` / `get_deployment_logs(deployment_id)` — Load execution logs
+- `list_deployments(limit, status)` — List tracked deployments
+- `list_run_scopes(limit)` — List unique run scopes
+- `get_cached_completion(cache_key, max_age)` — Find a cached task/flow execution node
+- `get_deployment_cost_totals(deployment_id)` — Get aggregated cost for a deployment
+- Replay and download helpers resolve document/blob content through the same interface
 
-Write operations (`save`, `save_batch`, `flush`, `shutdown`) are framework-internal — `PipelineTask` handles persistence automatically.
+Write operations (`insert_node`, `save_document`, `save_blob`, `save_document_batch`, `save_blob_batch`, `save_logs_batch`, `flush`, `shutdown`) are framework-internal — the framework handles persistence automatically. `DatabaseWriter` exposes a `supports_remote` property indicating whether the backend supports Prefect-based remote deployment execution.
 
-**Document summaries:** When enabled, stores automatically generate LLM-powered summaries in the background after each new document is saved. Summaries are best-effort and stored as store-level metadata (not on the `Document` model). Configure via `DOC_SUMMARY_ENABLED` and `DOC_SUMMARY_MODEL` environment variables.
+**Document summaries:** Persisted `summary` storage is supported via `Document.create(..., summary=...)` and `update_document_summary()`. Summaries are stored as metadata on document records. Configure via `DOC_SUMMARY_ENABLED` and `DOC_SUMMARY_MODEL`.
 
 ### LLM Integration
 
@@ -565,7 +567,7 @@ The pipeline system uses a three-tier class hierarchy: `PipelineTask` → `Pipel
 
 #### `PipelineTask`
 
-Base class for pipeline tasks with automatic tracing, document persistence, and lifecycle events:
+Base class for pipeline tasks with automatic execution-node tracking, document persistence, and lifecycle events:
 
 ```python
 from ai_pipeline_core import PipelineTask
@@ -573,13 +575,15 @@ from ai_pipeline_core import PipelineTask
 class ProcessChunk(PipelineTask):
     """Process a single document chunk."""
 
-    async def run(self, documents: list[InputDocument]) -> list[OutputDocument]:
+    @classmethod
+    async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[OutputDocument, ...]:
+        _ = cls
         doc = documents[0]
-        return [OutputDocument.create(
+        return (OutputDocument.create(
             name="result.json",
             content={"processed": True},
             derived_from=(doc.sha256,),
-        )]
+        ),)
 
 
 class ExpensiveTask(PipelineTask):
@@ -587,7 +591,9 @@ class ExpensiveTask(PipelineTask):
     timeout_seconds = 600
     estimated_minutes = 5
 
-    async def run(self, documents: list[InputDocument]) -> list[OutputDocument]:
+    @classmethod
+    async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[OutputDocument, ...]:
+        _ = cls
         ...
 ```
 
@@ -606,9 +612,7 @@ result = await handle.result()
 - `retries`: Retry attempts on failure (default `0`)
 - `retry_delay_seconds`: Delay between retries (default `20`)
 - `timeout_seconds`: Task execution timeout (default `None`)
-- `cacheable`: Enable task-level completion caching (default `False`)
 - `estimated_minutes`: Duration estimate for progress tracking (default `1`, must be >= 1)
-- `trace_level`: `"always" | "debug" | "off"` (default `"always"`)
 - `expected_cost`: Expected cost budget for cost tracking
 
 **Key features:**
@@ -616,9 +620,9 @@ result = await handle.result()
 - Async-only enforcement (raises `TypeError` if `run` is not `async def`)
 - Rejects classes starting with `Test` (reserved for pytest)
 - Rejects required `__init__` parameters (tasks use documents-only invocation)
-- Automatic Laminar tracing
-- Document auto-save to DocumentStore (returned documents are persisted)
-- Source validation (warns if referenced SHA256s don't exist in store)
+- Automatic execution-node tracking
+- Document auto-save to the active database backend (returned documents are persisted)
+- Source validation (warns if referenced SHA256s don't exist in the database)
 - Task-level lifecycle events (`TaskStartedEvent`, `TaskCompletedEvent`, `TaskFailedEvent`)
 
 #### `PipelineFlow`
@@ -633,23 +637,22 @@ class AnalysisFlow(PipelineFlow):
 
     async def run(
         self,
-        run_id: str,                      # Must be str
-        documents: list[InputDoc],        # Input types extracted from annotation
+        documents: tuple[InputDoc, ...],  # Input types extracted from annotation
         options: MyFlowOptions,           # Must be FlowOptions or subclass
-    ) -> list[OutputDoc]:                 # Output types extracted from annotation
+    ) -> tuple[OutputDoc, ...]:           # Output types extracted from annotation
         results: list[OutputDoc] = []
         for doc in documents:
-            results.extend(await AnalyzeTask.run([doc]))
-        return results
+            results.extend(await AnalyzeTask.run((doc,)))
+        return tuple(results)
 ```
 
-The flow's `documents` parameter annotation determines input types, and the return annotation determines output types. The `run()` method must have exactly 4 parameters: `self`, `run_id: str`, `documents: list[...]`, and `options: FlowOptions`.
+The flow's `documents` parameter annotation determines input types, and the return annotation determines output types. The `run()` method must have exactly 3 parameters: `self`, `documents: tuple[...]`, and `options: FlowOptions`. Use `get_run_id()` inside a flow when you need the current run ID.
 
 **Constructor parameters** for per-instance configuration:
 
 ```python
 class ConfigurableFlow(PipelineFlow):
-    async def run(self, run_id: str, documents: list[InputDoc], options: FlowOptions) -> list[OutputDoc]:
+    async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
         model = self.model  # Access constructor params as attributes
         ...
 
@@ -681,7 +684,7 @@ class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
     @staticmethod
     def build_result(
         run_id: str,
-        documents: list[Document],
+        documents: tuple[Document, ...],
         options: MyOptions,
     ) -> MyResult:
         ...
@@ -709,7 +712,7 @@ pipeline = MyPipeline()
 
 # CLI mode: parses sys.argv, requires positional working_directory argument
 # Usage: python script.py ./output [--start N] [--end N] [--max-keywords 8]
-pipeline.run_cli(initializer=init_fn, trace_name="my-pipeline")
+pipeline.run_cli(initializer=init_fn)
 
 # Local mode: in-memory store, returns result directly (synchronous)
 result = pipeline.run_local(
@@ -723,13 +726,12 @@ prefect_flow = pipeline.as_prefect_flow()
 ```
 
 **Features:**
-- **Per-flow resume**: Skips flows with a `FlowCompletion` record in the store (explicit completion tracking, not document-presence inference). Configurable `cache_ttl` (default 24h)
-- **Task-level caching**: Tasks with `cacheable = True` skip re-execution when the same inputs produce a cached completion record
+- **Per-flow resume**: Skips flows with a cached completed execution node in the database (explicit completion tracking, not document-presence inference). Configurable `cache_ttl` (default 24h)
 - **Type chain validation**: At runtime, validates that at least one of each flow's declared input types is producible by preceding flows (union semantics)
-- **Event publishing**: 12 lifecycle events (run started/completed/failed, flow started/completed/failed/skipped, task started/completed/failed, heartbeat, progress) via Pub/Sub. Task events include `step`, `task_invocation_id` for correlation. `actual_cost` aggregated from LLM spans. Enabled by setting `pubsub_service_type` ClassVar. Requires `PUBSUB_PROJECT_ID` and `PUBSUB_TOPIC_ID` env vars
+- **Event publishing**: 12 lifecycle events (run started/completed/failed, flow started/completed/failed/skipped, task started/completed/failed, heartbeat, progress) via Pub/Sub. Task events include `step`, `task_invocation_id` for correlation. `actual_cost` is aggregated from recorded conversation turns. Enabled by setting `pubsub_service_type` ClassVar. Requires `PUBSUB_PROJECT_ID` and `PUBSUB_TOPIC_ID` env vars
 - **Dynamic flow control**: `plan_next_flow()` returns `FlowDirective` to skip or continue flows based on runtime state
 - **Concurrency limits**: Cross-run enforcement via Prefect global concurrency limits
-- **CLI mode**: `--start N` / `--end N` for step control, `DualDocumentStore` when ClickHouse is configured
+- **CLI mode**: `--start N` / `--end N` for step control with the configured database backend
 
 #### Concurrency Limits
 
@@ -843,7 +845,7 @@ class RemoteResult(DeploymentResult):
     """Result type matching the remote pipeline's result."""
     report_count: int = 0
 
-class MyPipeline(RemoteDeployment[RemoteInputDocument, FlowOptions, RemoteResult]):
+class MyPipeline(RemoteDeployment[FlowOptions, RemoteResult]):
     """Client for the remote MyPipeline deployment."""
 
 client = MyPipeline()
@@ -851,15 +853,12 @@ result = await client.run(
     run_id="test",
     documents=input_docs,
     options=FlowOptions(),
-    on_progress=my_progress_callback,  # Optional: async (fraction, message) -> None
 )
 ```
 
-The client defines local Document subclasses ("mirror types") whose `class_name` must match the remote pipeline's document types exactly. `run_remote_deployment()` is also available as a lower-level function.
+The client defines local Document subclasses ("mirror types") whose `class_name` must match the remote pipeline's document types exactly. `run_remote_deployment()` is also available as a lower-level function. Remote execution only happens when the active database backend reports `supports_remote=True`; otherwise it falls back to inline execution.
 
-**Deterministic run_id**: `RemoteDeployment` derives a deterministic `run_id` from the caller's run_id + a combined fingerprint hash of all document SHA256s and serialized options (format: `{run_id}-{fingerprint[:8]}`). Same inputs always produce the same derived run_id, enabling worker-side flow resume while preventing `task_results` key collisions.
-
-**ClickHouse fallback**: When the remote worker completes but `state.result()` fails (e.g., caller lacks GCS credentials for Prefect's result storage), the framework falls back to reading from the ClickHouse `task_results` table. This requires both the worker and caller to have `CLICKHOUSE_HOST` configured. The worker writes results to `task_results` automatically whenever ClickHouse is available, independent of Pub/Sub configuration.
+**Deterministic run_id**: `RemoteDeployment` derives a deterministic `run_id` from the caller's run_id + a combined fingerprint hash of all document SHA256s and serialized options (format: `{run_id}-{fingerprint[:8]}`). Same inputs always produce the same derived run_id, enabling worker-side flow resume.
 
 **run_id validation**: All `run_id` values are validated at entry points — alphanumeric characters, underscores, and hyphens only, max 100 characters.
 
@@ -972,24 +971,12 @@ python -m ai_pipeline_core.prompt_compiler inspect AnalysisSpec
 
 ### Replay
 
-Every LLM conversation, pipeline task, and pipeline flow is automatically captured as a replay YAML file alongside traces. Replay files contain everything needed to re-execute the call — documents are referenced by SHA256 hash and resolved from the local store at replay time.
-
-**Replay files in trace output:**
-
-```
-.trace/001_my_flow/002_extract_insights/
-    span.yaml              # Timing, tokens, cost (unchanged)
-    input.yaml             # Trimmed browsable view (unchanged)
-    output.yaml            # Response content (unchanged)
-    task.yaml              # NEW — replay payload with $doc_ref references
-    003_insight_extraction/
-        conversation.yaml  # NEW — LLM conversation replay
-```
+Every LLM conversation turn, pipeline task, and pipeline flow is automatically captured as a replay payload in the unified database. When you download a deployment with `ai-trace download`, the snapshot is a portable `FilesystemDatabase`, and replay YAML files can live anywhere inside that snapshot or alongside your own test bundles. Document references are resolved from the database backend by SHA256 at replay time.
 
 **Inspect a replay file:**
 
 ```bash
-ai-replay show .trace/.../conversation.yaml
+ai-replay show ./downloaded_bundle/runs/.../conversation.yaml
 # Type: ConversationReplay
 # Model: gemini-3-flash
 # Options: {'reasoning_effort': 'low'}
@@ -1001,56 +988,58 @@ ai-replay show .trace/.../conversation.yaml
 **Re-execute with the same parameters:**
 
 ```bash
-ai-replay run .trace/.../conversation.yaml --import my_app.tasks
+ai-replay run ./downloaded_bundle/runs/.../conversation.yaml --db-path ./downloaded_bundle --import my_app.tasks
 ```
 
 **Override fields before execution:**
 
 ```bash
 # Switch model
-ai-replay run .trace/.../conversation.yaml --import my_app --set model=grok-4.1-fast
+ai-replay run ./downloaded_bundle/runs/.../conversation.yaml --db-path ./downloaded_bundle --import my_app --set model=grok-4.1-fast
 
 # Change prompt
-ai-replay run .trace/.../conversation.yaml --import my_app --set prompt="Summarize in 3 bullet points"
+ai-replay run ./downloaded_bundle/runs/.../conversation.yaml --db-path ./downloaded_bundle --import my_app --set prompt="Summarize in 3 bullet points"
 ```
 
 **Replay task and flow payloads:**
 
 ```bash
-ai-replay run .trace/.../task.yaml --import my_app
-ai-replay run .trace/.../flow.yaml --import my_app
+ai-replay run ./downloaded_bundle/runs/.../task.yaml --db-path ./downloaded_bundle --import my_app
+ai-replay run ./downloaded_bundle/runs/.../flow.yaml --db-path ./downloaded_bundle --import my_app
 ```
 
 The `--import` flag is required when the original script was run as `__main__` — it imports the module so Document subclasses and functions are registered, and automatically remaps `__main__:X` references to the correct module path.
 
-**Output directory and tracing:**
+**Output directory:**
 
 By default, replay writes results to `{replay_file_stem}_replay/` next to the replay file. The output directory contains:
 
 ```
 conversation_replay/
     output.yaml     # Execution result (content, usage, cost, timestamp)
-    .trace/         # Full trace from replay execution
-        summary.md
-        llm_calls.yaml
-        costs.md
-        001_root_span/
-            conversation.yaml  # Replayable again!
 ```
 
-Override with `--output-dir` or skip tracing with `--no-trace`:
+Override with `--output-dir`:
 
 ```bash
-# Custom output directory
 ai-replay run conversation.yaml --import my_app --output-dir ./my_output
+```
 
-# Skip tracing (only save output.yaml)
-ai-replay run conversation.yaml --import my_app --no-trace
+**Database-backed replay:**
+
+Replay now resolves document references from a database backend. Use `--db-path` for local snapshots or `--from-db` to replay directly from a node payload:
+
+```bash
+ai-replay run conversation.yaml --db-path ./downloaded_bundle
+ai-replay run --from-db 550e8400-e29b-41d4-a716-446655440000 --db-path ./downloaded_bundle
 ```
 
 **Programmatic replay:**
 
 ```python
+from pathlib import Path
+
+from ai_pipeline_core.database._filesystem import FilesystemDatabase
 from ai_pipeline_core.replay import ConversationReplay
 
 # Load from YAML
@@ -1060,7 +1049,8 @@ replay = ConversationReplay.from_yaml(yaml_text)
 replay = replay.model_copy(update={"model": "grok-4.1-fast"})
 
 # Execute
-result = await replay.execute(store_base=Path("./output"))
+database = FilesystemDatabase(Path("./downloaded_bundle"))
+result = await replay.execute(database)
 print(result.content)
 ```
 
@@ -1069,67 +1059,37 @@ print(result.content)
 - `TaskReplay` — captures `PipelineTask` calls with class path and all arguments (Documents as `$doc_ref` references)
 - `FlowReplay` — captures `PipelineFlow` calls with class path, run_id, documents, and flow_options
 
-### Local Trace Debugging
+### Deployment Downloads
 
-When running via `run_cli()`, trace spans are automatically saved to `<working_dir>/.trace/` for
-LLM-assisted debugging. Disable with `--no-trace`.
-
-The directory structure mirrors the execution flow. Each new run overwrites the previous trace:
+`ai-trace download` exports a deployment as a portable `FilesystemDatabase` snapshot:
 
 ```
-.trace/
-  summary.md              # Execution tree, timing, LLM stats
-  llm_calls.yaml          # All LLM calls with model, tokens, cost
-  errors.yaml             # Failed spans with parent chain (only if errors exist)
-  costs.md                # Cost aggregation by task
-  001_my_flow/            # Root span (3-digit prefix, max 20 char name)
-      span.yaml           # Span metadata (timing, status, type, I/O refs)
-      input.yaml          # Span input (block scalar YAML for multiline)
-      output.yaml         # Span output
-      events.yaml         # OTel span events (log records)
-      flow.yaml           # Replay payload (for PipelineFlow spans)
-      002_task_1/
-          span.yaml
-          input.yaml
-          output.yaml
-          task.yaml        # Replay payload (for PipelineTask spans)
-          003_analyze/
-              span.yaml
-              input.yaml
-              output.yaml
-              conversation.yaml  # Replay payload (for LLM conversation spans)
+downloaded_bundle/
+  summary.md
+  costs.md
+  logs.jsonl
+  runs/
+  blobs/
 ```
 
-Duplicate LLM spans are filtered by default (every `Conversation` call creates both a DEFAULT and an inner LLM span). Use `verbose=True` in `TraceDebugConfig` to include all spans.
-
-### Remote Trace Download
-
-When ClickHouse tracking is enabled, all span data (input/output, replay payloads, attributes, events, timing, LLM metrics) is stored in the `pipeline_spans` table with ZSTD-compressed content columns. This enables downloading traces from remote/cloud pipeline runs and rebuilding the `.trace/` directory locally for debugging and replay via `ai-trace download`.
-
-The reconstructed directory has the same structure as local `.trace/` output — `summary.md`, `llm_calls.yaml`, per-span directories with `span.yaml`, `input.yaml`, `output.yaml`, replay files, and `events.yaml`. Documents referenced by replay files (`$doc_ref` SHA256 hashes) are automatically downloaded and written in `LocalDocumentStore` format, making `ai-replay run` work on downloaded traces out of the box.
+That snapshot is directly usable by `ai-replay --db-path`.
 
 ### `ai-trace` CLI
 
-The `ai-trace` command-line tool provides access to pipeline traces stored in ClickHouse.
+The `ai-trace` command-line tool provides access to pipeline execution data from the configured database backend or a downloaded `FilesystemDatabase` snapshot.
 
 ```bash
 # List recent pipeline runs
 ai-trace list --limit 10 --status completed
 
-# Show trace summary without downloading
+# Show execution summary without downloading
 ai-trace show 550e8400-e29b-41d4-a716-446655440000
 
-# Download trace and rebuild .trace/ directory (includes referenced documents)
+# Download a deployment as a portable FilesystemDatabase snapshot
 ai-trace download 550e8400-e29b-41d4-a716-446655440000 -o ./debug/
-
-# Download with child pipeline runs
-ai-trace download my-run-001 --children -o ./debug/
-
-# Download trace only (skip document download)
-ai-trace download 550e8400-e29b-41d4-a716-446655440000 --no-docs -o ./debug/
 ```
 
-Connection defaults to `CLICKHOUSE_*` environment variables. Override with `--host`, `--port`, `--database`, `--user`, `--password`, `--no-secure`.
+Connection defaults to `CLICKHOUSE_*` environment variables, or use `--db-path` to point at a local FilesystemDatabase snapshot.
 
 ## Configuration
 
@@ -1139,10 +1099,6 @@ Connection defaults to `CLICKHOUSE_*` environment variables. Override with `--ho
 # LLM Configuration (via LiteLLM proxy)
 OPENAI_BASE_URL=http://localhost:4000
 OPENAI_API_KEY=your-api-key
-
-# Optional: Observability
-LMNR_PROJECT_API_KEY=your-lmnr-key
-LMNR_DEBUG=true  # Enable debug traces
 
 # Optional: Orchestration
 PREFECT_API_URL=http://localhost:4200/api
@@ -1155,7 +1111,7 @@ PREFECT_GCS_BUCKET=your-gcs-bucket
 # Optional: GCS (for remote storage)
 GCS_SERVICE_ACCOUNT_FILE=/path/to/service-account.json
 
-# Optional: Document Store & Tracking (ClickHouse -- omit for local filesystem store)
+# Optional: Unified Database / Execution Tracking (ClickHouse -- omit for local filesystem store)
 CLICKHOUSE_HOST=your-clickhouse-host
 CLICKHOUSE_PORT=8443
 CLICKHOUSE_DATABASE=default
@@ -1206,9 +1162,9 @@ print(settings.app_name)
 4. **LLM calls**: Use `Conversation` for all LLM interactions (multi-turn and single-shot). Use `tools=` for function calling
 5. **Options**: Omit `ModelOptions` unless specifically needed (defaults are production-optimized)
 6. **Documents**: Use `create_root()` for pipeline inputs (no provenance), `create()` or `derive()` for derived documents. Always subclass `Document`
-7. **Type annotations**: Input/output types are in the `run()` method signature -- `list[InputDoc]` and `-> list[OutputDoc]`
+7. **Type annotations**: Input/output types are in the `run()` method signature -- `tuple[InputDoc, ...]` and `-> tuple[OutputDoc, ...]`
 8. **Initialization**: Logger at module scope, not in functions
-9. **Document lists**: Use plain `list[Document]` -- no wrapper class needed
+9. **Document collections**: Use plain `tuple[Document, ...]` inside tasks and flows; deployment entrypoints still accept generic sequences
 
 ### Import Convention
 
@@ -1274,7 +1230,8 @@ When building applications on this framework, include the relevant `.ai-docs/*.m
 The `examples/` directory contains:
 
 - **`showcase.py`** -- Full 3-stage pipeline: class-based PipelineTask/PipelineFlow, Conversation API, multi-turn LLM analysis, structured extraction, PipelineDeployment with CLI, resume/skip, progress tracking, image processing
-- **`showcase_document_store.py`** -- Document store usage: class-based PipelineTask with auto-save, flow execution via `run_local()`, document provenance tracking
+- **`showcase_database.py`** -- Database usage: class-based PipelineTask with auto-save, flow execution via `run_local()`, document provenance tracking
+- **`showcase_replay.py`** -- Replay system: database-backed replay flow demonstration
 - **`showcase_prompt_compiler.py`** -- Prompt compiler features: Role, Rule, OutputRule, Guide, PromptSpec, rendering, output_structure, follow-up specs, definition-time validation
 
 Run examples:
@@ -1282,8 +1239,11 @@ Run examples:
 # Full pipeline showcase (requires OPENAI_BASE_URL and OPENAI_API_KEY)
 python examples/showcase.py ./output
 
-# Document store showcase (no arguments needed)
-python examples/showcase_document_store.py
+# Database showcase (no arguments needed)
+python examples/showcase_database.py
+
+# Replay showcase (no arguments needed)
+python examples/showcase_replay.py
 
 # Prompt compiler showcase (no arguments needed)
 python examples/showcase_prompt_compiler.py
@@ -1296,15 +1256,15 @@ ai-pipeline-core/
 |-- ai_pipeline_core/
 |   |-- _llm_core/        # Internal LLM client, model types, and response handling
 |   |-- deployment/        # Pipeline deployment, deploy script, CLI bootstrap, progress, remote
+|   |-- database/          # Execution DAG, documents, blobs, logs, and download helpers
 |   |-- docs_generator/    # AI-focused documentation generator
-|   |-- document_store/    # Store protocol and backends (ClickHouse, local, memory)
 |   |-- documents/         # Document system (Document base class, attachments, context)
 |   |-- llm/               # Conversation class, Tool base class, tool loop, URLSubstitutor, image processing
 |   |-- logging/           # Logging infrastructure
-|   |-- observability/     # Tracing, ClickHouse tracking, local debug traces, and ai-trace CLI
+|   |-- observability/     # Database-backed execution CLI (`ai-trace`)
 |   |-- pipeline/          # PipelineTask, PipelineFlow, parallel primitives, FlowOptions, concurrency limits
 |   |-- prompt_compiler/   # Type-safe prompt specs, rendering, and CLI tool
-|   |-- replay/            # Trace-based replay system (capture, serialize, resolve, execute)
+|   |-- replay/            # Replay system (capture, serialize, resolve, execute)
 |   |-- settings.py        # Configuration management (Pydantic BaseSettings)
 |   +-- exceptions.py      # Framework exceptions (LLMError, DocumentNameError, etc.)
 |-- .ai-docs/             # Auto-generated API guides for AI coding agents
@@ -1335,5 +1295,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Built on [Prefect](https://www.prefect.io/) for workflow orchestration
 - Uses [LiteLLM](https://github.com/BerriAI/litellm) for LLM provider abstraction (also compatible with [OpenRouter](https://openrouter.ai/))
-- Integrates [Laminar (LMNR)](https://www.lmnr.ai/) for observability
 - Type checking with [Pydantic](https://pydantic.dev/) and [basedpyright](https://github.com/DetachHead/basedpyright)

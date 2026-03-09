@@ -48,6 +48,16 @@ def _serialize_conversation(value: Conversation[Any]) -> dict[str, Any]:
     }
 
 
+def _serialize_send_content(content: ConversationContent) -> tuple[str, tuple[dict[str, str], ...]]:
+    """Serialize Conversation.send() content into replay-safe prompt fields."""
+    if isinstance(content, str):
+        return content, ()
+    if isinstance(content, Document):
+        return "", (_serialize_document_ref(content),)
+    documents = cast("Sequence[Document[Any]]", content)
+    return "", tuple(_serialize_document_ref(doc) for doc in documents)
+
+
 def _serialize_value(value: Any) -> Any:
     """Serialize a single value for replay payload.
 
@@ -56,9 +66,9 @@ def _serialize_value(value: Any) -> Any:
     """
     result: Any = value
     if isinstance(value, Conversation):
-        result = _serialize_conversation(value)
+        result = _serialize_conversation(cast(Conversation[Any], value))
     elif isinstance(value, Document):
-        result = _serialize_document_ref(value)
+        result = _serialize_document_ref(cast(Document[Any], value))
     elif isinstance(value, BaseModel):
         result = value.model_dump(mode="json")
     elif isinstance(value, Enum):
@@ -109,7 +119,7 @@ def serialize_prior_messages(messages: tuple[Any, ...]) -> list[dict[str, Any]]:
                 entry["tool_calls"] = [ToolCallEntry(id=tc.id, function_name=tc.function_name, arguments=tc.arguments).model_dump() for tc in msg.tool_calls]
             result.append(entry)
         elif isinstance(msg, Document):
-            result.append({"type": "document", **_serialize_document_ref(msg)})
+            result.append({"type": "document", **_serialize_document_ref(cast(Document[Any], msg))})
     return result
 
 
@@ -125,19 +135,13 @@ def build_conversation_replay_payload(
     messages: tuple[Any, ...],
     enable_substitutor: bool,
     extract_result_tags: bool,
+    include_date: bool,
+    current_date: str | None,
 ) -> dict[str, Any]:
     """Build a replay payload dict capturing the full conversation state."""
     # Serialize context as document references
     ctx_refs = [_serialize_document_ref(document) for document in context]
-
-    # Extract prompt text
-    prompt: str
-    if isinstance(content, str):
-        prompt = content
-    elif isinstance(content, Document):
-        prompt = content.text if content.is_text else f"[Document: {content.name}]"
-    else:
-        prompt = "\n".join(doc.text if doc.is_text else f"[Document: {doc.name}]" for doc in content)
+    prompt, prompt_documents = _serialize_send_content(content)
 
     # Serialize response format as importable path
     rf_path: str | None = None
@@ -157,12 +161,15 @@ def build_conversation_replay_payload(
         "model": model,
         "model_options": options_dict,
         "prompt": prompt,
+        "prompt_documents": prompt_documents,
         "response_format": rf_path,
         "purpose": purpose,
         "context": ctx_refs,
         "history": serialize_prior_messages(messages),
         "enable_substitutor": enable_substitutor,
         "extract_result_tags": extract_result_tags,
+        "include_date": include_date,
+        "current_date": current_date,
         "original": {
             "cost": response.cost,
             "tokens": {

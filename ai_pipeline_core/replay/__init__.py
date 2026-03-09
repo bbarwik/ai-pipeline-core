@@ -2,7 +2,7 @@
 
 Replay payloads capture everything needed to re-execute an LLM call,
 pipeline task, or pipeline flow. Documents are referenced by SHA256 hash
-and resolved from the LocalDocumentStore at replay time.
+and resolved through the unified database backends at replay time.
 """
 
 from .types import ConversationReplay, DocumentRef, FlowReplay, HistoryEntry, TaskReplay

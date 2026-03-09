@@ -1,18 +1,26 @@
 """Integration tests for the replay system with real LLM calls."""
 
-import json
+import os
+import asyncio
+from datetime import UTC, datetime
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel
 
+from ai_pipeline_core._llm_core.model_response import ModelResponse
+from ai_pipeline_core.database import ExecutionNode, NodeKind, NodeStatus
+from ai_pipeline_core.database._download import download_deployment
+from ai_pipeline_core.database._filesystem import FilesystemDatabase
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm import Conversation, ModelOptions
 from ai_pipeline_core.pipeline import PipelineTask, pipeline_test_context
+from ai_pipeline_core.replay.cli import main
 from ai_pipeline_core.replay.types import TaskReplay
 from ai_pipeline_core.settings import settings
+from tests.replay.conftest import store_document_in_database
 
 pytestmark = pytest.mark.integration
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
@@ -55,50 +63,8 @@ class ReplayTaskOutputDocument(Document):
     """Output document for task replay integration tests."""
 
 
-# -- Laminar capture helpers --------------------------------------------------
-
-
-class _CaptureSpan:
-    def __init__(self, payloads: list[str]) -> None:
-        self._payloads = payloads
-
-    def __enter__(self) -> "_CaptureSpan":
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        pass
-
-    def set_attribute(self, key: str, value: object) -> None:
-        if key == "replay.payload" and isinstance(value, str):
-            self._payloads.append(value)
-
-    def set_attributes(self, attrs: dict[str, object]) -> None:
-        payload = attrs.get("replay.payload")
-        if isinstance(payload, str):
-            self._payloads.append(payload)
-
-
-class _CaptureLaminar:
-    def __init__(self) -> None:
-        self.payloads: list[str] = []
-
-    def start_as_current_span(self, *args: object, **kwargs: object) -> _CaptureSpan:
-        return _CaptureSpan(self.payloads)
-
-    def set_span_output(self, output: object) -> None:
-        pass
-
-
-class _TaskCaptureLaminar:
-    """Capture for PipelineTask spans."""
-
-    def __init__(self) -> None:
-        self.payloads: list[str] = []
-
-    def set_span_attributes(self, attrs: dict[str, Any]) -> None:
-        payload = attrs.get("replay.payload")
-        if isinstance(payload, str):
-            self.payloads.append(payload)
+class ReplayDownloadOutputDocument(Document):
+    """Output document returned by download/replay integration tests."""
 
 
 # -- Pipeline task for replay test -------------------------------------------
@@ -124,31 +90,25 @@ class ReplayIntegrationTask(PipelineTask):
         )
 
 
-# -- Helpers ------------------------------------------------------------------
+class ReplayDownloadedBundleTask(PipelineTask):
+    @classmethod
+    async def run(cls, source: ReplayTaskInputDocument, label: str) -> tuple[ReplayDownloadOutputDocument, ...]:
+        _ = cls
+        return (
+            ReplayDownloadOutputDocument(
+                name="downloaded-result.txt",
+                content=source.content,
+                description=label,
+            ),
+        )
 
 
-def _write_document_to_local_store(doc: Document, store_base: Path) -> None:
-    """Write a document to disk in LocalDocumentStore layout."""
-    class_name = doc.__class__.__name__
-    type_dir = store_base / class_name
-    type_dir.mkdir(parents=True, exist_ok=True)
-    sha_prefix = doc.sha256[:6]
-    safe_name = f"{Path(doc.name).stem}_{sha_prefix}{Path(doc.name).suffix}"
-    (type_dir / safe_name).write_bytes(doc.content)
-    (type_dir / f"{safe_name}.meta.json").write_text(
-        json.dumps({
-            "name": doc.name,
-            "document_sha256": doc.sha256,
-            "content_sha256": doc.sha256,
-            "class_name": class_name,
-            "description": doc.description,
-            "derived_from": list(doc.derived_from),
-            "triggered_by": list(doc.triggered_by),
-            "mime_type": "text/plain",
-            "attachments": [],
-        }),
-        encoding="utf-8",
-    )
+async def _create_replay_database(base_path: Path, *documents: Document) -> FilesystemDatabase:
+    """Persist replay documents into a FilesystemDatabase snapshot."""
+    database = FilesystemDatabase(base_path)
+    for document in documents:
+        await store_document_in_database(database, document)
+    return database
 
 
 # -- Unit test (always runs) -------------------------------------------------
@@ -161,6 +121,114 @@ def test_task_replay_yaml_roundtrip() -> None:
     assert restored.payload_type == "pipeline_task"
 
 
+@pytest.mark.clickhouse
+@pytest.mark.skipif(not os.environ.get("CLICKHOUSE_HOST"), reason="ClickHouse not available (CLICKHOUSE_HOST not set)")
+def test_clickhouse_downloaded_bundle_can_replay_cross_deployment_document_refs(tmp_path: Path) -> None:
+    from ai_pipeline_core.database._clickhouse import ClickHouseDatabase
+    from ai_pipeline_core.settings import Settings
+
+    async def seed_and_download() -> tuple[Path, uuid.UUID]:
+        database = ClickHouseDatabase(Settings())
+        deployment_id = uuid.uuid4()
+        external_deployment_id = uuid.uuid4()
+        task_id = uuid.uuid4()
+        try:
+            source_doc = ReplayTaskInputDocument.create_root(
+                name="clickhouse-download.txt",
+                content="downloaded bundle replay input",
+                reason="clickhouse integration input",
+            )
+            await store_document_in_database(database, source_doc, deployment_id=external_deployment_id)
+
+            deployment_node = ExecutionNode(
+                node_id=deployment_id,
+                node_kind=NodeKind.DEPLOYMENT,
+                deployment_id=deployment_id,
+                root_deployment_id=deployment_id,
+                run_id="clickhouse-download-run",
+                run_scope="clickhouse-download-run/scope",
+                deployment_name="clickhouse-download",
+                name="clickhouse-download",
+                sequence_no=0,
+                status=NodeStatus.COMPLETED,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+                payload={"flow_plan": [], "options": {}, "parent_execution_id": ""},
+            )
+            flow_node = ExecutionNode(
+                node_id=uuid.uuid4(),
+                node_kind=NodeKind.FLOW,
+                deployment_id=deployment_id,
+                root_deployment_id=deployment_id,
+                parent_node_id=deployment_id,
+                run_id="clickhouse-download-run",
+                run_scope="clickhouse-download-run/scope",
+                deployment_name="clickhouse-download",
+                name="ClickHouseReplayFlow",
+                sequence_no=1,
+                status=NodeStatus.COMPLETED,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+                payload={},
+            )
+            task_node = ExecutionNode(
+                node_id=task_id,
+                node_kind=NodeKind.TASK,
+                deployment_id=deployment_id,
+                root_deployment_id=deployment_id,
+                parent_node_id=flow_node.node_id,
+                run_id="clickhouse-download-run",
+                run_scope="clickhouse-download-run/scope",
+                deployment_name="clickhouse-download",
+                name="ClickHouseReplayTask",
+                sequence_no=1,
+                flow_id=flow_node.node_id,
+                status=NodeStatus.COMPLETED,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+                payload={
+                    "replay_payload": {
+                        "version": 1,
+                        "payload_type": "pipeline_task",
+                        "function_path": f"{ReplayDownloadedBundleTask.__module__}:{ReplayDownloadedBundleTask.__qualname__}",
+                        "arguments": {
+                            "source": {
+                                "$doc_ref": source_doc.sha256,
+                                "class_name": type(source_doc).__name__,
+                                "name": source_doc.name,
+                            },
+                            "label": "clickhouse-replayed",
+                        },
+                        "original": {},
+                    }
+                },
+            )
+
+            await database.insert_node(deployment_node)
+            await database.insert_node(flow_node)
+            await database.insert_node(task_node)
+
+            download_dir = tmp_path / "clickhouse-downloaded"
+            await download_deployment(database, deployment_id, download_dir)
+            return download_dir, task_id
+        finally:
+            await database.shutdown()
+
+    download_dir, task_id = asyncio.run(seed_and_download())
+    replay_output_dir = tmp_path / "clickhouse-replay-output"
+    exit_code = main([
+        "run",
+        "--from-db",
+        str(task_id),
+        "--db-path",
+        str(download_dir),
+        "--output-dir",
+        str(replay_output_dir),
+    ])
+
+    assert exit_code == 0
+
+
 # -- Integration tests (require API keys) ------------------------------------
 
 
@@ -169,13 +237,11 @@ class TestReplayIntegration:
     """Integration tests exercising the replay lifecycle with real LLM calls."""
 
     @pytest.mark.asyncio
-    async def test_end_to_end_conversation_replay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_end_to_end_conversation_replay(self, tmp_path: Path) -> None:
         """Capture ConversationReplay, YAML round-trip, re-execute, verify token in response."""
         from ai_pipeline_core.replay import ConversationReplay
 
         token = uuid.uuid4().hex[:10].upper()
-        capture = _CaptureLaminar()
-        monkeypatch.setattr("ai_pipeline_core.llm.conversation.Laminar", capture)
 
         doc = ReplayContextDocument.create_root(
             name="context.txt",
@@ -183,153 +249,172 @@ class TestReplayIntegration:
             reason="test input",
             description="Replay context",
         )
-        _write_document_to_local_store(doc, tmp_path)
+        replay_database = await _create_replay_database(tmp_path, doc)
 
-        conv = Conversation(
+        base_conv = Conversation(
             model=DEFAULT_MODEL,
             model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"),
             context=(doc,),
             enable_substitutor=False,
         )
-        conv = await conv.send(f"Reply with only the replay code from the document. The code is {token}.")
+        conv = await base_conv.send(f"Reply with only the replay code from the document. The code is {token}.")
         assert conv.content
-        assert len(capture.payloads) > 0, "No replay payload captured"
-
-        replay = ConversationReplay.from_yaml(capture.payloads[-1])
+        response = cast(ModelResponse[Any], conv.messages[-1])
+        replay = ConversationReplay.model_validate(
+            base_conv._build_replay_payload(
+                f"Reply with only the replay code from the document. The code is {token}.",
+                None,
+                None,
+                response,
+            )
+        )
         yaml_text = replay.to_yaml()
         assert DEFAULT_MODEL in yaml_text
 
         restored = ConversationReplay.from_yaml(yaml_text)
-        result = await restored.execute(store_base=tmp_path)
+        result = await restored.execute(replay_database)
         assert token in result.content
         assert result.usage.total_tokens > 0
 
     @pytest.mark.asyncio
-    async def test_replay_with_changed_model(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_replay_with_changed_model(self, tmp_path: Path) -> None:
         """Capture with gemini-3-flash, replay with grok-4.1-fast, verify structured output."""
         from ai_pipeline_core.replay import ConversationReplay
 
+        replay_database = FilesystemDatabase(tmp_path)
         token = uuid.uuid4().hex[:10].upper()
-        capture = _CaptureLaminar()
-        monkeypatch.setattr("ai_pipeline_core.llm.conversation.Laminar", capture)
-
-        conv = Conversation(
+        base_conv = Conversation(
             model=DEFAULT_MODEL,
             model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"),
             enable_substitutor=False,
         )
-        conv = await conv.send_structured(
+        conv = await base_conv.send_structured(
             f"Summarize the prompt, return the requested_token as '{token}', set validation_passed=true.",
             response_format=ReplayStructuredResponse,
         )
         assert conv.parsed is not None
         assert conv.parsed.requested_token == token
 
-        assert len(capture.payloads) > 0
-        replay = ConversationReplay.from_yaml(capture.payloads[-1])
+        response = cast(ModelResponse[Any], conv.messages[-1])
+        replay = ConversationReplay.model_validate(
+            base_conv._build_replay_payload(
+                f"Summarize the prompt, return the requested_token as '{token}', set validation_passed=true.",
+                ReplayStructuredResponse,
+                None,
+                response,
+            )
+        )
         modified = replay.model_copy(update={"model": "grok-4.1-fast"})
         assert modified.model == "grok-4.1-fast"
 
-        result = await modified.execute(store_base=tmp_path)
+        result = await modified.execute(replay_database)
         assert result.parsed is not None
         assert isinstance(result.parsed, ReplayStructuredResponse)
         assert result.parsed.requested_token == token
 
     @pytest.mark.asyncio
-    async def test_replay_with_changed_prompt(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_replay_with_changed_prompt(self, tmp_path: Path) -> None:
         """Capture with token_a, replay with token_b, verify only token_b appears."""
         from ai_pipeline_core.replay import ConversationReplay
 
+        replay_database = FilesystemDatabase(tmp_path)
         token_a = uuid.uuid4().hex[:10].upper()
         token_b = uuid.uuid4().hex[:10].upper()
-        capture = _CaptureLaminar()
-        monkeypatch.setattr("ai_pipeline_core.llm.conversation.Laminar", capture)
-
-        conv = Conversation(
+        base_conv = Conversation(
             model=DEFAULT_MODEL,
             model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"),
             enable_substitutor=False,
         )
-        conv = await conv.send(f"Reply with only this token: {token_a}")
+        conv = await base_conv.send(f"Reply with only this token: {token_a}")
 
-        assert len(capture.payloads) > 0
-        replay = ConversationReplay.from_yaml(capture.payloads[-1])
+        response = cast(ModelResponse[Any], conv.messages[-1])
+        replay = ConversationReplay.model_validate(base_conv._build_replay_payload(f"Reply with only this token: {token_a}", None, None, response))
         modified = replay.model_copy(update={"prompt": f"Reply with only this token: {token_b}"})
 
-        result = await modified.execute(store_base=tmp_path)
+        result = await modified.execute(replay_database)
         assert token_b in result.content
         assert token_a not in result.content
 
     @pytest.mark.asyncio
-    async def test_replay_with_changed_model_options(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_replay_with_changed_model_options(self, tmp_path: Path) -> None:
         """Capture with reasoning_effort=low, replay with reasoning_effort=high."""
         from ai_pipeline_core.replay import ConversationReplay
 
+        replay_database = FilesystemDatabase(tmp_path)
         token = uuid.uuid4().hex[:10].upper()
-        capture = _CaptureLaminar()
-        monkeypatch.setattr("ai_pipeline_core.llm.conversation.Laminar", capture)
-
-        conv = Conversation(
+        base_conv = Conversation(
             model=DEFAULT_MODEL,
             enable_substitutor=False,
             model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"),
         )
-        conv = await conv.send_structured(
+        conv = await base_conv.send_structured(
             f"Summarize the prompt, return the requested_token as '{token}', set validation_passed=true.",
             response_format=ReplayStructuredResponse,
         )
         assert conv.parsed is not None
 
-        assert len(capture.payloads) > 0
-        replay = ConversationReplay.from_yaml(capture.payloads[-1])
+        response = cast(ModelResponse[Any], conv.messages[-1])
+        replay = ConversationReplay.model_validate(
+            base_conv._build_replay_payload(
+                f"Summarize the prompt, return the requested_token as '{token}', set validation_passed=true.",
+                ReplayStructuredResponse,
+                None,
+                response,
+            )
+        )
         modified = replay.model_copy(update={"model_options": {**replay.model_options, "reasoning_effort": "high", "max_completion_tokens": 2000}})
 
-        result = await modified.execute(store_base=tmp_path)
+        result = await modified.execute(replay_database)
         assert result.parsed is not None
         assert isinstance(result.parsed, ReplayStructuredResponse)
         assert result.parsed.requested_token == token
 
     @pytest.mark.asyncio
-    async def test_structured_output_replay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_structured_output_replay(self, tmp_path: Path) -> None:
         """Verify response_format round-trips through YAML and produces typed .parsed."""
         from ai_pipeline_core.replay import ConversationReplay
 
+        replay_database = FilesystemDatabase(tmp_path)
         token = uuid.uuid4().hex[:10].upper()
-        capture = _CaptureLaminar()
-        monkeypatch.setattr("ai_pipeline_core.llm.conversation.Laminar", capture)
-
-        conv = Conversation(
+        base_conv = Conversation(
             model=DEFAULT_MODEL,
             model_options=ModelOptions(max_completion_tokens=MAX_COMPLETION_TOKENS, reasoning_effort="low"),
             enable_substitutor=False,
         )
-        conv = await conv.send_structured(
+        conv = await base_conv.send_structured(
             f"Summarize the prompt, return the requested_token as '{token}', set validation_passed=true.",
             response_format=ReplayStructuredResponse,
         )
         assert conv.parsed is not None
 
-        assert len(capture.payloads) > 0
-        yaml_text = capture.payloads[-1]
+        response = cast(ModelResponse[Any], conv.messages[-1])
+        replay = ConversationReplay.model_validate(
+            base_conv._build_replay_payload(
+                f"Summarize the prompt, return the requested_token as '{token}', set validation_passed=true.",
+                ReplayStructuredResponse,
+                None,
+                response,
+            )
+        )
+        yaml_text = replay.to_yaml()
         response_format_path = f"{ReplayStructuredResponse.__module__}:{ReplayStructuredResponse.__qualname__}"
         assert response_format_path in yaml_text or "ReplayStructuredResponse" in yaml_text
 
-        replay = ConversationReplay.from_yaml(yaml_text)
-        assert replay.response_format is not None
+        restored_replay = ConversationReplay.from_yaml(yaml_text)
+        assert restored_replay.response_format is not None
 
-        result = await replay.execute(store_base=tmp_path)
+        result = await restored_replay.execute(replay_database)
         assert result.parsed is not None
         assert isinstance(result.parsed, ReplayStructuredResponse)
         assert result.parsed.requested_token == token
 
     @pytest.mark.asyncio
-    async def test_multi_turn_conversation_replay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_multi_turn_conversation_replay(self, tmp_path: Path) -> None:
         """Replay turn 2 of a multi-turn conversation with history from turn 1."""
         from ai_pipeline_core.replay import ConversationReplay
 
+        replay_database = FilesystemDatabase(tmp_path)
         token = uuid.uuid4().hex[:10].upper()
-        capture = _CaptureLaminar()
-        monkeypatch.setattr("ai_pipeline_core.llm.conversation.Laminar", capture)
 
         conv = Conversation(
             model=DEFAULT_MODEL,
@@ -339,13 +424,15 @@ class TestReplayIntegration:
         conv = await conv.send(f"Remember codename: {token}")
         assert conv.content
 
-        capture.payloads.clear()  # capture only turn 2
+        conv_with_history = conv
         conv = await conv.send_structured("Return the codename I told you.", response_format=ReplayMultiTurnResponse)
         assert conv.parsed is not None
         assert token in conv.parsed.codename.upper()
 
-        assert len(capture.payloads) > 0
-        replay = ConversationReplay.from_yaml(capture.payloads[-1])
+        response = cast(ModelResponse[Any], conv.messages[-1])
+        replay = ConversationReplay.model_validate(
+            conv_with_history._build_replay_payload("Return the codename I told you.", ReplayMultiTurnResponse, None, response)
+        )
 
         has_user = any(e.type == "user_text" for e in replay.history)
         has_response = any(e.type == "response" for e in replay.history)
@@ -354,7 +441,7 @@ class TestReplayIntegration:
 
         yaml_text = replay.to_yaml()
         restored = ConversationReplay.from_yaml(yaml_text)
-        result = await restored.execute(store_base=tmp_path)
+        result = await restored.execute(replay_database)
 
         assert result.parsed is not None
         assert isinstance(result.parsed, ReplayMultiTurnResponse)
@@ -371,7 +458,7 @@ class TestReplayIntegration:
             reason="test input",
             description="Facts about the Eiffel Tower",
         )
-        _write_document_to_local_store(doc, tmp_path)
+        replay_database = await _create_replay_database(tmp_path, doc)
 
         replay = ConversationReplay(
             model=DEFAULT_MODEL,
@@ -387,7 +474,7 @@ class TestReplayIntegration:
             enable_substitutor=False,
         )
 
-        result = await replay.execute(store_base=tmp_path)
+        result = await replay.execute(replay_database)
         assert result.content
         assert "330" in result.content
         assert result.usage.total_tokens > 0
@@ -396,17 +483,15 @@ class TestReplayIntegration:
     async def test_pipeline_task_replay(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Capture TaskReplay from a PipelineTask run, YAML round-trip, re-execute."""
-        from ai_pipeline_core.document_store._memory import MemoryDocumentStore
+        """Task replay payload persisted on the task node round-trips through YAML and re-executes."""
+        from uuid import uuid4
+
         from ai_pipeline_core.replay import TaskReplay as TaskReplayType
+        from ai_pipeline_core.database import MemoryDatabase, NodeKind
 
         token = uuid.uuid4().hex[:10].upper()
-        task_capture = _TaskCaptureLaminar()
-        monkeypatch.setattr("ai_pipeline_core.pipeline._task.Laminar", task_capture)
-        conv_capture = _CaptureLaminar()
-        monkeypatch.setattr("ai_pipeline_core.llm.conversation.Laminar", conv_capture)
+        database = MemoryDatabase()
 
         source_doc = ReplayTaskInputDocument.create_root(
             name="source.txt",
@@ -414,10 +499,14 @@ class TestReplayIntegration:
             reason="test input",
             description="Source document for task replay",
         )
-        _write_document_to_local_store(source_doc, tmp_path)
+        replay_database = await _create_replay_database(tmp_path, source_doc)
 
-        store = MemoryDocumentStore()
-        with pipeline_test_context(store=store):
+        with pipeline_test_context() as ctx:
+            deployment_id = uuid4()
+            ctx.database = database
+            ctx.deployment_id = deployment_id
+            ctx.root_deployment_id = deployment_id
+            ctx.deployment_name = "replay-integration"
             result_docs: list[Any] = await ReplayIntegrationTask.run(source_doc, model_name=DEFAULT_MODEL)
 
         assert len(result_docs) == 1
@@ -426,14 +515,15 @@ class TestReplayIntegration:
         parsed = ReplayTaskExtraction.model_validate_json(result_doc.content)
         assert token in parsed.extracted_code.upper() or token in parsed.source_summary.upper()
 
-        assert len(task_capture.payloads) > 0, "No task replay payload captured"
-        task_replay = TaskReplayType.from_yaml(task_capture.payloads[-1])
+        task_nodes = [node for node in database._nodes.values() if node.node_kind == NodeKind.TASK]
+        assert len(task_nodes) == 1
+        task_replay = TaskReplayType.model_validate(task_nodes[0].payload["replay_payload"])
 
         yaml_text = task_replay.to_yaml()
         restored = TaskReplayType.from_yaml(yaml_text)
-        replay_result = await restored.execute(store_base=tmp_path)
+        replay_result = await restored.execute(replay_database)
 
-        assert isinstance(replay_result, list)
+        assert isinstance(replay_result, tuple)
         assert len(replay_result) == 1
         assert isinstance(replay_result[0], ReplayTaskOutputDocument)
         replay_parsed = ReplayTaskExtraction.model_validate_json(replay_result[0].content)

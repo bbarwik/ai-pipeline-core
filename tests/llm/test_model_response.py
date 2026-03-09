@@ -3,9 +3,9 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from ai_pipeline_core._llm_core.model_response import Citation
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import TokenUsage
-from ai_pipeline_core._llm_core.model_response import Citation
 from tests.support.helpers import create_test_model_response, create_test_structured_model_response
 
 
@@ -48,41 +48,6 @@ class TestModelResponse:
         )
         assert response.reasoning_content == "Internal reasoning"
         assert response.content == "Visible content"
-
-    def test_get_laminar_metadata_basic(self):
-        """Test basic Laminar metadata extraction."""
-        response = create_test_model_response(
-            content="test",
-            model="gpt-5.1",
-            response_id="resp-id",
-        )
-
-        metadata = response.get_laminar_metadata()
-
-        assert metadata["gen_ai.response.id"] == "resp-id"
-        assert metadata["gen_ai.system"] == "litellm"
-
-    def test_get_laminar_metadata_with_usage(self):
-        """Test Laminar metadata with usage information."""
-        response = create_test_model_response(
-            content="test",
-            prompt_tokens=100,
-            completion_tokens=50,
-        )
-
-        metadata = response.get_laminar_metadata()
-
-        assert metadata["gen_ai.usage.input_tokens"] == 100
-        assert metadata["gen_ai.usage.output_tokens"] == 50
-        assert metadata["gen_ai.usage.total_tokens"] == 150
-
-    def test_get_laminar_metadata_with_cost(self):
-        """Test metadata with cost information."""
-        response = create_test_model_response(content="test", cost=0.05)
-
-        metadata = response.get_laminar_metadata()
-        assert metadata["gen_ai.usage.cost"] == pytest.approx(0.05)
-        assert metadata["gen_ai.usage.cost"] == pytest.approx(0.05)
 
     def test_usage_property(self):
         """Test usage property works directly."""
@@ -249,7 +214,3 @@ class TestStructuredModelResponse:
         assert response.model == "gpt-5.1"
         assert response.response_id == "test-id"
         assert response.cost == pytest.approx(0.02)
-
-        metadata = response.get_laminar_metadata()
-        assert metadata["gen_ai.response.id"] == "test-id"
-        assert metadata["gen_ai.usage.cost"] == pytest.approx(0.02)

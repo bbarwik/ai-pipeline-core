@@ -4,7 +4,7 @@
 
 ## Design Principles
 
-1. **Framework Absorbs Complexity, Apps Stay Simple** — All heavy/complex logic lives in the framework. Application code built on this framework should be minimal and straightforward. Tracing, retries, deployment, progress tracking, storage, logging, and validation are handled automatically.
+1. **Framework Absorbs Complexity, Apps Stay Simple** — All heavy/complex logic lives in the framework. Application code built on this framework should be minimal and straightforward. Execution tracking, retries, deployment, progress tracking, storage, logging, and validation are handled automatically.
 
 2. **Deploy First, Optimize Later** — Get working system fast. Architecture must allow future optimization without major refactoring.
 
@@ -39,7 +39,7 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 **Exceptions:**
 - Protocol stubs (method signature only)
 - ABC base class methods meant for override
-- In-memory test implementations (e.g., MemoryDocumentStore)
+- In-memory test implementations (e.g., MemoryDatabase)
 
 ### 1.2 Immutability & Safety
 
@@ -133,51 +133,53 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - Primary content in `Document.content`, secondary in `attachments` tuple
 - Properties: `mime_type`, `is_image`, `is_pdf`, `is_text`, `size`, `text`
 
-### 2.3 Pipeline Decorators (`pipeline/`)
+### 2.3 Pipeline Classes (`pipeline/`)
 
-**@pipeline_task:**
-- Wraps async functions with Prefect `@task` + Laminar tracing
-- Automatic document persistence to DocumentStore
+**`PipelineTask` base class:**
+- Subclass with `@classmethod async def run(cls, documents: tuple[...]) -> tuple[...]`
+- Automatic execution-node tracking and document persistence to the active database backend
 - Document lifecycle tracking (created, returned, orphaned)
-- Configurable retries, timeouts, trace levels
+- Configurable retries, timeouts via ClassVars
 
-**@pipeline_flow:**
-- Wraps async functions with Prefect `@flow` + Laminar tracing
-- Extracts input/output document types from annotations at decoration time
-- Validates: exactly 3 parameters, correct types, no input/output type overlap
-- Sets RunContext for document storage scoping
+**`PipelineFlow` base class:**
+- Subclass with `async def run(self, documents: tuple[...], options: FlowOptions) -> tuple[...]`
+- Extracts input/output document types from `run()` annotations at class definition time
+- Validates: exactly 3 parameters (`self`, `documents`, `options`), correct types, no input/output type overlap
+- Sets RunContext for document and run-scope scoping
+- Use `get_run_id()` from `ai_pipeline_core.pipeline` to access the current run ID inside a flow or task
 
-**`@pipeline_task` Return Type Validation:**
+**`PipelineTask` Return Type Validation:**
 - Return type must be `Document | None | list[Document] | tuple[Document, ...]`
 - Rejects mixed types (e.g., `str | Document`)
 - Rejects invalid containers (e.g., `dict[str, Document]`)
 
-**`@pipeline_flow` Return Type Validation:**
-- Return type must be `list[Document]` (e.g., `list[MyDoc]` or `list[DocA | DocB]`)
-- First parameter must be named `run_id` or `_run_id` (type `str`)
-- Enforced at both decoration time and runtime
+**`PipelineFlow` Return Type Validation:**
+- Return type must be `tuple[Document, ...]` (e.g., `tuple[MyDoc, ...]` or `tuple[DocA | DocB, ...]`)
+- Enforced at both definition time and runtime
 
 **Graceful Degradation:**
 - `safe_gather(*coros)` / `safe_gather_indexed(*coros)` execute coroutines in parallel, logging individual failures while returning successes
 - By default raises `RuntimeError` if all tasks fail (`raise_if_all_fail=True`)
-- Document persistence failures in `@pipeline_task` are logged as warnings, not errors
+- Document persistence failures in `PipelineTask` are logged as warnings, not errors
 
-### 2.4 Document Storage (`document_store/`)
+### 2.4 Database (`database/`)
 
-**Public API — `DocumentReader` protocol** (read-only, exported at top level):
-- Load, query, and check documents by type, SHA256, source values, or run scope
+**Public API — `DatabaseReader` protocol** (read-only, exported at top level):
+- Load and query execution nodes, documents, blobs, deployments, and logs
+- Power replay, `ai-trace`, and downloaded `FilesystemDatabase` snapshots
 
-**Internal — `DocumentStore` protocol** (`_protocol.py`, full read/write):
-- Extends `DocumentReader` with write operations — `@pipeline_task` handles persistence automatically
+**Internal — `DatabaseWriter` protocol** (`_protocol.py`, full read/write):
+- Adds write operations used by `PipelineTask`, deployments, replay capture, and execution logging
+- `supports_remote: bool` property — indicates whether the backend supports Prefect-based remote deployment execution
 
 **Backends** (all internal, prefixed with `_`):
-- ClickHouse (production), Local filesystem (CLI/debug), In-memory (testing), Dual (ClickHouse + local)
+- `ClickHouseDatabase` (production), `FilesystemDatabase` (CLI/download/replay), `MemoryDatabase` (testing)
 
 ### 2.5 Deployment (`deployment/`)
 
 **PipelineDeployment Base Class:**
 - Generic typing: `PipelineDeployment[TOptions, TResult]`
-- Per-flow resume via DocumentStore (explicit `FlowCompletion` records, configurable `cache_ttl`)
+- Per-flow resume via database-backed execution nodes (explicit flow completion records, configurable `cache_ttl`)
 - Per-flow uploads (not just at pipeline end)
 - Pub/Sub event publishing (per-flow start/completion via `PUBSUB_PROJECT_ID`, `PUBSUB_TOPIC_ID` environment variables on `Settings`)
 - CLI interface with `--start`/`--end` step control
@@ -185,7 +187,7 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 
 **RemoteDeployment:**
 - Typed client for calling a remote `PipelineDeployment` via Prefect
-- Generic typing: `RemoteDeployment[TDoc, TOptions, TResult]`
+- Generic typing: `RemoteDeployment[TOptions, TResult]` (2 type parameters: options and result)
 - Mirror types — local Document subclasses whose `class_name` must match remote types
 
 **Progress Tracking:**
@@ -199,10 +201,6 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - `LimitKind.CONCURRENT` — Lease-based slots
 - `LimitKind.PER_MINUTE` / `PER_HOUR` — Token bucket rate limits
 - Auto-created in Prefect at pipeline start; unthrottled when Prefect unavailable
-
-**DualDocumentStore:**
-- When ClickHouse is configured, CLI mode uses DualDocumentStore — saves to ClickHouse (primary) and local filesystem (secondary)
-- All reads delegate to primary; secondary failures are best-effort (logged as warnings)
 
 ### 2.6 Prompt Compiler (`prompt_compiler/`)
 
@@ -243,36 +241,37 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 
 ### 2.7 Observability (`observability/`)
 
-**Tracing:**
-- `@trace` decorator with Laminar integration
-- Automatic input/output capture with document content trimming (text: first/last 100 chars, binary: removed)
-- TraceInfo propagation across function calls
-- **Prompt traceability** — Every LLM call logs the context used
+**Execution Data:**
+- Execution structure is stored in `execution_nodes`
+- Execution logs are stored in `execution_logs`
+- LLM calls persist full prompt/response payloads and replay payloads for debugging and replay
 
-**Write Path:** `PipelineSpanProcessor` dispatches `SpanData` to `FilesystemBackend` (`.trace/` directory) and `ClickHouseBackend` (`pipeline_runs` + `pipeline_spans` tables). Document lineage tracked via SHA256 arrays on span attributes.
+**CLI:**
+- `ai-trace list` lists deployments from the database
+- `ai-trace show <id>` renders the execution tree plus logs
+- `ai-trace download <id>` exports a portable `FilesystemDatabase` snapshot
 
-**Local Debug:** `.trace/` directory with hierarchical span data, replay files, indexes, `summary.md`, `costs.md`. CLI tool `ai-trace` for ClickHouse access.
-
-**Logging:**
+**Logging API:**
 - `get_pipeline_logger()` — Configured logger with context
-- Logging bridge forwards to OTel span events (INFO+ level)
+- `ExecutionLogHandler` — stdlib logging handler that routes root-logger records into the active execution log buffer, persisted to `execution_logs` during deployment runs
+- Logs flow into the database-backed execution log pipeline automatically during deployment runs
 
 ### 2.8 Replay (`replay/`)
 
-**Automatic capture and re-execution of any pipeline boundary** — every LLM conversation, `@pipeline_task`, and `@pipeline_flow` call produces a typed replay YAML file alongside its trace output.
+**Automatic capture and re-execution of any pipeline boundary** — every LLM conversation, `PipelineTask`, and `PipelineFlow` call produces a typed replay payload that can be serialized to YAML for inspection or replay.
 
 **Three Payload Types (frozen Pydantic models):**
 - `ConversationReplay` — captures `Conversation.send()`/`send_structured()`: model, model_options, prompt, context docs, multi-turn history, response_format class path
-- `TaskReplay` — captures `@pipeline_task`: function path (`module:qualname`), all arguments (Documents as `$doc_ref` references, BaseModels as dicts, primitives as-is)
-- `FlowReplay` — captures `@pipeline_flow`: function path, run_id, document references, flow_options
+- `TaskReplay` — captures `PipelineTask`: class path (`module:qualname`), all arguments (Documents as `$doc_ref` references, BaseModels as dicts, primitives as-is)
+- `FlowReplay` — captures `PipelineFlow`: class path, run_id, document references, flow_options
 
-**Each payload type has:** `to_yaml()`, `from_yaml(text)`, `execute(store_base)` methods.
+**Each payload type has:** `to_yaml()`, `from_yaml(text)`, `execute(database)` methods.
 
-**Document References** — documents are referenced by SHA256 (`$doc_ref`), resolved from LocalDocumentStore during replay.
+**Document References** — documents are referenced by SHA256 (`$doc_ref`), resolved from a `DatabaseReader` during replay.
 
-**CLI Tool** (`ai-replay`): `run <file>` to execute, `show <file>` to inspect. Supports `--store`, `--set KEY=VALUE`, `--import MODULE`, `--output-dir`, `--no-trace`.
+**CLI Tool** (`ai-replay`): `run <file>` to execute, `run --from-db <node_id>` to replay directly from the database, and `show <file>` to inspect. Supports `--db-path`, `--set KEY=VALUE`, `--import MODULE`, and `--output-dir`.
 
-**Output:** Results saved to `output_dir/output.yaml` with full OTel tracing to `output_dir/.trace/`.
+**Output:** Results are saved to `output_dir/output.yaml`. Downloaded bundles remain replayable by pointing `--db-path` at the exported `FilesystemDatabase` root.
 
 ---
 
@@ -620,9 +619,7 @@ logger.warning(
 |----------|--------|-------|
 | Orchestrator | Prefect | Flow/task orchestration, state management |
 | LLM Proxy | LiteLLM (primary), OpenRouter (compatible) | Unified multi-provider access |
-| Document Storage | ClickHouse + local | Content-addressed with SHA256 deduplication |
-| Tracking Storage | ClickHouse | `pipeline_runs` + `pipeline_spans` (unified span data with document lineage) |
-| Tracing | Laminar (LMNR) + OpenTelemetry | Span-based with automatic instrumentation |
+| Database | ClickHouse (production), filesystem (CLI/replay), in-memory (testing) | Unified storage: `execution_nodes`, `documents`, `document_blobs`, `execution_logs`. Content-addressed with SHA256 deduplication |
 
 ---
 
@@ -662,7 +659,7 @@ The full suite has 3000+ tests and takes 3-5 minutes. Run only the relevant test
 | `ai_pipeline_core/llm/` | `pytest tests/llm/ -x -q` |
 | `ai_pipeline_core/pipeline/` | `pytest tests/pipeline/ -x -q` |
 | `ai_pipeline_core/deployment/` | `pytest tests/deployment/ -x -q` |
-| `ai_pipeline_core/document_store/` | `pytest tests/document_store/ -x -q` |
+| `ai_pipeline_core/database/` | `pytest tests/database/ -x -q` |
 | `ai_pipeline_core/prompt_compiler/` | `pytest tests/prompt_compiler/ -x -q` |
 | `ai_pipeline_core/observability/` | `pytest tests/observability/ -x -q` |
 | `ai_pipeline_core/replay/` | `pytest tests/replay/ -x -q` |

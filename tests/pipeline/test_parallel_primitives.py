@@ -16,20 +16,20 @@ class _PDoc(Document):
 
 class _FastTask(PipelineTask):
     @classmethod
-    async def run(cls, documents: list[_PDoc]) -> list[_PDoc]:
-        return [_PDoc(name="fast.txt", content=b"fast")]
+    async def run(cls, documents: tuple[_PDoc, ...]) -> tuple[_PDoc, ...]:
+        return (_PDoc(name="fast.txt", content=b"fast"),)
 
 
 class _SlowTask(PipelineTask):
     @classmethod
-    async def run(cls, documents: list[_PDoc]) -> list[_PDoc]:
+    async def run(cls, documents: tuple[_PDoc, ...]) -> tuple[_PDoc, ...]:
         await asyncio.sleep(60)
-        return [_PDoc(name="slow.txt", content=b"slow")]
+        return (_PDoc(name="slow.txt", content=b"slow"),)
 
 
 class _FailTask(PipelineTask):
     @classmethod
-    async def run(cls, documents: list[_PDoc]) -> list[_PDoc]:
+    async def run(cls, documents: tuple[_PDoc, ...]) -> tuple[_PDoc, ...]:
         raise ValueError("run fail")
 
 
@@ -54,7 +54,7 @@ async def test_run_returns_task_handle() -> None:
     with pipeline_test_context() as ctx:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         try:
-            handle: Any = _FastTask.run([_make_doc()])
+            handle: Any = _FastTask.run((_make_doc(),))
             assert isinstance(handle, TaskHandle)
             result = await handle.result()
             assert len(result) == 1
@@ -67,7 +67,7 @@ async def test_task_handle_done_property() -> None:
     with pipeline_test_context() as ctx:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         try:
-            handle = _FastTask.run([_make_doc()])
+            handle = _FastTask.run((_make_doc(),))
             await handle.result()
             assert handle.done is True
         finally:
@@ -79,7 +79,7 @@ async def test_task_handle_cancel() -> None:
     with pipeline_test_context() as ctx:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         try:
-            handle = _SlowTask.run([_make_doc()])
+            handle = _SlowTask.run((_make_doc(),))
             handle.cancel()
             with pytest.raises((asyncio.CancelledError, Exception)):
                 await handle.result()
@@ -92,8 +92,8 @@ async def test_collect_tasks_all_complete() -> None:
     with pipeline_test_context() as ctx:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         try:
-            h1 = _FastTask.run([_make_doc("a")])
-            h2 = _FastTask.run([_make_doc("b")])
+            h1 = _FastTask.run((_make_doc("a"),))
+            h2 = _FastTask.run((_make_doc("b"),))
             batch = await collect_tasks(h1, h2)
         finally:
             reset_execution_context(token)
@@ -109,8 +109,8 @@ async def test_collect_tasks_with_deadline_splits() -> None:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         slow: Any = None
         try:
-            fast = _FastTask.run([_make_doc()])
-            slow = _SlowTask.run([_make_doc()])
+            fast = _FastTask.run((_make_doc(),))
+            slow = _SlowTask.run((_make_doc(),))
             batch = await collect_tasks(fast, slow, deadline_seconds=0.5)
         finally:
             if slow is not None:
@@ -126,8 +126,8 @@ async def test_collect_tasks_failed_goes_to_incomplete() -> None:
     with pipeline_test_context() as ctx:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         try:
-            good = _FastTask.run([_make_doc()])
-            bad = _FailTask.run([_make_doc()])
+            good = _FastTask.run((_make_doc(),))
+            bad = _FailTask.run((_make_doc(),))
             batch = await collect_tasks(good, bad)
         finally:
             reset_execution_context(token)
@@ -141,7 +141,7 @@ async def test_collect_tasks_accepts_list() -> None:
     with pipeline_test_context() as ctx:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         try:
-            handles = [_FastTask.run([_make_doc("x")]) for _ in range(3)]
+            handles = [_FastTask.run((_make_doc("x"),)) for _ in range(3)]
             batch = await collect_tasks(handles)
         finally:
             reset_execution_context(token)
@@ -155,8 +155,8 @@ async def test_as_task_completed_yields_handles() -> None:
     with pipeline_test_context() as ctx:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         try:
-            h1 = _FastTask.run([_make_doc("1")])
-            h2 = _FastTask.run([_make_doc("2")])
+            h1 = _FastTask.run((_make_doc("1"),))
+            h2 = _FastTask.run((_make_doc("2"),))
             yielded = [handle async for handle in as_task_completed(h1, h2)]
         finally:
             reset_execution_context(token)
@@ -171,9 +171,9 @@ async def test_run_tasks_until_dispatches_and_collects() -> None:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         try:
             groups = [
-                (([_make_doc("a")],), {}),
-                (([_make_doc("b")],), {}),
-                (([_make_doc("c")],), {}),
+                (((_make_doc("a"),),), {}),
+                (((_make_doc("b"),),), {}),
+                (((_make_doc("c"),),), {}),
             ]
             batch = await run_tasks_until(_FastTask, groups)
         finally:

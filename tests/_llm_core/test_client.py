@@ -398,11 +398,10 @@ class TestGenerateImpl:
         with pytest.raises(ValueError, match="model must be provided"):
             await _generate_impl([msg], model="", model_options=ModelOptions())
 
-    @patch("ai_pipeline_core._llm_core.client.Laminar")
     @patch("ai_pipeline_core._llm_core.client.settings")
     @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
     @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value=None)
-    async def test_generate_successful_non_streaming(self, mock_degen, mock_aoai, mock_settings, mock_laminar):
+    async def test_generate_successful_non_streaming(self, mock_degen, mock_aoai, mock_settings):
         from ai_pipeline_core._llm_core.client import _generate_impl
         from ai_pipeline_core._llm_core.types import ModelOptions
 
@@ -420,19 +419,14 @@ class TestGenerateImpl:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_aoai.return_value = mock_client
 
-        mock_span = MagicMock()
-        mock_laminar.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
-        mock_laminar.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
-
         msg = CoreMessage(role=Role.USER, content="hi")
         opts = ModelOptions(retries=0, cache_ttl=None)
         result = await _generate_impl([msg], model="test-model", model_options=opts)
         assert result.content == "OK"
 
-    @patch("ai_pipeline_core._llm_core.client.Laminar")
     @patch("ai_pipeline_core._llm_core.client.settings")
     @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
-    async def test_generate_retry_on_timeout(self, mock_aoai, mock_settings, mock_laminar):
+    async def test_generate_retry_on_timeout(self, mock_aoai, mock_settings):
         from ai_pipeline_core._llm_core.client import _generate_impl
         from ai_pipeline_core._llm_core.types import ModelOptions
 
@@ -445,19 +439,14 @@ class TestGenerateImpl:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_aoai.return_value = mock_client
 
-        mock_span = MagicMock()
-        mock_laminar.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
-        mock_laminar.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
-
         msg = CoreMessage(role=Role.USER, content="hi")
         opts = ModelOptions(retries=0, retry_delay_seconds=0, cache_ttl=None)
         with pytest.raises(LLMError, match="Exhausted all retry attempts"):
             await _generate_impl([msg], model="test-model", model_options=opts)
 
-    @patch("ai_pipeline_core._llm_core.client.Laminar")
     @patch("ai_pipeline_core._llm_core.client.settings")
     @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
-    async def test_generate_retry_on_generic_exception(self, mock_aoai, mock_settings, mock_laminar):
+    async def test_generate_retry_on_generic_exception(self, mock_aoai, mock_settings):
         from ai_pipeline_core._llm_core.client import _generate_impl
         from ai_pipeline_core._llm_core.types import ModelOptions
 
@@ -470,10 +459,6 @@ class TestGenerateImpl:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_aoai.return_value = mock_client
 
-        mock_span = MagicMock()
-        mock_laminar.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
-        mock_laminar.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
-
         msg = CoreMessage(role=Role.USER, content="hi")
         opts = ModelOptions(retries=1, retry_delay_seconds=0, cache_ttl=None)
         with pytest.raises(LLMError, match="Exhausted all retry attempts"):
@@ -481,11 +466,10 @@ class TestGenerateImpl:
         # retries=1 means 1 original + 1 retry = 2 calls total
         assert mock_client.chat.completions.with_raw_response.create.call_count == 2
 
-    @patch("ai_pipeline_core._llm_core.client.Laminar")
     @patch("ai_pipeline_core._llm_core.client.settings")
     @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
     @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value=None)
-    async def test_generate_with_system_prompt(self, mock_degen, mock_aoai, mock_settings, mock_laminar):
+    async def test_generate_with_system_prompt(self, mock_degen, mock_aoai, mock_settings):
         from ai_pipeline_core._llm_core.client import _generate_impl
         from ai_pipeline_core._llm_core.types import ModelOptions
 
@@ -502,10 +486,6 @@ class TestGenerateImpl:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_aoai.return_value = mock_client
-
-        mock_span = MagicMock()
-        mock_laminar.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
-        mock_laminar.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
 
         msg = CoreMessage(role=Role.USER, content="hi")
         opts = ModelOptions(retries=0, cache_ttl=None, system_prompt="You are helpful")
@@ -520,11 +500,10 @@ class TestGenerateImpl:
         sys_content = system_messages[0]["content"]
         assert "You are helpful" in str(sys_content), f"System prompt not found in: {sys_content}"
 
-    @patch("ai_pipeline_core._llm_core.client.Laminar")
     @patch("ai_pipeline_core._llm_core.client.settings")
     @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
     @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value=None)
-    async def test_generate_openrouter_model_conversion(self, mock_degen, mock_aoai, mock_settings, mock_laminar):
+    async def test_generate_openrouter_model_conversion(self, mock_degen, mock_aoai, mock_settings):
         from ai_pipeline_core._llm_core.client import _generate_impl
         from ai_pipeline_core._llm_core.types import ModelOptions
 
@@ -542,20 +521,15 @@ class TestGenerateImpl:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_aoai.return_value = mock_client
 
-        mock_span = MagicMock()
-        mock_laminar.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
-        mock_laminar.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
-
         msg = CoreMessage(role=Role.USER, content="hi")
         opts = ModelOptions(retries=0, cache_ttl=None)
         result = await _generate_impl([msg], model="gpt-5-mini", model_options=opts)
         assert result.content == "OK"
 
-    @patch("ai_pipeline_core._llm_core.client.Laminar")
     @patch("ai_pipeline_core._llm_core.client.settings")
     @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
     @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value="repetition detected")
-    async def test_generate_degeneration_detected(self, mock_degen, mock_aoai, mock_settings, mock_laminar):
+    async def test_generate_degeneration_detected(self, mock_degen, mock_aoai, mock_settings):
         from ai_pipeline_core._llm_core.client import _generate_impl
         from ai_pipeline_core._llm_core.types import ModelOptions
 
@@ -573,20 +547,15 @@ class TestGenerateImpl:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_aoai.return_value = mock_client
 
-        mock_span = MagicMock()
-        mock_laminar.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
-        mock_laminar.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
-
         msg = CoreMessage(role=Role.USER, content="hi")
         opts = ModelOptions(retries=0, retry_delay_seconds=0, cache_ttl=None)
         with pytest.raises(LLMError):
             await _generate_impl([msg], model="test-model", model_options=opts)
 
-    @patch("ai_pipeline_core._llm_core.client.Laminar")
     @patch("ai_pipeline_core._llm_core.client.settings")
     @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
     @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value=None)
-    async def test_generate_with_cache_ttl_and_context(self, mock_degen, mock_aoai, mock_settings, mock_laminar):
+    async def test_generate_with_cache_ttl_and_context(self, mock_degen, mock_aoai, mock_settings):
         from ai_pipeline_core._llm_core.client import _generate_impl
         from ai_pipeline_core._llm_core.types import ModelOptions
 
@@ -603,10 +572,6 @@ class TestGenerateImpl:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_aoai.return_value = mock_client
-
-        mock_span = MagicMock()
-        mock_laminar.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
-        mock_laminar.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
 
         ctx_msg = CoreMessage(role=Role.SYSTEM, content="You are a system." * 1000)
         user_msg = CoreMessage(role=Role.USER, content="hi")

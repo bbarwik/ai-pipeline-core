@@ -57,7 +57,7 @@ rules:
     paths:
       exclude:
         - "**/test_*"
-        - "ai_pipeline_core/**"
+        - "**/ai_pipeline_core/**"
 
   - id: json-yaml-fallback
     patterns:

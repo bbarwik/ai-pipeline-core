@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ai_pipeline_core.documents import Document, DocumentSha256
+from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents.attachment import Attachment
 from ai_pipeline_core.logging import get_pipeline_logger
 
@@ -23,6 +23,17 @@ logger = get_pipeline_logger(__name__)
 _ALLOWED_SCHEMES = re.compile(r"^(https?|gs)://")
 _DOWNLOAD_TIMEOUT = 120
 _MAX_CONCURRENT_DOWNLOADS = 10
+
+
+def _string_key_dict(data: Any) -> dict[str, Any]:
+    """Normalize arbitrary mapping keys to strings for model validators."""
+    if not isinstance(data, dict):
+        return {}
+    mapping = cast(dict[Any, Any], data)
+    normalized: dict[str, Any] = {}
+    for key, value in mapping.items():
+        normalized[str(key)] = value
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +56,7 @@ class _InputBase(BaseModel):
     @classmethod
     def _strip_serialize_metadata(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            d = cast(dict[str, Any], data)
+            d = _string_key_dict(data)
             return {k: v for k, v in d.items() if k not in cls.STRIP_KEYS}
         return data
 
@@ -89,65 +100,15 @@ class DocumentInput(_InputBase):
         "mime_type",
     })
 
-
-# ---------------------------------------------------------------------------
-# Output models
-# ---------------------------------------------------------------------------
-
-
-class OutputAttachment(BaseModel):
-    """Attachment metadata in deployment results. Binary content is None."""
-
-    sha256: str
-    name: str
-    mime_type: str
-    size: int
-    description: str | None = None
-    content: str | None = None
-
-    model_config = ConfigDict(frozen=True)
-
-
-class OutputDocument(BaseModel):
-    """Document metadata in deployment results. Binary content is None."""
-
-    sha256: DocumentSha256
-    name: str
-    class_name: str
-    mime_type: str
-    size: int
-    description: str = ""
-    content: str | None = None
-    attachments: tuple[OutputAttachment, ...] = ()
-
-    model_config = ConfigDict(frozen=True)
-
-
-def build_output_document(doc: Document) -> OutputDocument:
-    """Build an OutputDocument from a live Document object."""
-    from ai_pipeline_core.documents._hashing import compute_content_sha256
-
-    att_outputs = tuple(
-        OutputAttachment(
-            sha256=compute_content_sha256(att.content),
-            name=att.name,
-            mime_type=att.mime_type,
-            size=att.size,
-            description=att.description,
-            content=att.text if att.is_text else None,
-        )
-        for att in doc.attachments
-    )
-    return OutputDocument(
-        sha256=doc.sha256,
-        name=doc.name,
-        class_name=doc.__class__.__name__,
-        mime_type=doc.mime_type,
-        size=doc.size,
-        description=doc.description or "",
-        content=doc.text if doc.is_text else None,
-        attachments=att_outputs,
-    )
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_serialized_document(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            normalized = _string_key_dict(data)
+            if normalized.get("description") is None:
+                normalized["description"] = ""
+            return normalized
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +224,7 @@ async def resolve_document_inputs(
     inputs: list[DocumentInput],
     known_types: list[type[Document]],
     start_step_input_types: list[type[Document]] | None = None,
-) -> list[Document]:
+) -> tuple[Document, ...]:
     """Resolve DocumentInput list into typed Documents.
 
     Handles both inline content and URL references. URL references are fetched
@@ -275,7 +236,7 @@ async def resolve_document_inputs(
         start_step_input_types: Input types from the start-step flow (for class_name inference).
     """
     if not inputs:
-        return []
+        return ()
 
     type_map = {t.__name__: t for t in known_types}
     inference_types = {t.__name__: t for t in (start_step_input_types or [])}
@@ -358,14 +319,11 @@ async def resolve_document_inputs(
         if errors:
             msgs = [f"  input[{i}]: {type(e).__name__}: {e}" for i, e in errors]
             raise ValueError(f"Failed to resolve {len(errors)}/{len(inputs)} document inputs:\n" + "\n".join(msgs))
-        return [r for r in results if isinstance(r, Document)]
+        return tuple(r for r in results if isinstance(r, Document))
 
 
 __all__ = [
     "AttachmentInput",
     "DocumentInput",
-    "OutputAttachment",
-    "OutputDocument",
-    "build_output_document",
     "resolve_document_inputs",
 ]

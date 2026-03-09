@@ -1,14 +1,14 @@
 # MODULE: pipeline
 # CLASSES: LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
-# DEPENDS: BaseSettings, StrEnum
+# DEPENDS: BaseModel, StrEnum
 # PURPOSE: Pipeline framework primitives.
-# VERSION: 0.13.0
+# VERSION: 0.14.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import FlowOptions, LimitKind, PipelineFlow, PipelineLimit, PipelineTask, TaskBatch, TaskHandle, as_task_completed, collect_tasks, pipeline_concurrency, pipeline_test_context, run_tasks_until, safe_gather, safe_gather_indexed
+from ai_pipeline_core import FlowOptions, LimitKind, PipelineFlow, PipelineLimit, PipelineTask, TaskBatch, TaskHandle, as_task_completed, collect_tasks, get_run_id, pipeline_concurrency, pipeline_test_context, run_tasks_until, safe_gather, safe_gather_indexed
 ```
 
 ## Public API
@@ -47,22 +47,15 @@ Must use names matching ``[a-zA-Z0-9_-]+`` in PipelineDeployment.concurrency_lim
             raise ValueError(f"timeout must be > 0, got {self.timeout}")
 
 
-class FlowOptions(BaseSettings):
-    """Base configuration for pipeline flows. Uses pydantic-settings.
-
-Every field defined on a FlowOptions subclass is automatically
-overridable via environment variables (e.g., a field named 'mode'
-reads from the MODE env var at instantiation time).
+class FlowOptions(BaseModel):
+    """Base configuration for pipeline flows.
 
 Use FlowOptions for deployment/environment configuration that may
 differ between environments (dev/staging/production).
 
 Never inherit from FlowOptions for task-level options, writer configs,
-or programmatically-constructed parameter objects — use BaseModel instead.
-FlowOptions fields are always subject to env var override, which causes
-silent, hard-to-debug behavior when field names collide with common
-env vars (MODE, HOST, PORT, etc.)."""
-    model_config = SettingsConfigDict(frozen=True, extra='forbid')
+or programmatically-constructed parameter objects — use BaseModel instead."""
+    model_config = ConfigDict(frozen=True, extra='forbid')
 
 
 class PipelineFlow:
@@ -75,7 +68,7 @@ per-instance configuration passed via ``build_flows()``::
     class TranslateFlow(PipelineFlow):
         target_language: str = "en"
 
-        async def run(self, run_id: str, documents: list[SourceDoc], options: FlowOptions) -> list[TranslatedDoc]:
+        async def run(self, documents: tuple[SourceDoc, ...], options: FlowOptions) -> tuple[TranslatedDoc, ...]:
             return await TranslateTask.run(documents, language=self.target_language)
 
 The deployment creates flow instances with constructor kwargs::
@@ -86,8 +79,9 @@ The deployment creates flow instances with constructor kwargs::
 Each instance runs independently with its own parameters, resume record, and progress.
 Constructor kwargs are captured for replay serialization via ``get_params()``.
 
-Signature must be exactly ``(self, run_id: str, documents: list[DocType], options: FlowOptions)``
-and is validated at class definition time by ``__init_subclass__``."""
+Signature must be exactly ``(self, documents: tuple[DocType, ...], options: FlowOptions)``
+and is validated at class definition time by ``__init_subclass__``.
+Use ``get_run_id()`` from ``ai_pipeline_core.pipeline`` to access the run ID inside a flow."""
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
     input_document_types: ClassVar[list[type[Document]]] = []
@@ -134,8 +128,13 @@ and is validated at class definition time by ``__init_subclass__``."""
         """Return constructor params for flow plan serialization."""
         return dict(getattr(self, "_params", {}))
 
-    async def run(self, run_id: str, documents: Any, options: Any) -> Sequence[Document]:
-        """Execute the flow. Must be overridden by subclasses (enforced at class definition time by ``__init_subclass__``)."""
+    async def run(self, documents: tuple[Any, ...], options: Any) -> tuple[Any, ...]:
+        """Execute the flow.
+
+        Subclasses must provide concrete ``tuple[MyDocument, ...]`` and ``FlowOptions``
+        annotations. The base stub stays broad so static type checkers accept
+        narrower overrides; ``__init_subclass__`` enforces the real signature.
+        """
         raise NotImplementedError
 
 
@@ -165,8 +164,8 @@ class TaskHandle:
 @dataclass(frozen=True, slots=True)
 class TaskBatch:
     """Collected task results and handles that did not complete successfully."""
-    completed: list[list[Document]]
-    incomplete: list[TaskHandle[list[Document]]]
+    completed: list[tuple[Document[Any], ...]]
+    incomplete: list[TaskHandle[tuple[Document[Any], ...]]]
 
 
 class PipelineTask:
@@ -174,35 +173,30 @@ class PipelineTask:
 
 Tasks are stateless units of work. Define ``run`` as a **@classmethod** because tasks
 carry no per-invocation instance state — all inputs arrive as arguments, all outputs
-are returned documents. The framework wraps ``run`` with tracing, retries, persistence,
+are returned documents. The framework wraps ``run`` with retries, persistence,
 and event emission automatically.
+
+Set ``_abstract_task = True`` on an intermediate base class to skip ``run()``
+validation on that class. Concrete subclasses do not inherit that skip; they must
+define ``run()`` or inherit a validated implementation from a non-abstract parent.
 
 Minimal example::
 
     class SummarizeTask(PipelineTask):
         @classmethod
-        async def run(cls, documents: list[ArticleDocument]) -> list[SummaryDocument]:
+        async def run(cls, documents: tuple[ArticleDocument, ...]) -> tuple[SummaryDocument, ...]:
             conv = Conversation(model="gemini-3-flash").with_context(documents[0])
             conv = await conv.send("Summarize this article.")
-            return [SummaryDocument.derive(from_documents=(documents[0],), name="summary.md", content=conv.content)]
+            return (SummaryDocument.derive(from_documents=(documents[0],), name="summary.md", content=conv.content),)
 
-Calling ``await SummarizeTask.run([doc])`` dispatches the full lifecycle. Calling without
+Calling ``await SummarizeTask.run((doc,))`` dispatches the full lifecycle. Calling without
 ``await`` returns a ``TaskHandle`` for parallel execution via ``collect_tasks``."""
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
     retries: ClassVar[int] = 0
     retry_delay_seconds: ClassVar[int] = 20
     timeout_seconds: ClassVar[int | None] = None
-    cacheable: ClassVar[bool] = False
-    trace_level: ClassVar[TraceLevel] = 'always'
-    trace_ignore_input: ClassVar[bool] = False
-    trace_ignore_output: ClassVar[bool] = False
-    trace_ignore_inputs: ClassVar[tuple[str, ...]] = ()
-    trace_input_formatter: ClassVar[Callable[..., str] | None] = None
-    trace_output_formatter: ClassVar[Callable[..., str] | None] = None
     expected_cost: ClassVar[float | None] = None
-    trace_trim_documents: ClassVar[bool] = True
-    trace_cost: ClassVar[float | None] = None
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
 
@@ -210,9 +204,10 @@ Calling ``await SummarizeTask.run([doc])`` dispatches the full lifecycle. Callin
         super().__init_subclass__(**kwargs)
         if cls is PipelineTask:
             return
+        if cls.__dict__.get("_abstract_task", False) is True:
+            return
 
         cls._validate_class_config()
-        cls._trace_decorator = cls._build_trace_decorator()
 
         own_run = cls.__dict__.get("run")
         if own_run is None:
@@ -350,10 +345,22 @@ async def pipeline_concurrency(
         state.status.prefect_available = False
         yield
 
+def get_run_id() -> str:
+    """Return the current run ID from the active execution context."""
+    ctx = get_execution_context()
+    if ctx is None:
+        msg = (
+            "get_run_id() called outside execution context. "
+            "This function is available inside PipelineFlow.run() and PipelineTask.run() "
+            "during deployment execution. "
+            "In tests, wrap your code with pipeline_test_context(run_id='...')."
+        )
+        raise RuntimeError(msg)
+    return ctx.run_id
+
 @contextmanager
 def pipeline_test_context(
     run_id: str = "test-run",
-    store: DocumentStore | None = None,
     publisher: ResultPublisher | None = None,
 ) -> Generator[ExecutionContext, None, None]:
     """Set up an execution + task context for tests without full deployment wiring.
@@ -361,15 +368,11 @@ def pipeline_test_context(
     Yields:
         The active execution context for the test scope.
     """
-    owns_store = store is None
-    active_store = store or MemoryDocumentStore()
     ctx = ExecutionContext(
         run_id=run_id,
         run_scope=RunScope(f"{run_id}/test"),
         execution_id=None,
-        store=active_store,
         publisher=publisher or _NoopPublisher(),
-        summary_generator=None,
         limits=MappingProxyType({}),
         limits_status=_SharedStatus(),
     )
@@ -380,8 +383,6 @@ def pipeline_test_context(
     finally:
         reset_task_context(task_token)
         reset_execution_context(ctx_token)
-        if owns_store:
-            active_store.shutdown()
 
 async def collect_tasks(
     *handles: TaskAwaitableGroup,
@@ -392,10 +393,10 @@ async def collect_tasks(
     if not ordered_handles:
         return TaskBatch(completed=[], incomplete=[])
 
-    completed: list[list[Document]] = []
-    incomplete: list[TaskHandle[list[Document]]] = []
-    by_task: dict[asyncio.Task[list[Document]], TaskHandle[list[Document]]] = {handle._task: handle for handle in ordered_handles}
-    pending: set[asyncio.Task[list[Document]]] = set(by_task.keys())
+    completed: list[tuple[Document[Any], ...]] = []
+    incomplete: list[TaskHandle[tuple[Document[Any], ...]]] = []
+    by_task: dict[asyncio.Task[tuple[Document[Any], ...]], TaskHandle[tuple[Document[Any], ...]]] = {handle._task: handle for handle in ordered_handles}
+    pending: set[asyncio.Task[tuple[Document[Any], ...]]] = set(by_task.keys())
     deadline_at = (time.monotonic() + deadline_seconds) if deadline_seconds is not None else None
 
     while pending:
@@ -418,14 +419,14 @@ async def collect_tasks(
     incomplete.extend(by_task[still_pending] for still_pending in pending)
     return TaskBatch(completed=completed, incomplete=incomplete)
 
-async def as_task_completed(*handles: TaskAwaitableGroup) -> AsyncIterator[TaskHandle[list[Document]]]:
+async def as_task_completed(*handles: TaskAwaitableGroup) -> AsyncIterator[TaskHandle[tuple[Document[Any], ...]]]:
     """Yield task handles in completion order."""
     ordered_handles = _normalize_handles(handles)
     if not ordered_handles:
         return
 
-    by_task: dict[asyncio.Task[list[Document]], TaskHandle[list[Document]]] = {handle._task: handle for handle in ordered_handles}
-    pending: set[asyncio.Task[list[Document]]] = set(by_task.keys())
+    by_task: dict[asyncio.Task[tuple[Document[Any], ...]], TaskHandle[tuple[Document[Any], ...]]] = {handle._task: handle for handle in ordered_handles}
+    pending: set[asyncio.Task[tuple[Document[Any], ...]]] = set(by_task.keys())
     while pending:
         done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
         for finished in done:
@@ -465,7 +466,15 @@ async def test_collect_tasks_empty_returns_empty_batch() -> None:
     assert batch.incomplete == []
 ```
 
-**Pipeline test context sets and restores** (`tests/pipeline/test_execution_context.py:94`)
+**Get run id returns run id from context** (`tests/pipeline/test_execution_context.py:111`)
+
+```python
+def test_get_run_id_returns_run_id_from_context() -> None:
+    with pipeline_test_context(run_id="test-ctx-123"):
+        assert get_run_id() == "test-ctx-123"
+```
+
+**Pipeline test context sets and restores** (`tests/pipeline/test_execution_context.py:97`)
 
 ```python
 def test_pipeline_test_context_sets_and_restores() -> None:
@@ -473,11 +482,10 @@ def test_pipeline_test_context_sets_and_restores() -> None:
     with pipeline_test_context(run_id="ctx-test") as ctx:
         assert get_execution_context() is ctx
         assert ctx.run_id == "ctx-test"
-        assert ctx.store is not None
     assert get_execution_context() is before
 ```
 
-**Pipeline test context with custom publisher** (`tests/pipeline/test_execution_context.py:103`)
+**Pipeline test context with custom publisher** (`tests/pipeline/test_execution_context.py:105`)
 
 ```python
 def test_pipeline_test_context_with_custom_publisher() -> None:
@@ -494,8 +502,8 @@ async def test_as_task_completed_yields_handles() -> None:
     with pipeline_test_context() as ctx:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         try:
-            h1 = _FastTask.run([_make_doc("1")])
-            h2 = _FastTask.run([_make_doc("2")])
+            h1 = _FastTask.run((_make_doc("1"),))
+            h2 = _FastTask.run((_make_doc("2"),))
             yielded = [handle async for handle in as_task_completed(h1, h2)]
         finally:
             reset_execution_context(token)
@@ -514,7 +522,7 @@ async def test_as_task_completed_yields_results() -> None:
 
     names: list[str] = []
     with pipeline_test_context():
-        async for handle in as_task_completed(EchoTask.run([first]), EchoTask.run([second])):
+        async for handle in as_task_completed(EchoTask.run((first,)), EchoTask.run((second,))):
             docs = await handle.result()
             names.extend(doc.name for doc in docs)
 
@@ -529,31 +537,12 @@ async def test_collect_tasks_accepts_list() -> None:
     with pipeline_test_context() as ctx:
         token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         try:
-            handles = [_FastTask.run([_make_doc("x")]) for _ in range(3)]
+            handles = [_FastTask.run((_make_doc("x"),)) for _ in range(3)]
             batch = await collect_tasks(handles)
         finally:
             reset_execution_context(token)
 
     assert len(batch.completed) == 3
-    assert batch.incomplete == []
-```
-
-**Collect tasks all complete** (`tests/pipeline/test_parallel_primitives.py:91`)
-
-```python
-@pytest.mark.asyncio
-async def test_collect_tasks_all_complete() -> None:
-    with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
-            h1 = _FastTask.run([_make_doc("a")])
-            h2 = _FastTask.run([_make_doc("b")])
-            batch = await collect_tasks(h1, h2)
-        finally:
-            reset_execution_context(token)
-
-    assert isinstance(batch, TaskBatch)
-    assert len(batch.completed) == 2
     assert batch.incomplete == []
 ```
 
@@ -566,6 +555,14 @@ async def test_collect_tasks_all_complete() -> None:
 def test_invalid_name_pattern(self):
     with pytest.raises(TypeError, match="invalid name"):
         _validate_concurrency_limits("TestDeploy", {"bad name!": PipelineLimit(10)})
+```
+
+**Get run id outside context raises** (`tests/pipeline/test_execution_context.py:116`)
+
+```python
+def test_get_run_id_outside_context_raises() -> None:
+    with pytest.raises(RuntimeError, match="pipeline_test_context"):
+        get_run_id()
 ```
 
 **Base flow options rejects extra** (`tests/pipeline/test_options.py:29`)
@@ -629,7 +626,7 @@ def test_limit_must_be_positive(self):
         PipelineLimit(limit=-5)
 ```
 
-**Missing build flows raises** (`tests/pipeline/test_static_validation.py:789`)
+**Missing build flows raises** (`tests/pipeline/test_static_validation.py:801`)
 
 ```python
 def test_missing_build_flows_raises(self):
@@ -638,18 +635,6 @@ def test_missing_build_flows_raises(self):
 
         class NoFlows(PipelineDeployment[FlowOptions, SampleResult]):
             @staticmethod
-            def build_result(run_id: str, documents: list[Document], options: FlowOptions) -> SampleResult:
+            def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> SampleResult:
                 return SampleResult(success=True)
-```
-
-**Missing build result raises** (`tests/pipeline/test_static_validation.py:781`)
-
-```python
-def test_missing_build_result_raises(self):
-    """Deployment without build_result raises TypeError."""
-    with pytest.raises(TypeError, match=r"must implement.*build_result"):
-
-        class NoBuild(PipelineDeployment[FlowOptions, SampleResult]):
-            def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
-                return [AlphaToBetaFlow()]
 ```

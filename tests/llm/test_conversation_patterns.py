@@ -2,7 +2,6 @@
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel, Field
@@ -12,15 +11,6 @@ from ai_pipeline_core._llm_core.types import CoreMessage, RawToolCall, Role, Tok
 from ai_pipeline_core.llm.conversation import Conversation
 from ai_pipeline_core.llm.tools import Tool, ToolOutput
 from tests.support.helpers import ConcreteDocument, create_test_model_response
-
-
-def _mock_laminar():
-    mock_span = MagicMock()
-    mock_span.__enter__ = MagicMock(return_value=mock_span)
-    mock_span.__exit__ = MagicMock(return_value=None)
-    mock_laminar = MagicMock()
-    mock_laminar.start_as_current_span.return_value = mock_span
-    return mock_laminar
 
 
 @pytest.mark.ai_docs
@@ -38,14 +28,13 @@ async def test_warmup_then_parallel_forks(monkeypatch):
 
     monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-    with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-        shared_doc = ConcreteDocument(name="shared_context.md", content=b"Shared context for all forks.")
-        base = Conversation(model="test-model", enable_substitutor=False).with_context(shared_doc)
-        warmed = await base.send("Acknowledge the context.")
-        fork_a, fork_b = await asyncio.gather(
-            warmed.send("Question A"),
-            warmed.send("Question B"),
-        )
+    shared_doc = ConcreteDocument(name="shared_context.md", content=b"Shared context for all forks.")
+    base = Conversation(model="test-model", enable_substitutor=False).with_context(shared_doc)
+    warmed = await base.send("Acknowledge the context.")
+    fork_a, fork_b = await asyncio.gather(
+        warmed.send("Question A"),
+        warmed.send("Question B"),
+    )
 
     assert warmed.content == "Answer: Acknowledge the context."
     assert fork_a.content == "Answer: Question A"
@@ -71,13 +60,12 @@ async def test_context_is_cached_prefix_messages_are_dynamic_suffix(monkeypatch)
 
     monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-    with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-        context_doc = ConcreteDocument(name="cached.md", content=b"Cached context")
-        message_doc = ConcreteDocument(name="dynamic.md", content=b"Dynamic data")
-        conv = Conversation(model="test-model", enable_substitutor=False)
-        conv = conv.with_context(context_doc)
-        conv = conv.with_document(message_doc)
-        await conv.send("Question")
+    context_doc = ConcreteDocument(name="cached.md", content=b"Cached context")
+    message_doc = ConcreteDocument(name="dynamic.md", content=b"Dynamic data")
+    conv = Conversation(model="test-model", enable_substitutor=False)
+    conv = conv.with_context(context_doc)
+    conv = conv.with_document(message_doc)
+    await conv.send("Question")
 
     # context_count tells the provider how many leading messages form the cached prefix
     assert captured_kwargs[0]["context_count"] == 1
@@ -143,9 +131,8 @@ async def test_send_with_tools_auto_loop(monkeypatch):
     monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
     # 3. Send with tools — auto-loop handles tool execution transparently
-    with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-        conv = Conversation(model="test-model", enable_substitutor=False)
-        result = await conv.send("What's the weather in Paris?", tools=[GetWeather()])
+    conv = Conversation(model="test-model", enable_substitutor=False)
+    result = await conv.send("What's the weather in Paris?", tools=[GetWeather()])
 
     # 4. Final response text from the LLM
     assert result.content == "It's sunny and 22°C in Paris!"

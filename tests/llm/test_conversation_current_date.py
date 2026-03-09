@@ -3,22 +3,12 @@
 import json
 from datetime import date
 from typing import Any
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from ai_pipeline_core._llm_core.types import CoreMessage
 from ai_pipeline_core.llm import Conversation, ModelOptions
 from tests.support.helpers import ConcreteDocument, create_test_model_response
-
-
-def _mock_laminar():
-    mock_span = MagicMock()
-    mock_span.__enter__ = MagicMock(return_value=mock_span)
-    mock_span.__exit__ = MagicMock(return_value=None)
-    mock_laminar = MagicMock()
-    mock_laminar.start_as_current_span.return_value = mock_span
-    return mock_laminar
 
 
 class TestCurrentDateInitialization:
@@ -103,9 +93,8 @@ class TestCurrentDateInSystemPrompt:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-            conv = Conversation(model="test-model", enable_substitutor=False, current_date="2025-03-15")
-            await conv.send("Hello")
+        conv = Conversation(model="test-model", enable_substitutor=False, current_date="2025-03-15")
+        await conv.send("Hello")
 
         opts = captured_options[0]
         assert opts is not None
@@ -122,14 +111,13 @@ class TestCurrentDateInSystemPrompt:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-            conv = Conversation(
-                model="test-model",
-                enable_substitutor=False,
-                current_date="2025-03-15",
-                model_options=ModelOptions(system_prompt="You are helpful."),
-            )
-            await conv.send("Hello")
+        conv = Conversation(
+            model="test-model",
+            enable_substitutor=False,
+            current_date="2025-03-15",
+            model_options=ModelOptions(system_prompt="You are helpful."),
+        )
+        await conv.send("Hello")
 
         opts = captured_options[0]
         assert opts is not None
@@ -146,9 +134,8 @@ class TestCurrentDateInSystemPrompt:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-            conv = Conversation(model="test-model", enable_substitutor=False, include_date=False)
-            await conv.send("Hello")
+        conv = Conversation(model="test-model", enable_substitutor=False, include_date=False)
+        await conv.send("Hello")
 
         opts = captured_options[0]
         # No model_options was provided and no date — should remain None
@@ -166,10 +153,9 @@ class TestCurrentDateInSystemPrompt:
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-            conv = Conversation(model="test-model", enable_substitutor=False, current_date="2025-03-15")
-            conv2 = await conv.send("First")
-            conv3 = await conv2.send("Second")
+        conv = Conversation(model="test-model", enable_substitutor=False, current_date="2025-03-15")
+        conv2 = await conv.send("First")
+        conv3 = await conv2.send("Second")
 
         assert conv.current_date == "2025-03-15"
         assert conv2.current_date == "2025-03-15"
@@ -189,10 +175,9 @@ class TestCurrentDateInSystemPrompt:
         long_hex = "0x" + "a1b2c3d4e5f6" * 12
         doc = ConcreteDocument(name="data.md", content=f"Address: {long_hex}".encode())
 
-        with patch("ai_pipeline_core.llm.conversation.Laminar", _mock_laminar()):
-            conv = Conversation(model="test-model", enable_substitutor=True, current_date="2025-03-15")
-            conv = conv.with_context(doc)
-            await conv.send("Check this")
+        conv = Conversation(model="test-model", enable_substitutor=True, current_date="2025-03-15")
+        conv = conv.with_context(doc)
+        await conv.send("Check this")
 
         opts = captured_options[0]
         assert opts is not None

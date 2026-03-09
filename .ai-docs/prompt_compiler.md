@@ -2,7 +2,7 @@
 # CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
 # DEPENDS: BaseModel, Generic, Role
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.13.0
+# VERSION: 0.14.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -175,7 +175,7 @@ Pydantic fields (dynamic input values):
 
 ```python
 def render_text(
-    spec: PromptSpec,
+    spec: PromptSpec[Any],
     *,
     documents: Sequence[Document] | None = None,
     include_input_documents: bool = True,
@@ -239,7 +239,7 @@ def render_text(
 
     return "\n\n".join(sections)
 
-def render_multi_line_messages(spec: PromptSpec) -> list[tuple[str, str]]:
+def render_multi_line_messages(spec: PromptSpec[Any]) -> list[tuple[str, str]]:
     """Return XML-tagged message blocks for multi-line fields.
 
     Each entry is ``(field_name, "<field_name>value</field_name>")``.
@@ -256,7 +256,7 @@ def render_multi_line_messages(spec: PromptSpec) -> list[tuple[str, str]]:
             result.append((field_name, f"<{field_name}>{value}</{field_name}>"))
     return result
 
-def render_preview(spec_class: type[PromptSpec], *, include_input_documents: bool = True) -> str:
+def render_preview(spec_class: type[PromptSpec[Any]], *, include_input_documents: bool = True) -> str:
     """Render a spec CLASS with placeholder values for dynamic fields.
 
     Uses `model_construct()` to bypass validation, allowing placeholder strings

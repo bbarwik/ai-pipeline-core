@@ -163,8 +163,8 @@ class _DeployTestResult(DeploymentResult):
 class _DeployTestFlow(PipelineFlow):
     """Class-based flow for deploy schema tests."""
 
-    async def run(self, run_id: str, documents: list[_DeployInputDoc], options: _DeployTestOptions) -> list[_DeployOutputDoc]:
-        return [_DeployOutputDoc.create_root(name="out.txt", content="ok", reason="test")]
+    async def run(self, documents: tuple[_DeployInputDoc, ...], options: _DeployTestOptions) -> tuple[_DeployOutputDoc, ...]:
+        return (_DeployOutputDoc.create_root(name="out.txt", content="ok", reason="test"),)
 
 
 class _DeploySchemaTestDeployment(PipelineDeployment[_DeployTestOptions, _DeployTestResult]):
@@ -172,7 +172,7 @@ class _DeploySchemaTestDeployment(PipelineDeployment[_DeployTestOptions, _Deploy
         return [_DeployTestFlow()]
 
     @staticmethod
-    def build_result(run_id: str, documents: list[Document], options: _DeployTestOptions) -> _DeployTestResult:
+    def build_result(run_id: str, documents: tuple[Document, ...], options: _DeployTestOptions) -> _DeployTestResult:
         return _DeployTestResult(success=True, report="done")
 
 

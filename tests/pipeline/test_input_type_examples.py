@@ -36,9 +36,9 @@ class FrozenConfig(BaseModel, frozen=True):
 def test_document_list_input() -> None:
     class T(PipelineTask):
         @classmethod
-        async def run(cls, documents: list[GoodInput]) -> list[GoodOutput]:
+        async def run(cls, documents: tuple[GoodInput, ...]) -> tuple[GoodOutput, ...]:
             _ = (cls, documents)
-            return []
+            return ()
 
     assert GoodInput in T.input_document_types
 
@@ -46,49 +46,49 @@ def test_document_list_input() -> None:
 def test_scalar_str_input() -> None:
     class T(PipelineTask):
         @classmethod
-        async def run(cls, source: GoodInput, label: str) -> list[GoodOutput]:
+        async def run(cls, source: GoodInput, label: str) -> tuple[GoodOutput, ...]:
             _ = (cls, source, label)
-            return []
+            return ()
 
 
 def test_scalar_int_input() -> None:
     class T(PipelineTask):
         @classmethod
-        async def run(cls, source: GoodInput, count: int) -> list[GoodOutput]:
+        async def run(cls, source: GoodInput, count: int) -> tuple[GoodOutput, ...]:
             _ = (cls, source, count)
-            return []
+            return ()
 
 
 def test_scalar_float_input() -> None:
     class T(PipelineTask):
         @classmethod
-        async def run(cls, source: GoodInput, threshold: float) -> list[GoodOutput]:
+        async def run(cls, source: GoodInput, threshold: float) -> tuple[GoodOutput, ...]:
             _ = (cls, source, threshold)
-            return []
+            return ()
 
 
 def test_scalar_bool_input() -> None:
     class T(PipelineTask):
         @classmethod
-        async def run(cls, source: GoodInput, verbose: bool) -> list[GoodOutput]:
+        async def run(cls, source: GoodInput, verbose: bool) -> tuple[GoodOutput, ...]:
             _ = (cls, source, verbose)
-            return []
+            return ()
 
 
 def test_enum_input() -> None:
     class T(PipelineTask):
         @classmethod
-        async def run(cls, source: GoodInput, priority: Priority) -> list[GoodOutput]:
+        async def run(cls, source: GoodInput, priority: Priority) -> tuple[GoodOutput, ...]:
             _ = (cls, source, priority)
-            return []
+            return ()
 
 
 def test_frozen_basemodel_input() -> None:
     class T(PipelineTask):
         @classmethod
-        async def run(cls, source: GoodInput, config: FrozenConfig) -> list[GoodOutput]:
+        async def run(cls, source: GoodInput, config: FrozenConfig) -> tuple[GoodOutput, ...]:
             _ = (cls, source, config)
-            return []
+            return ()
 
 
 # --- Rejected input types ---
@@ -99,9 +99,9 @@ def test_rejects_set_container() -> None:
 
         class T(PipelineTask):
             @classmethod
-            async def run(cls, documents: set[GoodInput]) -> list[GoodOutput]:
+            async def run(cls, documents: set[GoodInput]) -> tuple[GoodOutput, ...]:
                 _ = (cls, documents)
-                return []
+                return ()
 
 
 def test_rejects_mutable_basemodel() -> None:
@@ -112,6 +112,6 @@ def test_rejects_mutable_basemodel() -> None:
 
         class T(PipelineTask):
             @classmethod
-            async def run(cls, config: MutableConfig) -> list[GoodOutput]:
+            async def run(cls, config: MutableConfig) -> tuple[GoodOutput, ...]:
                 _ = (cls, config)
-                return []
+                return ()
