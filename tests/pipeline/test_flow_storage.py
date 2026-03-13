@@ -1,13 +1,21 @@
-"""PipelineTask persistence tests.
+"""PipelineTask output-document linkage tests."""
 
-Tests document auto-persistence, deduplication, and behavior
-without a database configured.
-"""
+# pyright: reportPrivateUsage=false
+
+from types import MappingProxyType
+from uuid import uuid7
 
 import pytest
 
-from ai_pipeline_core import Document
-from ai_pipeline_core.pipeline import PipelineTask, pipeline_test_context
+from ai_pipeline_core.database import SpanKind
+from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.deployment._types import _NoopPublisher
+from ai_pipeline_core.documents import Document
+from ai_pipeline_core.pipeline import PipelineTask
+from ai_pipeline_core.pipeline._execution_context import ExecutionContext, FlowFrame, set_execution_context
+from ai_pipeline_core.pipeline._runtime_sinks import build_runtime_sinks
+from ai_pipeline_core.pipeline.limits import _SharedStatus
+from ai_pipeline_core.settings import settings
 
 
 class InputDoc(Document):
@@ -21,61 +29,48 @@ class OutputDoc(Document):
 class PersistTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
-        _ = cls
         source = documents[0]
         return (OutputDoc.derive(from_documents=(source,), name="out.txt", content="ok"),)
 
 
-@pytest.mark.asyncio
-async def test_task_returns_documents() -> None:
-    doc = InputDoc.create_root(name="in.txt", content="hello", reason="test input")
-    with pipeline_test_context():
-        outputs = await PersistTask.run((doc,))
-    assert len(outputs) == 1
-    assert outputs[0].name == "out.txt"
+def _make_context(database: MemoryDatabase) -> ExecutionContext:
+    deployment_id = uuid7()
+    flow_span_id = uuid7()
+    return ExecutionContext(
+        run_id="test-run",
+        execution_id=None,
+        publisher=_NoopPublisher(),
+        limits=MappingProxyType({}),
+        limits_status=_SharedStatus(),
+        database=database,
+        sinks=build_runtime_sinks(database=database, settings_obj=settings),
+        deployment_id=deployment_id,
+        root_deployment_id=deployment_id,
+        deployment_name="test-pipeline",
+        flow_frame=FlowFrame(
+            name="flow",
+            flow_class_name="Flow",
+            step=1,
+            total_steps=1,
+            flow_minutes=(1.0,),
+            completed_minutes=0.0,
+            flow_params={},
+        ),
+        span_id=flow_span_id,
+        current_span_id=flow_span_id,
+        flow_span_id=flow_span_id,
+    )
 
 
 @pytest.mark.asyncio
-async def test_task_returns_correct_document_type() -> None:
-    """Task returns documents with correct type."""
-    doc = InputDoc.create_root(name="input.txt", content="test input", reason="test input")
-    with pipeline_test_context():
-        result = await PersistTask.run((doc,))
-    assert len(result) == 1
-    assert isinstance(result[0], OutputDoc)
+async def test_task_output_document_shas_are_queryable_from_span_tree() -> None:
+    database = MemoryDatabase()
+    source = InputDoc.create_root(name="in.txt", content="hello", reason="flow-storage-test")
+    with set_execution_context(_make_context(database)):
+        outputs = await PersistTask.run((source,))
 
+    task_span = next(span for span in database._spans.values() if span.kind == SpanKind.TASK)
+    referencing_spans = await database.get_spans_referencing_document(outputs[0].sha256, kinds=[SpanKind.TASK])
 
-@pytest.mark.asyncio
-async def test_task_deduplicates_returned_documents() -> None:
-    """Task deduplicates returned documents by SHA256."""
-
-    class DedupTask(PipelineTask):
-        @classmethod
-        async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
-            _ = cls
-            doc = OutputDoc.derive(from_documents=(source,), name="output.txt", content="test output")
-            return (doc, doc)
-
-    doc = InputDoc.create_root(name="input.txt", content="test input", reason="test input")
-    with pipeline_test_context():
-        result = await DedupTask.run(doc)
-    # Deduplication by SHA256: identical documents collapse to one
-    assert len(result) == 1
-
-
-@pytest.mark.asyncio
-async def test_task_multiple_outputs_returned() -> None:
-    """Task with multiple distinct outputs returns all of them."""
-
-    class MultiTask(PipelineTask):
-        @classmethod
-        async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
-            _ = cls
-            return tuple(OutputDoc.derive(from_documents=(doc,), name=f"out_{doc.name}", content=f"processed: {doc.text}") for doc in documents)
-
-    doc1 = InputDoc.create_root(name="a.txt", content="alpha", reason="test input")
-    doc2 = InputDoc.create_root(name="b.txt", content="beta", reason="test input")
-    with pipeline_test_context():
-        results = await MultiTask.run((doc1, doc2))
-    assert len(results) == 2
-    assert {d.name for d in results} == {"out_a.txt", "out_b.txt"}
+    assert task_span.output_document_shas == (outputs[0].sha256,)
+    assert [span.span_id for span in referencing_spans] == [task_span.span_id]

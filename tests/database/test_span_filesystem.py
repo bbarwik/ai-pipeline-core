@@ -1,0 +1,241 @@
+"""Tests for the span-oriented filesystem database backend."""
+
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+
+from ai_pipeline_core.database import BlobRecord, DocumentRecord, LogRecord, SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
+
+
+def _make_span(**kwargs: object) -> SpanRecord:
+    deployment_id = kwargs.pop("deployment_id", uuid4())
+    root_deployment_id = kwargs.pop("root_deployment_id", deployment_id)
+    started_at: datetime = kwargs.pop("started_at", datetime(2026, 3, 11, 12, 0, tzinfo=UTC))
+    defaults: dict[str, object] = {
+        "span_id": kwargs.pop("span_id", uuid4()),
+        "parent_span_id": kwargs.pop("parent_span_id", None),
+        "deployment_id": deployment_id,
+        "root_deployment_id": root_deployment_id,
+        "run_id": kwargs.pop("run_id", f"run-{deployment_id}"),
+        "deployment_name": "example",
+        "kind": SpanKind.TASK,
+        "name": "ExampleTask",
+        "status": SpanStatus.COMPLETED,
+        "sequence_no": 0,
+        "started_at": started_at,
+        "ended_at": started_at + timedelta(seconds=1),
+        "version": 1,
+        "meta_json": "",
+        "metrics_json": "",
+    }
+    defaults.update(kwargs)
+    return SpanRecord(**defaults)
+
+
+def _make_document(**kwargs: object) -> DocumentRecord:
+    defaults: dict[str, object] = {
+        "document_sha256": f"doc-{uuid4().hex}",
+        "content_sha256": f"blob-{uuid4().hex}",
+        "document_type": "TestDocument",
+        "name": "example.md",
+        "description": "Example document",
+        "mime_type": "text/markdown",
+        "size_bytes": 20,
+        "summary": "",
+        "derived_from": (),
+        "triggered_by": (),
+        "attachment_names": (),
+        "attachment_descriptions": (),
+        "attachment_content_sha256s": (),
+        "attachment_mime_types": (),
+        "attachment_size_bytes": (),
+        "created_at": datetime(2026, 3, 11, 12, 0, tzinfo=UTC),
+    }
+    defaults.update(kwargs)
+    return DocumentRecord(**defaults)
+
+
+def _make_blob(**kwargs: object) -> BlobRecord:
+    defaults: dict[str, object] = {
+        "content_sha256": f"blob-{uuid4().hex}",
+        "content": b"blob-content",
+        "created_at": datetime(2026, 3, 11, 12, 0, tzinfo=UTC),
+    }
+    defaults.update(kwargs)
+    return BlobRecord(**defaults)
+
+
+def _make_log(**kwargs: object) -> LogRecord:
+    defaults: dict[str, object] = {
+        "deployment_id": uuid4(),
+        "span_id": uuid4(),
+        "timestamp": datetime(2026, 3, 11, 12, 0, tzinfo=UTC),
+        "sequence_no": 0,
+        "level": "INFO",
+        "category": "framework",
+        "event_type": "",
+        "logger_name": "ai_pipeline_core.tests",
+        "message": "log message",
+        "fields_json": "{}",
+        "exception_text": "",
+    }
+    defaults.update(kwargs)
+    return LogRecord(**defaults)
+
+
+async def _seed_database(tmp_path: Path) -> tuple[FilesystemDatabase, str]:
+    database = FilesystemDatabase(tmp_path)
+    deployment_id = uuid4()
+    base = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
+
+    deployment = _make_span(
+        span_id=deployment_id,
+        deployment_id=deployment_id,
+        root_deployment_id=deployment_id,
+        kind=SpanKind.DEPLOYMENT,
+        name="Deployment",
+        started_at=base,
+    )
+    task = _make_span(
+        parent_span_id=deployment.span_id,
+        deployment_id=deployment_id,
+        root_deployment_id=deployment_id,
+        kind=SpanKind.TASK,
+        name="Task",
+        sequence_no=1,
+        started_at=base + timedelta(seconds=5),
+        output_document_shas=("doc-1",),
+    )
+    llm_round = _make_span(
+        parent_span_id=task.span_id,
+        deployment_id=deployment_id,
+        root_deployment_id=deployment_id,
+        kind=SpanKind.LLM_ROUND,
+        name="Round1",
+        sequence_no=1,
+        started_at=base + timedelta(seconds=6),
+        cost_usd=2.0,
+        metrics_json=json.dumps(
+            {
+                "tokens_input": 50,
+                "tokens_output": 10,
+                "tokens_cache_read": 5,
+                "tokens_reasoning": 1,
+            },
+            sort_keys=True,
+        ),
+    )
+
+    for span in (deployment, task, llm_round):
+        await database.insert_span(span)
+
+    await database.save_document(
+        _make_document(
+            document_sha256="doc-1",
+            content_sha256="blob-1",
+            attachment_names=("preview.png",),
+            attachment_descriptions=("Preview",),
+            attachment_content_sha256s=("blob-preview",),
+            attachment_mime_types=("image/png",),
+            attachment_size_bytes=(7,),
+            created_at=base,
+        )
+    )
+    await database.save_blob(_make_blob(content_sha256="blob-1", content=b"root", created_at=base))
+    await database.save_blob(_make_blob(content_sha256="blob-preview", content=b"pngdata", created_at=base))
+    await database.save_logs_batch([
+        _make_log(
+            deployment_id=deployment_id,
+            span_id=task.span_id,
+            timestamp=base + timedelta(seconds=7),
+            message="task log",
+        )
+    ])
+    await database.flush()
+    return database, "doc-1"
+
+
+@pytest.mark.asyncio
+async def test_filesystem_database_persists_and_reloads_records(tmp_path: Path) -> None:
+    database, document_sha = await _seed_database(tmp_path)
+
+    hydrated = await database.get_document_with_content(document_sha)
+    logs = await database.get_deployment_logs(next(iter(database._spans.values())).deployment_id)
+
+    assert hydrated is not None
+    assert hydrated.content == b"root"
+    assert hydrated.attachment_contents == {"blob-preview": b"pngdata"}
+    assert [log.message for log in logs] == ["task log"]
+
+    reloaded = FilesystemDatabase(tmp_path, read_only=True)
+    reloaded_hydrated = await reloaded.get_document_with_content(document_sha)
+    totals = await reloaded.get_deployment_cost_totals(next(iter(reloaded._spans.values())).root_deployment_id)
+
+    assert reloaded_hydrated is not None
+    assert reloaded_hydrated.record.attachment_names == ("preview.png",)
+    assert totals.cost_usd == 2.0
+    assert totals.tokens_input == 50
+
+
+@pytest.mark.asyncio
+async def test_filesystem_document_updates_use_created_at(tmp_path: Path) -> None:
+    database = FilesystemDatabase(tmp_path)
+    newer = _make_document(document_sha256="doc-1", summary="new", created_at=datetime(2026, 3, 11, 12, 1, tzinfo=UTC))
+    older = _make_document(document_sha256="doc-1", summary="old", created_at=datetime(2026, 3, 11, 12, 0, tzinfo=UTC))
+
+    await database.save_document(newer)
+    await database.save_document(older)
+    assert (await database.get_document("doc-1")) == newer
+
+    await database.update_document_summary("doc-1", "updated")
+    updated = await database.get_document("doc-1")
+
+    assert updated is not None
+    assert updated.summary == "updated"
+    assert updated.created_at >= newer.created_at
+
+
+@pytest.mark.asyncio
+async def test_filesystem_get_document_with_content_raises_for_missing_attachment_blob(tmp_path: Path) -> None:
+    database = FilesystemDatabase(tmp_path)
+    await database.save_document(
+        _make_document(
+            document_sha256="doc-1",
+            content_sha256="blob-1",
+            attachment_names=("preview.png",),
+            attachment_descriptions=("Preview",),
+            attachment_content_sha256s=("blob-missing",),
+            attachment_mime_types=("image/png",),
+            attachment_size_bytes=(10,),
+        )
+    )
+    await database.save_blob(_make_blob(content_sha256="blob-1", content=b"root"))
+
+    with pytest.raises(ValueError, match="missing from storage"):
+        await database.get_document_with_content("doc-1")
+
+
+@pytest.mark.asyncio
+async def test_filesystem_read_only_rejects_writes(tmp_path: Path) -> None:
+    database, _ = await _seed_database(tmp_path)
+    await database.shutdown()
+
+    read_only = FilesystemDatabase(tmp_path, read_only=True)
+
+    with pytest.raises(PermissionError, match="read-only"):
+        await read_only.save_document(_make_document())
+
+
+@pytest.mark.asyncio
+async def test_filesystem_get_all_document_shas_for_tree(tmp_path: Path) -> None:
+    database, _ = await _seed_database(tmp_path)
+    deployment = await database.get_deployment_by_run_id(next(iter(database._spans.values())).run_id)
+    assert deployment is not None
+
+    shas = await database.get_all_document_shas_for_tree(deployment.root_deployment_id)
+
+    assert shas == {"doc-1"}

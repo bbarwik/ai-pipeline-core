@@ -1,335 +1,233 @@
-"""In-memory database backend for testing.
-
-Dict-based storage implementing both DatabaseWriter and DatabaseReader protocols.
-All data is lost when the process exits.
-"""
+"""In-memory backend for the span-based database schema."""
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from uuid import UUID
 
-from ai_pipeline_core.database._types import BlobRecord, DocumentRecord, ExecutionLog, ExecutionNode, NodeKind, NodeStatus, RunScopeInfo
-from ai_pipeline_core.documents._context import DocumentSha256, RunScope
+from ai_pipeline_core.database._json_helpers import parse_json_object
+from ai_pipeline_core.database._sorting import (
+    child_span_sort_key,
+    deployment_sort_key,
+    log_sort_key,
+    span_sort_key,
+)
+from ai_pipeline_core.database._types import (
+    TOKENS_CACHE_READ_KEY,
+    TOKENS_INPUT_KEY,
+    TOKENS_OUTPUT_KEY,
+    TOKENS_REASONING_KEY,
+    BlobRecord,
+    CostTotals,
+    DocumentRecord,
+    HydratedDocument,
+    LogRecord,
+    SpanKind,
+    SpanRecord,
+    SpanStatus,
+    get_token_count,
+)
 
-__all__ = [
-    "MemoryDatabase",
-]
-
-
-def _document_sort_key(document: DocumentRecord) -> tuple[datetime, str]:
-    """Sort documents by creation time, then SHA, newest first when reversed."""
-    return document.created_at, document.document_sha256
+__all__ = ["MemoryDatabase"]
 
 
 class MemoryDatabase:
-    """Dict-based database backend for unit tests.
-
-    Implements both DatabaseWriter and DatabaseReader protocols.
-    """
+    """Dict-based backend for tests covering the span schema."""
 
     supports_remote = False
 
     def __init__(self) -> None:
-        self._nodes: dict[UUID, ExecutionNode] = {}
+        self._spans: dict[UUID, SpanRecord] = {}
         self._documents: dict[str, DocumentRecord] = {}
         self._blobs: dict[str, BlobRecord] = {}
-        self._logs: list[ExecutionLog] = []
+        self._logs: list[LogRecord] = []
 
-    # --- DatabaseWriter ---
-
-    async def insert_node(self, node: ExecutionNode) -> None:
-        """Insert a new execution node."""
-        self._nodes[node.node_id] = node
-
-    async def update_node(self, node_id: UUID, **updates: Any) -> None:
-        """Update fields on an existing execution node."""
-        existing = self._nodes.get(node_id)
-        if existing is None:
-            msg = f"Node {node_id} not found"
-            raise KeyError(msg)
-        updates = dict(updates)
-        if "updated_at" not in updates:
-            updates["updated_at"] = datetime.now(UTC)
-        if "version" not in updates:
-            updates["version"] = existing.version + 1
-        self._nodes[node_id] = replace(existing, **updates)
+    async def insert_span(self, span: SpanRecord) -> None:
+        existing = self._spans.get(span.span_id)
+        if existing is None or span.version > existing.version:
+            self._spans[span.span_id] = span
 
     async def save_document(self, record: DocumentRecord) -> None:
-        """Persist a single document record."""
-        self._documents[record.document_sha256] = record
-
-    async def save_document_batch(self, records: list[DocumentRecord]) -> None:
-        """Persist multiple document records in one operation."""
-        for record in records:
+        existing = self._documents.get(record.document_sha256)
+        if existing is None or record.created_at >= existing.created_at:
             self._documents[record.document_sha256] = record
 
+    async def save_document_batch(self, records: list[DocumentRecord]) -> None:
+        for record in records:
+            await self.save_document(record)
+
     async def save_blob(self, blob: BlobRecord) -> None:
-        """Persist a single binary blob."""
         self._blobs[blob.content_sha256] = blob
 
     async def save_blob_batch(self, blobs: list[BlobRecord]) -> None:
-        """Persist multiple binary blobs in one operation."""
         for blob in blobs:
             self._blobs[blob.content_sha256] = blob
 
-    async def save_logs_batch(self, logs: list[ExecutionLog]) -> None:
-        """Persist multiple execution logs in one operation."""
+    async def save_logs_batch(self, logs: list[LogRecord]) -> None:
         self._logs.extend(logs)
 
     async def update_document_summary(self, document_sha256: str, summary: str) -> None:
-        """Update the summary field of an existing document."""
         existing = self._documents.get(document_sha256)
         if existing is None:
             return
-        self._documents[document_sha256] = replace(existing, summary=summary, version=existing.version + 1)
+        self._documents[document_sha256] = replace(
+            existing,
+            summary=summary,
+            created_at=datetime.now(UTC),
+        )
 
     async def flush(self) -> None:
-        """Flush any buffered writes to storage."""
+        return None
 
     async def shutdown(self) -> None:
-        """Release resources and close connections."""
-
-    # --- DatabaseReader ---
-
-    async def get_node(self, node_id: UUID) -> ExecutionNode | None:
-        """Retrieve an execution node by its ID."""
-        return self._nodes.get(node_id)
-
-    async def get_children(self, parent_node_id: UUID) -> list[ExecutionNode]:
-        """Retrieve all direct child nodes of a parent node."""
-        return sorted(
-            (n for n in self._nodes.values() if n.parent_node_id == parent_node_id),
-            key=lambda n: (n.sequence_no, n.node_id),
-        )
-
-    async def get_deployment_tree(self, deployment_id: UUID) -> list[ExecutionNode]:
-        """Retrieve all nodes belonging to a deployment."""
-        return sorted(
-            (n for n in self._nodes.values() if n.deployment_id == deployment_id),
-            key=lambda n: (n.sequence_no, n.node_id),
-        )
-
-    async def get_deployment_by_run_id(self, run_id: str) -> ExecutionNode | None:
-        """Find the deployment node for a given run ID."""
-        for node in self._nodes.values():
-            if node.node_kind == NodeKind.DEPLOYMENT and node.run_id == run_id:
-                return node
         return None
 
-    async def get_deployment_by_run_scope(self, run_scope: str) -> ExecutionNode | None:
-        """Find the deployment node for a given run scope."""
-        for node in self._nodes.values():
-            if node.node_kind == NodeKind.DEPLOYMENT and node.run_scope == run_scope:
-                return node
-        return None
+    async def get_span(self, span_id: UUID) -> SpanRecord | None:
+        return self._spans.get(span_id)
 
-    async def get_document(self, document_sha256: str) -> DocumentRecord | None:
-        """Retrieve a document record by its SHA256."""
-        return self._documents.get(document_sha256)
+    async def get_child_spans(self, parent_span_id: UUID) -> list[SpanRecord]:
+        matches = [span for span in self._spans.values() if span.parent_span_id == parent_span_id]
+        return sorted(matches, key=child_span_sort_key)
 
-    async def find_document_by_name(self, name: str) -> DocumentRecord | None:
-        """Find the newest document with an exact name match."""
-        matches = [doc for doc in self._documents.values() if doc.name == name]
+    async def get_deployment_tree(self, root_deployment_id: UUID) -> list[SpanRecord]:
+        matches = [span for span in self._spans.values() if span.root_deployment_id == root_deployment_id]
+        return sorted(matches, key=span_sort_key)
+
+    async def get_deployment_by_run_id(self, run_id: str) -> SpanRecord | None:
+        matches = [span for span in self._spans.values() if span.kind == SpanKind.DEPLOYMENT and span.run_id == run_id]
         if not matches:
             return None
-        return max(matches, key=lambda doc: (doc.created_at, doc.document_sha256))
+        return max(matches, key=deployment_sort_key)
 
-    async def get_documents_batch(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentRecord]:
-        """Retrieve multiple document records by their SHA256s."""
-        return {sha: self._documents[sha] for sha in sha256s if sha in self._documents}
+    async def list_deployments(
+        self,
+        limit: int,
+        *,
+        status: str | None = None,
+    ) -> list[SpanRecord]:
+        matches = [span for span in self._spans.values() if span.kind == SpanKind.DEPLOYMENT]
+        if status is not None:
+            matches = [span for span in matches if span.status == status]
+        return sorted(matches, key=deployment_sort_key, reverse=True)[:limit]
+
+    async def get_cached_completion(
+        self,
+        cache_key: str,
+        *,
+        max_age: timedelta | None = None,
+    ) -> SpanRecord | None:
+        now = datetime.now(UTC)
+        matches: list[SpanRecord] = []
+        for span in self._spans.values():
+            if span.cache_key != cache_key or span.status != SpanStatus.COMPLETED:
+                continue
+            if max_age is not None and (span.ended_at is None or now - span.ended_at > max_age):
+                continue
+            matches.append(span)
+        if not matches:
+            return None
+        return max(matches, key=lambda span: (span.ended_at or span.started_at, span.version, str(span.span_id)))
+
+    async def get_deployment_cost_totals(self, root_deployment_id: UUID) -> CostTotals:
+        totals = CostTotals()
+        for span in self._spans.values():
+            if span.root_deployment_id != root_deployment_id or span.kind != SpanKind.LLM_ROUND:
+                continue
+            metrics = parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json")
+            totals = CostTotals(
+                cost_usd=totals.cost_usd + span.cost_usd,
+                tokens_input=totals.tokens_input + get_token_count(metrics, TOKENS_INPUT_KEY),
+                tokens_output=totals.tokens_output + get_token_count(metrics, TOKENS_OUTPUT_KEY),
+                tokens_cache_read=totals.tokens_cache_read + get_token_count(metrics, TOKENS_CACHE_READ_KEY),
+                tokens_reasoning=totals.tokens_reasoning + get_token_count(metrics, TOKENS_REASONING_KEY),
+            )
+        return totals
+
+    async def get_deployment_span_count(
+        self,
+        root_deployment_id: UUID,
+        *,
+        kinds: list[str] | None = None,
+    ) -> int:
+        allowed_kinds = set(kinds) if kinds is not None else None
+        return sum(
+            1 for span in self._spans.values() if span.root_deployment_id == root_deployment_id and (allowed_kinds is None or span.kind in allowed_kinds)
+        )
+
+    async def get_spans_referencing_document(
+        self,
+        document_sha256: str,
+        *,
+        kinds: list[str] | None = None,
+    ) -> list[SpanRecord]:
+        allowed_kinds = set(kinds) if kinds is not None else None
+        matches: list[SpanRecord] = []
+        for span in self._spans.values():
+            if allowed_kinds is not None and span.kind not in allowed_kinds:
+                continue
+            if document_sha256 in span.input_document_shas or document_sha256 in span.output_document_shas:
+                matches.append(span)
+                continue
+            if document_sha256 in span.input_blob_shas or document_sha256 in span.output_blob_shas:
+                matches.append(span)
+        return sorted(matches, key=span_sort_key)
+
+    async def get_document(self, document_sha256: str) -> DocumentRecord | None:
+        return self._documents.get(document_sha256)
+
+    async def get_documents_batch(self, sha256s: list[str]) -> dict[str, DocumentRecord]:
+        return {sha256: self._documents[sha256] for sha256 in sha256s if sha256 in self._documents}
+
+    async def get_document_with_content(self, document_sha256: str) -> HydratedDocument | None:
+        record = self._documents.get(document_sha256)
+        if record is None:
+            return None
+        blob = self._blobs.get(record.content_sha256)
+        if blob is None:
+            return None
+
+        attachment_contents: dict[str, bytes] = {}
+        missing_attachment_shas: list[str] = []
+        for attachment_sha in record.attachment_content_sha256s:
+            attachment_blob = self._blobs.get(attachment_sha)
+            if attachment_blob is None:
+                missing_attachment_shas.append(attachment_sha)
+                continue
+            attachment_contents[attachment_sha] = attachment_blob.content
+
+        if missing_attachment_shas:
+            missing_list = ", ".join(sorted(missing_attachment_shas))
+            raise ValueError(
+                f"Document {record.document_sha256} references attachment blobs that are missing from storage: {missing_list}. "
+                "Persist every attachment blob before reading the document."
+            )
+
+        return HydratedDocument(record=record, content=blob.content, attachment_contents=attachment_contents)
+
+    async def get_all_document_shas_for_tree(self, root_deployment_id: UUID) -> set[str]:
+        shas: set[str] = set()
+        for span in self._spans.values():
+            if span.root_deployment_id != root_deployment_id:
+                continue
+            shas.update(span.input_document_shas)
+            shas.update(span.output_document_shas)
+        return shas
 
     async def get_blob(self, content_sha256: str) -> BlobRecord | None:
-        """Retrieve a binary blob by its content SHA256."""
         return self._blobs.get(content_sha256)
 
     async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, BlobRecord]:
-        """Retrieve multiple binary blobs by their content SHA256s."""
-        return {sha: self._blobs[sha] for sha in content_sha256s if sha in self._blobs}
+        return {sha256: self._blobs[sha256] for sha256 in content_sha256s if sha256 in self._blobs}
 
-    async def get_documents_by_deployment(self, deployment_id: UUID) -> list[DocumentRecord]:
-        """Retrieve all documents belonging to a deployment chain."""
-        deployment_ids = self._deployment_chain_ids(deployment_id)
-        return [doc for doc in self._documents.values() if doc.deployment_id in deployment_ids]
-
-    async def get_documents_by_node(self, node_id: UUID) -> list[DocumentRecord]:
-        """Retrieve all documents produced by a specific node."""
-        result: list[DocumentRecord] = []
-        for doc in self._documents.values():
-            if doc.producing_node_id == node_id:
-                result.append(doc)
-        # For deployment nodes, also return root input documents (producing_node_id is None)
-        node = self._nodes.get(node_id)
-        if node is not None and node.node_kind == NodeKind.DEPLOYMENT:
-            for doc in self._documents.values():
-                if doc.producing_node_id is None and doc.deployment_id == node.deployment_id:
-                    result.append(doc)
-        return result
-
-    async def get_all_document_shas_for_deployment(self, deployment_id: UUID) -> set[str]:
-        """Retrieve all document SHA256s referenced by a deployment's nodes."""
-        shas: set[str] = set()
-        for node in self._nodes.values():
-            if node.deployment_id == deployment_id:
-                shas.update(node.input_document_shas)
-                shas.update(node.output_document_shas)
-                shas.update(node.context_document_shas)
-        return shas
-
-    async def check_existing_documents(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
-        """Return the subset of SHA256s that already exist in storage."""
-        return {sha for sha in sha256s if sha in self._documents}
-
-    async def find_documents_by_source(self, source_sha256: str) -> list[DocumentRecord]:
-        """Find documents derived from a given source SHA256."""
-        return [doc for doc in self._documents.values() if source_sha256 in doc.derived_from]
-
-    async def get_document_ancestry(self, sha256: DocumentSha256) -> dict[str, DocumentRecord]:
-        """Return all ancestor documents reachable from derived_from and triggered_by."""
-        target = self._documents.get(sha256)
-        if target is None:
-            return {}
-
-        ancestors: dict[str, DocumentRecord] = {}
-        pending = list(target.derived_from) + list(target.triggered_by)
-        seen = set(pending)
-
-        while pending:
-            current_sha = pending.pop(0)
-            current = self._documents.get(current_sha)
-            if current is None:
-                continue
-            ancestors[current_sha] = current
-            for parent_sha in (*current.derived_from, *current.triggered_by):
-                if parent_sha in seen:
-                    continue
-                seen.add(parent_sha)
-                pending.append(parent_sha)
-
-        return ancestors
-
-    def _deployment_chain_ids(self, deployment_id: UUID) -> set[UUID]:
-        deployment_node = self._nodes.get(deployment_id)
-        if deployment_node is None or deployment_node.node_kind != NodeKind.DEPLOYMENT:
-            return {deployment_id}
-
-        root_deployment_id = deployment_node.root_deployment_id
-        deployment_nodes = (node for node in self._nodes.values() if node.node_kind == NodeKind.DEPLOYMENT)
-        chain_ids = {node.deployment_id for node in deployment_nodes if node.root_deployment_id == root_deployment_id}
-        return chain_ids or {deployment_id}
-
-    async def find_documents_by_origin(self, sha256: DocumentSha256) -> list[DocumentRecord]:
-        """Find documents referencing a SHA256 in derived_from or triggered_by."""
-        return sorted(
-            [doc for doc in self._documents.values() if sha256 in doc.derived_from or sha256 in doc.triggered_by],
-            key=lambda doc: (doc.created_at, doc.document_sha256),
-            reverse=True,
-        )
-
-    async def list_run_scopes(self, limit: int) -> list[RunScopeInfo]:
-        """List non-empty document run scopes ordered by latest activity."""
-        grouped: dict[RunScope, RunScopeInfo] = {}
-        for doc in self._documents.values():
-            if not doc.run_scope:
-                continue
-            current = grouped.get(doc.run_scope)
-            if current is None:
-                grouped[doc.run_scope] = RunScopeInfo(
-                    run_scope=doc.run_scope,
-                    document_count=1,
-                    latest_created_at=doc.created_at,
-                )
-                continue
-            grouped[doc.run_scope] = RunScopeInfo(
-                run_scope=doc.run_scope,
-                document_count=current.document_count + 1,
-                latest_created_at=max(current.latest_created_at, doc.created_at),
-            )
-
-        ordered = sorted(
-            grouped.values(),
-            key=lambda info: (info.latest_created_at, info.run_scope),
-            reverse=True,
-        )
-        return ordered[:limit]
-
-    async def search_documents(
+    async def get_span_logs(
         self,
-        name: str | None,
-        document_type: str | None,
-        run_scope: str | None,
-        limit: int,
-        offset: int,
-    ) -> list[DocumentRecord]:
-        """Search documents by metadata with pagination."""
-        matches: list[DocumentRecord] = []
-        normalized_name = name.lower() if name is not None else None
-        for doc in self._documents.values():
-            if normalized_name is not None and normalized_name not in doc.name.lower():
-                continue
-            if document_type is not None and doc.document_type != document_type:
-                continue
-            if run_scope is not None and doc.run_scope != run_scope:
-                continue
-            matches.append(doc)
-
-        ordered = sorted(matches, key=_document_sort_key, reverse=True)
-        return ordered[offset : offset + limit]
-
-    async def get_deployment_cost_totals(self, deployment_id: UUID) -> tuple[float, int]:
-        """Return total conversation-turn cost and total tokens for a deployment."""
-        total_cost = 0.0
-        total_tokens = 0
-        for node in self._nodes.values():
-            if node.deployment_id != deployment_id or node.node_kind != NodeKind.CONVERSATION_TURN:
-                continue
-            total_cost += node.cost_usd
-            total_tokens += node.tokens_input + node.tokens_output
-        return total_cost, total_tokens
-
-    async def get_documents_by_run_scope(self, run_scope: str) -> list[DocumentRecord]:
-        """Retrieve all documents for a run scope."""
-        return sorted(
-            [doc for doc in self._documents.values() if doc.run_scope == run_scope],
-            key=lambda doc: (doc.created_at, doc.document_sha256),
-            reverse=True,
-        )
-
-    async def list_deployments(self, limit: int, status: str | None) -> list[ExecutionNode]:
-        """List deployment nodes ordered by newest start time first."""
-        matches = [node for node in self._nodes.values() if node.node_kind == NodeKind.DEPLOYMENT and (status is None or node.status.value == status)]
-        ordered = sorted(matches, key=lambda node: (node.started_at, node.node_id), reverse=True)
-        return ordered[:limit]
-
-    async def get_cached_completion(self, cache_key: str, max_age: timedelta | None = None) -> ExecutionNode | None:
-        """Find a completed node matching the cache key within the max age."""
-        now = datetime.now(UTC)
-        best: ExecutionNode | None = None
-        for node in self._nodes.values():
-            if node.cache_key != cache_key:
-                continue
-            if node.status != NodeStatus.COMPLETED:
-                continue
-            if max_age is not None:
-                if node.ended_at is None:
-                    continue
-                if now - node.ended_at > max_age:
-                    continue
-            if best is None or (node.ended_at is not None and (best.ended_at is None or node.ended_at > best.ended_at)):
-                best = node
-        return best
-
-    async def get_node_logs(
-        self,
-        node_id: UUID,
+        span_id: UUID,
         *,
         level: str | None = None,
         category: str | None = None,
-    ) -> list[ExecutionLog]:
-        """Retrieve execution logs for a specific node."""
+    ) -> list[LogRecord]:
         return sorted(
-            (log for log in self._logs if log.node_id == node_id and (level is None or log.level == level) and (category is None or log.category == category)),
-            key=lambda log: (log.sequence_no, log.timestamp),
+            (log for log in self._logs if log.span_id == span_id and (level is None or log.level == level) and (category is None or log.category == category)),
+            key=lambda log: (log.sequence_no, log.timestamp, str(log.span_id)),
         )
 
     async def get_deployment_logs(
@@ -338,13 +236,29 @@ class MemoryDatabase:
         *,
         level: str | None = None,
         category: str | None = None,
-    ) -> list[ExecutionLog]:
-        """Retrieve execution logs for an entire deployment."""
+    ) -> list[LogRecord]:
         return sorted(
             (
                 log
                 for log in self._logs
                 if log.deployment_id == deployment_id and (level is None or log.level == level) and (category is None or log.category == category)
             ),
-            key=lambda log: (log.timestamp, log.sequence_no, str(log.node_id)),
+            key=log_sort_key,
+        )
+
+    async def get_deployment_logs_batch(
+        self,
+        deployment_ids: list[UUID],
+        *,
+        level: str | None = None,
+        category: str | None = None,
+    ) -> list[LogRecord]:
+        allowed_ids = set(deployment_ids)
+        return sorted(
+            (
+                log
+                for log in self._logs
+                if log.deployment_id in allowed_ids and (level is None or log.level == level) and (category is None or log.category == category)
+            ),
+            key=log_sort_key,
         )

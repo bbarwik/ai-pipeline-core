@@ -41,10 +41,11 @@ class TestMemoryPublisherHeartbeat:
     """Verify _MemoryPublisher records heartbeat run_ids."""
 
     async def test_memory_publisher_records_heartbeat(self) -> None:
-        """_MemoryPublisher appends run_id to heartbeats list."""
+        """_MemoryPublisher appends heartbeat dict to heartbeats list."""
         publisher = _MemoryPublisher()
         await publisher.publish_heartbeat("run-abc")
-        assert publisher.heartbeats == ["run-abc"]
+        assert len(publisher.heartbeats) == 1
+        assert publisher.heartbeats[0]["run_id"] == "run-abc"
 
     async def test_memory_publisher_records_multiple_heartbeats(self) -> None:
         """Multiple heartbeat calls accumulate in order."""
@@ -52,7 +53,10 @@ class TestMemoryPublisherHeartbeat:
         await publisher.publish_heartbeat("run-1")
         await publisher.publish_heartbeat("run-2")
         await publisher.publish_heartbeat("run-1")
-        assert publisher.heartbeats == ["run-1", "run-2", "run-1"]
+        assert len(publisher.heartbeats) == 3
+        assert publisher.heartbeats[0]["run_id"] == "run-1"
+        assert publisher.heartbeats[1]["run_id"] == "run-2"
+        assert publisher.heartbeats[2]["run_id"] == "run-1"
 
 
 class TestHeartbeatCloudEventsEnvelope:

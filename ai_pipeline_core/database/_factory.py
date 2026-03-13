@@ -1,19 +1,14 @@
 """Database backend factory functions and type alias."""
 
-from __future__ import annotations
-
 from pathlib import Path
-from typing import TYPE_CHECKING, Union
 
 from ai_pipeline_core.database._memory import MemoryDatabase
-
-if TYPE_CHECKING:
-    from ai_pipeline_core.database._clickhouse import ClickHouseDatabase
-    from ai_pipeline_core.database._filesystem import FilesystemDatabase
-    from ai_pipeline_core.settings import Settings
+from ai_pipeline_core.database.clickhouse._backend import ClickHouseDatabase
+from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
+from ai_pipeline_core.settings import Settings
 
 # Type alias combining both protocols — all backends implement both
-Database = Union["MemoryDatabase", "FilesystemDatabase", "ClickHouseDatabase"]
+Database = MemoryDatabase | FilesystemDatabase | ClickHouseDatabase
 
 __all__ = [
     "Database",
@@ -42,16 +37,12 @@ def create_database(
         return MemoryDatabase()
 
     if backend == "filesystem":
-        from ai_pipeline_core.database._filesystem import FilesystemDatabase
-
         if base_path is None:
             msg = "FilesystemDatabase requires base_path parameter"
             raise ValueError(msg)
         return FilesystemDatabase(base_path)
 
     if backend == "clickhouse":
-        from ai_pipeline_core.database._clickhouse import ClickHouseDatabase
-
         return ClickHouseDatabase(settings=settings)
 
     supported = "'memory', 'filesystem', 'clickhouse'"

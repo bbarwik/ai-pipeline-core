@@ -7,16 +7,16 @@ fire-and-forget on final failure.
 
 import asyncio
 import json
-import uuid
 from concurrent.futures import Future
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, cast
+from uuid import uuid7
 
 from google.cloud.pubsub_v1 import PublisherClient  # pyright: ignore[reportMissingTypeStubs]
 
 from ai_pipeline_core.exceptions import PipelineCoreError
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 from ._types import (
     DocumentRef,
@@ -64,7 +64,7 @@ class PubSubPublisher:
         """Build a CloudEvents 1.0 JSON envelope."""
         self._seq += 1
         envelope = {
-            "id": str(uuid.uuid4()),
+            "id": str(uuid7()),
             "source": f"ai-{self._service_type}-worker",
             "type": event_type,
             "specversion": CLOUDEVENTS_SPEC_VERSION,
@@ -101,6 +101,17 @@ class PubSubPublisher:
             "run_id": run_id,
         }
 
+    async def _publish_event(self, event_type: EventType, run_id: str, payload: dict[str, Any]) -> None:
+        """Build and publish one CloudEvents payload for a lifecycle event."""
+        data = self._build_envelope(event_type, run_id, payload)
+        if event_type == EventType.RUN_COMPLETED and len(data) > MAX_PUBSUB_MESSAGE_BYTES:
+            raise ResultTooLargeError(f"Completed event ({len(data)} bytes) exceeds {MAX_PUBSUB_MESSAGE_BYTES} byte Pub/Sub limit")
+        attrs = self._make_attributes(event_type, run_id)
+        root_id = payload.get("root_deployment_id", "")
+        if root_id:
+            attrs["root_deployment_id"] = str(root_id)
+        await self._publish(data, attrs)
+
     @staticmethod
     def _doc_payloads(document_refs: tuple[DocumentRef, ...] | list[DocumentRef]) -> list[dict[str, Any]]:
         """Serialize document references into JSON-safe dicts."""
@@ -108,190 +119,217 @@ class PubSubPublisher:
 
     async def publish_run_started(self, event: RunStartedEvent) -> None:
         """Publish run.started event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.RUN_STARTED,
             event.run_id,
             {
-                "node_id": event.node_id,
+                "span_id": event.span_id,
                 "root_deployment_id": event.root_deployment_id,
                 "parent_deployment_task_id": event.parent_deployment_task_id,
-                "run_scope": event.run_scope,
+                "parent_span_id": event.parent_span_id,
+                "deployment_name": event.deployment_name,
+                "deployment_class": event.deployment_class,
+                "input_fingerprint": event.input_fingerprint,
+                "status": event.status,
                 "flow_plan": event.flow_plan,
+                "input_document_sha256s": list(event.input_document_sha256s),
             },
         )
-        await self._publish(data, self._make_attributes(EventType.RUN_STARTED, event.run_id))
 
-    async def publish_heartbeat(self, run_id: str) -> None:
+    async def publish_heartbeat(self, run_id: str, *, root_deployment_id: str = "", span_id: str = "") -> None:
         """Publish run.heartbeat event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.RUN_HEARTBEAT,
             run_id,
             {
+                "root_deployment_id": root_deployment_id,
+                "span_id": span_id,
                 "timestamp": datetime.now(UTC).isoformat(),
             },
         )
-        await self._publish(data, self._make_attributes(EventType.RUN_HEARTBEAT, run_id))
 
     async def publish_run_completed(self, event: RunCompletedEvent) -> None:
         """Publish run.completed event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.RUN_COMPLETED,
             event.run_id,
             {
-                "node_id": event.node_id,
+                "span_id": event.span_id,
                 "root_deployment_id": event.root_deployment_id,
                 "parent_deployment_task_id": event.parent_deployment_task_id,
+                "parent_span_id": event.parent_span_id,
+                "deployment_name": event.deployment_name,
+                "deployment_class": event.deployment_class,
+                "status": event.status,
                 "result": event.result,
+                "duration_ms": event.duration_ms,
                 "output_document_sha256s": list(event.output_document_sha256s),
             },
         )
 
-        if len(data) > MAX_PUBSUB_MESSAGE_BYTES:
-            raise ResultTooLargeError(f"Completed event ({len(data)} bytes) exceeds {MAX_PUBSUB_MESSAGE_BYTES} byte Pub/Sub limit")
-
-        await self._publish(data, self._make_attributes(EventType.RUN_COMPLETED, event.run_id))
-
     async def publish_run_failed(self, event: RunFailedEvent) -> None:
         """Publish run.failed event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.RUN_FAILED,
             event.run_id,
             {
-                "node_id": event.node_id,
+                "span_id": event.span_id,
                 "root_deployment_id": event.root_deployment_id,
                 "parent_deployment_task_id": event.parent_deployment_task_id,
+                "parent_span_id": event.parent_span_id,
+                "deployment_name": event.deployment_name,
+                "deployment_class": event.deployment_class,
+                "status": event.status,
                 "error_code": str(event.error_code),
                 "error_message": event.error_message,
+                "duration_ms": event.duration_ms,
             },
         )
-        await self._publish(data, self._make_attributes(EventType.RUN_FAILED, event.run_id))
 
     async def publish_flow_started(self, event: FlowStartedEvent) -> None:
         """Publish flow.started event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.FLOW_STARTED,
             event.run_id,
             {
-                "node_id": event.node_id,
+                "span_id": event.span_id,
                 "root_deployment_id": event.root_deployment_id,
                 "parent_deployment_task_id": event.parent_deployment_task_id,
+                "parent_span_id": event.parent_span_id,
                 "flow_name": event.flow_name,
                 "flow_class": event.flow_class,
                 "step": event.step,
                 "total_steps": event.total_steps,
+                "status": event.status,
                 "expected_tasks": event.expected_tasks,
                 "flow_params": event.flow_params,
+                "input_document_sha256s": list(event.input_document_sha256s),
             },
         )
-        await self._publish(data, self._make_attributes(EventType.FLOW_STARTED, event.run_id))
 
     async def publish_flow_completed(self, event: FlowCompletedEvent) -> None:
         """Publish flow.completed event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.FLOW_COMPLETED,
             event.run_id,
             {
-                "node_id": event.node_id,
+                "span_id": event.span_id,
                 "root_deployment_id": event.root_deployment_id,
                 "parent_deployment_task_id": event.parent_deployment_task_id,
+                "parent_span_id": event.parent_span_id,
                 "flow_name": event.flow_name,
                 "flow_class": event.flow_class,
                 "step": event.step,
                 "total_steps": event.total_steps,
+                "status": event.status,
                 "duration_ms": event.duration_ms,
                 "output_documents": self._doc_payloads(event.output_documents),
+                "input_document_sha256s": list(event.input_document_sha256s),
             },
         )
-        await self._publish(data, self._make_attributes(EventType.FLOW_COMPLETED, event.run_id))
 
     async def publish_flow_failed(self, event: FlowFailedEvent) -> None:
         """Publish flow.failed event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.FLOW_FAILED,
             event.run_id,
             {
-                "node_id": event.node_id,
+                "span_id": event.span_id,
                 "root_deployment_id": event.root_deployment_id,
                 "parent_deployment_task_id": event.parent_deployment_task_id,
+                "parent_span_id": event.parent_span_id,
                 "flow_name": event.flow_name,
                 "flow_class": event.flow_class,
                 "step": event.step,
                 "total_steps": event.total_steps,
+                "status": event.status,
                 "error_message": event.error_message,
+                "input_document_sha256s": list(event.input_document_sha256s),
             },
         )
-        await self._publish(data, self._make_attributes(EventType.FLOW_FAILED, event.run_id))
 
     async def publish_flow_skipped(self, event: FlowSkippedEvent) -> None:
         """Publish flow.skipped event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.FLOW_SKIPPED,
             event.run_id,
             {
-                "node_id": event.node_id,
+                "span_id": event.span_id,
                 "root_deployment_id": event.root_deployment_id,
                 "parent_deployment_task_id": event.parent_deployment_task_id,
+                "parent_span_id": event.parent_span_id,
                 "flow_name": event.flow_name,
+                "flow_class": event.flow_class,
                 "step": event.step,
                 "total_steps": event.total_steps,
+                "status": event.status,
                 "reason": event.reason,
+                "input_document_sha256s": list(event.input_document_sha256s),
             },
         )
-        await self._publish(data, self._make_attributes(EventType.FLOW_SKIPPED, event.run_id))
 
     async def publish_task_started(self, event: TaskStartedEvent) -> None:
         """Publish task.started event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.TASK_STARTED,
             event.run_id,
             {
-                "node_id": event.node_id,
+                "span_id": event.span_id,
                 "root_deployment_id": event.root_deployment_id,
                 "parent_deployment_task_id": event.parent_deployment_task_id,
+                "parent_span_id": event.parent_span_id,
                 "flow_name": event.flow_name,
                 "step": event.step,
+                "total_steps": event.total_steps,
+                "status": event.status,
                 "task_name": event.task_name,
                 "task_class": event.task_class,
+                "input_document_sha256s": list(event.input_document_sha256s),
             },
         )
-        await self._publish(data, self._make_attributes(EventType.TASK_STARTED, event.run_id))
 
     async def publish_task_completed(self, event: TaskCompletedEvent) -> None:
         """Publish task.completed event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.TASK_COMPLETED,
             event.run_id,
             {
-                "node_id": event.node_id,
+                "span_id": event.span_id,
                 "root_deployment_id": event.root_deployment_id,
                 "parent_deployment_task_id": event.parent_deployment_task_id,
+                "parent_span_id": event.parent_span_id,
                 "flow_name": event.flow_name,
                 "step": event.step,
+                "total_steps": event.total_steps,
+                "status": event.status,
                 "task_name": event.task_name,
                 "task_class": event.task_class,
                 "duration_ms": event.duration_ms,
                 "output_documents": self._doc_payloads(event.output_documents),
+                "input_document_sha256s": list(event.input_document_sha256s),
             },
         )
-        await self._publish(data, self._make_attributes(EventType.TASK_COMPLETED, event.run_id))
 
     async def publish_task_failed(self, event: TaskFailedEvent) -> None:
         """Publish task.failed event."""
-        data = self._build_envelope(
+        await self._publish_event(
             EventType.TASK_FAILED,
             event.run_id,
             {
-                "node_id": event.node_id,
+                "span_id": event.span_id,
                 "root_deployment_id": event.root_deployment_id,
                 "parent_deployment_task_id": event.parent_deployment_task_id,
+                "parent_span_id": event.parent_span_id,
                 "flow_name": event.flow_name,
                 "step": event.step,
+                "total_steps": event.total_steps,
+                "status": event.status,
                 "task_name": event.task_name,
                 "task_class": event.task_class,
                 "error_message": event.error_message,
+                "input_document_sha256s": list(event.input_document_sha256s),
             },
         )
-        await self._publish(data, self._make_attributes(EventType.TASK_FAILED, event.run_id))
 
     async def close(self) -> None:
         """Close the Pub/Sub client."""

@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlparse
 
-from ai_pipeline_core.exceptions import DocumentValidationError
+from ai_pipeline_core.documents.exceptions import DocumentValidationError
 
 __all__ = [
     "ensure_extension",

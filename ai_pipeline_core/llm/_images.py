@@ -19,7 +19,7 @@ from ai_pipeline_core._llm_core._validation import validate_image_content as _va
 from ai_pipeline_core._llm_core._validation import validate_pdf as _validate_pdf
 from ai_pipeline_core._llm_core.model_config import get_image_preset as _get_image_preset_name
 from ai_pipeline_core._llm_core.types import ContentPart, ImageContent, PDFContent, TextContent
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
 
@@ -58,7 +58,7 @@ class ImageProcessingConfig(BaseModel):
     webp_quality: int = Field(default=60, ge=10, le=95)
 
     @classmethod
-    def for_preset(cls, preset: ImagePreset) -> "ImageProcessingConfig":
+    def for_preset(cls, preset: ImagePreset) -> ImageProcessingConfig:
         """Create configuration from a model preset."""
         return _PRESETS[preset]
 
@@ -349,7 +349,7 @@ def _image_needs_processing(data: bytes, model: str) -> bool:
             w, h = img.size
             fmt = img.format
             return w > config.max_dimension or h > config.max_dimension or w * h > config.max_pixels or fmt not in _LLM_SUPPORTED_IMAGE_FORMATS
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return True
 
 
@@ -364,7 +364,7 @@ def _process_image_to_parts(data: bytes, model: str) -> list[ContentPart]:
             with Image.open(BytesIO(data)) as img:
                 mime_type: _ImageMimeType = _FORMAT_TO_MIME.get(img.format or "", "image/jpeg")
             return cast(list[ContentPart], [ImageContent(data=base64.b64encode(data), mime_type=mime_type)])
-        except (OSError, ValueError):
+        except OSError, ValueError:
             pass
 
     preset = get_image_preset(model)

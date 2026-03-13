@@ -6,13 +6,11 @@ from base64 import b32encode
 import pytest
 
 from ai_pipeline_core.documents import Document, is_document_sha256
-from ai_pipeline_core.documents._context import _suppress_document_registration
 
 
 @pytest.fixture(autouse=True)
 def _suppress_registration():
-    with _suppress_document_registration():
-        yield
+    return
 
 
 class TestIsDocumentSha256:

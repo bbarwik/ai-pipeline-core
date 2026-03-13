@@ -1,81 +1,164 @@
-"""Tests verifying MemoryDatabase satisfies both protocol contracts."""
+"""Tests for canonical database protocols."""
 
-from pathlib import Path
+import inspect
+from datetime import timedelta
+from typing import get_type_hints
+from uuid import UUID
 
-from ai_pipeline_core.database import DatabaseReader, DatabaseWriter, MemoryDatabase
-from ai_pipeline_core.database._protocol import _DocumentBlobReader
+from ai_pipeline_core.database import (
+    BlobRecord,
+    CostTotals,
+    DatabaseReader,
+    DocumentRecord,
+    HydratedDocument,
+    LogRecord,
+    MemoryDatabase,
+    SpanRecord,
+)
+from ai_pipeline_core.database._protocol import DatabaseWriter
 
 
-class TestProtocolConformance:
-    def test_memory_database_is_writer(self) -> None:
-        db = MemoryDatabase()
-        assert isinstance(db, DatabaseWriter)
+async def _async_method(*args: object, **kwargs: object) -> object:
+    return None
 
-    def test_memory_database_is_reader(self) -> None:
-        db = MemoryDatabase()
-        assert isinstance(db, DatabaseReader)
 
-    def test_writer_protocol_methods_exist(self) -> None:
-        expected = {
-            "insert_node",
-            "update_node",
-            "save_document",
-            "save_document_batch",
-            "save_blob",
-            "save_blob_batch",
-            "save_logs_batch",
-            "update_document_summary",
-            "flush",
-            "shutdown",
-        }
-        db = MemoryDatabase()
-        for method_name in expected:
-            assert hasattr(db, method_name), f"Missing writer method: {method_name}"
-            assert callable(getattr(db, method_name))
+def _make_reader_stub() -> object:
+    method_names = {
+        "get_all_document_shas_for_tree",
+        "get_blob",
+        "get_blobs_batch",
+        "get_cached_completion",
+        "get_child_spans",
+        "get_deployment_by_run_id",
+        "get_deployment_cost_totals",
+        "get_deployment_logs",
+        "get_deployment_logs_batch",
+        "get_deployment_span_count",
+        "get_deployment_tree",
+        "get_document",
+        "get_document_with_content",
+        "get_documents_batch",
+        "get_span",
+        "get_span_logs",
+        "get_spans_referencing_document",
+        "list_deployments",
+    }
+    return type("ReaderStub", (), {name: _async_method for name in method_names})()
 
-    def test_writer_protocol_supports_remote_exists(self) -> None:
-        db = MemoryDatabase()
-        assert hasattr(db, "supports_remote")
-        assert db.supports_remote is False
 
-    def test_reader_protocol_methods_exist(self) -> None:
-        expected = {
-            "get_node",
-            "get_children",
-            "get_deployment_tree",
-            "get_deployment_by_run_id",
-            "get_deployment_by_run_scope",
-            "get_document",
-            "find_document_by_name",
-            "get_documents_batch",
-            "get_blob",
-            "get_blobs_batch",
-            "get_documents_by_deployment",
-            "get_documents_by_node",
-            "get_all_document_shas_for_deployment",
-            "check_existing_documents",
-            "find_documents_by_source",
-            "get_document_ancestry",
-            "find_documents_by_origin",
-            "list_run_scopes",
-            "search_documents",
-            "get_deployment_cost_totals",
-            "get_documents_by_run_scope",
-            "list_deployments",
-            "get_cached_completion",
-            "get_node_logs",
-            "get_deployment_logs",
-        }
-        db = MemoryDatabase()
-        for method_name in expected:
-            assert hasattr(db, method_name), f"Missing reader method: {method_name}"
-            assert callable(getattr(db, method_name))
+def _make_writer_stub() -> object:
+    namespace = {
+        "supports_remote": property(lambda self: False),
+        "insert_span": _async_method,
+        "save_document": _async_method,
+        "save_document_batch": _async_method,
+        "save_blob": _async_method,
+        "save_blob_batch": _async_method,
+        "save_logs_batch": _async_method,
+        "update_document_summary": _async_method,
+        "flush": _async_method,
+        "shutdown": _async_method,
+    }
+    return type("WriterStub", (), namespace)()
 
-    def test_get_documents_by_deployment_contract_mentions_deployment_chain(self) -> None:
-        method_doc = _DocumentBlobReader.get_documents_by_deployment.__doc__
-        assert method_doc is not None
-        assert "deployment chain" in method_doc
 
-        readme_path = Path(__file__).resolve().parents[2] / "README.md"
-        readme_text = readme_path.read_text(encoding="utf-8")
-        assert "`get_documents_by_deployment(deployment_id)` — Load documents for a deployment chain" in readme_text
+def _assert_signature(
+    protocol: type[object],
+    method_name: str,
+    *,
+    parameter_types: dict[str, object],
+    return_type: object,
+    keyword_only: set[str] | None = None,
+) -> None:
+    signature = inspect.signature(getattr(protocol, method_name))
+    hints = get_type_hints(getattr(protocol, method_name))
+    keyword_only = keyword_only or set()
+    assert tuple(signature.parameters) == ("self", *parameter_types)
+    for parameter_name, expected_annotation in parameter_types.items():
+        parameter = signature.parameters[parameter_name]
+        if parameter_name in keyword_only:
+            assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert hints[parameter_name] == expected_annotation
+    assert hints["return"] == return_type
+
+
+def test_memory_database_conforms_to_protocols() -> None:
+    database = MemoryDatabase()
+    assert isinstance(database, DatabaseReader)
+    assert isinstance(database, DatabaseWriter)
+    assert database.supports_remote is False
+
+
+def test_database_reader_is_runtime_checkable() -> None:
+    assert getattr(DatabaseReader, "_is_runtime_protocol", False) is True
+    assert isinstance(_make_reader_stub(), DatabaseReader)
+    assert not isinstance(object(), DatabaseReader)
+
+
+def test_database_writer_is_runtime_checkable() -> None:
+    assert getattr(DatabaseWriter, "_is_runtime_protocol", False) is True
+    assert isinstance(_make_writer_stub(), DatabaseWriter)
+    assert not isinstance(object(), DatabaseWriter)
+
+
+def test_database_reader_method_signatures() -> None:
+    _assert_signature(DatabaseReader, "get_span", parameter_types={"span_id": UUID}, return_type=SpanRecord | None)
+    _assert_signature(
+        DatabaseReader,
+        "get_document",
+        parameter_types={"document_sha256": str},
+        return_type=DocumentRecord | None,
+    )
+    _assert_signature(
+        DatabaseReader,
+        "get_document_with_content",
+        parameter_types={"document_sha256": str},
+        return_type=HydratedDocument | None,
+    )
+    _assert_signature(
+        DatabaseReader,
+        "get_blob",
+        parameter_types={"content_sha256": str},
+        return_type=BlobRecord | None,
+    )
+    _assert_signature(
+        DatabaseReader,
+        "get_deployment_cost_totals",
+        parameter_types={"root_deployment_id": UUID},
+        return_type=CostTotals,
+    )
+    _assert_signature(
+        DatabaseReader,
+        "get_cached_completion",
+        parameter_types={"cache_key": str, "max_age": timedelta | None},
+        return_type=SpanRecord | None,
+        keyword_only={"max_age"},
+    )
+    _assert_signature(
+        DatabaseReader,
+        "list_deployments",
+        parameter_types={"limit": int, "status": str | None},
+        return_type=list[SpanRecord],
+        keyword_only={"status"},
+    )
+    _assert_signature(
+        DatabaseReader,
+        "get_span_logs",
+        parameter_types={"span_id": UUID, "level": str | None, "category": str | None},
+        return_type=list[LogRecord],
+        keyword_only={"level", "category"},
+    )
+    _assert_signature(
+        DatabaseReader,
+        "get_deployment_logs_batch",
+        parameter_types={"deployment_ids": list[UUID], "level": str | None, "category": str | None},
+        return_type=list[LogRecord],
+        keyword_only={"level", "category"},
+    )
+
+
+def test_database_writer_method_signatures() -> None:
+    _assert_signature(DatabaseWriter, "insert_span", parameter_types={"span": SpanRecord}, return_type=type(None))
+    _assert_signature(DatabaseWriter, "save_document", parameter_types={"record": DocumentRecord}, return_type=type(None))
+    _assert_signature(DatabaseWriter, "save_blob", parameter_types={"blob": BlobRecord}, return_type=type(None))
+    _assert_signature(DatabaseWriter, "save_logs_batch", parameter_types={"logs": list[LogRecord]}, return_type=type(None))

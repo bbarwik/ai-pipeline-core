@@ -8,7 +8,7 @@ python-magic for unknown files.
 
 import magic
 
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
 

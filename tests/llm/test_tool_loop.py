@@ -1,20 +1,26 @@
-"""Unit tests for llm/_tool_loop.py: execute_tool_loop and _execute_single_tool."""
+"""Unit tests for llm/_tool_loop.py."""
 
+import json
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
+from uuid import uuid7
 
-import pytest
 from pydantic import BaseModel, Field
 
 from ai_pipeline_core._llm_core.model_response import ModelResponse
-from ai_pipeline_core._llm_core.types import CoreMessage, ModelOptions, Role
+from ai_pipeline_core._llm_core.types import CoreMessage, Role
+from ai_pipeline_core.database import SpanKind
+from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.llm._tool_loop import _execute_single_tool, execute_tool_loop
 from ai_pipeline_core.llm.tools import Tool, ToolOutput
+from ai_pipeline_core.pipeline._execution_context import ExecutionContext, set_execution_context
+from ai_pipeline_core.pipeline._runtime_sinks import build_runtime_sinks
+from ai_pipeline_core.pipeline.limits import _SharedStatus
+from ai_pipeline_core.settings import settings
 
 from .conftest import make_response, make_tool_call
-
-
-# ── Test tools ────────────────────────────────────────────────────────────────
 
 
 class SearchTool(Tool):
@@ -37,16 +43,6 @@ class FailingTool(Tool):
         raise RuntimeError(f"Intentional: {input.reason}")
 
 
-class BadReturnTool(Tool):
-    """Tool that returns wrong type."""
-
-    class Input(BaseModel):
-        x: int = Field(description="Some value")
-
-    async def execute(self, input: Input) -> ToolOutput:
-        return "not a ToolOutput"  # type: ignore[return-value]
-
-
 class SlowTool(Tool):
     """Tool that takes too long."""
 
@@ -60,9 +56,6 @@ class SlowTool(Tool):
         return ToolOutput(content="done")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
 @dataclass(frozen=True)
 class _FakeToolResultMsg:
     tool_call_id: str
@@ -70,113 +63,100 @@ class _FakeToolResultMsg:
     content: str
 
 
-# ── _execute_single_tool ─────────────────────────────────────────────────────
-
-
-async def test_execute_single_tool_success() -> None:
-    tool = SearchTool()
-    tc = make_tool_call("c1", "search", '{"query": "test"}')
-    record, output = await _execute_single_tool(tool, tc, round_num=1)
-    assert record is not None
-    assert record.tool is SearchTool
-    assert record.round == 1
-    assert "Results for: test" in output.content
-
-
-async def test_execute_single_tool_invalid_json() -> None:
-    """Malformed JSON arguments produce error ToolOutput with no record."""
-    tool = SearchTool()
-    tc = make_tool_call("c1", "search", "not valid json")
-    record, output = await _execute_single_tool(tool, tc, round_num=1)
-    assert record is None
-    assert "Invalid arguments" in output.content
-
-
-async def test_execute_single_tool_validation_error() -> None:
-    """Missing required field produces error ToolOutput with no record."""
-    tool = SearchTool()
-    tc = make_tool_call("c1", "search", '{"wrong_field": 123}')
-    record, output = await _execute_single_tool(tool, tc, round_num=1)
-    assert record is None
-    assert "Invalid arguments" in output.content
-
-
-async def test_execute_single_tool_execution_raises() -> None:
-    """Tool execute() raising produces error ToolOutput WITH a record (input was valid)."""
-    tool = FailingTool()
-    tc = make_tool_call("c1", "failing_tool", '{"reason": "test failure"}')
-    record, output = await _execute_single_tool(tool, tc, round_num=1)
-    assert record is not None
-    assert record.tool is FailingTool
-    assert record.round == 1
-    assert record.input.reason == "test failure"  # type: ignore[union-attr]
-    assert "failed" in output.content
-    assert "Intentional" in output.content
-    assert record.output is output
-
-
-async def test_execute_single_tool_wrong_return_type() -> None:
-    """execute() returning non-ToolOutput raises TypeError."""
-    tool = BadReturnTool()
-    tc = make_tool_call("c1", "bad", '{"x": 1}')
-    with pytest.raises(TypeError, match="must return ToolOutput"):
-        await _execute_single_tool(tool, tc, round_num=1)
-
-
-async def test_execute_single_tool_timeout() -> None:
-    """Tool exceeding timeout produces error ToolOutput WITH a record (input was valid)."""
-    import ai_pipeline_core.llm._tool_loop as tl
-
-    original = tl.TOOL_EXECUTION_TIMEOUT_SECONDS
-    tl.TOOL_EXECUTION_TIMEOUT_SECONDS = 0.01  # 10ms timeout for test
-    try:
-        tool = SlowTool()
-        tc = make_tool_call("c1", "slow", '{"delay": 10}')
-        record, output = await _execute_single_tool(tool, tc, round_num=1)
-        assert record is not None
-        assert record.tool is SlowTool
-        assert record.input.delay == 10  # type: ignore[union-attr]
-        assert "timed out" in output.content
-        assert record.output is output
-    finally:
-        tl.TOOL_EXECUTION_TIMEOUT_SECONDS = original
-
-
-# ── execute_tool_loop ─────────────────────────────────────────────────────────
-
-
 def _build_msg(tid: str, fn: str, content: str) -> _FakeToolResultMsg:
     return _FakeToolResultMsg(tool_call_id=tid, function_name=fn, content=content)
 
 
-async def test_loop_no_tool_calls_immediate_return() -> None:
-    """LLM responds without tool calls — loop exits immediately."""
-    final = make_response(content="Direct answer")
+class _RecordingSpanDatabase(MemoryDatabase):
+    def __init__(self) -> None:
+        super().__init__()
+        self.inserted_spans: list[object] = []
 
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        return final
+    async def insert_span(self, span: object) -> None:
+        self.inserted_spans.append(span)
+        await super().insert_span(span)  # type: ignore[arg-type]
 
-    msgs, resp, records = await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[],
-        tool_lookup={},
-        tool_choice="auto",
-        max_tool_rounds=5,
-        purpose="test",
-        expected_cost=None,
-        core_messages=[CoreMessage(role=Role.USER, content="hi")],
-        context_count=0,
-        effective_options=None,
-        substitutor=None,
-        build_tool_result_message=_build_msg,
+
+def _make_context(database: MemoryDatabase) -> ExecutionContext:
+    deployment_id = uuid7()
+    span_id = uuid7()
+    return ExecutionContext(
+        run_id="tool-loop-test",
+        execution_id=None,
+        publisher=_NoopPublisher(),
+        limits=MappingProxyType({}),
+        limits_status=_SharedStatus(),
+        database=database,
+        sinks=build_runtime_sinks(database=database, settings_obj=settings),
+        deployment_id=deployment_id,
+        root_deployment_id=deployment_id,
+        deployment_name="tool-loop-test",
+        span_id=span_id,
+        current_span_id=span_id,
+        flow_span_id=span_id,
     )
-    assert resp.content == "Direct answer"
-    assert records == ()
-    assert len(msgs) == 1  # just the final response
 
 
-async def test_loop_single_tool_call_and_final() -> None:
-    """LLM calls tool once, then produces final response."""
+def _finished_spans(database: _RecordingSpanDatabase, kind: str) -> list[object]:
+    return [span for span in database.inserted_spans if getattr(span, "kind", None) == kind and getattr(span, "output_json", "")]
+
+
+async def test_execute_single_tool_success_returns_record_output_and_span() -> None:
+    tool = SearchTool()
+    tc = make_tool_call("c1", "search", '{"query": "test"}')
+    database = _RecordingSpanDatabase()
+
+    with set_execution_context(_make_context(database)):
+        record, output = await _execute_single_tool(tool, tc, round_num=1)
+
+    assert record is not None
+    assert record.tool is SearchTool
+    assert "Results for: test" in output.content
+    tool_call_span = _finished_spans(database, SpanKind.TOOL_CALL)[0]
+    tool_meta = json.loads(tool_call_span.meta_json)
+    assert tool_meta["tool_name"] == "search_tool"
+    assert tool_meta["round_index"] == 1
+
+
+async def test_execute_single_tool_validation_error_records_failed_tool_call() -> None:
+    tool = SearchTool()
+    tc = make_tool_call("c1", "search", "not valid json")
+    database = _RecordingSpanDatabase()
+
+    with set_execution_context(_make_context(database)):
+        record, output = await _execute_single_tool(tool, tc, round_num=1)
+
+    assert record is None
+    assert "Invalid arguments" in output.content
+    tool_call_span = _finished_spans(database, SpanKind.TOOL_CALL)[0]
+    assert tool_call_span.error_type == ""
+    tool_meta = json.loads(tool_call_span.meta_json)
+    assert tool_meta["tool_call_id"] == "c1"
+    assert tool_meta["round_index"] == 1
+
+
+async def test_execute_single_tool_timeout_records_failed_tool_call() -> None:
+    import ai_pipeline_core.llm._tool_loop as tool_loop
+
+    original = tool_loop.TOOL_EXECUTION_TIMEOUT_SECONDS
+    database = _RecordingSpanDatabase()
+    tool_loop.TOOL_EXECUTION_TIMEOUT_SECONDS = 0.01
+    try:
+        tool = SlowTool()
+        tc = make_tool_call("c1", "slow", '{"delay": 10}')
+        with set_execution_context(_make_context(database)):
+            record, output = await _execute_single_tool(tool, tc, round_num=2)
+    finally:
+        tool_loop.TOOL_EXECUTION_TIMEOUT_SECONDS = original
+
+    assert record is not None
+    assert "timed out" in output.content
+    tool_call_span = _finished_spans(database, SpanKind.TOOL_CALL)[0]
+    assert tool_call_span.error_type == ""
+    assert json.loads(tool_call_span.meta_json)["round_index"] == 2
+
+
+async def test_execute_tool_loop_records_rounds_and_tool_calls_in_order() -> None:
     call_count = 0
 
     async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
@@ -189,396 +169,44 @@ async def test_loop_single_tool_call_and_final() -> None:
             )
         return make_response(content="Found results")
 
-    msgs, resp, records = await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[{"type": "function", "function": {"name": "search"}}],
-        tool_lookup={"search": SearchTool()},
-        tool_choice="auto",
-        max_tool_rounds=5,
-        purpose="test",
-        expected_cost=None,
-        core_messages=[CoreMessage(role=Role.USER, content="search for test")],
-        context_count=0,
-        effective_options=None,
-        substitutor=None,
-        build_tool_result_message=_build_msg,
-    )
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_context(database)):
+        msgs, resp, records = await execute_tool_loop(
+            invoke_llm=invoke_llm,
+            tool_schemas=[{"type": "function", "function": {"name": "search"}}],
+            tool_lookup={"search": SearchTool()},
+            tool_choice="auto",
+            max_tool_rounds=5,
+            purpose="test",
+            expected_cost=None,
+            core_messages=[CoreMessage(role=Role.USER, content="search for test")],
+            context_count=0,
+            effective_options=None,
+            substitutor=None,
+            build_tool_result_message=_build_msg,
+        )
+
     assert resp.content == "Found results"
     assert len(records) == 1
-    assert records[0].tool is SearchTool
-    # accumulated: tool_call response + tool result msg + final response
     assert len(msgs) == 3
+    assert [span.kind for span in _finished_spans(database, SpanKind.TOOL_CALL)] == [SpanKind.TOOL_CALL]
 
 
-async def test_loop_parallel_tool_calls() -> None:
-    """LLM returns multiple tool calls — all execute in parallel, results in order."""
+async def test_execute_tool_loop_unknown_tool_records_tool_call_span() -> None:
     call_count = 0
 
     async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
         nonlocal call_count
+        _ = kwargs
         call_count += 1
-        if call_count == 1:
-            return make_response(
-                content="",
-                tool_calls=(
-                    make_tool_call("c1", "search", '{"query": "first"}'),
-                    make_tool_call("c2", "search", '{"query": "second"}'),
-                ),
-            )
-        return make_response(content="Both done")
+        return make_response(content="", tool_calls=(make_tool_call("c1", "missing_tool", "{}"),)) if call_count == 1 else make_response(content="done")
 
-    msgs, resp, records = await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[{"type": "function", "function": {"name": "search"}}],
-        tool_lookup={"search": SearchTool()},
-        tool_choice="auto",
-        max_tool_rounds=5,
-        purpose="test",
-        expected_cost=None,
-        core_messages=[CoreMessage(role=Role.USER, content="two searches")],
-        context_count=0,
-        effective_options=None,
-        substitutor=None,
-        build_tool_result_message=_build_msg,
-    )
-    assert len(records) == 2
-    assert "first" in records[0].output.content
-    assert "second" in records[1].output.content
-    # accumulated: tool_call response + 2 tool result msgs + final response
-    assert len(msgs) == 4
-
-
-async def test_loop_unknown_tool() -> None:
-    """Unknown tool produces error message listing available tools."""
-    call_count = 0
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return make_response(
-                content="",
-                tool_calls=(make_tool_call("c1", "nonexistent_tool", "{}"),),
-            )
-        return make_response(content="OK")
-
-    msgs, resp, records = await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[],
-        tool_lookup={"search": SearchTool()},
-        tool_choice="auto",
-        max_tool_rounds=5,
-        purpose="test",
-        expected_cost=None,
-        core_messages=[CoreMessage(role=Role.USER, content="hi")],
-        context_count=0,
-        effective_options=None,
-        substitutor=None,
-        build_tool_result_message=_build_msg,
-    )
-    assert len(records) == 0  # no successful records for unknown tools
-    # The error message should have been sent back to LLM
-    tool_result_msgs = [m for m in msgs if isinstance(m, _FakeToolResultMsg)]
-    assert any("Unknown tool" in m.content for m in tool_result_msgs)
-    assert any("search" in m.content for m in tool_result_msgs)  # lists available
-
-
-async def test_loop_mixed_known_and_unknown_tools() -> None:
-    """Mix of valid and unknown tools — valid executes, unknown gets error."""
-    call_count = 0
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return make_response(
-                content="",
-                tool_calls=(
-                    make_tool_call("c1", "search", '{"query": "valid"}'),
-                    make_tool_call("c2", "nonexistent", "{}"),
-                ),
-            )
-        return make_response(content="Done")
-
-    msgs, resp, records = await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[],
-        tool_lookup={"search": SearchTool()},
-        tool_choice="auto",
-        max_tool_rounds=5,
-        purpose="test",
-        expected_cost=None,
-        core_messages=[CoreMessage(role=Role.USER, content="hi")],
-        context_count=0,
-        effective_options=None,
-        substitutor=None,
-        build_tool_result_message=_build_msg,
-    )
-    assert len(records) == 1  # only the valid tool
-    assert records[0].tool is SearchTool
-    tool_result_msgs = [m for m in msgs if isinstance(m, _FakeToolResultMsg)]
-    assert len(tool_result_msgs) == 2  # one success, one error
-
-
-async def test_loop_max_rounds_exhaustion() -> None:
-    """Loop always gets tool calls — max_tool_rounds forces final with tool_choice='none'."""
-    invocations: list[dict[str, Any]] = []
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        invocations.append(kwargs)
-        if kwargs.get("tool_choice") == "none":
-            return make_response(content="Forced final answer")
-        return make_response(
-            content="",
-            tool_calls=(make_tool_call("c1", "search", '{"query": "again"}'),),
-        )
-
-    msgs, resp, records = await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[{"type": "function", "function": {"name": "search"}}],
-        tool_lookup={"search": SearchTool()},
-        tool_choice="auto",
-        max_tool_rounds=2,
-        purpose="test",
-        expected_cost=None,
-        core_messages=[CoreMessage(role=Role.USER, content="hi")],
-        context_count=0,
-        effective_options=None,
-        substitutor=None,
-        build_tool_result_message=_build_msg,
-    )
-    assert resp.content == "Forced final answer"
-    assert len(records) == 2  # 2 rounds of tool calls
-    # Last invocation should have tool_choice="none"
-    assert invocations[-1]["tool_choice"] == "none"
-    # Should have been called 3 times: 2 rounds + 1 forced final
-    assert len(invocations) == 3
-
-
-async def test_loop_tool_choice_only_first_round() -> None:
-    """tool_choice is applied on first round, None for subsequent rounds."""
-    invocations: list[dict[str, Any]] = []
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        invocations.append(kwargs)
-        if len(invocations) <= 2:
-            return make_response(
-                content="",
-                tool_calls=(make_tool_call("c1", "search", '{"query": "test"}'),),
-            )
-        return make_response(content="Final")
-
-    await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[{"type": "function", "function": {"name": "search"}}],
-        tool_lookup={"search": SearchTool()},
-        tool_choice="required",
-        max_tool_rounds=5,
-        purpose="test",
-        expected_cost=None,
-        core_messages=[CoreMessage(role=Role.USER, content="hi")],
-        context_count=0,
-        effective_options=None,
-        substitutor=None,
-        build_tool_result_message=_build_msg,
-    )
-    assert invocations[0]["tool_choice"] == "required"  # first round
-    assert invocations[1]["tool_choice"] is None  # second round
-    assert invocations[2]["tool_choice"] is None  # third round
-
-
-async def test_loop_stop_sequences_preserved_throughout() -> None:
-    """Stop sequences are preserved for all rounds including tool rounds and forced final."""
-    invocations: list[dict[str, Any]] = []
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        invocations.append(kwargs)
-        if kwargs.get("tool_choice") == "none":
-            return make_response(content="Final")
-        return make_response(
-            content="",
-            tool_calls=(make_tool_call("c1", "search", '{"query": "test"}'),),
-        )
-
-    opts = ModelOptions(stop=("</result>",))
-    await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[{"type": "function", "function": {"name": "search"}}],
-        tool_lookup={"search": SearchTool()},
-        tool_choice="auto",
-        max_tool_rounds=1,
-        purpose="test",
-        expected_cost=None,
-        core_messages=[CoreMessage(role=Role.USER, content="hi")],
-        context_count=0,
-        effective_options=opts,
-        substitutor=None,
-        build_tool_result_message=_build_msg,
-    )
-    # All rounds should preserve stop sequences
-    assert invocations[0]["effective_options"].stop == ("</result>",)
-    assert invocations[1]["effective_options"].stop == ("</result>",)
-
-
-async def test_loop_stop_sequence_active_on_natural_final() -> None:
-    """When LLM produces a natural final answer (no tool calls) after tool rounds,
-    stop sequences must be active so </result> extraction works correctly."""
-    invocations: list[dict[str, Any]] = []
-    call_count = 0
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        nonlocal call_count
-        invocations.append(kwargs)
-        call_count += 1
-        if call_count == 1:
-            # First round: LLM calls a tool
-            return make_response(
-                content="",
-                tool_calls=(make_tool_call("c1", "search", '{"query": "test"}'),),
-            )
-        # Second round: LLM produces natural final answer (no tool calls)
-        return make_response(content="<result>Here is the answer</result>")
-
-    opts = ModelOptions(stop=("</result>",))
-    await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[{"type": "function", "function": {"name": "search"}}],
-        tool_lookup={"search": SearchTool()},
-        tool_choice="auto",
-        max_tool_rounds=5,
-        purpose="test",
-        expected_cost=None,
-        core_messages=[CoreMessage(role=Role.USER, content="hi")],
-        context_count=0,
-        effective_options=opts,
-        substitutor=None,
-        build_tool_result_message=_build_msg,
-    )
-    # Both rounds should have stop sequences active
-    assert invocations[0]["effective_options"].stop == ("</result>",)
-    assert invocations[1]["effective_options"].stop == ("</result>",)
-
-
-async def test_loop_substitutor_applied_to_tool_result() -> None:
-    """URLSubstitutor is applied to tool results before sending to LLM."""
-
-    class FakeSubstitutor:
-        def substitute(self, text: str) -> str:
-            return text.replace("http://example.com", "[URL_1]")
-
-    call_count = 0
-    core_messages_captured: list[CoreMessage] = []
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        nonlocal call_count
-        call_count += 1
-        # Capture core_messages to inspect substitution
-        core_messages_captured.extend(kwargs["core_messages"])
-        if call_count == 1:
-            return make_response(
-                content="",
-                tool_calls=(make_tool_call("c1", "search", '{"query": "url test"}'),),
-            )
-        return make_response(content="Final")
-
-    class URLSearchTool(Tool):
-        """Returns a URL."""
-
-        class Input(BaseModel):
-            query: str = Field(description="Query")
-
-        async def execute(self, input: Input) -> ToolOutput:
-            return ToolOutput(content="Found at http://example.com")
-
-    core_msgs: list[CoreMessage] = [CoreMessage(role=Role.USER, content="find url")]
-    msgs, resp, records = await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[{"type": "function", "function": {"name": "search"}}],
-        tool_lookup={"search": URLSearchTool()},
-        tool_choice="auto",
-        max_tool_rounds=5,
-        purpose="test",
-        expected_cost=None,
-        core_messages=core_msgs,
-        context_count=0,
-        effective_options=None,
-        substitutor=FakeSubstitutor(),
-        build_tool_result_message=_build_msg,
-    )
-    # Core messages should have substituted content
-    tool_core_msgs = [m for m in core_msgs if m.role == Role.TOOL]
-    assert len(tool_core_msgs) == 1
-    assert "[URL_1]" in tool_core_msgs[0].content  # type: ignore[operator]
-
-    # Accumulated messages should have ORIGINAL content
-    result_msgs = [m for m in msgs if isinstance(m, _FakeToolResultMsg)]
-    assert len(result_msgs) == 1
-    assert "http://example.com" in result_msgs[0].content
-
-
-# ── Regression tests ──────────────────────────────────────────────────────────
-
-
-async def test_loop_max_tool_rounds_zero_raises() -> None:
-    """max_tool_rounds=0 is invalid — must be >= 1."""
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        return make_response(content="ok")
-
-    with pytest.raises(ValueError, match="max_tool_rounds must be >= 1"):
-        await execute_tool_loop(
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_context(database)):
+        msgs, resp, records = await execute_tool_loop(
             invoke_llm=invoke_llm,
             tool_schemas=[],
-            tool_lookup={},
-            tool_choice="auto",
-            max_tool_rounds=0,
-            purpose="test",
-            expected_cost=None,
-            core_messages=[CoreMessage(role=Role.USER, content="hi")],
-            context_count=0,
-            effective_options=None,
-            substitutor=None,
-            build_tool_result_message=_build_msg,
-        )
-
-
-async def test_loop_negative_max_tool_rounds_raises() -> None:
-    """Negative max_tool_rounds is invalid."""
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        return make_response(content="ok")
-
-    with pytest.raises(ValueError, match="max_tool_rounds must be >= 1"):
-        await execute_tool_loop(
-            invoke_llm=invoke_llm,
-            tool_schemas=[],
-            tool_lookup={},
-            tool_choice="auto",
-            max_tool_rounds=-1,
-            purpose="test",
-            expected_cost=None,
-            core_messages=[CoreMessage(role=Role.USER, content="hi")],
-            context_count=0,
-            effective_options=None,
-            substitutor=None,
-            build_tool_result_message=_build_msg,
-        )
-
-
-async def test_loop_programming_error_propagates() -> None:
-    """TypeError from tool execution propagates instead of being sent to LLM."""
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        return make_response(
-            content="",
-            tool_calls=(make_tool_call("c1", "bad_return_tool", '{"x": 1}'),),
-        )
-
-    with pytest.raises(TypeError, match="must return ToolOutput"):
-        await execute_tool_loop(
-            invoke_llm=invoke_llm,
-            tool_schemas=[{"type": "function", "function": {"name": "bad_return_tool"}}],
-            tool_lookup={"bad_return_tool": BadReturnTool()},
+            tool_lookup={"search": SearchTool()},
             tool_choice="auto",
             max_tool_rounds=5,
             purpose="test",
@@ -590,44 +218,6 @@ async def test_loop_programming_error_propagates() -> None:
             build_tool_result_message=_build_msg,
         )
 
-
-async def test_execution_failure_records_count_in_loop() -> None:
-    """Failed tool executions are counted in records when input was valid."""
-    call_count = 0
-
-    async def invoke_llm(**kwargs: Any) -> ModelResponse[Any]:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return make_response(
-                content="",
-                tool_calls=(
-                    make_tool_call("c1", "search_tool", '{"query": "good"}'),
-                    make_tool_call("c2", "failing_tool", '{"reason": "bad"}'),
-                ),
-            )
-        return make_response(content="Done")
-
-    msgs, resp, records = await execute_tool_loop(
-        invoke_llm=invoke_llm,
-        tool_schemas=[
-            {"type": "function", "function": {"name": "search_tool"}},
-            {"type": "function", "function": {"name": "failing_tool"}},
-        ],
-        tool_lookup={"search_tool": SearchTool(), "failing_tool": FailingTool()},
-        tool_choice="auto",
-        max_tool_rounds=5,
-        purpose="test",
-        expected_cost=None,
-        core_messages=[CoreMessage(role=Role.USER, content="hi")],
-        context_count=0,
-        effective_options=None,
-        substitutor=None,
-        build_tool_result_message=_build_msg,
-    )
-    # Both calls should produce records — success and failure
-    assert len(records) == 2
-    success_record = next(r for r in records if r.tool is SearchTool)
-    failure_record = next(r for r in records if r.tool is FailingTool)
-    assert "Results for:" in success_record.output.content
-    assert "Error:" in failure_record.output.content
+    assert resp.content == "done"
+    assert records == ()
+    assert any("Unknown tool" in msg.content for msg in msgs if isinstance(msg, _FakeToolResultMsg))

@@ -1,4 +1,4 @@
-"""Tests for database type models: ExecutionNode, DocumentRecord, BlobRecord, ExecutionLog."""
+"""Tests for canonical span-era database record types."""
 
 import dataclasses
 from datetime import UTC, datetime
@@ -6,295 +6,171 @@ from uuid import uuid4
 
 import pytest
 
-from ai_pipeline_core.database._ddl import DDL_DOCUMENTS, DDL_EXECUTION_LOGS, DDL_EXECUTION_NODES
-from ai_pipeline_core.database import NULL_PARENT, BlobRecord, DocumentRecord, ExecutionLog, ExecutionNode, NodeKind, NodeStatus
+from ai_pipeline_core.database._types import (
+    BlobRecord,
+    CostTotals,
+    DocumentRecord,
+    HydratedDocument,
+    LogRecord,
+    SpanKind,
+    SpanRecord,
+    SpanStatus,
+)
 
 
-class TestNodeKind:
-    def test_values(self) -> None:
-        assert NodeKind.DEPLOYMENT == "deployment"
-        assert NodeKind.FLOW == "flow"
-        assert NodeKind.TASK == "task"
-        assert NodeKind.CONVERSATION == "conversation"
-        assert NodeKind.CONVERSATION_TURN == "conversation_turn"
-
-    def test_all_values(self) -> None:
-        assert len(NodeKind) == 5
-
-
-class TestNodeStatus:
-    def test_values(self) -> None:
-        assert NodeStatus.RUNNING == "running"
-        assert NodeStatus.COMPLETED == "completed"
-        assert NodeStatus.FAILED == "failed"
-        assert NodeStatus.CACHED == "cached"
-        assert NodeStatus.SKIPPED == "skipped"
-
-    def test_all_values(self) -> None:
-        assert len(NodeStatus) == 5
+def test_span_kind_members() -> None:
+    assert tuple(kind.value for kind in SpanKind) == (
+        "deployment",
+        "flow",
+        "task",
+        "operation",
+        "conversation",
+        "llm_round",
+        "tool_call",
+    )
 
 
-class TestExecutionNode:
-    def _make_node(self, **kwargs: object) -> ExecutionNode:
-        deploy_id = uuid4()
-        defaults: dict[str, object] = {
-            "node_id": uuid4(),
-            "node_kind": NodeKind.TASK,
-            "deployment_id": deploy_id,
-            "root_deployment_id": deploy_id,
-            "run_id": "test-run",
-            "run_scope": "test-run/scope",
-            "deployment_name": "test-pipeline",
-            "name": "MyTask",
-            "sequence_no": 0,
-        }
-        defaults.update(kwargs)
-        return ExecutionNode(**defaults)  # type: ignore[arg-type]
+def test_span_status_members() -> None:
+    assert tuple(status.value for status in SpanStatus) == (
+        "running",
+        "completed",
+        "failed",
+        "cached",
+        "skipped",
+    )
 
-    def test_creation_with_defaults(self) -> None:
-        node = self._make_node()
-        assert node.status == NodeStatus.RUNNING
-        assert node.attempt == 0
-        assert node.cost_usd == 0.0
-        assert node.tokens_input == 0
-        assert node.tokens_reasoning == 0
-        assert node.error_type == ""
-        assert node.input_document_shas == ()
-        assert node.output_document_shas == ()
-        assert node.context_document_shas == ()
-        assert node.payload == {}
-        assert node.flow_class == ""
-        assert node.task_class == ""
-        assert node.cache_key == ""
-        assert node.version == 1
 
-    def test_frozen_immutability(self) -> None:
-        node = self._make_node()
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            node.name = "changed"  # type: ignore[misc]
+def test_span_record_defaults_and_immutability() -> None:
+    deployment_id = uuid4()
+    before = datetime.now(UTC)
+    span = SpanRecord(
+        span_id=uuid4(),
+        parent_span_id=None,
+        deployment_id=deployment_id,
+        root_deployment_id=deployment_id,
+        run_id="run-123",
+        deployment_name="example",
+        kind=SpanKind.TASK,
+        name="TaskName",
+        status=SpanStatus.RUNNING,
+        sequence_no=0,
+        started_at=before,
+        version=1,
+    )
 
-    def test_started_at_defaults_to_utcnow(self) -> None:
-        before = datetime.now(UTC)
-        node = self._make_node()
-        after = datetime.now(UTC)
-        assert before <= node.started_at <= after
-        assert before <= node.updated_at <= after
+    assert span.description == ""
+    assert span.ended_at is None
+    assert span.cache_key == ""
+    assert span.previous_conversation_id is None
+    assert span.cost_usd == 0.0
+    assert span.error_type == ""
+    assert span.error_message == ""
+    assert span.input_document_shas == ()
+    assert span.output_document_shas == ()
+    assert span.target == ""
+    assert span.receiver_json == ""
+    assert span.input_json == ""
+    assert span.output_json == ""
+    assert span.error_json == ""
+    assert span.meta_json == ""
+    assert span.metrics_json == ""
+    assert span.input_blob_shas == ()
+    assert span.output_blob_shas == ()
+    assert not hasattr(span, "detail_json")
 
-    def test_all_node_kinds_as_node_kind(self) -> None:
-        for kind in NodeKind:
-            node = self._make_node(node_kind=kind)
-            assert node.node_kind == kind
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        span.name = "changed"  # type: ignore[misc]
 
-    def test_document_sha_tuples(self) -> None:
-        node = self._make_node(
-            input_document_shas=("sha1", "sha2"),
-            output_document_shas=("sha3",),
-            context_document_shas=("sha4", "sha5", "sha6"),
+
+def test_document_record_defaults_and_attachment_fields() -> None:
+    record = DocumentRecord(
+        document_sha256="doc-sha",
+        content_sha256="blob-sha",
+        document_type="ExampleDocument",
+        name="example.md",
+    )
+
+    assert record.description == ""
+    assert record.mime_type == ""
+    assert record.size_bytes == 0
+    assert record.summary == ""
+    assert record.derived_from == ()
+    assert record.triggered_by == ()
+    assert record.attachment_names == ()
+    assert record.attachment_descriptions == ()
+    assert record.attachment_content_sha256s == ()
+    assert record.attachment_mime_types == ()
+    assert record.attachment_size_bytes == ()
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        record.name = "changed"  # type: ignore[misc]
+
+
+def test_document_record_rejects_mismatched_attachment_lengths() -> None:
+    with pytest.raises(ValueError, match="matching lengths"):
+        DocumentRecord(
+            document_sha256="doc-sha",
+            content_sha256="blob-sha",
+            document_type="ExampleDocument",
+            name="example.md",
+            attachment_names=("a.txt",),
+            attachment_descriptions=(),
+            attachment_content_sha256s=("blob-a",),
+            attachment_mime_types=("text/plain",),
+            attachment_size_bytes=(1,),
         )
-        assert len(node.input_document_shas) == 2
-        assert len(node.output_document_shas) == 1
-        assert len(node.context_document_shas) == 3
-
-    def test_payload_dict(self) -> None:
-        node = self._make_node(payload={"flow_plan": [{"name": "step1"}]})
-        assert node.payload["flow_plan"] == [{"name": "step1"}]
-
-    def test_cross_deployment_fields(self) -> None:
-        child_id = uuid4()
-        parent_task_id = uuid4()
-        node = self._make_node(
-            remote_child_deployment_id=child_id,
-            parent_deployment_task_id=parent_task_id,
-        )
-        assert node.remote_child_deployment_id == child_id
-        assert node.parent_deployment_task_id == parent_task_id
 
 
-class TestDocumentRecord:
-    def _make_record(self, **kwargs: object) -> DocumentRecord:
-        defaults: dict[str, object] = {
-            "document_sha256": "abc123",
-            "content_sha256": "def456",
-            "deployment_id": uuid4(),
-            "producing_node_id": uuid4(),
-            "document_type": "ResearchReport",
-            "name": "report.md",
-        }
-        defaults.update(kwargs)
-        return DocumentRecord(**defaults)  # type: ignore[arg-type]
+def test_blob_record_defaults_and_immutability() -> None:
+    before = datetime.now(UTC)
+    blob = BlobRecord(content_sha256="blob-sha", content=b"hello")
+    after = datetime.now(UTC)
 
-    def test_creation_with_defaults(self) -> None:
-        record = self._make_record()
-        assert record.run_scope == ""
-        assert record.description == ""
-        assert record.mime_type == ""
-        assert record.size_bytes == 0
-        assert not record.publicly_visible
-        assert record.derived_from == ()
-        assert record.triggered_by == ()
-        assert record.attachment_names == ()
-        assert record.summary == ""
-        assert record.metadata_json == "{}"
-        assert record.version == 1
+    assert before <= blob.created_at <= after
 
-    def test_frozen_immutability(self) -> None:
-        record = self._make_record()
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            record.name = "changed"  # type: ignore[misc]
-
-    def test_null_producing_node_id(self) -> None:
-        record = self._make_record(producing_node_id=None)
-        assert record.producing_node_id is None
-
-    def test_attachment_parallel_arrays(self) -> None:
-        record = self._make_record(
-            attachment_names=("screenshot.png",),
-            attachment_descriptions=("Page screenshot",),
-            attachment_sha256s=("att_sha1",),
-            attachment_mime_types=("image/png",),
-            attachment_sizes=(1024,),
-        )
-        assert record.attachment_names == ("screenshot.png",)
-        assert record.attachment_sizes == (1024,)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        blob.content = b"changed"  # type: ignore[misc]
 
 
-class TestBlobRecord:
-    def test_creation(self) -> None:
-        blob = BlobRecord(content_sha256="abc123", content=b"hello world", size_bytes=11)
-        assert blob.content == b"hello world"
-        assert blob.size_bytes == 11
+def test_log_record_defaults_and_immutability() -> None:
+    record = LogRecord(
+        deployment_id=uuid4(),
+        span_id=uuid4(),
+        timestamp=datetime.now(UTC),
+        sequence_no=3,
+        level="INFO",
+        category="framework",
+        logger_name="tests.logger",
+        message="hello",
+    )
 
-    def test_frozen_immutability(self) -> None:
-        blob = BlobRecord(content_sha256="abc123", content=b"data", size_bytes=4)
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            blob.content = b"changed"  # type: ignore[misc]
+    assert record.event_type == ""
+    assert record.fields_json == "{}"
+    assert record.exception_text == ""
 
-    def test_created_at_default(self) -> None:
-        before = datetime.now(UTC)
-        blob = BlobRecord(content_sha256="abc", content=b"x", size_bytes=1)
-        after = datetime.now(UTC)
-        assert before <= blob.created_at <= after
-
-
-class TestExecutionLog:
-    def test_creation(self) -> None:
-        deployment_id = uuid4()
-        node_id = uuid4()
-        flow_id = uuid4()
-        task_id = uuid4()
-        timestamp = datetime.now(UTC)
-        log = ExecutionLog(
-            node_id=node_id,
-            deployment_id=deployment_id,
-            root_deployment_id=deployment_id,
-            flow_id=flow_id,
-            task_id=task_id,
-            timestamp=timestamp,
-            sequence_no=3,
-            level="INFO",
-            category="lifecycle",
-            logger_name="ai_pipeline_core.pipeline",
-            message="Started task",
-        )
-        assert log.node_id == node_id
-        assert log.flow_id == flow_id
-        assert log.task_id == task_id
-        assert log.fields == "{}"
-        assert log.exception_text == ""
-
-    def test_frozen_immutability(self) -> None:
-        deployment_id = uuid4()
-        log = ExecutionLog(
-            node_id=uuid4(),
-            deployment_id=deployment_id,
-            root_deployment_id=deployment_id,
-            flow_id=None,
-            task_id=None,
-            timestamp=datetime.now(UTC),
-            sequence_no=0,
-            level="INFO",
-            category="framework",
-            logger_name="ai_pipeline_core.tests",
-            message="hello",
-        )
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            log.message = "changed"  # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        record.message = "changed"  # type: ignore[misc]
 
 
-class TestNullParent:
-    def test_default_parent_is_null_parent(self) -> None:
-        deploy_id = uuid4()
-        node = ExecutionNode(
-            node_id=uuid4(),
-            node_kind=NodeKind.TASK,
-            deployment_id=deploy_id,
-            root_deployment_id=deploy_id,
-            run_id="test",
-            run_scope="test/scope",
-            deployment_name="test",
-            name="Task",
-            sequence_no=0,
-        )
-        assert node.parent_node_id == NULL_PARENT
+def test_supporting_records_construct() -> None:
+    totals = CostTotals(
+        cost_usd=1.25,
+        tokens_input=10,
+        tokens_output=4,
+        tokens_cache_read=3,
+        tokens_reasoning=2,
+    )
+    hydrated = HydratedDocument(
+        record=DocumentRecord(
+            document_sha256="doc-sha",
+            content_sha256="blob-sha",
+            document_type="ExampleDocument",
+            name="example.md",
+        ),
+        content=b"hello",
+        attachment_contents={},
+    )
 
-    def test_null_parent_is_zero_uuid(self) -> None:
-        assert str(NULL_PARENT) == "00000000-0000-0000-0000-000000000000"
-
-
-class TestAttachmentValidation:
-    def _make_record(self, **kwargs: object) -> DocumentRecord:
-        defaults: dict[str, object] = {
-            "document_sha256": "abc123",
-            "content_sha256": "def456",
-            "deployment_id": uuid4(),
-            "producing_node_id": uuid4(),
-            "document_type": "TestDoc",
-            "name": "test.md",
-        }
-        defaults.update(kwargs)
-        return DocumentRecord(**defaults)  # type: ignore[arg-type]
-
-    def test_equal_length_arrays_accepted(self) -> None:
-        record = self._make_record(
-            attachment_names=("a.png",),
-            attachment_descriptions=("desc",),
-            attachment_sha256s=("sha",),
-            attachment_mime_types=("image/png",),
-            attachment_sizes=(100,),
-        )
-        assert len(record.attachment_names) == 1
-
-    def test_mismatched_lengths_raises(self) -> None:
-        with pytest.raises(ValueError, match="Attachment parallel arrays must have equal lengths"):
-            self._make_record(
-                attachment_names=("a.png", "b.png"),
-                attachment_descriptions=("desc",),
-                attachment_sha256s=("sha",),
-                attachment_mime_types=("image/png",),
-                attachment_sizes=(100,),
-            )
-
-    def test_empty_arrays_accepted(self) -> None:
-        record = self._make_record()
-        assert record.attachment_names == ()
-
-
-class TestDatabaseDdl:
-    def test_execution_nodes_uses_versioned_replacing_merge_tree(self) -> None:
-        assert "ENGINE = ReplacingMergeTree(version)" in DDL_EXECUTION_NODES
-        assert "version UInt64 DEFAULT 1" in DDL_EXECUTION_NODES
-        assert "INDEX idx_node_id node_id TYPE bloom_filter GRANULARITY 1" in DDL_EXECUTION_NODES
-        assert "INDEX idx_status status TYPE set(8) GRANULARITY 1" in DDL_EXECUTION_NODES
-
-    def test_documents_ddl_includes_run_scope_indexes_and_codec(self) -> None:
-        assert "run_scope String DEFAULT ''" in DDL_DOCUMENTS
-        assert "metadata_json String DEFAULT '{}' CODEC(ZSTD(3))" in DDL_DOCUMENTS
-        assert "document_type LowCardinality(String)" in DDL_DOCUMENTS
-        assert "mime_type LowCardinality(String) DEFAULT ''" in DDL_DOCUMENTS
-        assert "INDEX idx_name name TYPE bloom_filter GRANULARITY 1" in DDL_DOCUMENTS
-
-    def test_execution_logs_ddl_exists(self) -> None:
-        assert "CREATE TABLE IF NOT EXISTS execution_logs" in DDL_EXECUTION_LOGS
-        assert "sequence_no UInt32" in DDL_EXECUTION_LOGS
-        assert "category LowCardinality(String)" in DDL_EXECUTION_LOGS
-        assert "TTL toDateTime(timestamp) + INTERVAL 90 DAY" in DDL_EXECUTION_LOGS
+    assert totals.cost_usd == 1.25
+    assert totals.tokens_input + totals.tokens_output + totals.tokens_cache_read + totals.tokens_reasoning == 19
+    assert hydrated.content == b"hello"

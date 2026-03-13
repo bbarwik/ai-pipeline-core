@@ -1,4 +1,4 @@
-"""Data models for the unified execution DAG and document storage."""
+"""Data models for the span-based database schema."""
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -6,34 +6,104 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from ai_pipeline_core.documents._context import DocumentSha256, RunScope
+from ai_pipeline_core.documents._context import DocumentSha256
+from ai_pipeline_core.logger._types import LogRecord
 
 __all__ = [
-    "NULL_PARENT",
+    "TOKENS_CACHE_READ_KEY",
+    "TOKENS_INPUT_KEY",
+    "TOKENS_OUTPUT_KEY",
+    "TOKENS_REASONING_KEY",
     "BlobRecord",
+    "CostTotals",
     "DocumentRecord",
-    "ExecutionLog",
-    "ExecutionNode",
-    "NodeKind",
-    "NodeStatus",
-    "RunScopeInfo",
+    "HydratedDocument",
+    "LogRecord",
+    "SpanKind",
+    "SpanRecord",
+    "SpanStatus",
+    "get_token_count",
 ]
 
-NULL_PARENT = UUID(int=0)
+TOKENS_INPUT_KEY = "tokens_input"
+TOKENS_OUTPUT_KEY = "tokens_output"
+TOKENS_CACHE_READ_KEY = "tokens_cache_read"
+TOKENS_REASONING_KEY = "tokens_reasoning"
 
 
-class NodeKind(StrEnum):
-    """Discriminator for execution DAG node types."""
+def get_token_count(metrics: dict[str, Any], key: str) -> int:
+    """Extract an integer token count from a metrics dict, tolerating float/string values."""
+    value = metrics.get(key, 0)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _validate_string_tuple(field_name: str, values: object) -> None:
+    if not isinstance(values, tuple):
+        msg = f"{field_name} must be a tuple[str, ...]. Pass a tuple like ('sha1', 'sha2'), not {type(values).__name__}."
+        raise TypeError(msg)
+    if not all(isinstance(value, str) for value in values):
+        msg = f"{field_name} must contain only strings. Convert all values to str before constructing the record."
+        raise TypeError(msg)
+
+
+def _validate_int_tuple(field_name: str, values: object) -> None:
+    if not isinstance(values, tuple):
+        msg = f"{field_name} must be a tuple[int, ...]. Pass a tuple like (1, 2), not {type(values).__name__}."
+        raise TypeError(msg)
+    if not all(isinstance(value, int) for value in values):
+        msg = f"{field_name} must contain only integers. Convert all values to int before constructing the record."
+        raise TypeError(msg)
+
+
+def _validate_bytes_mapping(field_name: str, values: object) -> None:
+    if not isinstance(values, dict):
+        msg = f"{field_name} must be a dict[str, bytes]. Pass a dict keyed by content_sha256."
+        raise TypeError(msg)
+    if not all(isinstance(key, str) for key in values):
+        msg = f"{field_name} keys must be strings. Use attachment content SHA256 strings as keys."
+        raise TypeError(msg)
+    if not all(isinstance(value, bytes) for value in values.values()):
+        msg = f"{field_name} values must be bytes. Load blob contents before constructing the hydrated document."
+        raise TypeError(msg)
+
+
+def _validate_enum_string(field_name: str, value: object, enum_type: type[StrEnum]) -> None:
+    if not isinstance(value, str):
+        msg = f"{field_name} must be a string. Pass one of {[item.value for item in enum_type]}."
+        raise TypeError(msg)
+    try:
+        enum_type(value)
+    except ValueError as exc:
+        msg = f"{field_name} must be one of {[item.value for item in enum_type]}. Got {value!r}."
+        raise ValueError(msg) from exc
+
+
+# Enum
+class SpanKind(StrEnum):
+    """Discriminator for span-based execution records."""
 
     DEPLOYMENT = "deployment"
     FLOW = "flow"
     TASK = "task"
+    OPERATION = "operation"
     CONVERSATION = "conversation"
-    CONVERSATION_TURN = "conversation_turn"
+    LLM_ROUND = "llm_round"
+    TOOL_CALL = "tool_call"
 
 
-class NodeStatus(StrEnum):
-    """Lifecycle status of an execution node."""
+# Enum
+class SpanStatus(StrEnum):
+    """Lifecycle status for span-based execution records."""
 
     RUNNING = "running"
     COMPLETED = "completed"
@@ -42,171 +112,121 @@ class NodeStatus(StrEnum):
     SKIPPED = "skipped"
 
 
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
-def _empty_run_scope() -> RunScope:
-    return RunScope("")
-
-
 @dataclass(frozen=True, slots=True)
-class ExecutionNode:
-    """A single node in the execution DAG.
+class SpanRecord:
+    """Row from the span-oriented execution table."""
 
-    Every entity in a pipeline run (deployment, flow, task, conversation,
-    conversation_turn) is represented as one row in execution_nodes.
-    """
-
-    # Identity
-    node_id: UUID
-    node_kind: NodeKind
-
-    # Hierarchy
+    span_id: UUID
+    parent_span_id: UUID | None
     deployment_id: UUID
     root_deployment_id: UUID
-
-    # Run context (denormalized on every row)
     run_id: str
-    run_scope: RunScope
-    deployment_name: str
-
-    # Ordering
+    kind: str
     name: str
     sequence_no: int
-
-    # Parent (NULL_PARENT sentinel for root nodes)
-    parent_node_id: UUID = field(default=NULL_PARENT)
-    attempt: int = 0
-
-    # Class names (for Pub/Sub event reconstruction)
-    flow_class: str = ""
-    task_class: str = ""
-
-    # Lifecycle
-    status: NodeStatus = NodeStatus.RUNNING
+    deployment_name: str = ""
+    description: str = ""
+    status: str = SpanStatus.RUNNING
     started_at: datetime = field(default_factory=_utcnow)
     ended_at: datetime | None = None
-    updated_at: datetime = field(default_factory=_utcnow)
     version: int = 1
-
-    # LLM metrics (populated on conversation_turn nodes)
-    model: str = ""
+    cache_key: str = ""
+    previous_conversation_id: UUID | None = None
     cost_usd: float = 0.0
-    tokens_input: int = 0
-    tokens_output: int = 0
-    tokens_cache_read: int = 0
-    tokens_cache_write: int = 0
-    tokens_reasoning: int = 0
-    turn_count: int = 0
-
-    # Error
     error_type: str = ""
     error_message: str = ""
-
-    # Cross-deployment linking
-    remote_child_deployment_id: UUID | None = None
-    parent_deployment_task_id: UUID | None = None
-
-    # Cache/resume
-    cache_key: str = ""
-    input_fingerprint: str = ""
-
-    # Document references (SHA256 arrays)
     input_document_shas: tuple[str, ...] = ()
     output_document_shas: tuple[str, ...] = ()
-    context_document_shas: tuple[str, ...] = ()
+    target: str = ""
+    receiver_json: str = ""
+    input_json: str = ""
+    output_json: str = ""
+    error_json: str = ""
+    meta_json: str = ""
+    metrics_json: str = ""
+    input_blob_shas: tuple[str, ...] = ()
+    output_blob_shas: tuple[str, ...] = ()
 
-    # Denormalized IDs for zero-JOIN filtering
-    flow_id: UUID | None = None
-    task_id: UUID | None = None
-    conversation_id: UUID | None = None
-
-    # Payload (node-kind-specific JSON data, ZSTD compressed in ClickHouse)
-    payload: dict[str, Any] = field(default_factory=dict)
+    def __post_init__(self) -> None:
+        _validate_enum_string("kind", self.kind, SpanKind)
+        _validate_enum_string("status", self.status, SpanStatus)
+        _validate_string_tuple("input_document_shas", self.input_document_shas)
+        _validate_string_tuple("output_document_shas", self.output_document_shas)
+        _validate_string_tuple("input_blob_shas", self.input_blob_shas)
+        _validate_string_tuple("output_blob_shas", self.output_blob_shas)
 
 
 @dataclass(frozen=True, slots=True)
 class DocumentRecord:
-    """Document metadata registry row. Content-addressed by document_sha256."""
+    """Row from the content-addressed documents table."""
 
     document_sha256: DocumentSha256
     content_sha256: str
-    deployment_id: UUID
-    producing_node_id: UUID | None
     document_type: str
     name: str
-    run_scope: RunScope = field(default_factory=_empty_run_scope)
-
     description: str = ""
     mime_type: str = ""
     size_bytes: int = 0
-    publicly_visible: bool = False
-
+    summary: str = ""
     derived_from: tuple[str, ...] = ()
     triggered_by: tuple[str, ...] = ()
-
-    # Parallel arrays for attachment metadata
     attachment_names: tuple[str, ...] = ()
     attachment_descriptions: tuple[str, ...] = ()
-    attachment_sha256s: tuple[str, ...] = ()
+    attachment_content_sha256s: tuple[str, ...] = ()
     attachment_mime_types: tuple[str, ...] = ()
-    attachment_sizes: tuple[int, ...] = ()
-
-    summary: str = ""
-    metadata_json: str = "{}"
+    attachment_size_bytes: tuple[int, ...] = ()
     created_at: datetime = field(default_factory=_utcnow)
-    version: int = 1
 
     def __post_init__(self) -> None:
-        lengths = [
-            len(self.attachment_names),
+        _validate_string_tuple("derived_from", self.derived_from)
+        _validate_string_tuple("triggered_by", self.triggered_by)
+        _validate_string_tuple("attachment_names", self.attachment_names)
+        _validate_string_tuple("attachment_descriptions", self.attachment_descriptions)
+        _validate_string_tuple("attachment_content_sha256s", self.attachment_content_sha256s)
+        _validate_string_tuple("attachment_mime_types", self.attachment_mime_types)
+        _validate_int_tuple("attachment_size_bytes", self.attachment_size_bytes)
+        attachment_count = len(self.attachment_names)
+        attachment_lengths = (
             len(self.attachment_descriptions),
-            len(self.attachment_sha256s),
+            len(self.attachment_content_sha256s),
             len(self.attachment_mime_types),
-            len(self.attachment_sizes),
-        ]
-        if lengths and len(set(lengths)) > 1:
-            names = ("attachment_names", "attachment_descriptions", "attachment_sha256s", "attachment_mime_types", "attachment_sizes")
-            detail = ", ".join(f"{n}={length}" for n, length in zip(names, lengths, strict=True))
-            msg = f"Attachment parallel arrays must have equal lengths: {detail}"
+            len(self.attachment_size_bytes),
+        )
+        if any(length != attachment_count for length in attachment_lengths):
+            msg = (
+                "DocumentRecord attachment fields must have matching lengths. "
+                "Provide one name, description, content_sha256, mime_type, and size_bytes entry for each attachment."
+            )
             raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
 class BlobRecord:
-    """Content-addressed binary storage row."""
+    """Row from the immutable blobs table."""
 
     content_sha256: str
     content: bytes
-    size_bytes: int
     created_at: datetime = field(default_factory=_utcnow)
 
 
 @dataclass(frozen=True, slots=True)
-class ExecutionLog:
-    """Append-only execution log row linked to the execution DAG."""
+class CostTotals:
+    """Aggregated cost and token totals for llm_round spans."""
 
-    node_id: UUID
-    deployment_id: UUID
-    root_deployment_id: UUID
-    flow_id: UUID | None
-    task_id: UUID | None
-    timestamp: datetime
-    sequence_no: int
-    level: str
-    category: str
-    logger_name: str
-    message: str
-    event_type: str = ""
-    fields: str = "{}"
-    exception_text: str = ""
+    cost_usd: float = 0.0
+    tokens_input: int = 0
+    tokens_output: int = 0
+    tokens_cache_read: int = 0
+    tokens_reasoning: int = 0
 
 
 @dataclass(frozen=True, slots=True)
-class RunScopeInfo:
-    """Aggregated metadata for a non-empty document run scope."""
+class HydratedDocument:
+    """Document metadata with loaded primary and attachment blob content."""
 
-    run_scope: RunScope
-    document_count: int
-    latest_created_at: datetime
+    record: DocumentRecord
+    content: bytes
+    attachment_contents: dict[str, bytes] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_bytes_mapping("attachment_contents", self.attachment_contents)

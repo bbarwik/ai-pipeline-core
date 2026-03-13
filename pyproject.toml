@@ -1,10 +1,10 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.14.0"
+version = "0.15.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 authors = [
     {name = "ResearchTech Inc.", email = "bartosz@research.tech"}
 ]
@@ -13,8 +13,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -31,6 +30,7 @@ dependencies = [
     "python-magic>=0.4.27",
     "ruamel.yaml>=0.19.1",
     "tiktoken>=0.12.0",
+    "lmnr>=0.7.0",
     "clickhouse-connect>=0.10.0",
     "prefect-gcp>=0.6.15",
     "google-cloud-pubsub>=2.0",
@@ -71,6 +71,8 @@ asyncio_default_fixture_loop_scope = "function"
 addopts = '''
   --quiet
   --tb=short
+  --testmon
+  -m 'not integration and not clickhouse and not pubsub and not pubsub_live'
 '''
 strict = true
 testpaths = ["tests"]
@@ -94,7 +96,7 @@ skip_covered = false
 [tool.ruff]
 # Configuration for the Ruff linter and formatter
 line-length = 160
-target-version = "py312"
+target-version = "py314"
 preview = true  # Required for DOC (pydoclint-derived) rules
 exclude = [".tmp", "build", "dist", ".venv", "venv", "__pycache__", "scripts"]
 
@@ -111,7 +113,7 @@ select = [
     "SIM",     # flake8-simplify — redundant control flow
     "ARG",     # flake8-unused-arguments
     "RUF",     # ruff-specific — RUF012 mutable class attrs, RUF100 unused noqa
-    "UP",      # pyupgrade — Python 3.12+ idioms
+    "UP",      # pyupgrade — Python 3.14+ idioms
     "PERF",    # perflint — performance anti-patterns
     "C4",      # flake8-comprehensions
     "FBT",     # flake8-boolean-trap
@@ -150,31 +152,35 @@ ignore = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.pylint]
+max-public-methods = 30
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "RUF069", "TID251", "A002"]
-"examples/**/*.py" = ["D", "DOC", "PLC0415", "S", "ARG", "T20", "RUF029", "C901", "PLR0914", "PLR0915"]
+"examples/**/*.py" = ["D", "DOC", "PLC0415", "S", "ARG", "T20", "RUF029", "C901", "PLR0914", "PLR0915", "PLR6301", "A002"]
 "dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
 ".vulture_whitelist.py" = ["B018", "E402", "F401", "F821", "D", "PLC2701"]
 "ai_pipeline_core/__init__.py" = ["RUF067", "TID251"]
 "ai_pipeline_core/testing.py" = ["TID251"]
 "ai_pipeline_core/deployment/_cli.py" = ["TID251", "PLR0912", "PLR0914", "PLR0915", "UP047"]
-"ai_pipeline_core/deployment/_helpers.py" = ["PLC0415", "BLE001"]
+"ai_pipeline_core/deployment/_helpers.py" = ["PLC0415", "BLE001", "TID251"]
 "ai_pipeline_core/prompt_compiler/cli.py" = ["T201", "C901", "PLR0912", "PLR0915", "TID251"]
 "ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046", "BLE001", "TID251", "ARG001"]
 "ai_pipeline_core/deployment/_prefect.py" = ["TID251", "BLE001", "PLR0917"]
 "ai_pipeline_core/pipeline/limits.py" = ["BLE001", "ASYNC109", "TID251"]
 "tests/pipeline/test_limits.py" = ["PLC2801"]
 "ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912", "BLE001", "TID251"]
-"ai_pipeline_core/deployment/remote.py" = ["UP046", "UP047", "TID251", "BLE001", "PLC0415", "ARG001"]
+"ai_pipeline_core/deployment/remote.py" = ["UP046", "UP047", "TID251", "BLE001", "PLC0415", "ARG001", "PLR0914", "PLR0915"]
 "ai_pipeline_core/deployment/_pubsub.py" = ["BLE001"]
 "ai_pipeline_core/documents/document.py" = ["PLR0904"]
 "ai_pipeline_core/database/_factory.py" = ["F821", "PLC0415"]
-"ai_pipeline_core/database/_clickhouse.py" = ["S608", "BLE001", "PLR0904", "PLR0911", "PLR0912", "C901", "PLR6301", "PERF401"]
-"ai_pipeline_core/database/_connection.py" = ["BLE001"]
-"ai_pipeline_core/database/_filesystem.py" = ["PLR0904", "PLR6301", "PERF401"]
+"ai_pipeline_core/_codec.py" = ["PLR0911"]
+"ai_pipeline_core/database/clickhouse/_backend.py" = ["S608", "BLE001", "PLR0904", "PLR0911", "PLR0912", "C901", "PLR6301", "PERF401"]
+"ai_pipeline_core/database/clickhouse/_connection.py" = ["S608"]
+"ai_pipeline_core/database/filesystem/_backend.py" = ["PLR0904", "PLR6301", "PERF401"]
 "ai_pipeline_core/database/_memory.py" = ["PLR0904", "PLR6301", "RUF029", "PERF401"]
-"ai_pipeline_core/database/_summary.py" = ["PLR6301", "PLR0912", "PLR0914", "PLR0917", "PERF401"]
-"ai_pipeline_core/database/_documents.py" = ["PLC0415"]
+"ai_pipeline_core/database/snapshot/_summary.py" = ["PLR6301", "PLR0912", "PLR0914", "PLR0917", "PERF401"]
+"ai_pipeline_core/database/_documents.py" = ["PLC0415", "PERF401"]
 "ai_pipeline_core/_llm_core/client.py" = ["PLR0911", "C901", "PLR0912", "PLR0915", "PLR0914", "PLR1702", "RUF005", "PLC2801", "UP047", "BLE001"]
 "ai_pipeline_core/_llm_core/model_response.py" = ["UP046", "PLR6301", "PERF403", "BLE001"]
 "ai_pipeline_core/llm/__init__.py" = ["TID252"]
@@ -185,13 +191,16 @@ convention = "google"
 "ai_pipeline_core/deployment/_resolve.py" = ["PLC0415", "C901", "PLR0915", "BLE001"]
 "ai_pipeline_core/_llm_core/_validation.py" = ["BLE001"]
 "ai_pipeline_core/llm/_images.py" = ["PLR0917", "BLE001"]
-"ai_pipeline_core/pipeline/_task.py" = ["ARG003", "PLR0914", "PLR0915"]
+"ai_pipeline_core/pipeline/_task.py" = ["ARG003", "PLR0914", "PLR0915", "PLC2801"]
 "ai_pipeline_core/pipeline/_type_validation.py" = ["BLE001"]
 "ai_pipeline_core/deployment/_types.py" = ["RUF029"]
 "ai_pipeline_core/replay/types.py" = ["PLC0415"]
+"ai_pipeline_core/replay/_execute.py" = ["PLC0415"]
 "ai_pipeline_core/replay/cli.py" = ["T201", "BLE001"]
 "ai_pipeline_core/observability/cli.py" = ["T201", "BLE001", "PLC0415", "PLR0914"]
-"ai_pipeline_core/logging/logging_config.py" = ["TID251"]
+"ai_pipeline_core/logger/_buffer.py" = ["TID251"]
+"ai_pipeline_core/logger/_handler.py" = ["TID251"]
+"ai_pipeline_core/logger/logging_config.py" = ["TID251"]
 "ai_pipeline_core/docs_generator/cli.py" = ["T20"]
 
 [tool.ruff.format]
@@ -203,9 +212,10 @@ quote-style = "double"
 ban-relative-imports = "parents"
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"logging".msg = "Use from ai_pipeline_core.logging import get_pipeline_logger instead of import logging"
-"warnings".msg = "Use from ai_pipeline_core.logging import get_pipeline_logger for warnings instead of import warnings"
+"logging".msg = "Use from ai_pipeline_core.logger import get_pipeline_logger instead of import logging"
+"warnings".msg = "Use from ai_pipeline_core.logger import get_pipeline_logger for warnings instead of import warnings"
 "prefect".msg = "Do not import Prefect directly. Use ai_pipeline_core.pipeline and ai_pipeline_core.deployment instead."
+"prefect.testing.utilities.prefect_test_harness".msg = "Do not use prefect_test_harness in tests — it is already provided as a session-scoped fixture in tests/conftest.py. Each call starts a new Prefect server (~4s). Use the session fixture instead."
 
 [tool.ruff.lint.mccabe]
 max-complexity = 12
@@ -213,7 +223,7 @@ max-complexity = 12
 [tool.interrogate]
 fail-under = 100
 verbose = 1
-exclude = ["tests", "examples", ".venv", "venv", "build", "dist"]
+exclude = ["tests", "examples", ".venv", "venv", "build", "dist", "ai_pipeline_core/_*.py", "ai_pipeline_core/**/_*.py"]
 ignore-init-method = true
 ignore-init-module = false
 ignore-magic = true
@@ -227,7 +237,7 @@ ignore-semiprivate = true
 ignore-setters = true
 
 [tool.basedpyright]
-pythonVersion = "3.12"
+pythonVersion = "3.14"
 typeCheckingMode = "strict"
 include = ["ai_pipeline_core"]
 exclude = [
@@ -272,7 +282,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.14.0"
+current_version = "0.15.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"

@@ -71,7 +71,7 @@ class RenderOutputRule(OutputRule):
 
 
 @pytest.fixture
-def temp_modules() -> Generator[list[str], None, None]:
+def temp_modules() -> Generator[list[str]]:
     created: list[str] = []
     yield created
     for module_name in created:

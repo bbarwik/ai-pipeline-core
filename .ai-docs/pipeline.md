@@ -1,14 +1,14 @@
 # MODULE: pipeline
-# CLASSES: LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
+# CLASSES: LimitKind, PipelineLimit, FlowOptions, RunContext, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
 # DEPENDS: BaseModel, StrEnum
 # PURPOSE: Pipeline framework primitives.
-# VERSION: 0.14.0
+# VERSION: 0.15.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import FlowOptions, LimitKind, PipelineFlow, PipelineLimit, PipelineTask, TaskBatch, TaskHandle, as_task_completed, collect_tasks, get_run_id, pipeline_concurrency, pipeline_test_context, run_tasks_until, safe_gather, safe_gather_indexed
+from ai_pipeline_core import FlowOptions, LimitKind, PipelineFlow, PipelineLimit, PipelineTask, RunContext, TaskBatch, TaskHandle, as_task_completed, collect_tasks, get_run_id, pipeline_concurrency, pipeline_test_context, run_tasks_until, safe_gather, safe_gather_indexed, traced_operation
 ```
 
 ## Public API
@@ -58,6 +58,13 @@ or programmatically-constructed parameter objects — use BaseModel instead."""
     model_config = ConfigDict(frozen=True, extra='forbid')
 
 
+@dataclass(frozen=True, slots=True)
+class RunContext:
+    """Immutable context for a pipeline run, carried via ContextVar."""
+    run_id: str
+    execution_id: UUID | None = None
+
+
 class PipelineFlow:
     """Base class for pipeline flows.
 
@@ -93,7 +100,7 @@ Use ``get_run_id()`` from ``ai_pipeline_core.pipeline`` to access the run ID ins
         cls = type(self)
         known_params: set[str] = set()
         for klass in cls.__mro__:
-            known_params.update(name for name in getattr(klass, "__annotations__", {}) if not name.startswith("_"))
+            known_params.update(_declared_init_annotations(klass))
             known_params.update(
                 name
                 for name, value in vars(klass).items()
@@ -196,6 +203,9 @@ Calling ``await SummarizeTask.run((doc,))`` dispatches the full lifecycle. Calli
     retries: ClassVar[int] = 0
     retry_delay_seconds: ClassVar[int] = 20
     timeout_seconds: ClassVar[int | None] = None
+    cacheable: ClassVar[bool] = False
+    cache_version: ClassVar[int] = 1
+    cache_ttl_seconds: ClassVar[int | None] = None
     expected_cost: ClassVar[float | None] = None
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
@@ -291,7 +301,7 @@ async def pipeline_concurrency(
     name: str,
     *,
     timeout: int | None = None,
-) -> AsyncGenerator[None, None]:
+) -> AsyncGenerator[None]:
     """Acquire a concurrency/rate-limit slot for an operation.
 
     For CONCURRENT limits: slot held during block, released on exit.
@@ -361,8 +371,9 @@ def get_run_id() -> str:
 @contextmanager
 def pipeline_test_context(
     run_id: str = "test-run",
-    publisher: ResultPublisher | None = None,
-) -> Generator[ExecutionContext, None, None]:
+    publisher: Any | None = None,
+    cache_ttl: timedelta | None = None,
+) -> Generator[ExecutionContext]:
     """Set up an execution + task context for tests without full deployment wiring.
 
     Yields:
@@ -370,19 +381,14 @@ def pipeline_test_context(
     """
     ctx = ExecutionContext(
         run_id=run_id,
-        run_scope=RunScope(f"{run_id}/test"),
         execution_id=None,
-        publisher=publisher or _NoopPublisher(),
+        publisher=publisher or _create_noop_publisher(),
         limits=MappingProxyType({}),
         limits_status=_SharedStatus(),
+        cache_ttl=cache_ttl,
     )
-    ctx_token = set_execution_context(ctx)
-    task_token = set_task_context(TaskContext(scope_kind="test", task_class_name="pipeline_test_context"))
-    try:
+    with set_execution_context(ctx), set_task_context(TaskContext(scope_kind="test", task_class_name="pipeline_test_context")):
         yield ctx
-    finally:
-        reset_task_context(task_token)
-        reset_execution_context(ctx_token)
 
 async def collect_tasks(
     *handles: TaskAwaitableGroup,
@@ -442,11 +448,45 @@ async def run_tasks_until(
     handles = [task_cls.run(*args, **kwargs) for args, kwargs in argument_groups]
     return await collect_tasks(handles, deadline_seconds=deadline_seconds)
 
+@asynccontextmanager
+async def traced_operation(name: str, description: str = "") -> AsyncGenerator[None]:
+    """Create a tracked operation span. Outside deployment context this is a no-op."""
+    execution_ctx = get_execution_context()
+    if execution_ctx is None or execution_ctx.database is None or execution_ctx.deployment_id is None:
+        yield
+        return
+
+    parent_task = execution_ctx.task_frame
+    with contextlib.ExitStack() as stack:
+        async with track_span(
+            SpanKind.OPERATION,
+            name,
+            "",
+            sinks=get_sinks(),
+            db=execution_ctx.database,
+            input_preview=None,
+        ) as span_ctx:
+            task_frame = TaskFrame(
+                task_class_name=_TRACED_OPERATION_CLASS_NAME,
+                task_id=str(span_ctx.span_id),
+                depth=(parent_task.depth + 1) if parent_task is not None else 0,
+                parent=parent_task,
+            )
+            traced_ctx = get_execution_context()
+            if traced_ctx is not None:
+                stack.enter_context(set_execution_context(traced_ctx.with_task(task_frame)))
+            span_ctx.set_meta(description=description)
+            try:
+                yield
+            except Exception, asyncio.CancelledError:
+                span_ctx.set_meta(description=description)
+                raise
+
 ```
 
 ## Examples
 
-**Name with dashes and underscores** (`tests/pipeline/test_limits.py:155`)
+**Name with dashes and underscores** (`tests/pipeline/test_limits.py:154`)
 
 ```python
 def test_name_with_dashes_and_underscores(self):
@@ -455,7 +495,21 @@ def test_name_with_dashes_and_underscores(self):
     assert "my-limit_v2" in result
 ```
 
-**Collect tasks empty returns empty batch** (`tests/pipeline/test_task_constraints.py:93`)
+**Collect tasks accepts list** (`tests/pipeline/test_parallel_primitives.py:124`)
+
+```python
+@pytest.mark.asyncio
+async def test_collect_tasks_accepts_list() -> None:
+    with pipeline_test_context() as ctx:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
+            handles = [_FastTask.run((_make_doc("x"),)) for _ in range(3)]
+            batch = await collect_tasks(handles)
+
+    assert len(batch.completed) == 3
+    assert batch.incomplete == []
+```
+
+**Collect tasks empty returns empty batch** (`tests/pipeline/test_task_constraints.py:67`)
 
 ```python
 @pytest.mark.asyncio
@@ -466,47 +520,37 @@ async def test_collect_tasks_empty_returns_empty_batch() -> None:
     assert batch.incomplete == []
 ```
 
-**Get run id returns run id from context** (`tests/pipeline/test_execution_context.py:111`)
+**Get run id returns run id from context** (`tests/pipeline/test_execution_context.py:115`)
 
 ```python
 def test_get_run_id_returns_run_id_from_context() -> None:
-    with pipeline_test_context(run_id="test-ctx-123"):
-        assert get_run_id() == "test-ctx-123"
+    with pipeline_test_context(run_id="ctx-test"):
+        assert get_run_id() == "ctx-test"
 ```
 
-**Pipeline test context sets and restores** (`tests/pipeline/test_execution_context.py:97`)
+**Pipeline test context sets and restores** (`tests/pipeline/test_execution_context.py:105`)
 
 ```python
 def test_pipeline_test_context_sets_and_restores() -> None:
     before = get_execution_context()
+
     with pipeline_test_context(run_id="ctx-test") as ctx:
         assert get_execution_context() is ctx
         assert ctx.run_id == "ctx-test"
+
     assert get_execution_context() is before
 ```
 
-**Pipeline test context with custom publisher** (`tests/pipeline/test_execution_context.py:105`)
-
-```python
-def test_pipeline_test_context_with_custom_publisher() -> None:
-    pub = _NoopPublisher()
-    with pipeline_test_context(publisher=pub) as ctx:
-        assert ctx.publisher is pub
-```
-
-**As task completed yields handles** (`tests/pipeline/test_parallel_primitives.py:154`)
+**As task completed yields handles** (`tests/pipeline/test_parallel_primitives.py:135`)
 
 ```python
 @pytest.mark.asyncio
 async def test_as_task_completed_yields_handles() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             h1 = _FastTask.run((_make_doc("1"),))
             h2 = _FastTask.run((_make_doc("2"),))
             yielded = [handle async for handle in as_task_completed(h1, h2)]
-        finally:
-            reset_execution_context(token)
 
     assert len(yielded) == 2
     assert all(isinstance(handle, TaskHandle) for handle in yielded)
@@ -529,27 +573,26 @@ async def test_as_task_completed_yields_results() -> None:
     assert set(names) == {"out_1.txt", "out_2.txt"}
 ```
 
-**Collect tasks accepts list** (`tests/pipeline/test_parallel_primitives.py:140`)
+**Collect tasks all complete** (`tests/pipeline/test_parallel_primitives.py:82`)
 
 ```python
 @pytest.mark.asyncio
-async def test_collect_tasks_accepts_list() -> None:
+async def test_collect_tasks_all_complete() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
-            handles = [_FastTask.run((_make_doc("x"),)) for _ in range(3)]
-            batch = await collect_tasks(handles)
-        finally:
-            reset_execution_context(token)
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
+            h1 = _FastTask.run((_make_doc("a"),))
+            h2 = _FastTask.run((_make_doc("b"),))
+            batch = await collect_tasks(h1, h2)
 
-    assert len(batch.completed) == 3
+    assert isinstance(batch, TaskBatch)
+    assert len(batch.completed) == 2
     assert batch.incomplete == []
 ```
 
 
 ## Error Examples
 
-**Invalid name pattern** (`tests/pipeline/test_limits.py:136`)
+**Invalid name pattern** (`tests/pipeline/test_limits.py:135`)
 
 ```python
 def test_invalid_name_pattern(self):
@@ -557,12 +600,29 @@ def test_invalid_name_pattern(self):
         _validate_concurrency_limits("TestDeploy", {"bad name!": PipelineLimit(10)})
 ```
 
-**Get run id outside context raises** (`tests/pipeline/test_execution_context.py:116`)
+**Get run id outside context raises** (`tests/pipeline/test_execution_context.py:120`)
 
 ```python
 def test_get_run_id_outside_context_raises() -> None:
     with pytest.raises(RuntimeError, match="pipeline_test_context"):
         get_run_id()
+```
+
+**Traced operation marks failed span and reraises** (`tests/pipeline/test_traced_operation.py:135`)
+
+```python
+@pytest.mark.asyncio
+async def test_traced_operation_marks_failed_span_and_reraises() -> None:
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_context_with_db(database)):
+        with pytest.raises(ValueError, match="boom"):
+            async with traced_operation("explode"):
+                raise ValueError("boom")
+
+    operation_span = next(span for span in database._spans.values() if span.kind == SpanKind.OPERATION)
+    assert operation_span.status == SpanStatus.FAILED
+    assert operation_span.error_type == "ValueError"
+    assert operation_span.error_message == "boom"
 ```
 
 **Base flow options rejects extra** (`tests/pipeline/test_options.py:29`)
@@ -602,7 +662,7 @@ def test_inherited_flow_options_maintains_frozen(self):
         options.custom_field = "new_value"
 ```
 
-**Invalid kind type** (`tests/pipeline/test_limits.py:144`)
+**Invalid kind type** (`tests/pipeline/test_limits.py:143`)
 
 ```python
 def test_invalid_kind_type(self):
@@ -616,25 +676,14 @@ def test_invalid_kind_type(self):
         _validate_concurrency_limits("TestDeploy", {"test": limit})
 ```
 
-**Limit must be positive** (`tests/pipeline/test_limits.py:64`)
+**Key error shows available limits** (`tests/pipeline/test_limits.py:192`)
 
 ```python
-def test_limit_must_be_positive(self):
-    with pytest.raises(ValueError, match="limit must be >= 1"):
-        PipelineLimit(limit=0)
-    with pytest.raises(ValueError, match="limit must be >= 1"):
-        PipelineLimit(limit=-5)
-```
-
-**Missing build flows raises** (`tests/pipeline/test_static_validation.py:801`)
-
-```python
-def test_missing_build_flows_raises(self):
-    """Deployment without build_flows raises TypeError."""
-    with pytest.raises(TypeError, match="must implement build_flows"):
-
-        class NoFlows(PipelineDeployment[FlowOptions, SampleResult]):
-            @staticmethod
-            def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> SampleResult:
-                return SampleResult(success=True)
+async def test_key_error_shows_available_limits(self):
+    limits = {"alpha": PipelineLimit(10), "beta": PipelineLimit(20)}
+    state = _LimitsState(limits=MappingProxyType(limits), status=_SharedStatus())
+    with _set_limits_state(state):
+        with pytest.raises(KeyError, match="alpha, beta"):
+            async with pipeline_concurrency("missing"):
+                pass
 ```

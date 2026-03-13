@@ -1,22 +1,20 @@
 # MODULE: documents
-# CLASSES: Attachment, Document, RunContext
-# DEPENDS: BaseModel, Generic
+# CLASSES: Attachment, Document, DocumentValidationError, DocumentSizeError, DocumentNameError
+# DEPENDS: BaseModel, Exception
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.14.0
+# VERSION: 0.15.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import Attachment, Document, DocumentSha256, RunContext, RunScope, ensure_extension, find_document, is_document_sha256, replace_extension, sanitize_url
+from ai_pipeline_core import Attachment, Document, DocumentSha256, ensure_extension, find_document, is_document_sha256, replace_extension, sanitize_url
 ```
 
 ## Types & Constants
 
 ```python
 DocumentSha256 = NewType("DocumentSha256", str)
-
-RunScope = NewType("RunScope", str)
 
 ```
 
@@ -67,7 +65,7 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
         return detect_mime_type(self.content, self.name)
 
 
-class Document(BaseModel, Generic[TContent]):
+class Document(BaseModel):
     """Immutable base class for all pipeline documents. Cannot be instantiated directly — must be subclassed.
 
 Content is stored as bytes. Use `create()` for automatic conversion from str/dict/list/BaseModel.
@@ -88,6 +86,7 @@ Attachments:
     publicly_visible: ClassVar[bool] = False  # Whether this document type should be displayed in frontend dashboards.
     name: str
     description: str | None = None
+    summary: str = ''
     content: bytes
     derived_from: tuple[str, ...] = ()  # Content provenance: documents and references this document's content was directly
     triggered_by: tuple[DocumentSha256, ...] = ()  # Causal provenance: documents that triggered this document's creation without directly
@@ -100,6 +99,7 @@ Attachments:
         name: str,
         content: bytes,
         description: str | None = None,
+        summary: str = "",
         derived_from: tuple[str, ...] | None = None,
         triggered_by: tuple[DocumentSha256, ...] | None = None,
         attachments: tuple[Attachment, ...] | None = None,
@@ -112,25 +112,11 @@ Attachments:
             name=name,
             content=content,
             description=description,
+            summary=summary,
             derived_from=derived_from or (),
             triggered_by=triggered_by or (),
             attachments=attachments or (),
         )
-        # Register with task context for lifecycle tracking (skip during deserialization)
-        if not is_registration_suppressed():
-            ctx = get_task_context()
-            if ctx is None:
-                raise RuntimeError(
-                    f"{type(self).__name__} created outside pipeline task context. "
-                    "Documents must be created inside a PipelineTask.run() or PipelineFlow.run() method. "
-                    "Use create_root(...) only for deployment-boundary root inputs, "
-                    "or _suppress_document_registration() for deserialization paths."
-                )
-            if ctx.scope_kind not in {"task", "flow", "test"}:
-                raise RuntimeError(
-                    f"{type(self).__name__} created in {ctx.scope_kind} body. Documents must be created inside a PipelineTask or PipelineFlow execution scope."
-                )
-            ctx.created.add(self.sha256)
 
     @property
     def content_documents(self) -> tuple[str, ...]:
@@ -183,17 +169,16 @@ Attachments:
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
         description: str | None = None,
+        summary: str = "",
         derived_from: tuple[str, ...] | None = None,
         triggered_by: tuple[DocumentSha256, ...] | None = None,
         attachments: tuple[Attachment, ...] | None = None,
-        summary: str | None = None,
     ) -> Self:
         """Create a document with automatic content-to-bytes conversion.
 
         Must be called within a PipelineTask or PipelineFlow context.
         Must provide derived_from or triggered_by for provenance tracking.
         For root inputs (no provenance), use create_root(reason='...') instead.
-        Optional summary is stored in an inline registry for later persistence/event publishing.
         All created documents must be returned from the task — unreturned documents are flagged as orphans.
         Serialization is extension-driven: .json → JSON, .yaml → YAML, others → UTF-8.
         Reversible via parse(). Cannot be called on Document directly — must use a subclass.
@@ -203,17 +188,15 @@ Attachments:
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
             _validate_content_schema(cls._content_type, content, content_bytes, name)
-        doc = cls(
+        return cls(
             name=name,
             content=content_bytes,
             description=description,
+            summary=summary,
             derived_from=derived_from,
             triggered_by=triggered_by,
             attachments=attachments,
         )
-        if summary is not None:
-            set_inline_summary(doc.sha256, summary)
-        return doc
 
     @classmethod
     def create_root(
@@ -223,6 +206,7 @@ Attachments:
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
         reason: str,
         description: str | None = None,
+        summary: str = "",
         attachments: tuple[Attachment, ...] | None = None,
     ) -> Self:
         """Create a root document (pipeline input) with no provenance.
@@ -232,35 +216,31 @@ Attachments:
         """
         if not reason.strip():
             raise ValueError(f"{cls.__name__}.create_root(reason=...) requires a non-empty reason.")
-        ctx = get_task_context()
-        if ctx is not None and ctx.scope_kind != "test":
-            raise RuntimeError(
-                f"{cls.__name__}.create_root() cannot be called inside pipeline task/flow execution. Use create()/derive() with provenance in task code."
-            )
 
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
             _validate_content_schema(cls._content_type, content, content_bytes, name)
         logger.info("Creating root document '%s' (%s): %s", name, cls.__name__, reason)
-        with _suppress_document_registration():
-            return cls(
-                name=name,
-                content=content_bytes,
-                description=description,
-                derived_from=(),
-                triggered_by=(),
-                attachments=attachments,
-            )
+        return cls(
+            name=name,
+            content=content_bytes,
+            description=description,
+            summary=summary,
+            derived_from=(),
+            triggered_by=(),
+            attachments=attachments,
+        )
 
     @classmethod
     def derive(
         cls,
         *,
-        from_documents: tuple["Document", ...],
+        from_documents: tuple[Document, ...],
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
-        triggered_by: tuple["Document", ...] = (),
+        triggered_by: tuple[Document, ...] = (),
         description: str | None = None,
+        summary: str = "",
         attachments: tuple[Attachment, ...] | None = None,
     ) -> Self:
         """Create a document derived from other documents. The 95% API path.
@@ -273,6 +253,7 @@ Attachments:
         return cls.create(
             name=name,
             content=content,
+            summary=summary,
             derived_from=tuple(d.sha256 for d in from_documents),
             triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by) if triggered_by else None,
             description=description,
@@ -295,8 +276,7 @@ Attachments:
         if cleaned.get("attachments"):
             cleaned["attachments"] = [{k: v for k, v in att.items() if k not in Attachment.SERIALIZE_METADATA_KEYS} for att in cleaned["attachments"]]
 
-        with _suppress_document_registration():
-            return cls.model_validate(cleaned)
+        return cls.model_validate(cleaned)
 
     @final
     @classmethod
@@ -368,7 +348,7 @@ Attachments:
 
         # Check that the Document's model_fields only contain the allowed fields
         # It prevents AI models from adding additional fields to documents
-        allowed = {"name", "description", "content", "derived_from", "attachments", "triggered_by"}
+        allowed = {"name", "description", "summary", "content", "derived_from", "attachments", "triggered_by"}
         current = set(getattr(cls, "model_fields", {}).keys())
         extras = current - allowed
         if extras:
@@ -382,6 +362,9 @@ Attachments:
             name = cls.__name__
             existing = _class_name_registry.get(name)
             if existing is not None and existing is not cls:
+                if existing.__module__ == cls.__module__ and existing.__qualname__ == cls.__qualname__:
+                    _class_name_registry[name] = cls
+                    return
                 raise TypeError(
                     f"Document subclass '{name}' (in {cls.__module__}) collides with "
                     f"existing class in {existing.__module__}. "
@@ -399,24 +382,25 @@ Attachments:
 
     @cached_property
     def approximate_tokens_count(self) -> int:
-        """Approximate token count (tiktoken gpt-4 encoding). Images=TOKENS_PER_IMAGE, PDFs/other=1024."""
-        enc = _get_tiktoken_encoding()
+        """Approximate token count across primary content and attachments."""
         if self.is_text:
-            total = len(enc.encode(self.text))
+            total = estimate_text_tokens(self.text)
         elif self.is_image:
-            total = TOKENS_PER_IMAGE
+            total = estimate_image_tokens()
+        elif self.is_pdf:
+            total = estimate_pdf_tokens()
         else:
-            total = 1024
+            total = estimate_binary_tokens()
 
         for att in self.attachments:
             if att.is_image:
-                total += TOKENS_PER_IMAGE
+                total += estimate_image_tokens()
             elif att.is_pdf:
-                total += 1024
+                total += estimate_pdf_tokens()
             elif att.is_text:
-                total += len(enc.encode(att.text))
+                total += estimate_text_tokens(att.text)
             else:
-                total += 1024
+                total += estimate_binary_tokens()
 
         return total
 
@@ -458,7 +442,7 @@ Attachments:
         """SHA256 hash of raw content bytes only. Used for content deduplication."""
         return compute_content_sha256(self.content)
 
-    def has_derived_from(self, source: "Document | str") -> bool:
+    def has_derived_from(self, source: Document | str) -> bool:
         """Check if a source (Document or string) is in this document's derived_from."""
         if isinstance(source, str):
             return source in self.derived_from
@@ -539,33 +523,20 @@ Attachments:
         return compute_document_sha256(self)
 
 
-@dataclass(frozen=True, slots=True)
-class RunContext:
-    """Immutable context for a pipeline run, carried via ContextVar."""
-    run_scope: RunScope
-    execution_id: UUID | None = None
+class DocumentValidationError(Exception):
+    """Raised when document validation fails."""
 
+class DocumentSizeError(DocumentValidationError):
+    """Raised when document content exceeds MAX_CONTENT_SIZE limit."""
+
+class DocumentNameError(DocumentValidationError):
+    """Raised when document name contains path traversal, reserved suffixes, or invalid format."""
 
 ```
 
 ## Functions
 
 ```python
-def get_inline_summary(document_sha256: DocumentSha256) -> str | None:
-    """Get an inline summary registered at document creation time, if any."""
-    with _document_summaries_lock:
-        return _document_summaries.get(document_sha256)
-
-def pop_inline_summary(document_sha256: DocumentSha256) -> str | None:
-    """Consume and remove an inline summary for a document, if any."""
-    with _document_summaries_lock:
-        return _document_summaries.pop(document_sha256, None)
-
-def set_inline_summary(document_sha256: DocumentSha256, summary: str) -> None:
-    """Set or replace an inline summary for a document."""
-    with _document_summaries_lock:
-        _document_summaries[document_sha256] = summary
-
 def sanitize_url(url: str) -> str:
     """Sanitize URL or query string for use as a filename (max 100 chars)."""
     # Remove protocol if it's a URL
@@ -645,7 +616,7 @@ def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
 
 ## Examples
 
-**Attachment mime type** (`tests/documents/test_document_core.py:931`)
+**Attachment mime type** (`tests/documents/test_document_core.py:929`)
 
 ```python
 def test_attachment_mime_type(self):
@@ -654,7 +625,7 @@ def test_attachment_mime_type(self):
     assert "text" in att.mime_type
 ```
 
-**Attachment no detected mime type** (`tests/documents/test_document_core.py:936`)
+**Attachment no detected mime type** (`tests/documents/test_document_core.py:934`)
 
 ```python
 def test_attachment_no_detected_mime_type(self):
@@ -663,7 +634,7 @@ def test_attachment_no_detected_mime_type(self):
     assert not hasattr(att, "detected_mime_type")
 ```
 
-**Attachment order does not affect hash** (`tests/documents/test_document_attachments.py:69`)
+**Attachment order does not affect hash** (`tests/documents/test_document_attachments.py:67`)
 
 ```python
 def test_attachment_order_does_not_affect_hash(self):
@@ -675,7 +646,7 @@ def test_attachment_order_does_not_affect_hash(self):
     assert doc_xy.sha256 == doc_yx.sha256
 ```
 
-**Attachment order does not matter** (`tests/documents/test_hashing.py:50`)
+**Attachment order does not matter** (`tests/documents/test_hashing.py:48`)
 
 ```python
 def test_attachment_order_does_not_matter(self):
@@ -687,7 +658,7 @@ def test_attachment_order_does_not_matter(self):
     assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
 ```
 
-**Document mime type** (`tests/documents/test_document_core.py:921`)
+**Document mime type** (`tests/documents/test_document_core.py:919`)
 
 ```python
 def test_document_mime_type(self):
@@ -696,10 +667,31 @@ def test_document_mime_type(self):
     assert doc.mime_type == "application/json"
 ```
 
+**Document no detected mime type** (`tests/documents/test_document_core.py:939`)
+
+```python
+def test_document_no_detected_mime_type(self):
+    """Document has no detected_mime_type attribute (renamed to mime_type)."""
+    doc = ConcreteTestDocument.create_root(name="test.txt", content="hello", reason="test input")
+    assert not hasattr(doc, "detected_mime_type")
+```
+
+**Document type name** (`tests/documents/test_document_core.py:300`)
+
+```python
+def test_document_type_name(self):
+    """Test document class name is accessible."""
+    flow_doc = ConcreteTestDocument(name="test.txt", content=b"test")
+    assert type(flow_doc).__name__ == "ConcreteTestDocument"
+
+    task_doc = ConcreteTestTaskDoc(name="test.txt", content=b"test")
+    assert type(task_doc).__name__ == "ConcreteTestTaskDoc"
+```
+
 
 ## Error Examples
 
-**Document instantiate base class raises** (`tests/documents/test_document_enforcement.py:71`)
+**Document instantiate base class raises** (`tests/documents/test_document_enforcement.py:49`)
 
 ```python
 def test_document_instantiate_base_class_raises() -> None:
@@ -707,15 +699,7 @@ def test_document_instantiate_base_class_raises() -> None:
         Document(name="test.txt", content=b"data")
 ```
 
-**Document creation outside context raises** (`tests/documents/test_document_enforcement.py:19`)
-
-```python
-def test_document_creation_outside_context_raises() -> None:
-    with pytest.raises(RuntimeError, match="outside pipeline task context"):
-        _EnforcementDoc(name="test.txt", content=b"data")
-```
-
-**Cannot instantiate document** (`tests/documents/test_document_core.py:126`)
+**Cannot instantiate document** (`tests/documents/test_document_core.py:124`)
 
 ```python
 def test_cannot_instantiate_document(self):
@@ -724,7 +708,7 @@ def test_cannot_instantiate_document(self):
         Document(name="test.txt", content=b"test")
 ```
 
-**Content plus attachments exceeding limit** (`tests/documents/test_document_core.py:1024`)
+**Content plus attachments exceeding limit** (`tests/documents/test_document_core.py:1022`)
 
 ```python
 def test_content_plus_attachments_exceeding_limit(self):
@@ -738,7 +722,7 @@ def test_content_plus_attachments_exceeding_limit(self):
         )
 ```
 
-**Content plus attachments exceeding limit rejected** (`tests/documents/test_document_attachments.py:144`)
+**Content plus attachments exceeding limit rejected** (`tests/documents/test_document_attachments.py:142`)
 
 ```python
 def test_content_plus_attachments_exceeding_limit_rejected(self):
@@ -748,4 +732,31 @@ def test_content_plus_attachments_exceeding_limit_rejected(self):
             content=b"A" * 30,  # 30 bytes
             attachments=(Attachment(name="a.txt", content=b"B" * 25),),  # total 55 > 50
         )
+```
+
+**Model copy clears attachments** (`tests/documents/test_document_attachments.py:167`)
+
+```python
+def test_model_copy_clears_attachments(self):
+    doc = SampleFlowDoc(name="test.txt", content=b"Hello")
+    with pytest.raises(TypeError, match=r"model_copy.*not supported"):
+        doc.model_copy(update={"attachments": ()})
+```
+
+**Model copy preserves attachments when not updated** (`tests/documents/test_document_attachments.py:172`)
+
+```python
+def test_model_copy_preserves_attachments_when_not_updated(self):
+    doc = SampleFlowDoc(name="test.txt", content=b"Hello")
+    with pytest.raises(TypeError, match=r"model_copy.*not supported"):
+        doc.model_copy(update={"description": "new desc"})
+```
+
+**Model copy replaces attachments** (`tests/documents/test_document_attachments.py:162`)
+
+```python
+def test_model_copy_replaces_attachments(self):
+    doc = SampleFlowDoc(name="test.txt", content=b"Hello")
+    with pytest.raises(TypeError, match=r"model_copy.*not supported"):
+        doc.model_copy(update={"attachments": ()})
 ```

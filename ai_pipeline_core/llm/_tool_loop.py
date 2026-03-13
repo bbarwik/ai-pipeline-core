@@ -11,9 +11,13 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
+from ai_pipeline_core._codec import UniversalCodec
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import CoreMessage, ModelOptions, RawToolCall, Role
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.database import SpanKind
+from ai_pipeline_core.logger import get_pipeline_logger
+from ai_pipeline_core.pipeline._execution_context import get_execution_context, get_sinks
+from ai_pipeline_core.pipeline._track_span import track_span
 
 from ._substitutor import URLSubstitutor
 from .tools import Tool, ToolCallRecord, ToolOutput, to_snake_case
@@ -33,34 +37,77 @@ async def _execute_single_tool(
     """Execute a single tool call with error handling and timeout."""
     tool_cls = type(tool)
     snake_name = to_snake_case(tool_cls.__name__)
-    try:
-        parsed_input = tool_cls.Input.model_validate_json(tool_call.arguments)
-    except (ValidationError, json.JSONDecodeError) as e:
-        logger.warning("Tool input validation failed for %s: %s", tool_cls.__name__, e)
-        return None, ToolOutput(content=f"Error: Invalid arguments for tool '{snake_name}': {e}")
+    execution_ctx = get_execution_context()
+    tool_target = f"instance_method:{tool_cls.__module__}:{tool_cls.__qualname__}.execute"
+    receiver_payload = {"mode": "constructor_args", "value": _serialize_tool_constructor_args(tool)}
 
-    try:
-        result = await asyncio.wait_for(
-            tool.execute(parsed_input),
-            timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
-        )
-    except TimeoutError:
-        logger.warning("Tool execution timed out: %s", tool_cls.__name__)
-        output = ToolOutput(content=f"Error: Tool '{snake_name}' timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS}s")
-        return ToolCallRecord(tool=tool_cls, input=parsed_input, output=output, round=round_num), output
-    except Exception as e:
-        logger.warning("Tool execution failed for %s: %s", tool_cls.__name__, e)
-        output = ToolOutput(content=f"Error: Tool '{snake_name}' failed: {e}")
-        return ToolCallRecord(tool=tool_cls, input=parsed_input, output=output, round=round_num), output
+    async with track_span(
+        SpanKind.TOOL_CALL,
+        snake_name,
+        tool_target,
+        sinks=get_sinks(),
+        encode_receiver=receiver_payload,
+        encode_input={"input": _parse_tool_arguments(tool_call.arguments), "tool_call_id": tool_call.id, "round_index": round_num},
+        db=execution_ctx.database if execution_ctx is not None else None,
+        input_preview={"tool_name": snake_name, "arguments": _parse_tool_arguments(tool_call.arguments)},
+    ) as span_ctx:
+        try:
+            parsed_input = tool_cls.Input.model_validate_json(tool_call.arguments)
+        except (ValidationError, json.JSONDecodeError) as e:
+            logger.warning("Tool input validation failed for %s: %s", tool_cls.__name__, e)
+            output = ToolOutput(content=f"Error: Invalid arguments for tool '{snake_name}': {e}")
+            span_ctx.set_meta(
+                tool_name=snake_name,
+                tool_class_path=f"{tool_cls.__module__}:{tool_cls.__qualname__}",
+                tool_call_id=tool_call.id,
+                round_index=round_num,
+            )
+            span_ctx.set_output_preview(output.model_dump(mode="json"))
+            span_ctx._set_output_value(output)
+            return None, output
+        try:
+            result = await asyncio.wait_for(tool.execute(parsed_input), timeout=TOOL_EXECUTION_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.warning("Tool execution timed out: %s", tool_cls.__name__)
+            output = ToolOutput(content=f"Error: Tool '{snake_name}' timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS}s")
+            span_ctx.set_meta(
+                tool_name=snake_name,
+                tool_class_path=f"{tool_cls.__module__}:{tool_cls.__qualname__}",
+                tool_call_id=tool_call.id,
+                round_index=round_num,
+            )
+            span_ctx.set_output_preview(output.model_dump(mode="json"))
+            span_ctx._set_output_value(output)
+            return (ToolCallRecord(tool=tool_cls, input=parsed_input, output=output, round=round_num), output)
+        except Exception as e:
+            logger.warning("Tool execution failed for %s: %s", tool_cls.__name__, e)
+            output = ToolOutput(content=f"Error: Tool '{snake_name}' failed: {e}")
+            span_ctx.set_meta(
+                tool_name=snake_name,
+                tool_class_path=f"{tool_cls.__module__}:{tool_cls.__qualname__}",
+                tool_call_id=tool_call.id,
+                round_index=round_num,
+            )
+            span_ctx.set_output_preview(output.model_dump(mode="json"))
+            span_ctx._set_output_value(output)
+            return (ToolCallRecord(tool=tool_cls, input=parsed_input, output=output, round=round_num), output)
 
-    validated_result = cast(Any, result)
-    if not isinstance(validated_result, ToolOutput):
-        raise TypeError(
-            f"Tool '{tool_cls.__name__}'.execute() must return ToolOutput (or subclass), got {type(validated_result).__name__}. "
-            f"This is a programming error in the tool implementation."
+        validated_result = cast(Any, result)
+        if not isinstance(validated_result, ToolOutput):
+            raise TypeError(
+                f"Tool '{tool_cls.__name__}'.execute() must return ToolOutput (or subclass), got {type(validated_result).__name__}. "
+                f"This is a programming error in the tool implementation."
+            )
+        record = ToolCallRecord(tool=tool_cls, input=parsed_input, output=validated_result, round=round_num)
+        span_ctx.set_meta(
+            tool_name=snake_name,
+            tool_class_path=f"{tool_cls.__module__}:{tool_cls.__qualname__}",
+            tool_call_id=tool_call.id,
+            round_index=round_num,
         )
-    record = ToolCallRecord(tool=tool_cls, input=parsed_input, output=validated_result, round=round_num)
-    return record, validated_result
+        span_ctx.set_output_preview(validated_result.model_dump(mode="json"))
+        span_ctx._set_output_value(validated_result)
+        return record, validated_result
 
 
 InvokeLLMFn = Callable[..., Coroutine[Any, Any, ModelResponse[Any]]]
@@ -76,8 +123,10 @@ async def _execute_all_tool_calls(
     async def _execute_one(tc: RawToolCall) -> tuple[RawToolCall, ToolCallRecord | None, ToolOutput]:
         if tc.function_name not in tool_lookup:
             available = ", ".join(sorted(tool_lookup.keys()))
-            return tc, None, ToolOutput(content=f"Error: Unknown tool '{tc.function_name}'. Available tools: {available}")
-        return (tc, *(await _execute_single_tool(tool_lookup[tc.function_name], tc, round_num)))
+            output = ToolOutput(content=f"Error: Unknown tool '{tc.function_name}'. Available tools: {available}")
+            return tc, None, output
+        record, output = await _execute_single_tool(tool_lookup[tc.function_name], tc, round_num)
+        return tc, record, output
 
     results = await asyncio.gather(*(_execute_one(tc) for tc in tool_calls), return_exceptions=True)
     merged: list[tuple[RawToolCall, ToolCallRecord | None, ToolOutput]] = []
@@ -86,7 +135,8 @@ async def _execute_all_tool_calls(
             if isinstance(result, (TypeError, AssertionError, KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
                 raise result
             logger.warning("Unexpected error executing tool: %s", result)
-            merged.append((tool_calls[i], None, ToolOutput(content=f"Error: {result}")))
+            output = ToolOutput(content=f"Error: {result}")
+            merged.append((tool_calls[i], None, output))
         else:
             merged.append(result)
     return merged
@@ -119,6 +169,7 @@ async def execute_tool_loop(
     all_records: list[ToolCallRecord] = []
 
     for round_num in range(1, max_tool_rounds + 1):
+        logger.info("Tool loop round %d/%d (purpose=%s)", round_num, max_tool_rounds, purpose or "unspecified")
         response: ModelResponse[Any] = await invoke_llm(
             core_messages=core_messages,
             effective_options=effective_options,
@@ -128,6 +179,8 @@ async def execute_tool_loop(
             response_format=response_format,
             purpose=f"{purpose}:tool_round_{round_num}" if purpose else f"tool_round_{round_num}",
             expected_cost=expected_cost,
+            round_index=round_num,
+            tool_schemas=tool_schemas,
         )
 
         if not response.has_tool_calls:
@@ -137,6 +190,8 @@ async def execute_tool_loop(
         accumulated_messages.append(response)
         core_messages.append(CoreMessage(role=Role.ASSISTANT, content=response.content or "", tool_calls=response.tool_calls))
 
+        tool_names = ", ".join(tc.function_name for tc in response.tool_calls)
+        logger.info("Tool loop round %d: executing %d tool(s): %s", round_num, len(response.tool_calls), tool_names)
         merged = await _execute_all_tool_calls(response.tool_calls, tool_lookup, round_num)
 
         for tc, record, output in merged:
@@ -157,6 +212,21 @@ async def execute_tool_loop(
         response_format=response_format,
         purpose=f"{purpose}:forced_final" if purpose else "forced_final",
         expected_cost=expected_cost,
+        round_index=max_tool_rounds + 1,
+        tool_schemas=tool_schemas,
     )
     accumulated_messages.append(response)
     return accumulated_messages, response, tuple(all_records)
+
+
+def _parse_tool_arguments(arguments: str) -> Any:
+    """Best-effort parse of tool call arguments for tracing payloads."""
+    try:
+        return json.loads(arguments)
+    except json.JSONDecodeError:
+        return {"_raw": arguments}
+
+
+def _serialize_tool_constructor_args(tool: Tool) -> dict[str, Any]:
+    """Serialize tool constructor state into JSON-friendly values."""
+    return cast(dict[str, Any], UniversalCodec().encode(tool.__dict__).value)

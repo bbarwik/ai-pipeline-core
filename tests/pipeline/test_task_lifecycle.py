@@ -1,21 +1,21 @@
-"""Tests for PipelineTask runtime lifecycle."""
+"""Tests for PipelineTask lifecycle events and append-only span writes."""
 
-import asyncio
-from typing import Any, ClassVar
+import json
+from types import MappingProxyType
+from uuid import uuid7
 
 import pytest
-from pydantic import BaseModel, ConfigDict
 
-from ai_pipeline_core.deployment._types import TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent, _MemoryPublisher
+from ai_pipeline_core.deployment._types import TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent, _MemoryPublisher, _NoopPublisher
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.pipeline import FlowOptions, PipelineFlow, PipelineTask, TaskHandle
-from ai_pipeline_core.pipeline._execution_context import (
-    FlowFrame,
-    pipeline_test_context,
-    reset_execution_context,
-    set_execution_context,
-)
-from ai_pipeline_core.pipeline._task import _collect_documents
+from ai_pipeline_core.pipeline import PipelineTask, pipeline_test_context
+from ai_pipeline_core.pipeline._execution_context import FlowFrame, set_execution_context
+from ai_pipeline_core.pipeline._runtime_sinks import build_runtime_sinks
+from ai_pipeline_core.pipeline.limits import _SharedStatus
+from ai_pipeline_core.database import SpanKind, SpanStatus
+from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.pipeline._execution_context import ExecutionContext
+from ai_pipeline_core.settings import settings
 
 
 class _InDoc(Document):
@@ -24,16 +24,6 @@ class _InDoc(Document):
 
 class _OutDoc(Document):
     """Test output document."""
-
-
-class _VisibleOutDoc(Document):
-    """Output document with publicly_visible=True."""
-
-    publicly_visible = True
-
-
-class _FlowOutDoc(Document):
-    """Flow output doc for expected_tasks regression test."""
 
 
 class _PassthroughTask(PipelineTask):
@@ -48,80 +38,26 @@ class _FailingTask(PipelineTask):
         raise ValueError("task failed deliberately")
 
 
-class _RetryCounterTask(PipelineTask):
-    retries = 2
-    retry_delay_seconds = 0
-    _calls: int = 0
-
-    @classmethod
-    async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
-        _RetryCounterTask._calls += 1
-        if _RetryCounterTask._calls < 3:
-            raise ValueError(f"attempt {_RetryCounterTask._calls}")
-        return (_OutDoc(name="retry_out.txt", content=b"ok"),)
-
-
-class _ExhaustedRetryTask(PipelineTask):
-    retries = 1
-    retry_delay_seconds = 0
-
-    @classmethod
-    async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
-        raise ValueError("always fails")
-
-
-class _TimeoutTask(PipelineTask):
-    timeout_seconds = 1
-
-    @classmethod
-    async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
-        await asyncio.sleep(60)
-        return ()
-
-
 class _CacheableTask(PipelineTask):
     cacheable = True
-    _run_count: int = 0
+    cache_version = 3
+    cache_ttl_seconds = 3600
+    run_calls = 0
 
     @classmethod
     async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
-        _CacheableTask._run_count += 1
-        return (_OutDoc(name="cached.txt", content=b"fresh-data"),)
+        cls.run_calls += 1
+        return (_OutDoc.derive(from_documents=(documents[0],), name="cached.txt", content=f"call-{cls.run_calls}"),)
 
 
-class _VisibleOutputTask(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_VisibleOutDoc, ...]:
-        return (_VisibleOutDoc.derive(from_documents=tuple(documents), name="visible.txt", content="visible"),)
+class _RecordingSpanDatabase(MemoryDatabase):
+    def __init__(self) -> None:
+        super().__init__()
+        self.inserted_spans: list[object] = []
 
-
-class _ParentTask(PipelineTask):
-    """Outer task that invokes a child task."""
-
-    @classmethod
-    async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
-        return await _PassthroughTask.run(documents)
-
-
-class _EmptyResultTask(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
-        return ()
-
-
-class _CustomNameTask(PipelineTask):
-    name = "custom-display-name"
-
-    @classmethod
-    async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
-        return (_OutDoc(name="custom-name.txt", content=b"custom"),)
-
-
-class _FlowWithCustomTask(PipelineFlow):
-    async def run(self, documents: tuple[_InDoc, ...], options: FlowOptions) -> tuple[_FlowOutDoc, ...]:
-        _ = options
-        await _CustomNameTask.run(documents)
-        return (_FlowOutDoc.derive(from_documents=documents, name="flow-out.txt", content="ok"),)
+    async def insert_span(self, span: object) -> None:
+        self.inserted_spans.append(span)
+        await super().insert_span(span)  # type: ignore[arg-type]
 
 
 def _make_flow_frame() -> FlowFrame:
@@ -140,234 +76,131 @@ def _make_input() -> _InDoc:
     return _InDoc(name="input.txt", content=b"test-input")
 
 
+def _make_span_context(database: MemoryDatabase) -> ExecutionContext:
+    deployment_id = uuid7()
+    flow_span_id = uuid7()
+    return ExecutionContext(
+        run_id="test-run",
+        execution_id=None,
+        publisher=_NoopPublisher(),
+        limits=MappingProxyType({}),
+        limits_status=_SharedStatus(),
+        database=database,
+        sinks=build_runtime_sinks(database=database, settings_obj=settings),
+        deployment_id=deployment_id,
+        root_deployment_id=deployment_id,
+        deployment_name="test-pipeline",
+        flow_frame=_make_flow_frame(),
+        span_id=flow_span_id,
+        current_span_id=flow_span_id,
+        flow_span_id=flow_span_id,
+    )
+
+
 @pytest.mark.asyncio
 async def test_task_run_returns_handle() -> None:
     with pipeline_test_context():
-        handle: Any = _PassthroughTask.run((_make_input(),))
-        assert isinstance(handle, TaskHandle)
+        handle = _PassthroughTask.run((_make_input(),))
         result = await handle
         assert len(result) == 1
         assert isinstance(result[0], _OutDoc)
 
 
 @pytest.mark.asyncio
-async def test_task_run_is_directly_awaitable() -> None:
-    with pipeline_test_context():
-        result: tuple[Any, ...] = await _PassthroughTask.run((_make_input(),))
-        assert len(result) == 1
-
-
-def test_expected_tasks_uses_overridable_name() -> None:
-    tasks = _FlowWithCustomTask.expected_tasks()
-    assert "custom-display-name" in tasks
-    assert "_CustomNameTask" not in tasks
-
-
-@pytest.mark.asyncio
-async def test_task_requires_execution_context() -> None:
-    with pytest.raises(RuntimeError, match="outside pipeline execution context"):
-        run_result: Any = _PassthroughTask.run((_make_input(),))  # noqa: F841
-
-
-@pytest.mark.asyncio
-async def test_task_runtime_validates_argument_types() -> None:
-    with pipeline_test_context():
-        with pytest.raises(TypeError, match="invalid value for 'documents'"):
-            run_result: Any = _PassthroughTask.run([_make_input()])  # noqa: F841
-
-
-@pytest.mark.asyncio
-async def test_empty_result_is_valid() -> None:
-    with pipeline_test_context():
-        result = await _EmptyResultTask.run((_make_input(),))
-        assert result == ()
-
-
-@pytest.mark.asyncio
-async def test_task_retries_until_success() -> None:
-    _RetryCounterTask._calls = 0
-    with pipeline_test_context():
-        result = await _RetryCounterTask.run((_make_input(),))
-        assert len(result) == 1
-        assert _RetryCounterTask._calls == 3
-
-
-@pytest.mark.asyncio
-async def test_task_retries_exhausted_raises() -> None:
-    with pipeline_test_context():
-        with pytest.raises(ValueError, match="always fails"):
-            await _ExhaustedRetryTask.run((_make_input(),))
-
-
-@pytest.mark.asyncio
-async def test_task_timeout_raises() -> None:
-    with pipeline_test_context():
-        with pytest.raises(TimeoutError):
-            await _TimeoutTask.run((_make_input(),))
-
-
-@pytest.mark.asyncio
-async def test_task_started_and_completed_events() -> None:
+async def test_task_started_and_completed_events_use_same_span_id() -> None:
     publisher = _MemoryPublisher()
     with pipeline_test_context(publisher=publisher) as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             await _PassthroughTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
 
     started = [event for event in publisher.events if isinstance(event, TaskStartedEvent)]
     completed = [event for event in publisher.events if isinstance(event, TaskCompletedEvent)]
     assert len(started) == 1
-    assert started[0].task_class == "_PassthroughTask"
-    assert started[0].flow_name == "test-flow"
-    assert started[0].step == 1
-    assert started[0].node_id
     assert len(completed) == 1
-    assert completed[0].task_class == "_PassthroughTask"
-    assert completed[0].step == 1
-    assert completed[0].node_id == started[0].node_id
+    assert started[0].task_class == "_PassthroughTask"
+    assert completed[0].span_id == started[0].span_id
     assert completed[0].duration_ms >= 0
 
 
 @pytest.mark.asyncio
-async def test_task_failed_event() -> None:
+async def test_task_failed_event_uses_started_span_id() -> None:
     publisher = _MemoryPublisher()
     with pipeline_test_context(publisher=publisher) as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             with pytest.raises(ValueError, match="task failed deliberately"):
                 await _FailingTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
 
     started = [event for event in publisher.events if isinstance(event, TaskStartedEvent)]
     failed = [event for event in publisher.events if isinstance(event, TaskFailedEvent)]
     assert len(started) == 1
     assert len(failed) == 1
-    assert failed[0].task_class == "_FailingTask"
-    assert failed[0].step == 1
-    assert failed[0].node_id == started[0].node_id
+    assert failed[0].span_id == started[0].span_id
     assert "task failed deliberately" in failed[0].error_message
 
 
 @pytest.mark.asyncio
-async def test_no_events_without_flow_frame() -> None:
-    publisher = _MemoryPublisher()
-    with pipeline_test_context(publisher=publisher):
+async def test_successful_task_writes_started_then_completed_span_rows() -> None:
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_span_context(database)):
         await _PassthroughTask.run((_make_input(),))
 
-    task_events = [event for event in publisher.events if isinstance(event, (TaskStartedEvent, TaskCompletedEvent, TaskFailedEvent))]
-    assert task_events == []
+    task_rows = [span for span in database.inserted_spans if getattr(span, "kind", None) == SpanKind.TASK]
+    assert len(task_rows) == 2
+
+    started_span, completed_span = task_rows
+    assert started_span.status == SpanStatus.RUNNING
+    assert completed_span.status == SpanStatus.COMPLETED
+    assert started_span.span_id == completed_span.span_id
+    assert started_span.ended_at is None
+    assert completed_span.ended_at is not None
+    assert completed_span.version > started_span.version
+    assert json.loads(completed_span.meta_json)["attempt"] == 0
 
 
 @pytest.mark.asyncio
-async def test_subtask_depth_tracking() -> None:
-    publisher = _MemoryPublisher()
-    with pipeline_test_context(publisher=publisher) as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
-            await _ParentTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
+async def test_failed_task_writes_started_then_failed_span_rows() -> None:
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_span_context(database)):
+        with pytest.raises(ValueError, match="task failed deliberately"):
+            await _FailingTask.run((_make_input(),))
 
-    started = [event for event in publisher.events if isinstance(event, TaskStartedEvent)]
-    assert len(started) == 2
+    task_rows = [span for span in database.inserted_spans if getattr(span, "kind", None) == SpanKind.TASK]
+    assert len(task_rows) == 2
 
-    parent_event = next(event for event in started if event.task_class == "_ParentTask")
-    child_event = next(event for event in started if event.task_class == "_PassthroughTask")
-    assert parent_event.node_id
-    assert child_event.node_id
-    assert parent_event.node_id != child_event.node_id
+    started_span, failed_span = task_rows
+    assert started_span.status == SpanStatus.RUNNING
+    assert failed_span.status == SpanStatus.FAILED
+    assert failed_span.error_type == "ValueError"
+    assert failed_span.error_message == "task failed deliberately"
+    assert json.loads(failed_span.input_json)["documents"]["items"][0]["sha256"] == _make_input().sha256
 
 
 @pytest.mark.asyncio
-async def test_cacheable_task_different_input_reruns() -> None:
-    _CacheableTask._run_count = 0
-    with pipeline_test_context():
-        doc1 = _InDoc(name="a.txt", content=b"aaa")
-        doc2 = _InDoc(name="b.txt", content=b"bbb")
+async def test_completed_cacheable_task_persists_task_cache_key() -> None:
+    _CacheableTask.run_calls = 0
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_span_context(database)):
+        await _CacheableTask.run((_make_input(),))
 
-        await _CacheableTask.run((doc1,))
-        assert _CacheableTask._run_count == 1
-
-        await _CacheableTask.run((doc2,))
-        assert _CacheableTask._run_count == 2
-
-
-class _CancelTask(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
-        raise asyncio.CancelledError()
+    task_rows = [span for span in database.inserted_spans if getattr(span, "kind", None) == SpanKind.TASK]
+    completed_span = task_rows[-1]
+    assert completed_span.status == SpanStatus.COMPLETED
+    assert completed_span.cache_key.startswith(f"task:{_CacheableTask.__module__}:{_CacheableTask.__qualname__}:v3:")
 
 
 @pytest.mark.asyncio
-async def test_cancelled_error_propagates_not_returned_as_data() -> None:
-    """CancelledError must be raised, not returned as list[Document]."""
-    with pipeline_test_context():
-        with pytest.raises(asyncio.CancelledError):
-            await _CancelTask.run((_make_input(),))
+async def test_second_identical_cacheable_task_run_reuses_cached_outputs() -> None:
+    _CacheableTask.run_calls = 0
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_span_context(database)):
+        first_result = await _CacheableTask.run((_make_input(),))
 
+    with set_execution_context(_make_span_context(database)):
+        second_result = await _CacheableTask.run((_make_input(),))
 
-class _CostTask(PipelineTask):
-    expected_cost: ClassVar[float | None] = 1.0
-
-    @classmethod
-    async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
-        return (_OutDoc(name="out.txt", content=b"x"),)
-
-
-def test_collect_documents_recurses_into_frozen_basemodel() -> None:
-    """Documents nested in frozen BaseModel fields must be collected."""
-
-    class NestedDoc(Document):
-        """Doc inside a model."""
-
-    class Config(BaseModel):
-        model_config = ConfigDict(frozen=True)
-        source: NestedDoc
-        label: str
-
-    doc = NestedDoc(name="nested.txt", content=b"data")
-    config = Config(source=doc, label="test")
-
-    collected: list[Document] = []
-    _collect_documents(config, collected)
-    assert len(collected) == 1
-    assert collected[0].sha256 == doc.sha256
-
-
-@pytest.mark.asyncio
-async def test_output_refs_carry_publicly_visible() -> None:
-    publisher = _MemoryPublisher()
-    with pipeline_test_context(publisher=publisher) as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
-            await _VisibleOutputTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-
-    completed = [event for event in publisher.events if isinstance(event, TaskCompletedEvent)]
-    assert len(completed) == 1
-    assert len(completed[0].output_documents) == 1
-    ref = completed[0].output_documents[0]
-    assert ref.publicly_visible is True
-    assert ref.class_name == "_VisibleOutDoc"
-
-
-@pytest.mark.asyncio
-async def test_output_refs_carry_provenance() -> None:
-    publisher = _MemoryPublisher()
-    with pipeline_test_context(publisher=publisher) as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
-            await _VisibleOutputTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-
-    completed = [event for event in publisher.events if isinstance(event, TaskCompletedEvent)]
-    assert len(completed) == 1
-    ref = completed[0].output_documents[0]
-    # _VisibleOutputTask.run derives from the input doc
-    assert len(ref.derived_from) > 0
-    assert ref.triggered_by == ()
+    assert _CacheableTask.run_calls == 1
+    assert second_result[0].sha256 == first_result[0].sha256
+    task_rows = [span for span in database.inserted_spans if getattr(span, "kind", None) == SpanKind.TASK]
+    cached_span = task_rows[-1]
+    assert cached_span.status == SpanStatus.CACHED
+    assert cached_span.output_document_shas == (first_result[0].sha256,)

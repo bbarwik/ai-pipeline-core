@@ -5,6 +5,7 @@
 import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
@@ -91,7 +92,7 @@ class TestPubSubPublisher:
     def test_build_envelope_structure(self):
         """_build_envelope produces a valid CloudEvents 1.0 envelope."""
         pub, _ = _make_pubsub_publisher()
-        data_bytes = pub._build_envelope(EventType.RUN_STARTED, "run-1", {"node_id": "node-1"})
+        data_bytes = pub._build_envelope(EventType.RUN_STARTED, "run-1", {"span_id": "span-1"})
         envelope = json.loads(data_bytes)
 
         assert envelope["specversion"] == CLOUDEVENTS_SPEC_VERSION
@@ -99,22 +100,23 @@ class TestPubSubPublisher:
         assert envelope["source"] == "ai-research-worker"
         assert envelope["subject"] == "run-1"
         assert envelope["datacontenttype"] == "application/json"
-        assert "id" in envelope
+        assert UUID(envelope["id"]).version == 7
         assert "time" in envelope
 
         data = envelope["data"]
         assert data["run_id"] == "run-1"
-        assert data["node_id"] == "node-1"
+        assert data["span_id"] == "span-1"
 
     async def test_publish_started(self):
         """publish_run_started publishes run.started event."""
         pub, mock_client = _make_pubsub_publisher()
         event = RunStartedEvent(
             run_id="run-1",
-            node_id="node-1",
+            span_id="span-1",
             root_deployment_id="root-1",
             parent_deployment_task_id=None,
-            run_scope="run-1:abc",
+            input_fingerprint="abc123456789abcd",
+            status="running",
         )
 
         mock_future = asyncio.Future()
@@ -161,9 +163,10 @@ class TestPubSubPublisher:
         huge_result = {"data": "x" * (MAX_PUBSUB_MESSAGE_BYTES + 1)}
         event = RunCompletedEvent(
             run_id="run-1",
-            node_id="node-1",
+            span_id="span-1",
             root_deployment_id="root-1",
             parent_deployment_task_id=None,
+            status="completed",
             result=huge_result,
         )
 
@@ -177,9 +180,10 @@ class TestPubSubPublisher:
         pub, mock_client = _make_pubsub_publisher()
         event = RunFailedEvent(
             run_id="run-1",
-            node_id="node-1",
+            span_id="span-1",
             root_deployment_id="root-1",
             parent_deployment_task_id=None,
+            status="failed",
             error_code=ErrorCode.PIPELINE_ERROR,
             error_message="something broke",
         )
@@ -228,10 +232,11 @@ class TestPubSubPublisher:
 
         event = RunStartedEvent(
             run_id="run-1",
-            node_id="node-1",
+            span_id="span-1",
             root_deployment_id="root-1",
             parent_deployment_task_id=None,
-            run_scope="run-1:abc",
+            input_fingerprint="abc123456789abcd",
+            status="running",
         )
 
         with patch("ai_pipeline_core.deployment._pubsub.asyncio.sleep", new_callable=AsyncMock):
@@ -253,10 +258,11 @@ class TestPubSubPublisher:
 
         event = RunStartedEvent(
             run_id="run-1",
-            node_id="node-1",
+            span_id="span-1",
             root_deployment_id="root-1",
             parent_deployment_task_id=None,
-            run_scope="run-1:abc",
+            input_fingerprint="abc123456789abcd",
+            status="running",
         )
 
         with patch("ai_pipeline_core.deployment._pubsub.asyncio.sleep", new_callable=AsyncMock):

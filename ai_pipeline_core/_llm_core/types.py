@@ -10,13 +10,26 @@ All types are frozen Pydantic models for immutability and JSON serialization.
 import json
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Any, Literal, cast
+from typing import Any, Literal, Self, cast
 
 from pydantic import Base64Bytes, BaseModel, ConfigDict, field_validator, model_validator
 
-# Token count per image/PDF (per CLAUDE.md §3.6)
-TOKENS_PER_IMAGE = 1080
+from ai_pipeline_core._token_estimates import TOKENS_PER_IMAGE, estimate_image_tokens
 
+__all__ = [
+    "TOKENS_PER_IMAGE",
+    "ContentPart",
+    "CoreMessage",
+    "ImageContent",
+    "ModelName",
+    "ModelOptions",
+    "PDFContent",
+    "RawToolCall",
+    "Role",
+    "TextContent",
+    "TokenUsage",
+    "estimate_image_tokens",
+]
 
 type ModelName = (
     Literal[
@@ -134,7 +147,7 @@ class CoreMessage(BaseModel):
     name: str | None = None
 
     @model_validator(mode="after")
-    def _validate_tool_fields(self) -> "CoreMessage":
+    def _validate_tool_fields(self) -> Self:
         if self.tool_calls and self.role != Role.ASSISTANT:
             raise ValueError("tool_calls is only valid on ASSISTANT messages")
         if self.tool_call_id is not None and self.role != Role.TOOL:

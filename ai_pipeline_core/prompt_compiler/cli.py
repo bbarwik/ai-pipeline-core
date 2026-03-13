@@ -18,6 +18,10 @@ _SKIP_DIRS: frozenset[str] = frozenset({".git", ".venv", "venv", "__pycache__", 
 _APPROX_CHARS_PER_TOKEN = 4
 
 
+def _import_module_by_name(module_name: str) -> Any:
+    return importlib.import_module(module_name)
+
+
 def _iter_python_files(root: Path) -> list[Path]:
     """Find Python files under root, skipping common non-source directories."""
     return [f for f in root.rglob("*.py") if not any(part in _SKIP_DIRS for part in f.relative_to(root).parts)]
@@ -40,8 +44,10 @@ def _module_name_from_path(file: Path, root: Path) -> str | None:
 def _file_defines_class(file: Path, class_name: str) -> bool:
     """Check via AST if file defines a class with the given name (no import needed)."""
     try:
-        tree = ast.parse(file.read_text(encoding="utf-8"))
-    except (SyntaxError, OSError, UnicodeDecodeError):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(file.read_text(encoding="utf-8"))
+    except SyntaxError, OSError, UnicodeDecodeError:
         return False
     return any(isinstance(node, ast.ClassDef) and node.name == class_name for node in tree.body)
 
@@ -50,7 +56,7 @@ def _file_may_contain_specs(file: Path) -> bool:
     """Quick text scan for PromptSpec references (avoids importing every file)."""
     try:
         return "PromptSpec" in file.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return False
 
 
@@ -79,7 +85,7 @@ def _import_matching_modules(root: Path, file_filter: Callable[[Path], bool]) ->
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SyntaxWarning)
-                importlib.import_module(module_name)
+                _import_module_by_name(module_name)
         except Exception as e:  # noqa: BLE001
             errors.append(f"{module_name}: {e}")
     return errors
@@ -96,7 +102,7 @@ def _resolve_spec_class(ref: str, root: Path) -> type[PromptSpec[Any]]:
         module_name, class_name = ref.split(":", maxsplit=1)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
-            module = importlib.import_module(module_name)
+            module = _import_module_by_name(module_name)
         obj = getattr(module, class_name, None)
         if not isinstance(obj, type) or not issubclass(obj, PromptSpec):
             raise ValueError(f"'{ref}' is not a PromptSpec subclass")

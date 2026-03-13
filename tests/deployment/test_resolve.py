@@ -13,7 +13,6 @@ from ai_pipeline_core.deployment._resolve import (
     resolve_document_inputs,
 )
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._context import _suppress_document_registration
 
 
 class ResolveDoc(Document):
@@ -26,8 +25,7 @@ class OtherDoc(Document):
 
 @pytest.fixture(autouse=True)
 def suppress_doc_registration():
-    with _suppress_document_registration():
-        yield
+    return
 
 
 # ---------------------------------------------------------------------------

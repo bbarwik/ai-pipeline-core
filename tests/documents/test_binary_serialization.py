@@ -5,7 +5,6 @@ import base64
 import pytest
 
 from ai_pipeline_core.documents import Attachment
-from ai_pipeline_core.documents._context import _suppress_document_registration
 
 from tests.support.helpers import ConcreteDocument
 
@@ -29,8 +28,7 @@ BINARY_DATA = bytes(range(256))
 
 @pytest.fixture(autouse=True)
 def _suppress_registration():
-    with _suppress_document_registration():
-        yield
+    return
 
 
 class TestDocumentPydanticSerializationBug:

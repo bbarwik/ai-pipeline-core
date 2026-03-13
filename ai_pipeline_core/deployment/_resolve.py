@@ -12,11 +12,13 @@ from typing import Any, ClassVar, Self, cast
 from urllib.parse import urlparse
 
 import httpx
+from google.cloud import storage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents.attachment import Attachment
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
+from ai_pipeline_core.settings import settings
 
 logger = get_pipeline_logger(__name__)
 
@@ -86,6 +88,7 @@ class DocumentInput(_InputBase):
 
     name: str = Field(default="", description="Document filename (e.g. 'task.md'). Auto-derived from URL path if omitted.")
     description: str = Field(default="", description="Human-readable description of this document.")
+    summary: str = Field(default="", description="Inline summary of the document content.")
     class_name: str = Field(default="", description="Document type class name. Required when the pipeline accepts multiple input types.")
 
     derived_from: tuple[str, ...] = Field(default=(), description="Content provenance: SHA256 hashes of source documents or URIs.")
@@ -130,7 +133,7 @@ async def _is_private_ip(hostname: str) -> bool:
     try:
         resolved = await asyncio.to_thread(socket.getaddrinfo, hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
         return any(_is_ip_private(ipaddress.ip_address(addr[4][0])) for addr in resolved)
-    except (socket.gaierror, ValueError, OSError):
+    except socket.gaierror, ValueError, OSError:
         return False
 
 
@@ -177,11 +180,6 @@ async def _fetch_http(url: str, client: httpx.AsyncClient) -> tuple[bytes, str |
 
 async def _fetch_gcs(url: str) -> bytes:
     """Fetch content from GCS with size enforcement."""
-    try:
-        from google.cloud import storage  # type: ignore[import-untyped]
-    except ImportError:
-        raise ImportError("google-cloud-storage required for gs:// URLs. Install: pip install google-cloud-storage") from None
-
     # Parse gs://bucket/path
     parts = url.removeprefix("gs://").split("/", maxsplit=1)
     if len(parts) != 2 or not parts[1]:
@@ -189,8 +187,6 @@ async def _fetch_gcs(url: str) -> bytes:
     bucket_name, blob_path = parts
 
     def _download() -> bytes:
-        from ai_pipeline_core.settings import settings
-
         if settings.gcs_service_account_file:
             client = storage.Client.from_service_account_json(settings.gcs_service_account_file)  # pyright: ignore[reportUnknownMemberType]
         else:
@@ -295,6 +291,7 @@ async def resolve_document_inputs(
                     name=doc_input.name,
                     content=content,
                     description=doc_input.description or None,
+                    summary=doc_input.summary,
                     attachments=attachments or None,
                     reason="deployment input (inline content)",
                 )
@@ -310,6 +307,7 @@ async def resolve_document_inputs(
                 name=name,
                 content=content_bytes,
                 description=doc_input.description or None,
+                summary=doc_input.summary,
                 attachments=attachments or None,
                 reason=f"deployment input (url source: {doc_input.url})",
             )

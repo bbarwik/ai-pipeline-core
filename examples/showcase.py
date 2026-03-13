@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Class-based pipeline showcase.
 
-Runs locally with an in-memory database so ``python examples/showcase.py`` works
-without extra setup beyond LLM credentials.
+Usage::
 
-If you want persistent execution data instead, run this deployment through
-``showcase_pipeline.run_cli(...)`` and inspect the stored execution with:
-  ai-trace list
-  ai-trace show <deployment-id>
-  ai-trace download <deployment-id>
-  ai-replay run --from-db <node-id>
+    python examples/showcase.py ./output
+
+Execution data is persisted to the given working directory via FilesystemDatabase.
+Inspect the stored execution with::
+
+    ai-trace show <deployment-id> --db-path ./output
+    ai-trace download <deployment-id> --db-path ./output
+    ai-replay show --from-db <node-id> --db-path ./output
+    ai-replay run --from-db <node-id> --db-path ./output
 """
 
 from typing import ClassVar, Literal
@@ -25,11 +27,12 @@ from ai_pipeline_core import (
     PipelineDeployment,
     PipelineFlow,
     PipelineTask,
+    Tool,
+    ToolOutput,
     find_document,
     get_run_id,
-    setup_logging,
 )
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
 
@@ -64,6 +67,72 @@ class InsightModel(BaseModel, frozen=True):
 
 class InsightDocument(Document[InsightModel]):
     """Structured extraction output."""
+
+
+class ResearchDocument(Document):
+    """Research findings from tool-assisted investigation."""
+
+
+# --- Tools for the research task ---
+
+TOPIC_DATABASE = {
+    "ai pipelines": "AI pipelines chain LLM calls with typed data flow, enabling reproducible multi-step reasoning.",
+    "immutable documents": "Immutable documents ensure provenance tracking and safe parallel processing without race conditions.",
+    "observability": "Pipeline observability captures execution trees, LLM metrics, and replay payloads for debugging.",
+    "validation": "Import-time validation catches configuration errors before any LLM call is made, reducing wasted compute.",
+}
+
+
+class LookupRelatedTopics(Tool):
+    """Look up topics related to a given subject from the knowledge base. Returns matching topic names and summaries."""
+
+    class Input(BaseModel):
+        subject: str = Field(description="The subject to find related topics for")
+
+    async def execute(self, input: Input) -> ToolOutput:
+        matches = [f"- **{topic}**: {summary}" for topic, summary in TOPIC_DATABASE.items() if any(word in topic for word in input.subject.lower().split())]
+        if not matches:
+            return ToolOutput(content=f"No related topics found for '{input.subject}'.")
+        return ToolOutput(content=f"Related topics for '{input.subject}':\n" + "\n".join(matches))
+
+
+CLAIM_VERDICTS = {
+    "provenance": "Confirmed: content-addressed SHA256 hashing provides full provenance chains.",
+    "typed documents": "Confirmed: Pydantic-based Document subclasses enforce type safety at definition time.",
+    "class-based tasks": "Confirmed: __init_subclass__ validates task signatures, return types, and config at import time.",
+    "parallel processing": "Confirmed: immutability and frozen dataclasses enable safe concurrent execution.",
+}
+
+
+class VerifyClaim(Tool):
+    """Check whether a factual claim about the system is accurate. Returns a verification verdict."""
+
+    class Input(BaseModel):
+        claim: str = Field(description="A short factual claim to verify")
+
+    async def execute(self, input: Input) -> ToolOutput:
+        for keyword, verdict in CLAIM_VERDICTS.items():
+            if keyword in input.claim.lower():
+                return ToolOutput(content=verdict)
+        return ToolOutput(content=f"Unverified: no matching evidence found for '{input.claim}'.")
+
+
+class ExplainConcept(Tool):
+    """Get a detailed explanation of a technical concept by consulting an expert LLM."""
+
+    class Input(BaseModel):
+        concept: str = Field(description="The technical concept to explain in depth")
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+    async def execute(self, input: Input) -> ToolOutput:
+        conv = Conversation(model=self.model)
+        conv = await conv.send(
+            f"Explain '{input.concept}' in 2-3 sentences for a senior engineer. Be specific and technical.",
+            purpose=f"explain {input.concept}",
+        )
+        return ToolOutput(content=conv.content)
 
 
 class ShowcaseFlowOptions(FlowOptions):
@@ -121,18 +190,55 @@ class ExtractInsightsTask(PipelineTask):
         )
 
 
+class ResearchTask(PipelineTask):
+    name = "research_with_tools"
+
+    @classmethod
+    async def run(cls, documents: tuple[AnalysisDocument | ShowcaseConfigDocument, ...]) -> tuple[ResearchDocument, ...]:
+        logger.info("Running %s", cls.name)
+        cfg = find_document(documents, ShowcaseConfigDocument).parsed
+        analysis = find_document(documents, AnalysisDocument)
+        tools = [
+            LookupRelatedTopics(),
+            VerifyClaim(),
+            ExplainConcept(model=cfg.fast_model),
+        ]
+        conv = Conversation(model=cfg.core_model).with_context(analysis)
+        conv = await conv.send(
+            "Based on the analysis document:\n"
+            "1. Look up related topics for the main subject\n"
+            "2. Verify one key factual claim made in the analysis\n"
+            "3. Pick the most interesting concept and get a detailed explanation\n"
+            "Then synthesize all findings into a concise research summary.",
+            tools=tools,
+            purpose=f"research {analysis.name}",
+        )
+        return (
+            ResearchDocument.derive(
+                from_documents=(analysis,),
+                name=f"research_{analysis.id}.md",
+                content=conv.content,
+            ),
+        )
+
+
 class CompileReportTask(PipelineTask):
     name = "compile_report"
 
     @classmethod
-    async def run(cls, documents: tuple[InsightDocument, ...]) -> tuple[ReportDocument, ...]:
+    async def run(cls, documents: tuple[InsightDocument | ResearchDocument, ...]) -> tuple[ReportDocument, ...]:
         logger.info("Running %s", cls.name)
-        insights: list[InsightModel] = [document.parsed for document in documents]
-        lines = ["# Showcase Report", "", f"Insights: {len(insights)}", ""]
+        insights = [doc.parsed for doc in documents if isinstance(doc, InsightDocument)]
+        research = [doc for doc in documents if isinstance(doc, ResearchDocument)]
+        lines = ["# Showcase Report", "", f"Insights: {len(insights)} | Research: {len(research)}", ""]
         for idx, insight in enumerate(insights, start=1):
             lines.append(f"## Insight {idx}")
             lines.append(f"Complexity: {insight.complexity}")
             lines.extend(f"- {finding}" for finding in insight.findings)
+            lines.append("")
+        for idx, doc in enumerate(research, start=1):
+            lines.append(f"## Research {idx}")
+            lines.append(doc.text)
             lines.append("")
         return (
             ReportDocument.derive(
@@ -175,31 +281,47 @@ class ExtractionFlow(PipelineFlow):
         return tuple(outputs)
 
 
+class ResearchFlow(PipelineFlow):
+    estimated_minutes = 3
+
+    async def run(
+        self,
+        documents: tuple[AnalysisDocument | ShowcaseConfigDocument, ...],
+        options: ShowcaseFlowOptions,
+    ) -> tuple[ResearchDocument, ...]:
+        logger.info("Running %s [%s]", type(self).name, get_run_id())
+        cfg = find_document(documents, ShowcaseConfigDocument)
+        outputs: list[ResearchDocument] = []
+        for analysis in [doc for doc in documents if isinstance(doc, AnalysisDocument)]:
+            outputs.extend(await ResearchTask.run((analysis, cfg)))
+        return tuple(outputs)
+
+
 class ReportFlow(PipelineFlow):
     estimated_minutes = 1
 
     async def run(
         self,
-        documents: tuple[InsightDocument | AnalysisDocument | ShowcaseConfigDocument, ...],
+        documents: tuple[InsightDocument | ResearchDocument, ...],
         options: ShowcaseFlowOptions,
     ) -> tuple[ReportDocument, ...]:
         logger.info("Running %s [%s]", type(self).name, get_run_id())
-        insights = [doc for doc in documents if isinstance(doc, InsightDocument)]
-        return await CompileReportTask.run(tuple(insights))
+        return await CompileReportTask.run(tuple(documents))
 
 
 class ShowcaseResult(DeploymentResult):
     analysis_count: int = 0
     insight_count: int = 0
+    research_count: int = 0
     report_count: int = 0
 
 
 class ShowcasePipeline(PipelineDeployment[ShowcaseFlowOptions, ShowcaseResult]):
-    pubsub_service_type: ClassVar[str] = ""
+    pubsub_service_type: ClassVar[str] = "showcase"
 
     def build_flows(self, options: ShowcaseFlowOptions) -> list[PipelineFlow]:
         logger.info("Building flows for %s", type(self).__name__)
-        return [AnalysisFlow(), ExtractionFlow(), ReportFlow()]
+        return [AnalysisFlow(), ExtractionFlow(), ResearchFlow(), ReportFlow()]
 
     @staticmethod
     def build_result(
@@ -212,6 +334,7 @@ class ShowcasePipeline(PipelineDeployment[ShowcaseFlowOptions, ShowcaseResult]):
             success=True,
             analysis_count=len([d for d in documents if isinstance(d, AnalysisDocument)]),
             insight_count=len([d for d in documents if isinstance(d, InsightDocument)]),
+            research_count=len([d for d in documents if isinstance(d, ResearchDocument)]),
             report_count=len([d for d in documents if isinstance(d, ReportDocument)]),
         )
 
@@ -245,18 +368,5 @@ def initialize_showcase(options: ShowcaseFlowOptions) -> tuple[str, tuple[Docume
     return "showcase-v2", docs
 
 
-def main() -> None:
-    setup_logging(level="INFO")
-    options = ShowcaseFlowOptions()
-    run_id, documents = initialize_showcase(options)
-    result = showcase_pipeline.run_local(
-        run_id=run_id,
-        documents=documents,
-        options=options,
-    )
-    print(result.model_dump_json(indent=2))
-    print("\nUse showcase_pipeline.run_cli(initializer=initialize_showcase) when you want persistent execution data for ai-trace and ai-replay.")
-
-
 if __name__ == "__main__":
-    main()
+    showcase_pipeline.run_cli(initializer=initialize_showcase)

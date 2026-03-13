@@ -1,29 +1,19 @@
 #!/usr/bin/env python3
-"""TaskReplay showcase using MemoryDatabase-backed document resolution."""
+"""Replay showcase using a real recorded task span.
+
+Usage:
+  python examples/showcase_replay.py
+"""
 
 import asyncio
-from datetime import UTC, datetime
-from typing import cast
-from uuid import UUID, uuid4
 
-from ai_pipeline_core import Document, RunScope
-from ai_pipeline_core.database import (
-    NULL_PARENT,
-    BlobRecord,
-    DatabaseReader,
-    DatabaseWriter,
-    DocumentRecord,
-    ExecutionNode,
-    MemoryDatabase,
-    NodeKind,
-    NodeStatus,
-)
-from ai_pipeline_core.pipeline import PipelineTask
-from ai_pipeline_core.replay import TaskReplay
+from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, PipelineFlow, PipelineTask
+from ai_pipeline_core.database import MemoryDatabase, SpanKind
+from ai_pipeline_core.replay import execute_span
 
 
 class ReplaySourceDocument(Document):
-    """Input document referenced from the replay payload."""
+    """Input document for the replay showcase."""
 
 
 class ReplayOutputDocument(Document):
@@ -31,7 +21,7 @@ class ReplayOutputDocument(Document):
 
 
 class ReplayUppercaseTask(PipelineTask):
-    """Minimal task used by the replay showcase."""
+    """Uppercase one source document."""
 
     name = "replay_uppercase"
 
@@ -47,161 +37,99 @@ class ReplayUppercaseTask(PipelineTask):
         )
 
 
-def _completed_node(
-    *,
-    node_id: UUID,
-    deployment_id: UUID,
-    run_id: str,
-    run_scope: RunScope,
-    name: str,
-    node_kind: NodeKind,
-    sequence_no: int,
-    parent_node_id: UUID,
-    payload: dict[str, object] | None = None,
-) -> ExecutionNode:
-    timestamp = datetime.now(UTC)
-    return ExecutionNode(
-        node_id=node_id,
-        node_kind=node_kind,
-        deployment_id=deployment_id,
-        root_deployment_id=deployment_id,
-        run_id=run_id,
-        run_scope=run_scope,
-        deployment_name="replay-showcase",
-        name=name,
-        sequence_no=sequence_no,
-        parent_node_id=parent_node_id,
-        status=NodeStatus.COMPLETED,
-        started_at=timestamp,
-        ended_at=timestamp,
-        updated_at=timestamp,
-        payload=payload or {},
-    )
+class ReplayFlow(PipelineFlow):
+    """Single-task flow used to record a replayable task span."""
+
+    async def run(
+        self,
+        documents: tuple[ReplaySourceDocument, ...],
+        options: FlowOptions,
+    ) -> tuple[ReplayOutputDocument, ...]:
+        _ = options
+        return await ReplayUppercaseTask.run(documents)
 
 
-async def _store_document(
-    writer: DatabaseWriter,
-    *,
-    document: Document,
-    deployment_id: UUID,
-    run_scope: RunScope,
-) -> DocumentRecord:
-    record = DocumentRecord(
-        document_sha256=document.sha256,
-        content_sha256=document.content_sha256,
-        deployment_id=deployment_id,
-        producing_node_id=None,
-        document_type=type(document).__name__,
-        name=document.name,
-        run_scope=run_scope,
-        description=document.description or "",
-        mime_type=document.mime_type,
-        size_bytes=document.size,
-        derived_from=document.derived_from,
-        triggered_by=document.triggered_by,
-    )
-    await writer.save_blob(
-        BlobRecord(
-            content_sha256=document.content_sha256,
-            content=document.content,
-            size_bytes=len(document.content),
-        )
-    )
-    await writer.save_document(record)
-    return record
+class ReplayShowcaseResult(DeploymentResult):
+    """Deployment result for the replay example."""
+
+    output_count: int = 0
 
 
-def _require_replay_outputs(value: tuple[object, ...] | object) -> tuple[ReplayOutputDocument, ...]:
-    """Validate replay execution output for the example before printing it."""
-    if not isinstance(value, tuple):
-        raise TypeError(f"Expected TaskReplay.execute() to return a tuple, got {type(value).__name__}.")
+class ReplayShowcasePipeline(PipelineDeployment[FlowOptions, ReplayShowcaseResult]):
+    """Minimal deployment that records one replayable task span."""
 
-    raw_outputs = cast(tuple[object, ...], value)
-    outputs: list[ReplayOutputDocument] = []
-    for item in raw_outputs:
-        if not isinstance(item, ReplayOutputDocument):
-            raise TypeError(f"Expected TaskReplay.execute() to return only ReplayOutputDocument instances. Got {type(item).__name__}.")
-        outputs.append(item)
-    return tuple(outputs)
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        _ = options
+        return [ReplayFlow()]
+
+    @staticmethod
+    def build_result(
+        run_id: str,
+        documents: tuple[Document, ...],
+        options: FlowOptions,
+    ) -> ReplayShowcaseResult:
+        _ = (run_id, options)
+        return ReplayShowcaseResult(success=True, output_count=len(documents))
+
+
+def _select_recorded_task_span(tree: tuple[object, ...]) -> object:
+    for span in tree:
+        if getattr(span, "kind", "") != SpanKind.TASK:
+            continue
+        target = getattr(span, "target", "")
+        if target.endswith(f"{ReplayUppercaseTask.__qualname__}.run"):
+            return span
+    raise RuntimeError("Could not find the recorded ReplayUppercaseTask span in the deployment tree.")
 
 
 async def main() -> None:
-    database = MemoryDatabase()
-    writer: DatabaseWriter = database
-    reader: DatabaseReader = database
+    source_database = MemoryDatabase()
+    replay_database = MemoryDatabase()
+    pipeline = ReplayShowcasePipeline()
 
-    deployment_id = uuid4()
-    run_scope = RunScope("examples/replay/main")
-    deployment_node = _completed_node(
-        node_id=deployment_id,
-        deployment_id=deployment_id,
-        run_id="examples-replay",
-        run_scope=run_scope,
-        name="replay-showcase",
-        node_kind=NodeKind.DEPLOYMENT,
-        sequence_no=0,
-        parent_node_id=NULL_PARENT,
-    )
-    await writer.insert_node(deployment_node)
-
-    source = ReplaySourceDocument.create_root(
+    input_document = ReplaySourceDocument.create_root(
         name="notes.txt",
-        content="Replay payloads resolve documents by SHA256 from the database.",
-        reason="seed a document for TaskReplay resolution",
-    )
-    source_record = await _store_document(
-        writer,
-        document=source,
-        deployment_id=deployment_id,
-        run_scope=run_scope,
+        content="Replay should execute against a span recorded by the real pipeline runtime.",
+        reason="seed the replay showcase input",
     )
 
-    payload = TaskReplay(
-        function_path=f"{ReplayUppercaseTask.__module__}:{ReplayUppercaseTask.__qualname__}",
-        arguments={
-            "documents": [
-                {
-                    "$doc_ref": source.sha256,
-                    "class_name": type(source).__name__,
-                    "name": source.name,
-                }
-            ]
-        },
-    )
-    task_node_id = uuid4()
-    await writer.insert_node(
-        _completed_node(
-            node_id=task_node_id,
-            deployment_id=deployment_id,
-            run_id="examples-replay",
-            run_scope=run_scope,
-            name="replay-upper-case",
-            node_kind=NodeKind.TASK,
-            sequence_no=1,
-            parent_node_id=deployment_node.node_id,
-            payload={"replay_payload": payload.model_dump(mode="json", by_alias=True)},
-        )
+    await pipeline.run(
+        "examples-replay",
+        (input_document,),
+        FlowOptions(),
+        database=source_database,
     )
 
-    stored_record = await reader.get_document(source_record.document_sha256)
-    stored_node = await reader.get_node(task_node_id)
-    if stored_record is None or stored_node is None:
-        raise RuntimeError("Expected replay inputs to be stored in MemoryDatabase.")
+    deployment = await source_database.get_deployment_by_run_id("examples-replay")
+    if deployment is None:
+        raise RuntimeError("Replay showcase deployment was not recorded in the source database.")
 
-    stored_payload = TaskReplay.model_validate(stored_node.payload["replay_payload"])
-    outputs = _require_replay_outputs(await stored_payload.execute(reader))
+    tree = tuple(await source_database.get_deployment_tree(deployment.root_deployment_id))
+    recorded_task_span = _select_recorded_task_span(tree)
+    replay_outputs = await execute_span(
+        recorded_task_span.span_id,
+        source_db=source_database,
+        sink_db=replay_database,
+    )
 
-    print("Stored document:")
-    print(f"  - {stored_record.name} [{stored_record.document_type}]")
+    replay_deployments = await replay_database.list_deployments(limit=5)
 
-    print("\nReplay payload YAML:")
-    print(payload.to_yaml().strip())
+    print("Recorded span:")
+    print(f"  - span_id: {recorded_task_span.span_id}")
+    print(f"  - target: {recorded_task_span.target}")
+    print(f"  - input_document_shas: {recorded_task_span.input_document_shas}")
 
     print("\nReplay result:")
-    for document in outputs:
+    for document in replay_outputs:
         print(f"  - {document.name}: {document.text}")
 
-    print("\nThe stored task node mirrors what ai-replay reads from payload['replay_payload'] when replaying from a database backend.")
+    print("\nReplay recording:")
+    print(f"  - replay deployments captured: {len(replay_deployments)}")
+    if replay_deployments:
+        print(f"  - replay run_id: {replay_deployments[0].run_id}")
+
+    await source_database.shutdown()
+    await replay_database.shutdown()
 
 
 if __name__ == "__main__":

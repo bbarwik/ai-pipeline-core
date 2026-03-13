@@ -1,41 +1,16 @@
 #!/usr/bin/env python3
-"""MemoryDatabase showcase for DatabaseReader and DatabaseWriter.
+"""MemoryDatabase showcase focused on recorded span metadata.
 
-Demonstrates practical usage patterns:
-  - pipeline runs persisting nodes and documents into MemoryDatabase
-  - direct node insertion with DatabaseWriter
-  - DatabaseReader lookups for documents, searches, ancestry, and run scopes
+Usage:
+  python examples/showcase_database.py
 """
 
 import asyncio
-from datetime import UTC, datetime
+import json
 from typing import override
-from uuid import UUID, uuid4
 
-from ai_pipeline_core import (
-    DeploymentResult,
-    Document,
-    FlowOptions,
-    PipelineDeployment,
-    PipelineFlow,
-    PipelineTask,
-    RunScope,
-)
-from ai_pipeline_core.database import (
-    DatabaseReader,
-    DatabaseWriter,
-    ExecutionNode,
-    MemoryDatabase,
-    NodeKind,
-    NodeStatus,
-)
-from ai_pipeline_core.logging import get_pipeline_logger
-
-logger = get_pipeline_logger(__name__)
-
-RUN_SCOPE_LIMIT = 5
-SEARCH_LIMIT = 10
-MANUAL_NOTE_SEQUENCE = 3
+from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, PipelineFlow, PipelineTask
+from ai_pipeline_core.database import DatabaseReader, MemoryDatabase, SpanKind, SpanRecord
 
 
 class RawDataDocument(Document):
@@ -57,7 +32,6 @@ class CleanDataTask(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[RawDataDocument, ...]) -> tuple[CleanedDataDocument, ...]:
-        logger.info("Running %s", cls.name)
         return tuple(
             CleanedDataDocument.derive(
                 from_documents=(raw,),
@@ -75,7 +49,6 @@ class BuildSummaryTask(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[CleanedDataDocument, ...]) -> tuple[SummaryReportDocument, ...]:
-        logger.info("Running %s", cls.name)
         lines = ["# Summary", "", f"Total documents: {len(documents)}", ""]
         for index, document in enumerate(documents, start=1):
             lines.append(f"- Doc {index} ({document.name}): {document.text[:60]}")
@@ -146,56 +119,21 @@ class DatabaseShowcasePipeline(PipelineDeployment[FlowOptions, DatabaseShowcaseR
         )
 
 
-def _completed_node(
-    *,
-    node_id: UUID,
-    deployment_id: UUID,
-    run_id: str,
-    run_scope: RunScope,
-    parent_node_id: UUID,
-    sequence_no: int,
-) -> ExecutionNode:
-    timestamp = datetime.now(UTC)
-    return ExecutionNode(
-        node_id=node_id,
-        node_kind=NodeKind.TASK,
-        deployment_id=deployment_id,
-        root_deployment_id=deployment_id,
-        run_id=run_id,
-        run_scope=run_scope,
-        deployment_name="database-showcase",
-        name="manual-note",
-        sequence_no=sequence_no,
-        parent_node_id=parent_node_id,
-        task_class="ManualDatabaseNote",
-        status=NodeStatus.COMPLETED,
-        started_at=timestamp,
-        ended_at=timestamp,
-        updated_at=timestamp,
-    )
-
-
-async def _run_showcase_pipeline(
-    pipeline: DatabaseShowcasePipeline,
-    database: MemoryDatabase,
-    *,
-    run_id: str,
-    documents: tuple[RawDataDocument, ...],
-) -> None:
-    await pipeline.run(run_id, documents, FlowOptions(), database=database)
+def _select_span(tree: list[SpanRecord], kind: SpanKind, name: str) -> SpanRecord:
+    for span in tree:
+        if span.kind == kind and span.name == name:
+            return span
+    raise RuntimeError(f"Could not find span {kind}:{name} in the deployment tree.")
 
 
 async def main() -> None:
     database = MemoryDatabase()
-    writer: DatabaseWriter = database
     reader: DatabaseReader = database
     pipeline = DatabaseShowcasePipeline()
 
-    await _run_showcase_pipeline(
-        pipeline,
-        database,
-        run_id="examples-database-main",
-        documents=(
+    result = await pipeline.run(
+        "examples-database-main",
+        (
             RawDataDocument.create_root(
                 name="main_file_a.txt",
                 content="First raw document with duplicate onboarding steps.",
@@ -207,86 +145,40 @@ async def main() -> None:
                 reason="seed the main database showcase run",
             ),
         ),
-    )
-    await _run_showcase_pipeline(
-        pipeline,
-        database,
-        run_id="examples-database-archive",
-        documents=(
-            RawDataDocument.create_root(
-                name="archive_file_a.txt",
-                content="Archived batch used only to demonstrate multiple run scopes.",
-                reason="seed the archive database showcase run",
-            ),
-        ),
+        FlowOptions(),
+        database=database,
     )
 
     deployment = await reader.get_deployment_by_run_id("examples-database-main")
     if deployment is None:
-        raise RuntimeError("Expected the main deployment node to exist in MemoryDatabase.")
+        raise RuntimeError("Database showcase deployment was not recorded.")
 
-    await writer.insert_node(
-        _completed_node(
-            node_id=uuid4(),
-            deployment_id=deployment.deployment_id,
-            run_id=deployment.run_id,
-            run_scope=deployment.run_scope,
-            parent_node_id=deployment.node_id,
-            sequence_no=MANUAL_NOTE_SEQUENCE,
-        )
-    )
+    tree = await reader.get_deployment_tree(deployment.root_deployment_id)
+    summary_task_span = _select_span(tree, SpanKind.TASK, BuildSummaryTask.name)
+    task_meta = json.loads(summary_task_span.meta_json or "{}")
+    task_metrics = json.loads(summary_task_span.metrics_json or "{}")
 
-    deployment_tree = await reader.get_deployment_tree(deployment.deployment_id)
-    clean_task = next((node for node in deployment_tree if node.name == CleanDataTask.name), None)
-    if clean_task is None:
-        raise RuntimeError("Expected a clean-data task node in the deployment tree.")
-    produced_by_clean = await reader.get_documents_by_node(clean_task.node_id)
+    document_shas = await reader.get_all_document_shas_for_tree(deployment.root_deployment_id)
+    documents_by_sha = await reader.get_documents_batch(sorted(document_shas))
+    documents = sorted(documents_by_sha.values(), key=lambda record: record.name)
 
-    exact_lookup = await reader.find_document_by_name("main_file_a.txt")
-    if exact_lookup is None:
-        raise RuntimeError("Expected 'main_file_a.txt' to exist in MemoryDatabase.")
-    scoped_summary_results = await reader.search_documents(
-        name="summary.md",
-        document_type=SummaryReportDocument.__name__,
-        run_scope=str(deployment.run_scope),
-        limit=1,
-        offset=0,
-    )
-    if not scoped_summary_results:
-        raise RuntimeError("Expected a scoped summary document for the main run scope.")
-    scoped_summary = scoped_summary_results[0]
-    cleaned_search = await reader.search_documents(
-        name="cleaned_",
-        document_type=CleanedDataDocument.__name__,
-        run_scope=str(deployment.run_scope),
-        limit=SEARCH_LIMIT,
-        offset=0,
-    )
-    ancestry = await reader.get_document_ancestry(scoped_summary.document_sha256)
-    run_scopes = await reader.list_run_scopes(limit=RUN_SCOPE_LIMIT)
+    print("Deployment result:")
+    print(f"  - success: {result.success}")
+    print(f"  - document_count: {result.document_count}")
+    print(f"  - summary_preview: {result.summary_preview}")
 
-    print("Execution nodes:")
-    for node in deployment_tree:
-        print(f"  - {node.node_kind.value}: {node.name}")
+    print("\nRecorded span:")
+    print(f"  - kind: {summary_task_span.kind}")
+    print(f"  - name: {summary_task_span.name}")
+    print(f"  - target: {summary_task_span.target}")
+    print(f"  - meta_json: {json.dumps(task_meta, indent=2, sort_keys=True)}")
+    print(f"  - metrics_json: {json.dumps(task_metrics, indent=2, sort_keys=True)}")
 
-    print("\nDocuments produced by clean-data:")
-    for record in produced_by_clean:
-        print(f"  - {record.name} [{record.document_type}]")
+    print("\nOutput documents:")
+    for document in documents:
+        print(f"  - {document.name} [{document.document_type}]")
 
-    print("\nExact lookup:")
-    print(f"  - {exact_lookup.name} [{exact_lookup.document_type}] in run scope {exact_lookup.run_scope}")
-
-    print("\nSearch results:")
-    for record in cleaned_search:
-        print(f"  - {record.name}")
-
-    print("\nSummary ancestry:")
-    for record in ancestry.values():
-        print(f"  - {record.name} [{record.document_type}]")
-
-    print("\nRun scopes:")
-    for scope_info in run_scopes:
-        print(f"  - {scope_info.run_scope}: {scope_info.document_count} document(s)")
+    await database.shutdown()
 
 
 if __name__ == "__main__":

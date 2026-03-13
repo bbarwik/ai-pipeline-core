@@ -499,7 +499,7 @@ def test_discover_all_specs_suppresses_syntax_warnings(tmp_path: Path, capsys: p
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     # Module that references PromptSpec and contains a non-raw string with invalid escape
     (pkg / "spec.py").write_text(
-        'from ai_pipeline_core.prompt_compiler import PromptSpec\nx = "test\\.pattern"\n',
+        'from ai_pipeline_core.prompt_compiler import PromptSpec\nx = r"test\\.pattern"\n',
         encoding="utf-8",
     )
 
@@ -581,6 +581,10 @@ def test_main_compile_removes_stale_files(tmp_path: Path, capsys: pytest.Capture
 
 def test_main_compile_idempotent(capsys: pytest.CaptureFixture[str]) -> None:
     """Running compile twice produces identical output files."""
+    import gc
+
+    gc.collect()  # Flush weakly-referenced PromptSpec classes from prior tests
+
     root = Path.cwd()
     main(["compile", "--root", str(root)])
     capsys.readouterr()

@@ -6,19 +6,23 @@ deployment_class resolution, and edge cases.
 
 # pyright: reportPrivateUsage=false
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import uuid4, uuid7
 
 import pytest
 from pydantic import BaseModel
 
-from ai_pipeline_core import DeploymentResult, Document, FlowOptions
+from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment
 from ai_pipeline_core.database import MemoryDatabase
-from ai_pipeline_core.database._filesystem import FilesystemDatabase
+from ai_pipeline_core.database import SpanKind
+from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
 from ai_pipeline_core.deployment._resolve import DocumentInput
 from ai_pipeline_core.deployment.remote import RemoteDeployment, _derive_remote_run_id
-from ai_pipeline_core.pipeline import pipeline_test_context
+from ai_pipeline_core.pipeline import PipelineFlow, pipeline_test_context
+from ai_pipeline_core.pipeline._runtime_sinks import build_runtime_sinks
+from ai_pipeline_core.settings import settings
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +50,31 @@ class NestedDocResult(DeploymentResult):
     """Result containing a Document field — tests nested deserialization."""
 
     output_doc: AlphaDoc | None = None
+
+
+class InlineRemoteChildResult(DeploymentResult):
+    report: str = ""
+
+
+class InlineRemoteChildOutput(Document):
+    """Output doc for inline remote deployment tests."""
+
+
+class InlineRemoteChildFlow(PipelineFlow):
+    async def run(self, documents: tuple[AlphaDoc, ...], options: FlowOptions) -> tuple[InlineRemoteChildOutput, ...]:
+        _ = options
+        return (InlineRemoteChildOutput.derive(from_documents=documents, name="remote.txt", content="remote"),)
+
+
+class InlineRemoteChildDeployment(PipelineDeployment[FlowOptions, InlineRemoteChildResult]):
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        _ = options
+        return [InlineRemoteChildFlow()]
+
+    @staticmethod
+    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> InlineRemoteChildResult:
+        _ = (run_id, documents, options)
+        return InlineRemoteChildResult(success=True, report="inline child")
 
 
 # ===================================================================
@@ -146,11 +175,11 @@ class TestMissingGenerics:
             class Bad(RemoteDeployment):  # type: ignore[type-arg]
                 pass
 
-    def test_rejects_one_generic_param(self):
-        with pytest.raises(TypeError):
+    def test_defaults_result_type_when_one_generic_param_is_provided(self):
+        class Defaulted(RemoteDeployment[FlowOptions]):
+            pass
 
-            class Bad(RemoteDeployment[FlowOptions]):  # type: ignore[type-arg]
-                pass
+        assert Defaulted.result_type is DeploymentResult
 
 
 # ===================================================================
@@ -252,9 +281,8 @@ class TestInlineModeDetection:
         mock_ctx.database = MemoryDatabase()
         mock_ctx.deployment_id = uuid4()
         mock_ctx.root_deployment_id = uuid4()
-        mock_ctx.current_node_id = uuid4()
+        mock_ctx.current_span_id = uuid4()
         mock_ctx.deployment_name = "test"
-        mock_ctx.run_scope = "test"
         mock_ctx.next_child_sequence.return_value = 0
 
         foo = Foo()
@@ -279,9 +307,8 @@ class TestInlineModeDetection:
         mock_ctx.database = FilesystemDatabase(tmp_path)
         mock_ctx.deployment_id = uuid4()
         mock_ctx.root_deployment_id = uuid4()
-        mock_ctx.current_node_id = uuid4()
+        mock_ctx.current_span_id = uuid4()
         mock_ctx.deployment_name = "test"
-        mock_ctx.run_scope = "test"
         mock_ctx.next_child_sequence.return_value = 0
 
         foo = Foo()
@@ -306,19 +333,15 @@ class TestInlineModeDetection:
         class RemoteCapableDatabase:
             supports_remote = True
 
-            async def insert_node(self, _node):
-                return None
-
-            async def update_node(self, _node_id, **_updates):
+            async def insert_span(self, _span):
                 return None
 
         mock_ctx = MagicMock()
         mock_ctx.database = RemoteCapableDatabase()
         mock_ctx.deployment_id = uuid4()
         mock_ctx.root_deployment_id = uuid4()
-        mock_ctx.current_node_id = uuid4()
+        mock_ctx.current_span_id = uuid4()
         mock_ctx.deployment_name = "test"
-        mock_ctx.run_scope = "test"
         mock_ctx.next_child_sequence.return_value = 0
 
         foo = Foo()
@@ -381,9 +404,8 @@ class TestInlineModeDetection:
         mock_ctx.database = MemoryDatabase()
         mock_ctx.deployment_id = uuid4()
         mock_ctx.root_deployment_id = uuid4()
-        mock_ctx.current_node_id = uuid4()
+        mock_ctx.current_span_id = uuid4()
         mock_ctx.deployment_name = "test"
-        mock_ctx.run_scope = "test"
         mock_ctx.publisher = publisher
         mock_ctx.execution_id = execution_id
         mock_ctx.next_child_sequence.return_value = 0
@@ -399,6 +421,39 @@ class TestInlineModeDetection:
 
         assert mock_inline.await_args.kwargs["publisher"] is publisher
         assert mock_inline.await_args.kwargs["parent_execution_id"] == execution_id
+
+    async def test_inline_remote_persists_bidirectional_remote_linkage(self):
+        class Foo(RemoteDeployment[FlowOptions, InlineRemoteChildResult]):
+            deployment_class = f"{__name__}:InlineRemoteChildDeployment"
+
+        doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test input")
+        database = MemoryDatabase()
+
+        with pipeline_test_context(run_id="project") as ctx:
+            ctx.database = database
+            ctx.sinks = build_runtime_sinks(database=database, settings_obj=settings)
+            ctx.deployment_id = uuid7()
+            ctx.root_deployment_id = ctx.deployment_id
+            ctx.current_span_id = ctx.deployment_id
+            ctx.current_span_id = ctx.deployment_id
+            ctx.deployment_name = "parent-deployment"
+
+            await Foo().run((doc,), FlowOptions())
+
+        task_spans = [span for span in database._spans.values() if span.kind == SpanKind.TASK]
+        deployment_spans = [span for span in database._spans.values() if span.kind == SpanKind.DEPLOYMENT]
+
+        assert len(task_spans) == 1
+        assert len(deployment_spans) == 1
+
+        task_meta = json.loads(task_spans[0].meta_json)
+        task_input = json.loads(task_spans[0].input_json)
+
+        assert task_spans[0].name == f"remote:{Foo.name}"
+        assert task_meta["deployment_name"] == "parent-deployment"
+        assert task_meta["remote_mode"] == "inline"
+        assert task_input["options"]["data"] == {}
+        assert deployment_spans[0].parent_span_id == task_spans[0].span_id
 
 
 # ===================================================================
@@ -466,7 +521,6 @@ class TestRunResultDeserialization:
                 "project",
                 [doc],
                 FlowOptions(),
-                child_deployment_id=uuid4(),
                 root_deployment_id=uuid4(),
                 parent_deployment_task_id=uuid4(),
             )
@@ -489,7 +543,6 @@ class TestRunResultDeserialization:
                 "project",
                 [doc],
                 FlowOptions(),
-                child_deployment_id=uuid4(),
                 root_deployment_id=uuid4(),
                 parent_deployment_task_id=uuid4(),
             )
@@ -515,7 +568,6 @@ class TestRunResultDeserialization:
                 "project",
                 [],
                 FlowOptions(),
-                child_deployment_id=uuid4(),
                 root_deployment_id=root_deployment_id,
                 parent_deployment_task_id=uuid4(),
                 parent_execution_id=parent_execution_id,
@@ -538,7 +590,6 @@ class TestRunResultDeserialization:
                 "project",
                 [],
                 FlowOptions(),
-                child_deployment_id=uuid4(),
                 root_deployment_id=uuid4(),
                 parent_deployment_task_id=uuid4(),
             )
@@ -560,7 +611,6 @@ class TestRunResultDeserialization:
                 "project",
                 [],
                 FlowOptions(),
-                child_deployment_id=uuid4(),
                 root_deployment_id=uuid4(),
                 parent_deployment_task_id=uuid4(),
             )
@@ -579,7 +629,6 @@ class TestRunResultDeserialization:
                     "project",
                     [],
                     FlowOptions(),
-                    child_deployment_id=uuid4(),
                     root_deployment_id=uuid4(),
                     parent_deployment_task_id=uuid4(),
                 )
@@ -598,7 +647,6 @@ class TestRunErrorPropagation:
                     "project",
                     [],
                     FlowOptions(),
-                    child_deployment_id=uuid4(),
                     root_deployment_id=uuid4(),
                     parent_deployment_task_id=uuid4(),
                 )

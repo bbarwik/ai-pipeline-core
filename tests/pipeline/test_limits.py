@@ -15,7 +15,6 @@ from ai_pipeline_core.pipeline.limits import (
     _SharedStatus,
     _ensure_concurrency_limits,
     _limits_state,
-    _reset_limits_state,
     _set_limits_state,
     _slot_decay_per_second,
     _validate_concurrency_limits,
@@ -169,12 +168,11 @@ class TestValidateConcurrencyLimits:
 
 
 class TestContextVarHelpers:
-    def test_set_and_reset(self):
+    def test_set_and_restore(self):
         original = _limits_state.get()
         new_state = _LimitsState(limits=MappingProxyType({"x": PipelineLimit(1)}), status=_SharedStatus())
-        token = _set_limits_state(new_state)
-        assert _limits_state.get() is new_state
-        _reset_limits_state(token)
+        with _set_limits_state(new_state):
+            assert _limits_state.get() is new_state
         assert _limits_state.get() is original
 
 
@@ -186,24 +184,18 @@ class TestContextVarHelpers:
 class TestPipelineConcurrencyKeyError:
     async def test_unregistered_limit_raises_key_error(self):
         state = _LimitsState(limits=MappingProxyType({}), status=_SharedStatus())
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             with pytest.raises(KeyError, match="not registered"):
                 async with pipeline_concurrency("nonexistent"):
                     pass
-        finally:
-            _reset_limits_state(token)
 
     async def test_key_error_shows_available_limits(self):
         limits = {"alpha": PipelineLimit(10), "beta": PipelineLimit(20)}
         state = _LimitsState(limits=MappingProxyType(limits), status=_SharedStatus())
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             with pytest.raises(KeyError, match="alpha, beta"):
                 async with pipeline_concurrency("missing"):
                     pass
-        finally:
-            _reset_limits_state(token)
 
 
 # ---------------------------------------------------------------------------
@@ -217,14 +209,11 @@ class TestPipelineConcurrencyLocalFallback:
         status.prefect_available = False
         limits = {"test": PipelineLimit(2, LimitKind.CONCURRENT, timeout=5)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             entered = False
             async with pipeline_concurrency("test"):
                 entered = True
             assert entered
-        finally:
-            _reset_limits_state(token)
 
     async def test_per_minute_no_local_fallback(self):
         """PER_MINUTE with Prefect unavailable just yields (no semaphore)."""
@@ -232,14 +221,11 @@ class TestPipelineConcurrencyLocalFallback:
         status.prefect_available = False
         limits = {"rate": PipelineLimit(10, LimitKind.PER_MINUTE)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             entered = False
             async with pipeline_concurrency("rate"):
                 entered = True
             assert entered
-        finally:
-            _reset_limits_state(token)
 
     async def test_per_hour_no_local_fallback(self):
         """PER_HOUR with Prefect unavailable just yields (no semaphore)."""
@@ -247,14 +233,11 @@ class TestPipelineConcurrencyLocalFallback:
         status.prefect_available = False
         limits = {"rate": PipelineLimit(10, LimitKind.PER_HOUR)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             entered = False
             async with pipeline_concurrency("rate"):
                 entered = True
             assert entered
-        finally:
-            _reset_limits_state(token)
 
 
 # ---------------------------------------------------------------------------
@@ -267,64 +250,51 @@ class TestPipelineConcurrencyPrefect:
         status = _SharedStatus()
         limits = {"bd": PipelineLimit(500, LimitKind.CONCURRENT, timeout=60)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             with patch("ai_pipeline_core.pipeline.limits.concurrency") as mock_cm:
                 mock_cm.return_value.__aenter__ = AsyncMock()
                 mock_cm.return_value.__aexit__ = AsyncMock(return_value=False)
                 async with pipeline_concurrency("bd"):
                     pass
                 mock_cm.assert_called_once_with("bd", occupy=1, timeout_seconds=60, strict=False)
-        finally:
-            _reset_limits_state(token)
 
     async def test_per_minute_calls_rate_limit(self):
         status = _SharedStatus()
         limits = {"sf": PipelineLimit(15, LimitKind.PER_MINUTE, timeout=300)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             with patch("ai_pipeline_core.pipeline.limits.rate_limit", new_callable=AsyncMock) as mock_rl:
                 async with pipeline_concurrency("sf"):
                     pass
                 mock_rl.assert_called_once_with("sf", occupy=1, timeout_seconds=300, strict=False)
-        finally:
-            _reset_limits_state(token)
 
     async def test_per_hour_calls_rate_limit(self):
         status = _SharedStatus()
         limits = {"hourly": PipelineLimit(100, LimitKind.PER_HOUR, timeout=120)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             with patch("ai_pipeline_core.pipeline.limits.rate_limit", new_callable=AsyncMock) as mock_rl:
                 async with pipeline_concurrency("hourly"):
                     pass
                 mock_rl.assert_called_once_with("hourly", occupy=1, timeout_seconds=120, strict=False)
-        finally:
-            _reset_limits_state(token)
 
     async def test_timeout_override(self):
         status = _SharedStatus()
         limits = {"bd": PipelineLimit(500, timeout=600)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             with patch("ai_pipeline_core.pipeline.limits.concurrency") as mock_cm:
                 mock_cm.return_value.__aenter__ = AsyncMock()
                 mock_cm.return_value.__aexit__ = AsyncMock(return_value=False)
                 async with pipeline_concurrency("bd", timeout=30):
                     pass
                 mock_cm.assert_called_once_with("bd", occupy=1, timeout_seconds=30, strict=False)
-        finally:
-            _reset_limits_state(token)
 
     async def test_timeout_error_propagates(self):
         status = _SharedStatus()
         limits = {"bd": PipelineLimit(500)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             with patch("ai_pipeline_core.pipeline.limits.concurrency") as mock_cm:
                 mock_cm.return_value.__aenter__ = AsyncMock(side_effect=AcquireConcurrencySlotTimeoutError("timeout"))
                 with pytest.raises(AcquireConcurrencySlotTimeoutError):
@@ -332,16 +302,13 @@ class TestPipelineConcurrencyPrefect:
                         pass
             # prefect_available should still be True
             assert status.prefect_available is True
-        finally:
-            _reset_limits_state(token)
 
     async def test_acquisition_error_degrades_to_local_concurrent(self):
         """ConcurrencySlotAcquisitionError should degrade to local semaphore for CONCURRENT."""
         status = _SharedStatus()
         limits = {"bd": PipelineLimit(5, LimitKind.CONCURRENT, timeout=5)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             with patch("ai_pipeline_core.pipeline.limits.concurrency") as mock_cm:
                 mock_cm.return_value.__aenter__ = AsyncMock(side_effect=ConcurrencySlotAcquisitionError("server error"))
                 entered = False
@@ -349,16 +316,13 @@ class TestPipelineConcurrencyPrefect:
                     entered = True
                 assert entered
                 assert status.prefect_available is False
-        finally:
-            _reset_limits_state(token)
 
     async def test_acquisition_error_degrades_to_noop_for_rate_limit(self):
         """ConcurrencySlotAcquisitionError should yield for PER_MINUTE (no local fallback)."""
         status = _SharedStatus()
         limits = {"sf": PipelineLimit(15, LimitKind.PER_MINUTE)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             with patch("ai_pipeline_core.pipeline.limits.rate_limit", new_callable=AsyncMock) as mock_rl:
                 mock_rl.side_effect = ConcurrencySlotAcquisitionError("server error")
                 entered = False
@@ -366,8 +330,6 @@ class TestPipelineConcurrencyPrefect:
                     entered = True
                 assert entered
                 assert status.prefect_available is False
-        finally:
-            _reset_limits_state(token)
 
 
 # ---------------------------------------------------------------------------
@@ -381,8 +343,7 @@ class TestSharedStatusAcrossGather:
         status = _SharedStatus()
         limits = {"bd": PipelineLimit(5, LimitKind.CONCURRENT, timeout=5)}
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             call_count = 0
 
             async def worker_that_triggers_degradation():
@@ -404,8 +365,6 @@ class TestSharedStatusAcrossGather:
                 assert call_count == call_count_before
 
             await asyncio.gather(worker_that_triggers_degradation(), worker_that_checks_status())
-        finally:
-            _reset_limits_state(token)
 
 
 # ---------------------------------------------------------------------------
@@ -426,8 +385,7 @@ class TestEnsureConcurrencyLimits:
         }
         status = _SharedStatus()
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             mock_client = AsyncMock()
             with patch("ai_pipeline_core.pipeline.limits.get_client") as mock_get_client:
                 mock_get_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -443,18 +401,13 @@ class TestEnsureConcurrencyLimits:
             assert calls["hourly"]["limit"] == 3600
             assert calls["hourly"]["slot_decay_per_second"] == pytest.approx(1.0)
             assert status.prefect_available is True
-        finally:
-            _reset_limits_state(token)
 
     async def test_prefect_failure_degrades(self):
         limits: Mapping[str, PipelineLimit] = {"bd": PipelineLimit(500)}
         status = _SharedStatus()
         state = _LimitsState(limits=MappingProxyType(limits), status=status)
-        token = _set_limits_state(state)
-        try:
+        with _set_limits_state(state):
             with patch("ai_pipeline_core.pipeline.limits.get_client") as mock_get_client:
                 mock_get_client.return_value.__aenter__ = AsyncMock(side_effect=ConnectionError("no server"))
                 await _ensure_concurrency_limits(limits)
             assert status.prefect_available is False
-        finally:
-            _reset_limits_state(token)

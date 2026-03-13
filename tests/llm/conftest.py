@@ -4,13 +4,11 @@ import pytest
 
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import RawToolCall, TokenUsage
-from ai_pipeline_core.documents._context import _suppress_document_registration
 
 
 @pytest.fixture(autouse=True)
 def _suppress_registration():
-    with _suppress_document_registration():
-        yield
+    return
 
 
 def make_tool_call(call_id: str, function_name: str, arguments: str) -> RawToolCall:

@@ -6,39 +6,63 @@ instances with response properties derived from the last ModelResponse.
 """
 
 import asyncio
-import json
-import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from itertools import chain
-from typing import Any, Generic, Literal, cast, overload
-from uuid import uuid4
+from typing import Any, Generic, Literal, Self, TypeVar, cast, overload
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
-from typing_extensions import TypeVar
 
 from ai_pipeline_core._llm_core import CoreMessage, ModelOptions, ModelResponse, Role, TokenUsage
 from ai_pipeline_core._llm_core import generate as core_generate
 from ai_pipeline_core._llm_core import generate_structured as core_generate_structured
-from ai_pipeline_core._llm_core._validation import validate_text
 from ai_pipeline_core._llm_core.model_response import Citation
-from ai_pipeline_core._llm_core.types import TOKENS_PER_IMAGE, ContentPart, TextContent
+from ai_pipeline_core._llm_core.types import ContentPart, TextContent
+from ai_pipeline_core._token_estimates import (
+    estimate_binary_tokens,
+    estimate_image_tokens,
+    estimate_message_text_tokens,
+    estimate_pdf_tokens,
+    estimate_text_tokens,
+)
+from ai_pipeline_core.database import BlobRecord, SpanKind
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.llm._images import validated_binary_parts
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.documents._hashing import compute_content_sha256
+from ai_pipeline_core.logger import get_pipeline_logger
+from ai_pipeline_core.pipeline._execution_context import get_execution_context, get_sinks
+from ai_pipeline_core.pipeline._track_span import track_span
 from ai_pipeline_core.prompt_compiler.render import RESULT_CLOSE, _extract_result, render_multi_line_messages, render_text
 from ai_pipeline_core.prompt_compiler.spec import PromptSpec
 
+from . import _conversation_messages as _message_helpers
+from ._conversation_messages import (
+    AnyMessage,
+    AssistantMessage,
+    ConversationContent,
+    ToolResultMessage,
+    UserMessage,
+    _core_messages_to_db_span_input,
+    _core_messages_to_span_input,
+    _document_to_content_parts,
+    _finish_reason,
+    _normalize_content,
+    _prompt_parts,
+    _response_format_path,
+    _serialize_response_tool_calls,
+    _serialize_tool_config,
+)
 from ._substitutor import URLSubstitutor
-from .tools import Tool, ToolCallRecord, generate_tool_schema, to_snake_case
+from ._tool_loop import execute_tool_loop
+from .tools import Tool, ToolCallRecord, ToolOutput, generate_tool_schema, to_snake_case
 
 __all__ = [
+    "_LLM_ROUND_REPLAY_TARGET",
     "AssistantMessage",
     "Conversation",
     "ConversationContent",
     "ToolResultMessage",
     "UserMessage",
+    "_replay_llm_round",
 ]
 
 # Instruction appended to system prompt when substitutor is active with patterns
@@ -51,172 +75,18 @@ _SUBSTITUTOR_INSTRUCTION = (
 )
 
 logger = get_pipeline_logger(__name__)
+_escape_xml_content = _message_helpers._escape_xml_content
+_escape_xml_metadata = _message_helpers._escape_xml_metadata
 
 # Document name sentinel for system prompt documents — treated as role=SYSTEM in messages
 _SYSTEM_PROMPT_DOCUMENT_NAME = "system_prompt"
 
 _CHARS_PER_TOKEN = 4
 MAX_TOOL_ROUNDS_DEFAULT = 10
+_LLM_ROUND_REPLAY_TARGET = f"function:{__name__}:_replay_llm_round"
 
 T = TypeVar("T", default=None)
 U = TypeVar("U", bound=BaseModel)
-
-ConversationContent = str | Document | list[Document]
-"""Content accepted by send() and send_structured(): plain text, a Document, or a list of Documents."""
-
-# Regex matching XML tags whose names are wrapper elements used by document serialization.
-# Only these tags are escaped in content bodies — everything else (JSON, YAML, HTML, code) passes through.
-_WRAPPER_TAG_RE = re.compile(r"<(/?)(document|content|description|attachment|id|name)\b([^>]*)>", re.IGNORECASE)
-
-
-def _escape_xml_metadata(text: str) -> str:
-    """Escape < and > in metadata fields (names, IDs, descriptions) to prevent tag injection."""
-    return text.replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _escape_xml_content(text: str) -> str:
-    """Escape only XML tags matching wrapper element names to prevent structural injection.
-
-    Leaves all other content intact — JSON, YAML, URLs, code, HTML tags, quotes,
-    ampersands are never modified. Only tags that could break the <document>/<content>/
-    <attachment> wrapper structure are escaped.
-    """
-    return _WRAPPER_TAG_RE.sub(lambda m: f"&lt;{m.group(1)}{m.group(2)}{m.group(3)}&gt;", text)
-
-
-def _document_to_xml_header(doc: Document) -> str:
-    """Generate XML header for a document with proper escaping."""
-    escaped_name = _escape_xml_metadata(doc.name)
-    escaped_id = _escape_xml_metadata(doc.id)
-    desc = f"<description>{_escape_xml_metadata(doc.description)}</description>\n" if doc.description else ""
-    return f"<document>\n<id>{escaped_id}</id>\n<name>{escaped_name}</name>\n{desc}<content>\n"
-
-
-def _document_to_content_parts(doc: Document, model: str) -> list[ContentPart]:
-    """Convert a Document to content parts for CoreMessage."""
-    parts: list[ContentPart] = []
-    header = _document_to_xml_header(doc)
-
-    if doc.is_text:
-        if err := validate_text(doc.content, doc.name):
-            logger.warning("Skipping invalid document: %s", err)
-            return []
-        text = _escape_xml_content(doc.content.decode("utf-8"))
-        # Build document with attachments INSIDE the wrapper
-        # Text attachments are inlined as strings, binary attachments become separate ContentParts
-        text_fragments = [f"{header}{text}\n"]
-        binary_att_parts: list[ContentPart] = []
-
-        for att in doc.attachments:
-            if att.is_text:
-                att_content = _build_attachment_content(att)
-                if att_content:
-                    text_fragments.append(att_content)
-            else:
-                binary_att_parts.extend(_build_attachment_parts(att, model))
-
-        if binary_att_parts:
-            # Mixed content: emit text, then binary parts, then closing tag
-            parts.append(TextContent(text="".join(text_fragments)))
-            parts.extend(binary_att_parts)
-            parts.append(TextContent(text="</content>\n</document>"))
-        else:
-            # Pure text: single TextContent
-            text_fragments.append("</content>\n</document>")
-            parts.append(TextContent(text="".join(text_fragments)))
-
-    elif doc.is_image or doc.is_pdf:
-        binary_parts = validated_binary_parts(doc.content, doc.name, is_image=doc.is_image, model=model)
-        if binary_parts is None:
-            return []
-        parts.append(TextContent(text=header))
-        parts.extend(binary_parts)
-
-        for att in doc.attachments:
-            parts.extend(_build_attachment_parts(att, model))
-
-        parts.append(TextContent(text="</content>\n</document>"))
-    else:
-        logger.warning("Skipping unsupported document type: %s - %s", doc.name, doc.mime_type)
-        return []
-
-    return parts
-
-
-def _build_attachment_content(att: Any) -> str | None:
-    """Build text content for a text attachment (returns string for embedding)."""
-    if not att.is_text:
-        return None
-    if err := validate_text(att.content, att.name):
-        logger.warning("Skipping invalid attachment: %s", err)
-        return None
-
-    escaped_name = _escape_xml_metadata(att.name)
-    desc_attr = f' description="{_escape_xml_metadata(att.description)}"' if att.description else ""
-    att_text = _escape_xml_content(att.content.decode("utf-8"))
-    return f'<attachment name="{escaped_name}"{desc_attr}>\n{att_text}\n</attachment>\n'
-
-
-def _build_attachment_parts(att: Any, model: str) -> list[ContentPart]:
-    """Build content parts for an attachment (for binary attachments)."""
-    parts: list[ContentPart] = []
-    escaped_name = _escape_xml_metadata(att.name)
-    desc_attr = f' description="{_escape_xml_metadata(att.description)}"' if att.description else ""
-    att_open = f'<attachment name="{escaped_name}"{desc_attr}>\n'
-
-    if att.is_text:
-        if err := validate_text(att.content, att.name):
-            logger.warning("Skipping invalid attachment: %s", err)
-            return []
-        att_text = _escape_xml_content(att.content.decode("utf-8"))
-        parts.append(TextContent(text=f"{att_open}{att_text}\n</attachment>\n"))
-    elif att.is_image or att.is_pdf:
-        binary_parts = validated_binary_parts(att.content, att.name, is_image=att.is_image, model=model)
-        if binary_parts is None:
-            return []
-        parts.append(TextContent(text=att_open))
-        parts.extend(binary_parts)
-        parts.append(TextContent(text="</attachment>\n"))
-    else:
-        logger.warning("Skipping unsupported attachment type: %s - %s", att.name, att.mime_type)
-
-    return parts
-
-
-@dataclass(frozen=True, slots=True)
-class UserMessage:
-    """Internal wrapper for user string messages (not a Document)."""
-
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class AssistantMessage:
-    """Internal wrapper for injected assistant messages (not from an LLM call)."""
-
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class ToolResultMessage:
-    """Internal wrapper for tool execution results in conversation history."""
-
-    tool_call_id: str
-    function_name: str
-    content: str
-
-
-# Union of all types that can appear in messages tuple
-AnyMessage = Document | ModelResponse[Any] | UserMessage | AssistantMessage | ToolResultMessage
-
-
-def _normalize_content(content: ConversationContent) -> tuple[Document | UserMessage, ...]:
-    """Normalize content to tuple of Documents or internal messages."""
-    if isinstance(content, str):
-        return (UserMessage(content),)
-    if isinstance(content, Document):
-        return (content,)
-    return tuple(content)
 
 
 class Conversation(BaseModel, Generic[T]):
@@ -276,16 +146,6 @@ class Conversation(BaseModel, Generic[T]):
                 d["current_date"] = date.today().isoformat()
         return data  # pyright: ignore[reportUnknownVariableType]
 
-    @model_validator(mode="before")
-    @classmethod
-    def _initialize_conversation_id(cls, data: Any) -> Any:
-        """Auto-generate a stable conversation UUID on construction."""
-        if isinstance(data, dict):
-            d = cast(dict[str, Any], data)
-            if not d.get("_conversation_id"):
-                d["_conversation_id"] = uuid4().hex
-        return data  # pyright: ignore[reportUnknownVariableType]
-
     @field_validator("model")
     @classmethod
     def validate_model_not_empty(cls, v: str) -> str:
@@ -303,6 +163,43 @@ class Conversation(BaseModel, Generic[T]):
         if isinstance(v, list):
             return tuple(v)
         return v
+
+    def __codec_state__(self) -> dict[str, Any]:  # noqa: PLW3201 - Required codec hook name from the replay protocol.
+        """Return codec state including Pydantic private fields."""
+        conversation_id = cast(str, getattr(self, "_conversation_id", ""))
+        tool_call_records = cast(tuple[ToolCallRecord, ...], getattr(self, "_tool_call_records", ()))
+        state = {field_name: getattr(self, field_name) for field_name in type(self).model_fields}
+        state["messages"] = tuple(_serialize_message_for_codec(message) for message in self.messages)
+        state["_conversation_id"] = conversation_id
+        state["_tool_call_records"] = tuple(
+            {
+                "tool": record.tool,
+                "input": record.input,
+                "output": record.output,
+                "round": record.round,
+            }
+            for record in tool_call_records
+        )
+        return state
+
+    @classmethod
+    def __codec_load__(cls, state: dict[str, Any]) -> Self:  # noqa: PLW3201 - Required codec hook name from the replay protocol.
+        """Reconstruct a Conversation from codec state."""
+        public_state = {field_name: state[field_name] for field_name in cls.model_fields if field_name in state}
+        public_state["messages"] = tuple(_deserialize_message_from_codec(message) for message in public_state.get("messages", ()))
+        conversation = cls(**public_state)
+        tool_call_records = tuple(
+            ToolCallRecord(
+                tool=cast(type[Tool], record["tool"]),
+                input=cast(BaseModel, record["input"]),
+                output=cast(ToolOutput, record["output"]),
+                round=cast(int, record["round"]),
+            )
+            for record in cast(tuple[dict[str, Any], ...], state.get("_tool_call_records", ()))
+        )
+        object.__setattr__(conversation, "_conversation_id", cast(str, state.get("_conversation_id", "")))
+        object.__setattr__(conversation, "_tool_call_records", tool_call_records)
+        return conversation
 
     # --- Response properties (delegate to last ModelResponse) ---
 
@@ -481,85 +378,33 @@ class Conversation(BaseModel, Generic[T]):
             update["parsed"] = restored
         return response.model_copy(update=update)  # nosemgrep: no-document-model-copy
 
-    # --- Replay payload ---
-
-    def _build_replay_payload(
-        self,
-        content: ConversationContent,
-        response_format: type[BaseModel] | None,
-        purpose: str | None,
-        response: ModelResponse[Any],
-    ) -> dict[str, Any]:
-        """Build a replay payload dict capturing the full conversation state."""
-        from ai_pipeline_core.replay._capture import build_conversation_replay_payload
-
-        return build_conversation_replay_payload(
-            content=content,
-            response_format=response_format,
-            purpose=purpose,
-            response=response,
-            context=self.context,
-            model=self.model,
-            model_options=self.model_options,
-            messages=self.messages,
-            enable_substitutor=self.enable_substitutor,
-            extract_result_tags=self.extract_result_tags,
-            include_date=self.include_date,
-            current_date=self.current_date,
-        )
-
     @staticmethod
     def _metadata_float(metadata: Mapping[str, Any], key: str) -> float:
         """Read numeric timing metadata defensively, defaulting missing or invalid values to zero."""
         raw_value = metadata.get(key, 0.0)
         try:
             return float(raw_value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return 0.0
 
-    def _build_failed_replay_payload(
-        self,
-        content: ConversationContent,
-        response_format: type[BaseModel] | None,
-        purpose: str | None,
-        *,
-        error_type: str,
-        error_message: str,
-    ) -> dict[str, Any]:
-        """Build a replay payload for a failed LLM call without a response object."""
-        from ai_pipeline_core.replay._capture import _serialize_send_content, serialize_prior_messages
-
-        response_format_path = f"{response_format.__module__}:{response_format.__qualname__}" if response_format else None
-        model_options = self.model_options.model_dump(exclude_defaults=True) if self.model_options else {}
-        prompt, prompt_documents = _serialize_send_content(content)
-        return {
-            "version": 1,
-            "payload_type": "conversation",
-            "model": self.model,
-            "model_options": model_options,
-            "prompt": prompt,
-            "prompt_documents": prompt_documents,
-            "response_format": response_format_path,
-            "purpose": purpose,
-            "context": [{"$doc_ref": doc.sha256, "class_name": type(doc).__name__, "name": doc.name} for doc in self.context],
-            "history": serialize_prior_messages(self.messages),
-            "enable_substitutor": self.enable_substitutor,
-            "extract_result_tags": self.extract_result_tags,
-            "include_date": self.include_date,
-            "current_date": self.current_date,
-            "original": {
-                "status": "failed",
-                "error_type": error_type,
-                "error_message": error_message,
-                "cost": 0.0,
-                "tokens": {
-                    "input": 0,
-                    "output": 0,
-                    "cached": 0,
-                    "reasoning": 0,
-                },
-            },
-        }
+    @staticmethod
+    def _collect_multimodal_blobs(core_messages: Sequence[CoreMessage]) -> list[Any]:
+        """Collect unique image/PDF blobs referenced by multimodal request messages."""
+        seen_content_shas: set[str] = set()
+        blobs: list[BlobRecord] = []
+        for message in core_messages:
+            if not isinstance(message.content, tuple):
+                continue
+            for part in message.content:
+                if isinstance(part, TextContent):
+                    continue
+                content_bytes = bytes(part.data)
+                content_sha256 = compute_content_sha256(content_bytes)
+                if content_sha256 in seen_content_shas:
+                    continue
+                seen_content_shas.add(content_sha256)
+                blobs.append(BlobRecord(content_sha256=content_sha256, content=content_bytes))
+        return blobs
 
     # --- Send methods ---
 
@@ -580,6 +425,9 @@ class Conversation(BaseModel, Generic[T]):
                 base_prompt = effective.system_prompt if effective else None
                 combined = f"{base_prompt}\n\n{extra}" if base_prompt else extra
                 effective = (effective or ModelOptions()).model_copy(update={"system_prompt": combined})  # nosemgrep: no-document-model-copy
+        execution_ctx = get_execution_context()
+        if execution_ctx is not None and execution_ctx.disable_cache:
+            effective = (effective or ModelOptions()).model_copy(update={"cache_ttl": None})
         return effective
 
     async def _invoke_llm(
@@ -593,30 +441,100 @@ class Conversation(BaseModel, Generic[T]):
         response_format: type[BaseModel] | None = None,
         purpose: str | None = None,
         expected_cost: float | None = None,
+        round_index: int = 1,
+        tool_schemas: list[dict[str, Any]] | None = None,
     ) -> ModelResponse[Any]:
         """Single LLM call wrapper — used directly and by the tool loop."""
-        if response_format is not None:
-            return await core_generate_structured(
-                core_messages,
-                response_format,
-                model=self.model,
-                model_options=effective_options,
-                purpose=purpose,
-                expected_cost=expected_cost,
-                context_count=context_count,
-                tools=tools,
+        response_format_path = _response_format_path(response_format) or None
+        span_input_preview = _core_messages_to_span_input(core_messages)
+        span_input_db = _core_messages_to_db_span_input(core_messages)
+        execution_ctx = get_execution_context()
+        llm_target = _LLM_ROUND_REPLAY_TARGET
+        llm_input = {
+            "messages": core_messages,
+            "model": self.model,
+            "model_options": effective_options,
+            "tool_choice": tool_choice,
+            "response_format": response_format,
+            "purpose": purpose,
+            "expected_cost": expected_cost,
+            "round_index": round_index,
+            "tool_schemas": tool_schemas or [],
+        }
+
+        async with track_span(
+            SpanKind.LLM_ROUND,
+            f"round-{round_index}",
+            llm_target,
+            sinks=get_sinks(),
+            db=execution_ctx.database if execution_ctx is not None else None,
+            encode_input=llm_input,
+            input_preview=span_input_preview,
+        ) as span_ctx:
+            try:
+                if response_format is not None:
+                    response = await core_generate_structured(
+                        core_messages,
+                        response_format,
+                        model=self.model,
+                        model_options=effective_options,
+                        purpose=purpose,
+                        expected_cost=expected_cost,
+                        context_count=context_count,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                    )
+                else:
+                    response = await core_generate(
+                        core_messages,
+                        model=self.model,
+                        model_options=effective_options,
+                        purpose=purpose,
+                        expected_cost=expected_cost,
+                        context_count=context_count,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                    )
+            except Exception, asyncio.CancelledError:
+                span_ctx.set_meta(
+                    model=self.model,
+                    finish_reason="error",
+                    response_id="",
+                    tool_schemas=list(tool_schemas or []),
+                    round_index=round_index,
+                    request_messages=span_input_db,
+                    response_content="",
+                    response_tool_calls=[],
+                    response_format_path=response_format_path,
+                    tool_call_count=0,
+                    tool_choice=tool_choice,
+                )
+                raise
+            span_ctx.set_meta(
+                model=response.model or self.model,
+                finish_reason=_finish_reason(response),
+                response_id=response.response_id,
+                tool_schemas=list(tool_schemas or []),
+                round_index=round_index,
+                request_messages=span_input_db,
+                response_content=response.content,
+                response_tool_calls=_serialize_response_tool_calls(response.tool_calls),
+                response_format_path=response_format_path,
+                tool_call_count=len(response.tool_calls),
                 tool_choice=tool_choice,
             )
-        return await core_generate(
-            core_messages,
-            model=self.model,
-            model_options=effective_options,
-            purpose=purpose,
-            expected_cost=expected_cost,
-            context_count=context_count,
-            tools=tools,
-            tool_choice=tool_choice,
-        )
+            span_ctx.set_metrics(
+                tokens_input=response.usage.prompt_tokens,
+                tokens_output=response.usage.completion_tokens,
+                tokens_cache_read=response.usage.cached_tokens,
+                tokens_reasoning=response.usage.reasoning_tokens,
+                cost_usd=response.cost or 0.0,
+                first_token_ms=int(self._metadata_float(response.metadata, "first_token_time") * 1000),
+            )
+            outputs = [item for item in (response.reasoning_content, response.content) if item]
+            span_ctx.set_output_preview(outputs if len(outputs) > 1 else response.content)
+            span_ctx._set_output_value(response)
+            return response
 
     async def _execute_send(
         self,
@@ -627,10 +545,8 @@ class Conversation(BaseModel, Generic[T]):
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
-    ) -> tuple[tuple[AnyMessage, ...], ModelResponse[Any], tuple[ToolCallRecord, ...]]:
+    ) -> tuple[tuple[AnyMessage, ...], ModelResponse[Any], tuple[ToolCallRecord, ...], str]:
         """Common preparation, LLM call (or tool loop), and response restoration."""
-        from ._tool_loop import execute_tool_loop
-
         if tool_choice is not None and not tools:
             raise ValueError(f"tool_choice='{tool_choice}' requires tools= to be provided. Pass a list of Tool instances with tools=[...].")
 
@@ -668,149 +584,136 @@ class Conversation(BaseModel, Generic[T]):
                     raise ValueError(f"Duplicate tool name '{name}'. Tool names must be unique after snake_case conversion.")
                 tool_lookup[name] = t
 
-        span_name = purpose or f"conversation.{'send_structured' if response_format else 'send'}"
-        if substitutor:
-            core_messages = self._apply_substitution(core_messages, substitutor)
+        recorder_name = purpose or f"{self.model}:{'send_structured' if response_format else 'send'}"
 
         tool_records: tuple[ToolCallRecord, ...] = ()
         accumulated_tool_messages: list[Any] = []
-        send_started_at = datetime.now(tz=UTC)
-        context_shas = tuple(doc.sha256 for doc in self.context)
-        model_options_json = self.model_options.model_dump_json() if self.model_options else "{}"
-        response_format_class = f"{response_format.__module__}.{response_format.__qualname__}" if response_format else ""
+        model_options = self.model_options.model_dump(mode="json") if self.model_options else {}
+        effective_model_options = effective_options.model_dump(mode="json") if effective_options else {}
+        effective_system_prompt = effective_options.system_prompt if effective_options is not None else None
+        response_format_path = _response_format_path(response_format)
+        prompt_content, prompt_document_shas = _prompt_parts(content)
+        serialized_tools = tuple(_serialize_tool_config(tool) for tool in tools or [])
 
-        try:
-            if tools and tool_schemas and tool_lookup:
-                # Tool loop — response_format is passed through so the LLM produces structured
-                # output on its final response (whether natural or forced).
-                accumulated_tool_messages, response, tool_records = await execute_tool_loop(
-                    invoke_llm=self._invoke_llm,
-                    tool_schemas=tool_schemas,
-                    tool_lookup=tool_lookup,
-                    tool_choice=tool_choice or "auto",
-                    max_tool_rounds=max_tool_rounds,
-                    purpose=purpose,
-                    expected_cost=expected_cost,
-                    core_messages=core_messages,
-                    context_count=context_count,
-                    effective_options=effective_options,
-                    substitutor=substitutor,
-                    build_tool_result_message=lambda tid, fn, c: ToolResultMessage(tool_call_id=tid, function_name=fn, content=c),
-                    response_format=response_format,
-                )
-            else:
-                response = await self._invoke_llm(
-                    core_messages=core_messages,
-                    effective_options=effective_options,
-                    context_count=context_count,
-                    response_format=response_format,
-                    purpose=purpose,
-                    expected_cost=expected_cost,
-                )
-        except (Exception, asyncio.CancelledError) as exc:
-            from ai_pipeline_core.pipeline._execution_context import ConversationTurnData, get_conversation_turns
+        # Build span input from pre-substitution messages (shows full context with binary placeholders)
+        span_input = _core_messages_to_span_input(core_messages)
+        conversation_target = f"decoded_method:{type(self).__module__}:{type(self).__qualname__}.{'send_structured' if response_format else 'send'}"
+        conversation_input = {
+            "content": content,
+            "response_format": response_format,
+            "tools": serialized_tools,
+            "tool_choice": tool_choice,
+            "max_tool_rounds": max_tool_rounds,
+            "purpose": purpose,
+            "expected_cost": expected_cost,
+        }
+        execution_ctx = get_execution_context()
 
-            turns_list = get_conversation_turns()
-            if turns_list is not None:
-                ended_at = datetime.now(tz=UTC)
-                error_type = type(exc).__name__
-                error_message = str(exc)
-                failed_replay_payload_json = ""
-                try:
-                    failed_replay_payload_json = json.dumps(
-                        self._build_failed_replay_payload(
-                            content,
-                            response_format,
-                            purpose,
-                            error_type=error_type,
-                            error_message=error_message,
-                        ),
-                        default=str,
-                    )
-                except Exception:
-                    logger.debug("Failed to build replay payload for failed LLM call", exc_info=True)
-                turns_list.append(
-                    ConversationTurnData(
-                        conversation_id=self._conversation_id,
-                        conversation_name=span_name,
-                        model=self.model,
-                        cost_usd=0.0,
-                        tokens_input=0,
-                        tokens_output=0,
-                        tokens_cache_read=0,
-                        tokens_reasoning=0,
-                        prompt_content=str(content),
-                        response_content="",
-                        reasoning_content="",
-                        started_at=send_started_at,
-                        ended_at=ended_at,
-                        time_taken=(ended_at - send_started_at).total_seconds(),
-                        first_token_time=0.0,
-                        context_document_shas=context_shas,
-                        model_options_json=model_options_json,
-                        response_format_class=response_format_class,
-                        response_id="",
-                        citations_json="",
-                        replay_payload_json=failed_replay_payload_json,
-                        status="failed",
-                        error_type=error_type,
-                        error_message=error_message,
-                    )
-                )
-            raise
-
-        if substitutor:
-            response = self._restore_response(response, substitutor, response_format)
-            if accumulated_tool_messages:
-                accumulated_tool_messages[-1] = response
-
-        from ai_pipeline_core.pipeline._execution_context import ConversationTurnData, get_conversation_turns
-
-        turns_list = get_conversation_turns()
-        if turns_list is not None:
-            replay_payload_json = ""
+        async with track_span(
+            SpanKind.CONVERSATION,
+            recorder_name,
+            conversation_target,
+            sinks=get_sinks(),
+            encode_receiver={"mode": "decoded_state", "value": self},
+            encode_input=conversation_input,
+            db=execution_ctx.database if execution_ctx is not None else None,
+            input_preview=span_input,
+        ) as span_ctx:
+            if substitutor:
+                core_messages = self._apply_substitution(core_messages, substitutor)
             try:
-                replay_payload_json = json.dumps(
-                    self._build_replay_payload(content, response_format, purpose, response),
-                    default=str,
+                if tools and tool_schemas and tool_lookup:
+                    accumulated_tool_messages, response, tool_records = await execute_tool_loop(
+                        invoke_llm=self._invoke_llm,
+                        tool_schemas=tool_schemas,
+                        tool_lookup=tool_lookup,
+                        tool_choice=tool_choice or "auto",
+                        max_tool_rounds=max_tool_rounds,
+                        purpose=purpose,
+                        expected_cost=expected_cost,
+                        core_messages=core_messages,
+                        context_count=context_count,
+                        effective_options=effective_options,
+                        substitutor=substitutor,
+                        build_tool_result_message=lambda tid, fn, c: ToolResultMessage(tool_call_id=tid, function_name=fn, content=c),
+                        response_format=response_format,
+                    )
+                else:
+                    response = await self._invoke_llm(
+                        core_messages=core_messages,
+                        effective_options=effective_options,
+                        context_count=context_count,
+                        response_format=response_format,
+                        purpose=purpose,
+                        expected_cost=expected_cost,
+                        round_index=1,
+                        tool_schemas=tool_schemas,
+                    )
+            except Exception, asyncio.CancelledError:
+                span_ctx.set_meta(
+                    purpose=recorder_name,
+                    citations=[],
+                    enable_substitutor=self.enable_substitutor,
+                    extract_result_tags=self.extract_result_tags,
+                    include_date=self.include_date,
+                    current_date=self.current_date,
+                    model=self.model,
+                    prompt_content=prompt_content,
+                    prompt_document_shas=prompt_document_shas,
+                    model_options=model_options,
+                    effective_model_options=effective_model_options,
+                    effective_system_prompt=effective_system_prompt,
+                    response_format_path=response_format_path,
+                    tools=serialized_tools,
+                    tool_choice=tool_choice,
+                    max_tool_rounds=max_tool_rounds,
                 )
-            except Exception:
-                logger.debug("Failed to build replay payload", exc_info=True)
-            turns_list.append(
-                ConversationTurnData(
-                    conversation_id=self._conversation_id,
-                    conversation_name=span_name,
-                    model=response.model or self.model,
-                    cost_usd=response.cost or 0.0,
-                    tokens_input=response.usage.prompt_tokens,
-                    tokens_output=response.usage.completion_tokens,
-                    tokens_cache_read=response.usage.cached_tokens,
-                    tokens_reasoning=response.usage.reasoning_tokens,
-                    prompt_content=str(content),
-                    response_content=response.content,
-                    reasoning_content=response.reasoning_content or "",
-                    started_at=send_started_at,
-                    ended_at=datetime.now(tz=UTC),
-                    time_taken=self._metadata_float(response.metadata, "time_taken"),
-                    first_token_time=self._metadata_float(response.metadata, "first_token_time"),
-                    context_document_shas=context_shas,
-                    model_options_json=model_options_json,
-                    response_format_class=response_format_class,
-                    response_id=response.response_id,
-                    citations_json=json.dumps(
-                        [{"title": c.title, "url": c.url, "start_index": c.start_index, "end_index": c.end_index} for c in response.citations],
-                        default=str,
-                    ),
-                    replay_payload_json=replay_payload_json,
-                )
+                raise
+            if substitutor:
+                response = self._restore_response(response, substitutor, response_format)
+                if accumulated_tool_messages:
+                    accumulated_tool_messages[-1] = response
+
+            if accumulated_tool_messages:
+                final_messages = new_messages + tuple(accumulated_tool_messages)
+            else:
+                final_messages = new_messages + (response,)
+
+            new_conversation_id = str(span_ctx.span_id)
+            updated_conversation = self.model_copy(
+                update={
+                    "messages": final_messages,
+                    "_tool_call_records": tool_records,
+                    "_conversation_id": new_conversation_id,
+                }
             )
-
-        if accumulated_tool_messages:
-            final_messages = new_messages + tuple(accumulated_tool_messages)
-        else:
-            final_messages = new_messages + (response,)
-
-        return final_messages, response, tool_records
+            span_ctx.set_meta(
+                purpose=recorder_name,
+                citations=[{"title": c.title, "url": c.url, "start_index": c.start_index, "end_index": c.end_index} for c in response.citations],
+                enable_substitutor=self.enable_substitutor,
+                extract_result_tags=self.extract_result_tags,
+                include_date=self.include_date,
+                current_date=self.current_date,
+                model=response.model or self.model,
+                prompt_content=prompt_content,
+                prompt_document_shas=prompt_document_shas,
+                response_content=response.content,
+                reasoning_content=response.reasoning_content or "",
+                response_id=response.response_id,
+                model_options=model_options,
+                effective_model_options=effective_model_options,
+                effective_system_prompt=effective_system_prompt,
+                response_format_path=response_format_path,
+                tools=serialized_tools,
+                tool_choice=tool_choice,
+                max_tool_rounds=max_tool_rounds,
+            )
+            span_ctx.set_metrics(
+                first_token_ms=int(self._metadata_float(response.metadata, "first_token_time") * 1000),
+            )
+            span_ctx.set_output_preview({"model": response.model or self.model, "tool_call_count": len(tool_records)})
+            span_ctx._set_output_value(updated_conversation)
+            return final_messages, response, tool_records, new_conversation_id
 
     async def send(
         self,
@@ -821,13 +724,13 @@ class Conversation(BaseModel, Generic[T]):
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[None]":
+    ) -> Conversation[None]:
         """Send message, returns NEW Conversation with response.
 
         Document content is wrapped in <document> XML tags with id, name, description.
         When tools are provided, runs an auto-loop: LLM → tool calls → execute → re-send.
         """
-        new_messages, _response, records = await self._execute_send(
+        new_messages, _response, records, new_conversation_id = await self._execute_send(
             content,
             None,
             purpose,
@@ -836,7 +739,7 @@ class Conversation(BaseModel, Generic[T]):
             tool_choice=tool_choice,
             max_tool_rounds=max_tool_rounds,
         )
-        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records})  # type: ignore[return-value]
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records, "_conversation_id": new_conversation_id})  # type: ignore[return-value]
 
     async def send_structured(
         self,
@@ -848,7 +751,7 @@ class Conversation(BaseModel, Generic[T]):
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[U]":
+    ) -> Conversation[U]:
         """Send message expecting structured response, returns NEW Conversation[U] with .parsed.
 
         Quality degrades beyond ~2-3K output tokens or nesting >2 levels.
@@ -858,7 +761,7 @@ class Conversation(BaseModel, Generic[T]):
         When tools are provided, response_format is passed on every tool-loop round.
         Structured parsing occurs on the final response (when the LLM stops calling tools).
         """
-        new_messages, _response, records = await self._execute_send(
+        new_messages, _response, records, new_conversation_id = await self._execute_send(
             content,
             response_format,
             purpose,
@@ -867,7 +770,7 @@ class Conversation(BaseModel, Generic[T]):
             tool_choice=tool_choice,
             max_tool_rounds=max_tool_rounds,
         )
-        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records})  # type: ignore[return-value]
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records, "_conversation_id": new_conversation_id})  # type: ignore[return-value]
 
     @overload
     async def send_spec(
@@ -881,7 +784,7 @@ class Conversation(BaseModel, Generic[T]):
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[None]": ...
+    ) -> Conversation[None]: ...
 
     @overload
     async def send_spec(
@@ -895,7 +798,7 @@ class Conversation(BaseModel, Generic[T]):
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[U]": ...
+    ) -> Conversation[U]: ...
 
     async def send_spec(
         self,
@@ -908,7 +811,7 @@ class Conversation(BaseModel, Generic[T]):
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[Any]":
+    ) -> Conversation[Any]:
         """Send a PromptSpec to the LLM.
 
         Adds documents to context (or messages for follow-up specs), renders the
@@ -991,19 +894,19 @@ class Conversation(BaseModel, Generic[T]):
 
     # --- Builder methods (return NEW Conversation) ---
 
-    def with_document(self, doc: Document) -> "Conversation[T]":
+    def with_document(self, doc: Document) -> Conversation[T]:
         """Return NEW Conversation with document appended to messages (dynamic suffix, not cached)."""
         return self.model_copy(update={"messages": self.messages + (doc,)})
 
-    def with_documents(self, docs: Sequence[Document]) -> "Conversation[T]":
+    def with_documents(self, docs: Sequence[Document]) -> Conversation[T]:
         """Return NEW Conversation with multiple documents appended to messages (not cached)."""
         return self.model_copy(update={"messages": self.messages + tuple(docs)})
 
-    def with_assistant_message(self, content: str) -> "Conversation[T]":
+    def with_assistant_message(self, content: str) -> Conversation[T]:
         """Return NEW Conversation with an injected assistant turn in messages."""
         return self.model_copy(update={"messages": self.messages + (AssistantMessage(content),)})
 
-    def with_context(self, *docs: Document) -> "Conversation[T]":
+    def with_context(self, *docs: Document) -> Conversation[T]:
         """Return NEW Conversation with documents added to the cacheable context prefix.
 
         Always set context before the first send() — adding context mid-conversation
@@ -1011,17 +914,17 @@ class Conversation(BaseModel, Generic[T]):
         """
         return self.model_copy(update={"context": self.context + docs})
 
-    def with_model_options(self, options: ModelOptions) -> "Conversation[T]":
+    def with_model_options(self, options: ModelOptions) -> Conversation[T]:
         """Return NEW Conversation with updated model options."""
         return self.model_copy(update={"model_options": options})
 
-    def with_model(self, model: str) -> "Conversation[T]":
+    def with_model(self, model: str) -> Conversation[T]:
         """Return NEW Conversation with a different model, preserving all state."""
         if not model:
             raise ValueError("model must be non-empty")
         return self.model_copy(update={"model": model})
 
-    def with_substitutor(self, enabled: bool = True) -> "Conversation[T]":
+    def with_substitutor(self, enabled: bool = True) -> Conversation[T]:
         """Return NEW Conversation with content protection enabled/disabled.
 
         Shortens URLs, blockchain addresses, and high-entropy strings before sending.
@@ -1038,21 +941,99 @@ class Conversation(BaseModel, Generic[T]):
         total = 0
         for item in chain(self.context, self.messages):
             if isinstance(item, ModelResponse):
-                total += len(item.content) // _CHARS_PER_TOKEN
+                total += estimate_message_text_tokens(item.content)
                 if reasoning := item.reasoning_content:
-                    total += len(reasoning) // _CHARS_PER_TOKEN
+                    total += estimate_message_text_tokens(reasoning)
             elif isinstance(item, ToolResultMessage):
-                total += len(item.content) // _CHARS_PER_TOKEN
+                total += estimate_message_text_tokens(item.content)
             elif isinstance(item, (UserMessage, AssistantMessage)):
-                total += len(item.text) // _CHARS_PER_TOKEN
+                total += estimate_message_text_tokens(item.text)
             elif isinstance(item, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
                 if item.is_text:
-                    total += len(item.content) // _CHARS_PER_TOKEN
-                elif item.is_image or item.is_pdf:
-                    total += TOKENS_PER_IMAGE
+                    total += estimate_text_tokens(item.text)
+                elif item.is_image:
+                    total += estimate_image_tokens()
+                elif item.is_pdf:
+                    total += estimate_pdf_tokens()
+                else:
+                    total += estimate_binary_tokens()
                 for att in item.attachments:
                     if att.is_text:
-                        total += len(att.content) // _CHARS_PER_TOKEN
-                    elif att.is_image or att.is_pdf:
-                        total += TOKENS_PER_IMAGE
+                        total += estimate_text_tokens(att.text)
+                    elif att.is_image:
+                        total += estimate_image_tokens()
+                    elif att.is_pdf:
+                        total += estimate_pdf_tokens()
+                    else:
+                        total += estimate_binary_tokens()
         return total
+
+
+async def _replay_llm_round(
+    *,
+    messages: list[CoreMessage],
+    model: str,
+    model_options: ModelOptions | None = None,
+    tool_choice: str | None = None,
+    response_format: type[BaseModel] | None = None,
+    purpose: str | None = None,
+    expected_cost: float | None = None,
+    round_index: int = 1,
+    tool_schemas: list[dict[str, Any]] | None = None,
+) -> ModelResponse[Any]:
+    """Replay one recorded llm_round boundary against the primitive LLM client."""
+    _ = round_index
+    if response_format is not None:
+        return await core_generate_structured(
+            messages,
+            response_format,
+            model=model,
+            model_options=model_options,
+            purpose=purpose,
+            expected_cost=expected_cost,
+            context_count=0,
+            tools=tool_schemas,
+            tool_choice=tool_choice,
+        )
+    return await core_generate(
+        messages,
+        model=model,
+        model_options=model_options,
+        purpose=purpose,
+        expected_cost=expected_cost,
+        context_count=0,
+        tools=tool_schemas,
+        tool_choice=tool_choice,
+    )
+
+
+def _serialize_message_for_codec(message: AnyMessage) -> Any:
+    if isinstance(message, UserMessage):
+        return {"__conversation_message__": "user", "text": message.text}
+    if isinstance(message, AssistantMessage):
+        return {"__conversation_message__": "assistant", "text": message.text}
+    if isinstance(message, ToolResultMessage):
+        return {
+            "__conversation_message__": "tool_result",
+            "tool_call_id": message.tool_call_id,
+            "function_name": message.function_name,
+            "content": message.content,
+        }
+    return message
+
+
+def _deserialize_message_from_codec(message: Any) -> AnyMessage:
+    if not isinstance(message, dict):
+        return cast(AnyMessage, message)
+    message_kind = message.get("__conversation_message__")
+    if message_kind == "user":
+        return UserMessage(text=cast(str, message["text"]))
+    if message_kind == "assistant":
+        return AssistantMessage(text=cast(str, message["text"]))
+    if message_kind == "tool_result":
+        return ToolResultMessage(
+            tool_call_id=cast(str, message["tool_call_id"]),
+            function_name=cast(str, message["function_name"]),
+            content=cast(str, message["content"]),
+        )
+    return cast(AnyMessage, message)

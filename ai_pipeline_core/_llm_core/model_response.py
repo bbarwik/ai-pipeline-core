@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from .types import RawToolCall, TokenUsage
 
-T = TypeVar("T")
+T = TypeVar("T", default=str)
 """Type parameter for response output. str for unstructured, BaseModel subclass for structured."""
 
 

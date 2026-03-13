@@ -9,9 +9,8 @@ This eliminates stale pip cache issues, missing transitive dependencies, and
 non-deterministic installs.
 
 Requirements:
-- `uv` installed locally (for dependency resolution)
-- `pip` installed locally (for wheel download)
-- `python -m build` available (for wheel building)
+- `uv` installed locally (used for `uv build` and dependency resolution)
+- `pip` installed locally (used for wheel download)
 - Settings: PREFECT_API_URL, PREFECT_GCS_BUCKET
 - pyproject.toml with project name and version
 - Local package installed for flow metadata extraction
@@ -20,6 +19,7 @@ Usage:
     python -m ai_pipeline_core.deployment.deploy
 """
 
+import annotationlib
 import argparse
 import asyncio
 import shlex
@@ -48,8 +48,8 @@ __all__ = [
 
 _UV_TARGET_PLATFORM = "x86_64-unknown-linux-gnu"
 _PIP_TARGET_PLATFORMS = ("manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64", "linux_x86_64")
-_TARGET_PYTHON_VERSION = "3.12"
-_TARGET_ABI = "cp312"
+_TARGET_PYTHON_VERSION = "3.14"
+_TARGET_ABI = "cp314"
 
 
 def _filter_lock_file(lock_file: Path, exclude_names: set[str]) -> None:
@@ -249,7 +249,7 @@ class _Deployer:
     def _create_gcs_bucket(self, bucket_folder: str) -> Any:
         """Create a GcsBucket instance for uploading files."""
         creds = GcpCredentials()
-        if hasattr(settings, "gcs_service_account_file") and settings.gcs_service_account_file:
+        if settings.gcs_service_account_file:
             creds = GcpCredentials(service_account_file=Path(settings.gcs_service_account_file))
         return GcsBucket(bucket=self.config["bucket"], bucket_folder=bucket_folder, gcp_credentials=creds)
 
@@ -335,7 +335,7 @@ class _Deployer:
 
         deployment._set_defaults_from_flow(flow)  # pyright: ignore[reportPossiblyUnboundVariable]
 
-        return_type = getattr(flow.fn, "__annotations__", {}).get("return")  # pyright: ignore[reportPossiblyUnboundVariable]
+        return_type = annotationlib.get_annotations(flow.fn, format=annotationlib.Format.VALUE).get("return")  # pyright: ignore[reportPossiblyUnboundVariable]
         if return_type is not None and hasattr(return_type, "model_json_schema"):
             deployment._parameter_openapi_schema.definitions["_ResultSchema"] = return_type.model_json_schema()
 

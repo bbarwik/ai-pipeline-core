@@ -1,8 +1,8 @@
 # MODULE: prompt_compiler
 # CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
-# DEPENDS: BaseModel, Generic, Role
+# DEPENDS: BaseModel, Role
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.14.0
+# VERSION: 0.15.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -96,7 +96,7 @@ Never use ``#`` (H1) headers in Guide templates — reserved for prompt section 
         _validate_guide(cls)
 
 
-class PromptSpec(BaseModel, Generic[OutputT]):
+class PromptSpec(BaseModel):
     """Base class for all prompt specifications.
 
 Generic parameter ``OutputT`` determines the output type:
@@ -158,7 +158,7 @@ Pydantic fields (dynamic input values):
     output_rules: ClassVar[tuple[type[OutputRule], ...]]
     output_structure: ClassVar[str | None]
 
-    def __init_subclass__(cls, *, follows: type["PromptSpec"] | None = None, **kwargs: Any) -> None:
+    def __init_subclass__(cls, *, follows: type[PromptSpec] | None = None, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
         # Pydantic creates concrete subclasses for parameterized generics (e.g. PromptSpec[str]).
@@ -479,7 +479,7 @@ def test_main_inspect_not_found(capsys: pytest.CaptureFixture[str]) -> None:
 
 ## Error Examples
 
-**Spec rules reject output rule with specific message** (`tests/prompt_compiler/test_spec.py:651`)
+**Spec rules reject output rule with specific message** (`tests/prompt_compiler/test_spec.py:665`)
 
 ```python
 def test_spec_rules_reject_output_rule_with_specific_message() -> None:
@@ -507,7 +507,7 @@ def test_spec_rules_reject_output_rule_with_specific_message() -> None:
             rules = (FormatBullets,)  # Wrong! Should be output_rules=
 ```
 
-**Spec bare field no description** (`tests/prompt_compiler/test_spec.py:923`)
+**Spec bare field no description** (`tests/prompt_compiler/test_spec.py:937`)
 
 ```python
 def test_spec_bare_field_no_description() -> None:
@@ -530,7 +530,7 @@ def test_spec_bare_field_no_description() -> None:
             item: str  # Wrong! Must use Field(description='...')
 ```
 
-**Task field placeholder single field** (`tests/prompt_compiler/test_spec.py:1075`)
+**Task field placeholder single field** (`tests/prompt_compiler/test_spec.py:1089`)
 
 ```python
 def test_task_field_placeholder_single_field() -> None:

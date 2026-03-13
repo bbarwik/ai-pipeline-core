@@ -3,6 +3,7 @@
 # pyright: reportPrivateUsage=false
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,7 +13,6 @@ from ai_pipeline_core.deployment._helpers import _classify_error, _create_publis
 from ai_pipeline_core.deployment.base import _validate_flow_chain
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.pipeline import PipelineFlow
-from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import Settings
@@ -20,8 +20,7 @@ from ai_pipeline_core.settings import Settings
 
 @pytest.fixture(autouse=True)
 def _suppress_registration():
-    with _suppress_document_registration():
-        yield
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +74,7 @@ class TestCreatePublisher:
             pubsub_topic_id="topic",
             clickhouse_host="",
         )
-        with patch("ai_pipeline_core.deployment._pubsub.PubSubPublisher") as mock_cls:
+        with patch("ai_pipeline_core.deployment._helpers.PubSubPublisher") as mock_cls:
             mock_cls.return_value = MagicMock()
             publisher = _create_publisher(s, "svc")
             mock_cls.assert_called_once()
@@ -83,40 +82,40 @@ class TestCreatePublisher:
 
 
 # ---------------------------------------------------------------------------
-# _compute_run_scope
+# _compute_input_fingerprint
 # ---------------------------------------------------------------------------
 
-from ai_pipeline_core.deployment._helpers import _compute_run_scope, _heartbeat_loop
+from ai_pipeline_core.deployment._helpers import _compute_input_fingerprint, _heartbeat_loop
 
 
 class ScopeDoc(Document):
     pass
 
 
-class TestComputeRunScope:
+class TestComputeInputFingerprint:
     def test_no_documents(self):
         opts = FlowOptions()
-        scope = _compute_run_scope("run1", [], opts)
-        assert str(scope).startswith("run1:")
+        fingerprint = _compute_input_fingerprint([], opts)
+        assert len(fingerprint) == 16
 
     def test_with_documents(self):
         doc = ScopeDoc.create_root(name="test.txt", content="hello", reason="test")
-        scope = _compute_run_scope("run1", [doc], FlowOptions())
-        assert str(scope).startswith("run1:")
+        fingerprint = _compute_input_fingerprint([doc], FlowOptions())
+        assert len(fingerprint) == 16
 
     def test_different_docs_different_scope(self):
         doc1 = ScopeDoc.create_root(name="a.txt", content="aaa", reason="test")
         doc2 = ScopeDoc.create_root(name="b.txt", content="bbb", reason="test")
-        scope1 = _compute_run_scope("run1", [doc1], FlowOptions())
-        scope2 = _compute_run_scope("run1", [doc2], FlowOptions())
-        assert scope1 != scope2
+        fingerprint1 = _compute_input_fingerprint([doc1], FlowOptions())
+        fingerprint2 = _compute_input_fingerprint([doc2], FlowOptions())
+        assert fingerprint1 != fingerprint2
 
     def test_same_docs_same_scope(self):
         doc = ScopeDoc.create_root(name="a.txt", content="aaa", reason="test")
         opts = FlowOptions()
-        scope1 = _compute_run_scope("run1", [doc], opts)
-        scope2 = _compute_run_scope("run1", [doc], opts)
-        assert scope1 == scope2
+        fingerprint1 = _compute_input_fingerprint([doc], opts)
+        fingerprint2 = _compute_input_fingerprint([doc], opts)
+        assert fingerprint1 == fingerprint2
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +188,7 @@ class TestHeartbeatLoop:
         publisher = MagicMock()
         call_count = 0
 
-        async def _failing_heartbeat(run_id: str) -> None:
+        async def _failing_heartbeat(run_id: str, *, root_deployment_id: str = "", span_id: str = "") -> None:
             nonlocal call_count
             call_count += 1
             raise RuntimeError("publish failed")
@@ -203,3 +202,123 @@ class TestHeartbeatLoop:
             with pytest.raises(asyncio.CancelledError):
                 await task
         assert call_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# run_cli_for_deployment — database fallback
+# ---------------------------------------------------------------------------
+
+
+class TestCliDatabaseFallback:
+    """When ClickHouse is not configured, CLI must use FilesystemDatabase in the working directory."""
+
+    def test_no_clickhouse_uses_filesystem_database(self, tmp_path: Path):
+        """run_cli_for_deployment must pass base_path=wd so FilesystemDatabase is used."""
+        from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
+        from ai_pipeline_core.deployment._cli import run_cli_for_deployment
+        from ai_pipeline_core.deployment.base import DeploymentResult, PipelineDeployment
+
+        class _DbFallbackInputDoc(Document):
+            pass
+
+        class _DbFallbackOutputDoc(Document):
+            pass
+
+        class _DbFallbackFlow(PipelineFlow):
+            async def run(self, documents: tuple[_DbFallbackInputDoc, ...], options: FlowOptions) -> tuple[_DbFallbackOutputDoc, ...]:
+                return ()
+
+        class _DbFallbackResult(DeploymentResult):
+            pass
+
+        class _DbFallbackDeployment(PipelineDeployment[FlowOptions, _DbFallbackResult]):
+            name = "test-cli-db"
+            options_type = FlowOptions
+            result_type = _DbFallbackResult
+
+            def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+                return [_DbFallbackFlow()]
+
+            def build_result(self, options, documents, run_id, **kwargs) -> _DbFallbackResult:
+                return _DbFallbackResult(success=True)
+
+        captured_database = None
+
+        async def _capture_run(self, **kwargs):
+            nonlocal captured_database
+            captured_database = kwargs.get("database")
+            return _DbFallbackResult(success=True)
+
+        deployment = _DbFallbackDeployment()
+        wd = tmp_path / "output"
+
+        with (
+            patch("sys.argv", ["test-cli-db", str(wd)]),
+            patch.object(PipelineDeployment, "run", _capture_run),
+            patch("ai_pipeline_core.deployment._cli.settings", Settings(clickhouse_host="")),
+        ):
+            run_cli_for_deployment(deployment)
+
+        assert captured_database is not None, "deployment.run() was called without a database"
+        assert isinstance(captured_database, FilesystemDatabase), (
+            f"Expected FilesystemDatabase, got {type(captured_database).__name__}. "
+            "CLI should fall back to FilesystemDatabase(wd) when ClickHouse is not configured."
+        )
+        assert captured_database._base_path == wd
+
+    def test_cli_generates_artifacts_before_database_shutdown(self, tmp_path: Path) -> None:
+        from ai_pipeline_core.deployment._cli import run_cli_for_deployment
+        from ai_pipeline_core.deployment.base import DeploymentResult, PipelineDeployment
+
+        class _CliInputDoc(Document):
+            pass
+
+        class _CliOutputDoc(Document):
+            pass
+
+        class _CliFlow(PipelineFlow):
+            async def run(self, documents: tuple[_CliInputDoc, ...], options: FlowOptions) -> tuple[_CliOutputDoc, ...]:
+                return ()
+
+        class _CliResult(DeploymentResult):
+            pass
+
+        class _CliDeployment(PipelineDeployment[FlowOptions, _CliResult]):
+            name = "test-cli-order"
+            options_type = FlowOptions
+            result_type = _CliResult
+
+            def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+                return [_CliFlow()]
+
+            def build_result(self, options, documents, run_id, **kwargs) -> _CliResult:
+                return _CliResult(success=True)
+
+        database = MagicMock()
+        events: list[str] = []
+
+        async def _capture_run(self, **kwargs):
+            return _CliResult(success=True)
+
+        async def _capture_artifacts(database_arg, output_dir):
+            assert database_arg is database
+            events.append("artifacts")
+
+        async def _capture_shutdown(database_arg):
+            assert database_arg is database
+            events.append("shutdown")
+
+        deployment = _CliDeployment()
+        wd = tmp_path / "output"
+
+        with (
+            patch("sys.argv", ["test-cli-order", str(wd)]),
+            patch.object(PipelineDeployment, "run", _capture_run),
+            patch("ai_pipeline_core.deployment._cli._create_span_database_from_settings", return_value=database),
+            patch("ai_pipeline_core.deployment._cli._generate_run_artifacts", _capture_artifacts),
+            patch("ai_pipeline_core.deployment._cli._shutdown_database", _capture_shutdown),
+            patch("ai_pipeline_core.deployment._cli.settings", Settings(clickhouse_host="")),
+        ):
+            run_cli_for_deployment(deployment)
+
+        assert events == ["artifacts", "shutdown"]

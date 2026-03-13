@@ -6,7 +6,7 @@ Tests: cache TTL, option/input change invalidation, crash-retry resume, complete
 import pytest
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, PipelineFlow, PipelineTask
-from ai_pipeline_core.database import create_database
+from ai_pipeline_core.database._memory import MemoryDatabase
 from ai_pipeline_core.deployment import FlowAction, FlowDirective
 
 from .conftest import OutputDoc, StageOne, StageTwo, _TestOptions, _TestResult
@@ -199,7 +199,7 @@ class TestResumeAfterSuccess:
         input_doc = ResumeInputDoc.create_root(name="input.txt", content="test input", reason="test")
         deployment = NormalDeployment()
         options = Resume_TestOptions()
-        db = create_database(backend="memory")
+        db = MemoryDatabase()
 
         # First run — flow executes fully
         await deployment.run("test-project", [input_doc], options, database=db)
@@ -211,11 +211,11 @@ class TestResumeAfterSuccess:
 
 
 class TestResumeWithDifferentOptions:
-    """Different options should produce a different run_scope, bypassing cache."""
+    """Different options should produce a different input fingerprint, bypassing cache."""
 
     @pytest.mark.asyncio
     async def test_different_options_bypass_cache(self):
-        """Changing options produces a different run_scope, so flow re-executes."""
+        """Changing options produces a different input fingerprint, so flow re-executes."""
         input_doc = ResumeInputDoc.create_root(name="input.txt", content="test input", reason="test")
 
         class OptionedOptions(FlowOptions):
@@ -233,7 +233,7 @@ class TestResumeWithDifferentOptions:
                 return OptionedResult(success=True)
 
         deployment = OptionedDeployment()
-        db = create_database(backend="memory")
+        db = MemoryDatabase()
 
         await deployment.run("test-project", [input_doc], OptionedOptions(flavor="vanilla"), database=db)
         assert _flow_call_count == 1
@@ -242,23 +242,23 @@ class TestResumeWithDifferentOptions:
         await deployment.run("test-project", [input_doc], OptionedOptions(flavor="vanilla"), database=db)
         assert _flow_call_count == 1
 
-        # Different options → new scope → re-executes
+        # Different options → new fingerprint → re-executes
         await deployment.run("test-project", [input_doc], OptionedOptions(flavor="chocolate"), database=db)
         assert _flow_call_count == 2
 
 
 class TestResumeWithDifferentInputs:
-    """Different input documents should produce a different run_scope."""
+    """Different input documents should produce a different input fingerprint."""
 
     @pytest.mark.asyncio
     async def test_different_inputs_bypass_cache(self):
-        """Changing input documents produces a different run_scope, so flow re-executes."""
+        """Changing input documents produces a different input fingerprint, so flow re-executes."""
         input_doc_a = ResumeInputDoc.create_root(name="a.txt", content="input A", reason="test")
         input_doc_b = ResumeInputDoc.create_root(name="b.txt", content="input B", reason="test")
 
         deployment = NormalDeployment()
         options = Resume_TestOptions()
-        db = create_database(backend="memory")
+        db = MemoryDatabase()
 
         await deployment.run("test-project", [input_doc_a], options, database=db)
         assert _flow_call_count == 1
@@ -267,6 +267,6 @@ class TestResumeWithDifferentInputs:
         await deployment.run("test-project", [input_doc_a], options, database=db)
         assert _flow_call_count == 1
 
-        # Different input → new scope → re-executes
+        # Different input → new fingerprint → re-executes
         await deployment.run("test-project", [input_doc_b], options, database=db)
         assert _flow_call_count == 2

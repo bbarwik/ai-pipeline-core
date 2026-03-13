@@ -1,51 +1,48 @@
-"""Tests for task execution node creation in the database execution DAG.
-
-Verifies that PipelineTask._execute_invocation creates:
-- A RUNNING task node on start
-- Updates to COMPLETED with input/output shas on success
-- Updates to FAILED with error info on failure
-- Document persistence via dual-write to new database
-- Conversation turn nodes from captured ConversationTurnData
-"""
+"""Tests for task span creation and document persistence."""
 
 # pyright: reportPrivateUsage=false
 
-import asyncio
+import json
 import logging
 from types import MappingProxyType
-from uuid import UUID, uuid4
+from uuid import UUID, uuid7
 
 import pytest
 
-from ai_pipeline_core.database import MemoryDatabase, NodeKind, NodeStatus
+from ai_pipeline_core.database import SpanKind, SpanStatus
+from ai_pipeline_core.database._memory import MemoryDatabase
 from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logging import ExecutionLogBuffer, ExecutionLogHandler
+from ai_pipeline_core.logger._buffer import ExecutionLogBuffer
+from ai_pipeline_core.logger._handler import ExecutionLogHandler
 from ai_pipeline_core.pipeline import PipelineTask
-from ai_pipeline_core.pipeline._execution_context import (
-    ExecutionContext,
-    FlowFrame,
-    reset_execution_context,
-    set_execution_context,
-)
+from ai_pipeline_core.pipeline._execution_context import ExecutionContext, FlowFrame, set_execution_context
+from ai_pipeline_core.pipeline._runtime_sinks import build_runtime_sinks
 from ai_pipeline_core.pipeline.limits import _SharedStatus
+from ai_pipeline_core.settings import settings
 
 
-# --- Test document types ---
+class _RecordingSpanDatabase(MemoryDatabase):
+    def __init__(self) -> None:
+        super().__init__()
+        self.inserted_spans: list[object] = []
+
+    async def insert_span(self, span: object) -> None:
+        self.inserted_spans.append(span)
+        await super().insert_span(span)  # type: ignore[arg-type]
 
 
 class _NodeInDoc(Document):
-    """Input document for task node tests."""
+    """Input document for task span tests."""
 
 
 class _NodeOutDoc(Document):
-    """Output document for task node tests."""
-
-
-# --- Test tasks ---
+    """Output document for task span tests."""
 
 
 class _SimpleTask(PipelineTask):
+    expected_cost = 0.25
+
     @classmethod
     async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
         return (_NodeOutDoc.derive(from_documents=tuple(documents), name="out.txt", content="output"),)
@@ -57,28 +54,10 @@ class _FailingTask(PipelineTask):
         raise ValueError("deliberate task failure")
 
 
-class _LongFailingTask(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
-        raise ValueError("x" * 4000)
-
-
-class _CancelledTask(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
-        raise asyncio.CancelledError("task cancelled")
-
-
-class _EmptyResultTask(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
-        return ()
-
-
 class _NestedChildTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
-        return (_NodeOutDoc.derive(from_documents=tuple(documents), name="child-out.txt", content="child"),)
+        return (_NodeOutDoc.derive(from_documents=tuple(documents), name="child.txt", content="child"),)
 
 
 class _NestedParentTask(PipelineTask):
@@ -87,11 +66,21 @@ class _NestedParentTask(PipelineTask):
         return await _NestedChildTask.run(documents)
 
 
-# --- Helpers ---
+class _SummaryTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
+        return (
+            _NodeOutDoc.create(
+                name="summary.txt",
+                content="output",
+                derived_from=(documents[0].sha256,),
+                summary="Persist this summary",
+            ),
+        )
 
 
 def _make_input() -> _NodeInDoc:
-    return _NodeInDoc(name="input.txt", content=b"test-input")
+    return _NodeInDoc.create_root(name="input.txt", content="test-input", reason="task-span-test")
 
 
 def _make_flow_frame() -> FlowFrame:
@@ -110,272 +99,176 @@ def _make_context_with_db(
     db: MemoryDatabase,
     *,
     deployment_id: UUID | None = None,
-    flow_node_id: UUID | None = None,
+    flow_span_id: UUID | None = None,
     log_buffer: ExecutionLogBuffer | None = None,
 ) -> ExecutionContext:
-    dep_id = deployment_id or uuid4()
-    ctx = ExecutionContext(
+    resolved_deployment_id = deployment_id or uuid7()
+    resolved_flow_span_id = flow_span_id or uuid7()
+    return ExecutionContext(
         run_id="test-run",
-        run_scope="test-run/scope",
         execution_id=None,
         publisher=_NoopPublisher(),
         limits=MappingProxyType({}),
         limits_status=_SharedStatus(),
         database=db,
-        deployment_id=dep_id,
-        root_deployment_id=dep_id,
+        sinks=build_runtime_sinks(database=db, settings_obj=settings),
+        deployment_id=resolved_deployment_id,
+        root_deployment_id=resolved_deployment_id,
         deployment_name="test-pipeline",
         flow_frame=_make_flow_frame(),
-        current_node_id=flow_node_id or uuid4(),
+        span_id=resolved_flow_span_id,
+        current_span_id=resolved_flow_span_id,
+        flow_span_id=resolved_flow_span_id,
         log_buffer=log_buffer,
     )
-    return ctx
 
 
-# --- Tests ---
+def _latest_task_span(database: MemoryDatabase) -> object:
+    spans = [span for span in database._spans.values() if span.kind == SpanKind.TASK]
+    assert len(spans) == 1
+    return spans[0]
 
 
-@pytest.fixture
-def db() -> MemoryDatabase:
-    return MemoryDatabase()
+@pytest.mark.asyncio
+async def test_successful_task_creates_completed_task_span_with_description_and_document_links() -> None:
+    database = _RecordingSpanDatabase()
+    ctx = _make_context_with_db(database)
+    input_doc = _make_input()
+    with set_execution_context(ctx):
+        result = await _SimpleTask.run((input_doc,))
+
+    task_span = _latest_task_span(database)
+    assert task_span.status == SpanStatus.COMPLETED
+    assert task_span.parent_span_id == ctx.flow_span_id
+    assert task_span.input_document_shas == (input_doc.sha256,)
+    assert task_span.output_document_shas == (result[0].sha256,)
+    assert "documents=[input.txt]" in task_span.description
+
+    receiver_payload = json.loads(task_span.receiver_json)
+    meta_payload = json.loads(task_span.meta_json)
+    input_payload = json.loads(task_span.input_json)
+    assert task_span.target == f"classmethod:{_SimpleTask.__module__}:{_SimpleTask.__qualname__}.run"
+    assert receiver_payload["value"]["task_class"]["path"] == f"{_SimpleTask.__module__}:{_SimpleTask.__qualname__}"
+    assert meta_payload["attempt"] == 0
+    assert input_payload["documents"]["items"][0]["sha256"] == input_doc.sha256
 
 
-class TestTaskNodeCreation:
-    """Test that task execution creates task nodes in the database."""
+@pytest.mark.asyncio
+async def test_successful_task_detail_omits_remote_child_deployment_id() -> None:
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_context_with_db(database)):
+        await _SimpleTask.run((_make_input(),))
 
-    @pytest.mark.asyncio
-    async def test_successful_task_creates_completed_node(self, db: MemoryDatabase) -> None:
-        ctx = _make_context_with_db(db)
-        token = set_execution_context(ctx)
-        try:
+    task_span = _latest_task_span(database)
+    assert "remote_child_deployment_id" not in json.loads(task_span.meta_json)
+
+
+@pytest.mark.asyncio
+async def test_task_completion_includes_log_summary_and_prunes_buffer_state() -> None:
+    root_logger = logging.getLogger()
+    handler = next((item for item in root_logger.handlers if isinstance(item, ExecutionLogHandler)), None)
+    added_handler = False
+    if handler is None:
+        handler = ExecutionLogHandler()
+        root_logger.addHandler(handler)
+        added_handler = True
+
+    buffer = ExecutionLogBuffer()
+    database = _RecordingSpanDatabase()
+    ctx = _make_context_with_db(database, log_buffer=buffer)
+    try:
+        with set_execution_context(ctx):
             await _SimpleTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
+    finally:
+        if added_handler:
+            root_logger.removeHandler(handler)
 
-        task_nodes = [n for n in db._nodes.values() if n.node_kind == NodeKind.TASK]
-        assert len(task_nodes) == 1
-        node = task_nodes[0]
-        assert node.status == NodeStatus.COMPLETED
-        assert node.task_class == "_SimpleTask"
-        assert node.deployment_id == ctx.deployment_id
-        assert node.ended_at is not None
-
-    @pytest.mark.asyncio
-    async def test_task_node_has_correct_parent(self, db: MemoryDatabase) -> None:
-        flow_node_id = uuid4()
-        ctx = _make_context_with_db(db, flow_node_id=flow_node_id)
-        token = set_execution_context(ctx)
-        try:
-            await _SimpleTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-
-        task_node = [n for n in db._nodes.values() if n.node_kind == NodeKind.TASK][0]
-        assert task_node.parent_node_id == flow_node_id
-
-    @pytest.mark.asyncio
-    async def test_task_node_has_input_output_shas(self, db: MemoryDatabase) -> None:
-        ctx = _make_context_with_db(db)
-        token = set_execution_context(ctx)
-        input_doc = _make_input()
-        try:
-            result = await _SimpleTask.run((input_doc,))
-        finally:
-            reset_execution_context(token)
-
-        task_node = [n for n in db._nodes.values() if n.node_kind == NodeKind.TASK][0]
-        assert input_doc.sha256 in task_node.input_document_shas
-        assert len(task_node.output_document_shas) == 1
-        assert result[0].sha256 in task_node.output_document_shas
-
-    @pytest.mark.asyncio
-    async def test_empty_result_has_no_output_shas(self, db: MemoryDatabase) -> None:
-        ctx = _make_context_with_db(db)
-        token = set_execution_context(ctx)
-        try:
-            await _EmptyResultTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-
-        task_node = [n for n in db._nodes.values() if n.node_kind == NodeKind.TASK][0]
-        assert task_node.output_document_shas == ()
-
-    @pytest.mark.asyncio
-    async def test_task_node_payload_includes_log_summary(self, db: MemoryDatabase) -> None:
-        root_logger = logging.getLogger()
-        handler = next((item for item in root_logger.handlers if isinstance(item, ExecutionLogHandler)), None)
-        added_handler = False
-        if handler is None:
-            handler = ExecutionLogHandler()
-            root_logger.addHandler(handler)
-            added_handler = True
-        buffer = ExecutionLogBuffer()
-        ctx = _make_context_with_db(db, log_buffer=buffer)
-        token = set_execution_context(ctx)
-        try:
-            await _SimpleTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-            if added_handler:
-                root_logger.removeHandler(handler)
-
-        task_node = [n for n in db._nodes.values() if n.node_kind == NodeKind.TASK][0]
-        assert task_node.payload["log_summary"]["total"] == 2
-        assert task_node.payload["log_summary"]["errors"] == 0
-
-    @pytest.mark.asyncio
-    async def test_task_completion_prunes_log_summary_state(self, db: MemoryDatabase) -> None:
-        root_logger = logging.getLogger()
-        handler = next((item for item in root_logger.handlers if isinstance(item, ExecutionLogHandler)), None)
-        added_handler = False
-        if handler is None:
-            handler = ExecutionLogHandler()
-            root_logger.addHandler(handler)
-            added_handler = True
-        buffer = ExecutionLogBuffer()
-        ctx = _make_context_with_db(db, log_buffer=buffer)
-        token = set_execution_context(ctx)
-        try:
-            await _SimpleTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-            if added_handler:
-                root_logger.removeHandler(handler)
-
-        task_node = [n for n in db._nodes.values() if n.node_kind == NodeKind.TASK][0]
-        assert buffer.get_summary(task_node.node_id) == {
-            "total": 0,
-            "warnings": 0,
-            "errors": 0,
-            "last_error": "",
-        }
+    task_span = _latest_task_span(database)
+    metrics = json.loads(task_span.metrics_json)
+    assert metrics["log_summary"]["total"] == 2
+    assert metrics["log_summary"]["errors"] == 0
+    assert buffer.get_summary(task_span.span_id) == {"total": 0, "warnings": 0, "errors": 0, "last_error": ""}
 
 
-class TestTaskNodeFailure:
-    """Test that failed tasks create FAILED nodes with error info."""
+@pytest.mark.asyncio
+async def test_failed_task_creates_failed_task_span_with_full_error_message() -> None:
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_context_with_db(database)):
+        with pytest.raises(ValueError, match="deliberate task failure"):
+            await _FailingTask.run((_make_input(),))
 
-    @pytest.mark.asyncio
-    async def test_failed_task_creates_failed_node(self, db: MemoryDatabase) -> None:
-        ctx = _make_context_with_db(db)
-        token = set_execution_context(ctx)
-        try:
-            with pytest.raises(ValueError, match="deliberate task failure"):
-                await _FailingTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-
-        task_nodes = [n for n in db._nodes.values() if n.node_kind == NodeKind.TASK]
-        assert len(task_nodes) == 1
-        node = task_nodes[0]
-        assert node.status == NodeStatus.FAILED
-        assert node.error_type == "ValueError"
-        assert "deliberate task failure" in node.error_message
-        assert node.ended_at is not None
-
-    @pytest.mark.asyncio
-    async def test_cancelled_task_creates_failed_node(self, db: MemoryDatabase) -> None:
-        ctx = _make_context_with_db(db)
-        token = set_execution_context(ctx)
-        try:
-            with pytest.raises(asyncio.CancelledError):
-                await _CancelledTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-
-        task_nodes = [n for n in db._nodes.values() if n.node_kind == NodeKind.TASK]
-        assert len(task_nodes) == 1
-        node = task_nodes[0]
-        assert node.status == NodeStatus.FAILED
-        assert node.error_type == "CancelledError"
-        assert node.ended_at is not None
-
-    @pytest.mark.asyncio
-    async def test_failed_task_preserves_full_error_message(self, db: MemoryDatabase) -> None:
-        ctx = _make_context_with_db(db)
-        token = set_execution_context(ctx)
-        try:
-            with pytest.raises(ValueError, match=r"x{10}"):
-                await _LongFailingTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-
-        task_node = [n for n in db._nodes.values() if n.node_kind == NodeKind.TASK][0]
-        assert task_node.status == NodeStatus.FAILED
-        assert task_node.error_message == "x" * 4000
+    task_span = _latest_task_span(database)
+    assert task_span.status == SpanStatus.FAILED
+    assert task_span.error_type == "ValueError"
+    assert task_span.error_message == "deliberate task failure"
+    assert json.loads(task_span.meta_json)["attempt"] == 0
 
 
-class TestTaskNodeHierarchy:
-    """Test that nested tasks create proper parent-child relationships."""
+@pytest.mark.asyncio
+async def test_nested_tasks_form_parent_child_task_span_hierarchy() -> None:
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_context_with_db(database)):
+        await _NestedParentTask.run((_make_input(),))
 
-    @pytest.mark.asyncio
-    async def test_nested_tasks_have_parent_child(self, db: MemoryDatabase) -> None:
-        ctx = _make_context_with_db(db)
-        token = set_execution_context(ctx)
-        try:
-            await _NestedParentTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-
-        task_nodes = [n for n in db._nodes.values() if n.node_kind == NodeKind.TASK]
-        assert len(task_nodes) == 2
-
-        parent_node = next(n for n in task_nodes if n.task_class == "_NestedParentTask")
-        child_node = next(n for n in task_nodes if n.task_class == "_NestedChildTask")
-
-        # Child's parent is the parent task node
-        assert child_node.parent_node_id == parent_node.node_id
+    task_spans = sorted(
+        (span for span in database._spans.values() if span.kind == SpanKind.TASK),
+        key=lambda span: span.sequence_no,
+    )
+    assert len(task_spans) == 2
+    parent_span, child_span = task_spans
+    assert child_span.parent_span_id == parent_span.span_id
 
 
-class TestDocumentDualWrite:
-    """Test that documents are persisted to both old store and new database."""
+@pytest.mark.asyncio
+async def test_task_persists_documents_and_blobs_with_span_schema() -> None:
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_context_with_db(database)):
+        outputs = await _SummaryTask.run((_make_input(),))
 
-    @pytest.mark.asyncio
-    async def test_documents_persisted_to_database(self, db: MemoryDatabase) -> None:
-        ctx = _make_context_with_db(db)
-        token = set_execution_context(ctx)
-        try:
-            await _SimpleTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
+    output = outputs[0]
+    document_record = database._documents[output.sha256]
+    blob = database._blobs[document_record.content_sha256]
 
-        # Check document records were created
-        assert len(db._documents) > 0
-
-        # Check blob records were created
-        assert len(db._blobs) > 0
-
-    @pytest.mark.asyncio
-    async def test_persisted_documents_include_execution_run_scope(self, db: MemoryDatabase) -> None:
-        ctx = _make_context_with_db(db)
-        token = set_execution_context(ctx)
-        try:
-            await _SimpleTask.run((_make_input(),))
-        finally:
-            reset_execution_context(token)
-
-        assert db._documents
-        assert {doc.run_scope for doc in db._documents.values()} == {ctx.run_scope}
+    assert document_record.document_type == "_NodeOutDoc"
+    assert document_record.summary == "Persist this summary"
+    assert document_record.mime_type == output.mime_type
+    assert document_record.size_bytes == output.size
+    assert document_record.attachment_names == ()
+    assert blob.content == output.content
 
 
-class TestNoDatabase:
-    """Test that tasks work without a database (graceful degradation)."""
+@pytest.mark.asyncio
+async def test_started_and_completed_rows_are_valid_span_records() -> None:
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_context_with_db(database)):
+        await _SimpleTask.run((_make_input(),))
 
-    @pytest.mark.asyncio
-    async def test_task_works_without_database(self) -> None:
-        """When no database is on the context, tasks run normally."""
-        ctx = ExecutionContext(
-            run_id="test-run",
-            run_scope="test-run/scope",
-            execution_id=None,
-            publisher=_NoopPublisher(),
-            limits=MappingProxyType({}),
-            limits_status=_SharedStatus(),
-            database=None,
-            deployment_id=None,
-        )
-        token = set_execution_context(ctx)
-        try:
-            result = await _SimpleTask.run((_make_input(),))
-            assert len(result) == 1
-        finally:
-            reset_execution_context(token)
+    started_span, completed_span = [span for span in database.inserted_spans if getattr(span, "kind", None) == SpanKind.TASK]
+    assert started_span.status == SpanStatus.RUNNING
+    assert completed_span.status == SpanStatus.COMPLETED
+    assert started_span.span_id == completed_span.span_id
+    assert completed_span.version > started_span.version
+    assert completed_span.input_json != ""
+    assert completed_span.meta_json != ""
+
+
+@pytest.mark.asyncio
+async def test_task_detail_includes_retry_configuration() -> None:
+    class _ConfiguredTask(PipelineTask):
+        retries = 3
+        timeout_seconds = 60
+        retry_delay_seconds = 5
+
+        @classmethod
+        async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
+            return (_NodeOutDoc.derive(from_documents=documents, name="configured.txt", content="ok"),)
+
+    database = _RecordingSpanDatabase()
+    with set_execution_context(_make_context_with_db(database)):
+        await _ConfiguredTask.run((_make_input(),))
+
+    task_span = _latest_task_span(database)
+    meta = json.loads(task_span.meta_json)
+    assert meta["retries"] == 3
+    assert meta["timeout_seconds"] == 60
+    assert meta["retry_delay_seconds"] == 5

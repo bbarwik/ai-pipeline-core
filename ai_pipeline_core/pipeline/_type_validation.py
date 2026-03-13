@@ -20,11 +20,12 @@ from typing import Annotated, Any, Literal, Union, cast, get_args, get_origin, g
 from pydantic import BaseModel
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.llm.conversation import Conversation
 
-ALLOWED_TASK_SCALAR_TYPES: tuple[type[Any], ...] = (str, int, float, bool, bytes)
+ALLOWED_TASK_SCALAR_TYPES: tuple[type[Any], ...] = (str, int, float, bool)
 _MAX_WRAPPED_DEPTH = 10
 _UNHANDLED = object()
+_CONVERSATION_MODULE = "ai_pipeline_core.llm.conversation"
+_CONVERSATION_CLASS = "Conversation"
 type _RuntimeValidationResult = object | str | None
 
 
@@ -145,7 +146,7 @@ def _is_conversation_annotation(annotation: Any) -> bool:
     """Check whether an annotation is ``Conversation`` or ``Conversation[T]``."""
     unwrapped = _unwrap_annotated(annotation)
     origin = get_origin(unwrapped)
-    return unwrapped is Conversation or origin is Conversation
+    return _is_conversation_type(unwrapped) or _is_conversation_type(origin)
 
 
 def _is_document_subclass(annotation: Any) -> bool:
@@ -354,9 +355,23 @@ def _literal_runtime_error(value: Any, annotation: Any, *, path: str) -> str | N
 
 
 def _conversation_runtime_error(value: Any, *, path: str) -> str | None:
-    if isinstance(value, Conversation):
+    if _is_conversation_instance(value):
         return None
     return f"{path} must be Conversation, got {type(value).__name__}"
+
+
+def _is_conversation_type(value: Any) -> bool:
+    return isinstance(value, type) and value.__module__ == _CONVERSATION_MODULE and value.__name__ == _CONVERSATION_CLASS
+
+
+def _is_conversation_instance(value: Any) -> bool:
+    value_type = type(value)
+    return (
+        value_type.__module__ == _CONVERSATION_MODULE
+        and value_type.__name__ == _CONVERSATION_CLASS
+        and hasattr(value, "messages")
+        and hasattr(value, "context")
+    )
 
 
 def _typed_leaf_runtime_error(value: Any, annotation: Any, *, path: str) -> _RuntimeValidationResult:

@@ -1,6 +1,6 @@
 """Run completion event integration tests via real Pub/Sub emulator.
 
-Verifies output_document_sha256s correctness, node_id/root_deployment_id
+Verifies output_document_sha256s correctness, span_id/root_deployment_id
 presence, and event integrity after full and partial resume.
 """
 
@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from google.api_core.exceptions import GoogleAPICallError
 
-from ai_pipeline_core.database import create_database
+from ai_pipeline_core.database._memory import MemoryDatabase
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
 from ai_pipeline_core.deployment._types import EventType
 
@@ -83,21 +83,21 @@ def _make_second_publisher(pubsub_test_resources: PubsubTestResources) -> tuple[
 class TestRunCompletedEvent:
     """Run completion event structure and correctness tests."""
 
-    async def test_completed_event_has_node_id_and_root_id(
+    async def test_completed_event_has_span_id_and_root_id(
         self,
         real_publisher: PublisherWithStore,
         pubsub_test_resources: PubsubTestResources,
     ):
-        """Completed event has node_id and root_deployment_id in data payload."""
+        """Completed event has span_id and root_deployment_id in data payload."""
         deployment = TwoStageDeployment()
         await run_pipeline(deployment, real_publisher.publisher)
 
         events = pull_events(pubsub_test_resources, expected_count=TWO_FLOW_EVENT_COUNT)
         completed = _get_completed_event(events)
 
-        assert "node_id" in completed.data
+        assert "span_id" in completed.data
         assert "root_deployment_id" in completed.data
-        assert len(completed.data["node_id"]) > 0
+        assert len(completed.data["span_id"]) > 0
         assert len(completed.data["root_deployment_id"]) > 0
 
     async def test_output_sha256s_point_to_last_flow_outputs(
@@ -123,7 +123,7 @@ class TestRunCompletedEvent:
         """After full resume (all flows cached), completed event is still emitted."""
         deployment = TwoStageDeployment()
         input_doc = make_input_doc()
-        db = create_database(backend="memory")
+        db = MemoryDatabase()
 
         # First run — all flows execute
         await run_pipeline(deployment, real_publisher.publisher, docs=[input_doc], database=db)
@@ -137,16 +137,16 @@ class TestRunCompletedEvent:
 
             # Completed event is still emitted on resume
             completed = _get_completed_event(second_events)
-            assert "node_id" in completed.data
+            assert "span_id" in completed.data
             assert "root_deployment_id" in completed.data
         finally:
             try:
                 second_resources.subscriber_client.delete_subscription(subscription=second_resources.subscription_path)
-            except (OSError, GoogleAPICallError):
+            except OSError, GoogleAPICallError:
                 pass
             try:
                 second_resources.publisher_client.delete_topic(topic=second_resources.topic_path)
-            except (OSError, GoogleAPICallError):
+            except OSError, GoogleAPICallError:
                 pass
 
     async def test_completed_event_correct_after_full_resume_3flow(
@@ -157,7 +157,7 @@ class TestRunCompletedEvent:
         """After full resume on 3-flow pipeline, completed event is still emitted with correct structure."""
         deployment = ThreeStageDeployment()
         input_doc = make_input_doc()
-        db = create_database(backend="memory")
+        db = MemoryDatabase()
 
         # First run — all 3 flows execute
         await run_pipeline(deployment, real_publisher.publisher, docs=[input_doc], database=db)
@@ -170,14 +170,14 @@ class TestRunCompletedEvent:
             second_events = pull_events(second_resources, expected_count=THREE_FLOW_RESUME_EVENT_COUNT)
             completed = _get_completed_event(second_events)
 
-            assert "node_id" in completed.data
+            assert "span_id" in completed.data
             assert "root_deployment_id" in completed.data
         finally:
             try:
                 second_resources.subscriber_client.delete_subscription(subscription=second_resources.subscription_path)
-            except (OSError, GoogleAPICallError):
+            except OSError, GoogleAPICallError:
                 pass
             try:
                 second_resources.publisher_client.delete_topic(topic=second_resources.topic_path)
-            except (OSError, GoogleAPICallError):
+            except OSError, GoogleAPICallError:
                 pass

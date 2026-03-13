@@ -7,7 +7,7 @@ import pytest
 
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.pipeline import PipelineTask, TaskBatch, TaskHandle, as_task_completed, collect_tasks, run_tasks_until
-from ai_pipeline_core.pipeline._execution_context import FlowFrame, pipeline_test_context, reset_execution_context, set_execution_context
+from ai_pipeline_core.pipeline._execution_context import FlowFrame, pipeline_test_context, set_execution_context
 
 
 class _PDoc(Document):
@@ -52,51 +52,39 @@ def _make_doc(content: str = "test") -> _PDoc:
 @pytest.mark.asyncio
 async def test_run_returns_task_handle() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             handle: Any = _FastTask.run((_make_doc(),))
             assert isinstance(handle, TaskHandle)
             result = await handle.result()
             assert len(result) == 1
-        finally:
-            reset_execution_context(token)
 
 
 @pytest.mark.asyncio
 async def test_task_handle_done_property() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             handle = _FastTask.run((_make_doc(),))
             await handle.result()
             assert handle.done is True
-        finally:
-            reset_execution_context(token)
 
 
 @pytest.mark.asyncio
 async def test_task_handle_cancel() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             handle = _SlowTask.run((_make_doc(),))
             handle.cancel()
             with pytest.raises((asyncio.CancelledError, Exception)):
                 await handle.result()
-        finally:
-            reset_execution_context(token)
 
 
 @pytest.mark.asyncio
 async def test_collect_tasks_all_complete() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             h1 = _FastTask.run((_make_doc("a"),))
             h2 = _FastTask.run((_make_doc("b"),))
             batch = await collect_tasks(h1, h2)
-        finally:
-            reset_execution_context(token)
 
     assert isinstance(batch, TaskBatch)
     assert len(batch.completed) == 2
@@ -106,16 +94,15 @@ async def test_collect_tasks_all_complete() -> None:
 @pytest.mark.asyncio
 async def test_collect_tasks_with_deadline_splits() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
         slow: Any = None
         try:
-            fast = _FastTask.run((_make_doc(),))
-            slow = _SlowTask.run((_make_doc(),))
-            batch = await collect_tasks(fast, slow, deadline_seconds=0.5)
+            with set_execution_context(ctx.with_flow(_make_flow_frame())):
+                fast = _FastTask.run((_make_doc(),))
+                slow = _SlowTask.run((_make_doc(),))
+                batch = await collect_tasks(fast, slow, deadline_seconds=0.5)
         finally:
             if slow is not None:
                 slow.cancel()
-            reset_execution_context(token)
 
     assert len(batch.completed) == 1
     assert len(batch.incomplete) == 1
@@ -124,13 +111,10 @@ async def test_collect_tasks_with_deadline_splits() -> None:
 @pytest.mark.asyncio
 async def test_collect_tasks_failed_goes_to_incomplete() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             good = _FastTask.run((_make_doc(),))
             bad = _FailTask.run((_make_doc(),))
             batch = await collect_tasks(good, bad)
-        finally:
-            reset_execution_context(token)
 
     assert len(batch.completed) == 1
     assert len(batch.incomplete) == 1
@@ -139,12 +123,9 @@ async def test_collect_tasks_failed_goes_to_incomplete() -> None:
 @pytest.mark.asyncio
 async def test_collect_tasks_accepts_list() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             handles = [_FastTask.run((_make_doc("x"),)) for _ in range(3)]
             batch = await collect_tasks(handles)
-        finally:
-            reset_execution_context(token)
 
     assert len(batch.completed) == 3
     assert batch.incomplete == []
@@ -153,13 +134,10 @@ async def test_collect_tasks_accepts_list() -> None:
 @pytest.mark.asyncio
 async def test_as_task_completed_yields_handles() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             h1 = _FastTask.run((_make_doc("1"),))
             h2 = _FastTask.run((_make_doc("2"),))
             yielded = [handle async for handle in as_task_completed(h1, h2)]
-        finally:
-            reset_execution_context(token)
 
     assert len(yielded) == 2
     assert all(isinstance(handle, TaskHandle) for handle in yielded)
@@ -168,16 +146,13 @@ async def test_as_task_completed_yields_handles() -> None:
 @pytest.mark.asyncio
 async def test_run_tasks_until_dispatches_and_collects() -> None:
     with pipeline_test_context() as ctx:
-        token = set_execution_context(ctx.with_flow(_make_flow_frame()))
-        try:
+        with set_execution_context(ctx.with_flow(_make_flow_frame())):
             groups = [
                 (((_make_doc("a"),),), {}),
                 (((_make_doc("b"),),), {}),
                 (((_make_doc("c"),),), {}),
             ]
             batch = await run_tasks_until(_FastTask, groups)
-        finally:
-            reset_execution_context(token)
 
     assert len(batch.completed) == 3
     assert batch.incomplete == []

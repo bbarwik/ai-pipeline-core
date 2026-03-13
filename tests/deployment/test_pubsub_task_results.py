@@ -1,7 +1,7 @@
 """Tests for task lifecycle events — TaskStartedEvent, TaskCompletedEvent, TaskFailedEvent.
 
-Verifies event construction with new fields (node_id, root_deployment_id,
-parent_deployment_task_id), _MemoryPublisher recording, and PubSubPublisher
+Verifies event construction with new fields (span_id, root_deployment_id,
+parent_deployment_task_id, status), _MemoryPublisher recording, and PubSubPublisher
 envelope generation.
 """
 
@@ -31,16 +31,24 @@ FLOW_NAME = "analyze"
 STEP = 2
 TASK_NAME = "extract_entities"
 TASK_CLASS = "ExtractEntitiesTask"
+TASK_RUNNING_STATUS = "running"
+TASK_COMPLETED_STATUS = "completed"
+TASK_FAILED_STATUS = "failed"
+
+
+TOTAL_STEPS = 3
 
 
 def _make_started_event(*, parent: str | None = PARENT_DEPLOYMENT_TASK_ID) -> TaskStartedEvent:
     return TaskStartedEvent(
         run_id=RUN_ID,
-        node_id=NODE_ID,
+        span_id=NODE_ID,
         root_deployment_id=ROOT_DEPLOYMENT_ID,
         parent_deployment_task_id=parent,
         flow_name=FLOW_NAME,
         step=STEP,
+        total_steps=TOTAL_STEPS,
+        status=TASK_RUNNING_STATUS,
         task_name=TASK_NAME,
         task_class=TASK_CLASS,
     )
@@ -54,15 +62,17 @@ def _make_completed_event(
 ) -> TaskCompletedEvent:
     return TaskCompletedEvent(
         run_id=RUN_ID,
-        node_id=NODE_ID,
+        span_id=NODE_ID,
         root_deployment_id=ROOT_DEPLOYMENT_ID,
         parent_deployment_task_id=parent,
         flow_name=FLOW_NAME,
         step=STEP,
+        total_steps=TOTAL_STEPS,
+        status=TASK_COMPLETED_STATUS,
         task_name=TASK_NAME,
         task_class=TASK_CLASS,
         duration_ms=duration_ms,
-        output_documents=output_documents or [],
+        output_documents=tuple(output_documents or []),
     )
 
 
@@ -73,11 +83,13 @@ def _make_failed_event(
 ) -> TaskFailedEvent:
     return TaskFailedEvent(
         run_id=RUN_ID,
-        node_id=NODE_ID,
+        span_id=NODE_ID,
         root_deployment_id=ROOT_DEPLOYMENT_ID,
         parent_deployment_task_id=parent,
         flow_name=FLOW_NAME,
         step=STEP,
+        total_steps=TOTAL_STEPS,
+        status=TASK_FAILED_STATUS,
         task_name=TASK_NAME,
         task_class=TASK_CLASS,
         error_message=error_message,
@@ -85,34 +97,37 @@ def _make_failed_event(
 
 
 class TestTaskEventConstruction:
-    """Task events carry node_id, root_deployment_id, parent_deployment_task_id."""
+    """Task events carry span_id, root_deployment_id, parent_deployment_task_id, and status."""
 
     def test_started_event_has_new_fields(self):
         event = _make_started_event()
-        assert event.node_id == NODE_ID
+        assert event.span_id == NODE_ID
         assert event.root_deployment_id == ROOT_DEPLOYMENT_ID
         assert event.parent_deployment_task_id == PARENT_DEPLOYMENT_TASK_ID
         assert event.run_id == RUN_ID
         assert event.flow_name == FLOW_NAME
         assert event.step == STEP
+        assert event.status == TASK_RUNNING_STATUS
         assert event.task_name == TASK_NAME
         assert event.task_class == TASK_CLASS
 
     def test_completed_event_has_new_fields_and_duration(self):
         doc = DocumentRef(sha256="abc123", class_name="Report", name="report.md")
         event = _make_completed_event(duration_ms=2000, output_documents=[doc])
-        assert event.node_id == NODE_ID
+        assert event.span_id == NODE_ID
         assert event.root_deployment_id == ROOT_DEPLOYMENT_ID
         assert event.parent_deployment_task_id == PARENT_DEPLOYMENT_TASK_ID
+        assert event.status == TASK_COMPLETED_STATUS
         assert event.duration_ms == 2000
         assert len(event.output_documents) == 1
         assert event.output_documents[0].sha256 == "abc123"
 
     def test_failed_event_has_new_fields_and_error(self):
         event = _make_failed_event(error_message="timeout reached")
-        assert event.node_id == NODE_ID
+        assert event.span_id == NODE_ID
         assert event.root_deployment_id == ROOT_DEPLOYMENT_ID
         assert event.parent_deployment_task_id == PARENT_DEPLOYMENT_TASK_ID
+        assert event.status == TASK_FAILED_STATUS
         assert event.error_message == "timeout reached"
 
     def test_parent_deployment_task_id_can_be_none(self):
@@ -133,9 +148,10 @@ class TestTaskEventConstruction:
             output_documents=[DocumentRef(sha256="def456", class_name="Summary", name="summary.md")],
         )
         d = asdict(event)
-        assert d["node_id"] == NODE_ID
+        assert d["span_id"] == NODE_ID
         assert d["root_deployment_id"] == ROOT_DEPLOYMENT_ID
         assert d["parent_deployment_task_id"] == PARENT_DEPLOYMENT_TASK_ID
+        assert d["status"] == TASK_COMPLETED_STATUS
         assert d["output_documents"][0]["sha256"] == "def456"
 
 
@@ -209,11 +225,12 @@ class TestPubSubPublisherTaskEnvelopes:
         assert envelope["type"] == EventType.TASK_STARTED
         assert envelope["subject"] == RUN_ID
         assert envelope["specversion"] == "1.0"
-        assert envelope["data"]["node_id"] == NODE_ID
+        assert envelope["data"]["span_id"] == NODE_ID
         assert envelope["data"]["root_deployment_id"] == ROOT_DEPLOYMENT_ID
         assert envelope["data"]["parent_deployment_task_id"] == PARENT_DEPLOYMENT_TASK_ID
         assert envelope["data"]["flow_name"] == FLOW_NAME
         assert envelope["data"]["step"] == STEP
+        assert envelope["data"]["status"] == TASK_RUNNING_STATUS
         assert envelope["data"]["task_name"] == TASK_NAME
         assert envelope["data"]["task_class"] == TASK_CLASS
         assert attributes["event_type"] == str(EventType.TASK_STARTED)
@@ -230,8 +247,9 @@ class TestPubSubPublisherTaskEnvelopes:
         envelope = json.loads(data_bytes)
 
         assert envelope["type"] == EventType.TASK_COMPLETED
-        assert envelope["data"]["node_id"] == NODE_ID
+        assert envelope["data"]["span_id"] == NODE_ID
         assert envelope["data"]["root_deployment_id"] == ROOT_DEPLOYMENT_ID
+        assert envelope["data"]["status"] == TASK_COMPLETED_STATUS
         assert envelope["data"]["duration_ms"] == 3000
         assert len(envelope["data"]["output_documents"]) == 1
         assert envelope["data"]["output_documents"][0]["sha256"] == "sha-abc"
@@ -247,9 +265,10 @@ class TestPubSubPublisherTaskEnvelopes:
         envelope = json.loads(data_bytes)
 
         assert envelope["type"] == EventType.TASK_FAILED
-        assert envelope["data"]["node_id"] == NODE_ID
+        assert envelope["data"]["span_id"] == NODE_ID
         assert envelope["data"]["root_deployment_id"] == ROOT_DEPLOYMENT_ID
         assert envelope["data"]["parent_deployment_task_id"] == PARENT_DEPLOYMENT_TASK_ID
+        assert envelope["data"]["status"] == TASK_FAILED_STATUS
         assert envelope["data"]["error_message"] == "disk full"
         assert attributes["event_type"] == str(EventType.TASK_FAILED)
 

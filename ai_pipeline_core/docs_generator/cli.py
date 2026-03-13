@@ -394,13 +394,11 @@ def _render_inherited_methods(cls: ClassInfo, lines: list[str]) -> None:
 
 
 def _render_method_stub(method: MethodInfo, lines: list[str]) -> None:
-    """Render a method stub with optional docstring."""
+    """Render a compact method stub for README summaries."""
+    lines.append(f"    def {method.name}{method.signature}: ...")
     if method.docstring:
-        doc = method.docstring.splitlines()[0].strip()
-        lines.append(f"    def {method.name}{method.signature}:")
-        lines.append(f'        """{doc}"""')
-    else:
-        lines.append(f"    def {method.name}{method.signature}: ...")
+        doc_line = method.docstring.splitlines()[0].strip()
+        lines.append(f'        """{doc_line}"""')
 
 
 def _render_class_summary(cls: ClassInfo, lines: list[str]) -> None:
@@ -434,12 +432,10 @@ def _render_class_summary(cls: ClassInfo, lines: list[str]) -> None:
 def _render_function_summary(func: FunctionInfo, lines: list[str]) -> None:
     """Render a function as Python code for README.md."""
     prefix = "async " if func.is_async else ""
-    lines.append(f"{prefix}def {func.name}{func.signature}:")
+    lines.append(f"{prefix}def {func.name}{func.signature}: ...")
     if func.docstring:
-        doc = func.docstring.splitlines()[0].strip()
-        lines.append(f'    """{doc}"""')
-    else:
-        lines.append("    ...")
+        doc_line = func.docstring.splitlines()[0].strip()
+        lines.append(f'    """{doc_line}"""')
 
 
 # ---------------------------------------------------------------------------

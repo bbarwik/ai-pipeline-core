@@ -1,475 +1,368 @@
-"""CLI tool for replaying captured pipeline conversations, tasks, and flows."""
+"""CLI for generic replay and replay experiments."""
 
 import argparse
 import asyncio
 import importlib
-import re
+import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 import yaml
 from pydantic import BaseModel
 
-from ai_pipeline_core.database import create_database_from_settings
-from ai_pipeline_core.database._factory import Database
-from ai_pipeline_core.database._filesystem import FilesystemDatabase
+from ai_pipeline_core._codec import import_by_path
+from ai_pipeline_core.database._factory import Database, create_database_from_settings
+from ai_pipeline_core.database._json_helpers import parse_json_object
 from ai_pipeline_core.database._protocol import DatabaseReader
-from ai_pipeline_core.database._types import NodeKind
+from ai_pipeline_core.database._types import SpanRecord
+from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.settings import Settings
+from ai_pipeline_core.logger import get_pipeline_logger
+from ai_pipeline_core.settings import settings
 
-from .types import ConversationReplay, FlowReplay, TaskReplay, _infer_db_path
+from ._execute import execute_span
+from ._experiment import ExperimentOverrides, experiment_batch, experiment_span, find_experiment_span_ids
+
+__all__ = ["main"]
 
 logger = get_pipeline_logger(__name__)
-
-_PAYLOAD_CLASSES: dict[str, type[ConversationReplay | TaskReplay | FlowReplay]] = {
-    "conversation": ConversationReplay,
-    "pipeline_task": TaskReplay,
-    "pipeline_flow": FlowReplay,
-}
-
-_NODE_KIND_TO_PAYLOAD_TYPE: dict[NodeKind, str] = {
-    NodeKind.CONVERSATION_TURN: "conversation",
-    NodeKind.TASK: "pipeline_task",
-    NodeKind.FLOW: "pipeline_flow",
-}
-
 _CONTENT_PREVIEW_LENGTH = 200
-_MAIN_MODULE_PATTERN = re.compile(r"__main__:")
 
 
-def _string_key_dict(data: Any) -> dict[str, Any]:
-    """Normalize arbitrary YAML/object mappings to ``dict[str, Any]``."""
-    if not isinstance(data, dict):
-        return {}
-    mapping = cast(dict[Any, Any], data)
-    normalized: dict[str, Any] = {}
-    for key, value in mapping.items():
-        normalized[str(key)] = value
-    return normalized
+def infer_db_path(replay_file: Path) -> Path:
+    """Walk up from a replay file to find a snapshot root."""
+    current = replay_file.resolve().parent
+    while current != current.parent:
+        if (current / "spans").is_dir() or (current / "blobs").is_dir():
+            return current
+        current = current.parent
+    raise FileNotFoundError(f"Could not find a snapshot root above {replay_file}. Use --db-path to point at the FilesystemDatabase root.")
 
 
 def _import_modules(modules: list[str]) -> None:
-    """Import user-specified modules so their Document subclasses and functions are registered."""
     for module_name in modules:
-        try:
-            importlib.import_module(module_name)
-        except ImportError as exc:
-            print(f"Warning: Could not import '{module_name}': {exc}", file=sys.stderr)
+        importlib.import_module(module_name)
 
 
-def _remap_main_references(payload: ConversationReplay | TaskReplay | FlowReplay, imported_modules: list[str]) -> ConversationReplay | TaskReplay | FlowReplay:
-    """Remap __main__:X references to the actual module path."""
-    if not imported_modules:
-        return payload
-
-    updates: dict[str, Any] = {}
-
-    if isinstance(payload, (TaskReplay, FlowReplay)) and _MAIN_MODULE_PATTERN.match(payload.function_path):
-        qualname = payload.function_path.split(":", 1)[1]
-        resolved = _find_symbol_in_modules(qualname, imported_modules)
-        if resolved:
-            updates["function_path"] = resolved
-            logger.debug("Remapped function_path: __main__:%s -> %s", qualname, resolved)
-
-    if isinstance(payload, ConversationReplay) and payload.response_format and _MAIN_MODULE_PATTERN.match(payload.response_format):
-        qualname = payload.response_format.split(":", 1)[1]
-        resolved = _find_symbol_in_modules(qualname, imported_modules)
-        if resolved:
-            updates["response_format"] = resolved
-            logger.debug("Remapped response_format: __main__:%s -> %s", qualname, resolved)
-
-    return payload.model_copy(update=updates) if updates else payload
+async def _load_span_from_database(database: DatabaseReader, span_id: UUID) -> SpanRecord:
+    span = await database.get_span(span_id)
+    if span is None:
+        raise FileNotFoundError(f"Span {span_id} was not found in the database.")
+    return span
 
 
-def _find_symbol_in_modules(qualname: str, modules: list[str]) -> str | None:
-    """Search imported modules for a symbol by qualname."""
-    top_name = qualname.split(".", maxsplit=1)[0]
-    for module_name in modules:
-        module = sys.modules.get(module_name)
-        if module and hasattr(module, top_name):
-            return f"{module_name}:{qualname}"
-    return None
+def _resolve_database_for_span(db_path: str | None) -> tuple[Database, str]:
+    if db_path is not None:
+        resolved_path = Path(db_path).resolve()
+        return FilesystemDatabase(resolved_path, read_only=True), str(resolved_path)
+    if not settings.clickhouse_host:
+        raise ValueError("--from-db without --db-path requires CLICKHOUSE_HOST, or pass --db-path to a FilesystemDatabase snapshot.")
+    return create_database_from_settings(settings), "clickhouse"
 
 
-def _load_payload(path: Path) -> ConversationReplay | TaskReplay | FlowReplay:
-    """Load a replay YAML file and return the typed payload."""
-    text = path.read_text(encoding="utf-8")
-    raw = yaml.safe_load(text)
-    if not isinstance(raw, dict):
-        raise TypeError(f"Expected a YAML mapping in {path}, got {type(raw).__name__}")
-
-    data = _string_key_dict(raw)
-    payload_type_raw = data.get("payload_type")
-    payload_type = payload_type_raw if isinstance(payload_type_raw, str) else None
-    if payload_type not in _PAYLOAD_CLASSES:
-        valid = ", ".join(sorted(_PAYLOAD_CLASSES))
-        raise ValueError(f"Unknown payload_type '{payload_type}' in {path}. Valid types: {valid}. Check that the file is a supported replay YAML payload.")
-
-    cls = _PAYLOAD_CLASSES[payload_type]
-    return cls.from_yaml(text)
+def _resolve_database_for_file(replay_file: Path, db_path: str | None) -> tuple[FilesystemDatabase, str]:
+    resolved_path = Path(db_path).resolve() if db_path else infer_db_path(replay_file)
+    return FilesystemDatabase(resolved_path, read_only=True), str(resolved_path)
 
 
-async def _load_payload_from_database(database: DatabaseReader, node_id: UUID) -> ConversationReplay | TaskReplay | FlowReplay:
-    """Load a replay payload from an execution node."""
-    node = await database.get_node(node_id)
-    if node is None:
-        raise FileNotFoundError(
-            f"Execution node {node_id} was not found in the database. Use ai-trace list/show to inspect available deployment and node identifiers."
-        )
-
-    payload_data = node.payload.get("replay_payload")
-    if not isinstance(payload_data, dict):
-        fallback_type = _NODE_KIND_TO_PAYLOAD_TYPE.get(node.node_kind)
-        if fallback_type is None:
-            raise ValueError(
-                f"Execution node {node_id} ({node.node_kind.value}) does not carry a replay payload. "
-                f"Replay is supported for conversation_turn, task, and flow nodes."
-            )
-        raise TypeError(
-            f"Execution node {node_id} ({node.node_kind.value}, status={node.status.value}) has no replay payload and cannot be replayed. "
-            "Replay requires payload['replay_payload'] to be persisted on the conversation_turn/task/flow node, "
-            "including failed nodes that recorded replay data."
-        )
-    payload_data = _string_key_dict(payload_data)
-
-    payload_type_raw = payload_data.get("payload_type")
-    payload_type = payload_type_raw if isinstance(payload_type_raw, str) else None
-    if payload_type not in _PAYLOAD_CLASSES:
-        fallback_type = _NODE_KIND_TO_PAYLOAD_TYPE.get(node.node_kind)
-        if fallback_type is None:
-            raise ValueError(
-                f"Execution node {node_id} has an unsupported replay payload_type={payload_type!r}. "
-                f"Replay is supported for conversation, pipeline_task, and pipeline_flow payloads."
-            )
-        payload_type = fallback_type
-        payload_data = dict(payload_data)
-        payload_data["payload_type"] = payload_type
-
-    payload_cls = _PAYLOAD_CLASSES[payload_type]
-    return payload_cls.model_validate(payload_data)
+def _validate_replay_file(replay_file: Path) -> None:
+    if not replay_file.exists():
+        raise FileNotFoundError(f"File not found: {replay_file}")
+    if replay_file.is_dir():
+        raise ValueError(f"Expected a span JSON file, got directory {replay_file}. Use --from-db <span_id> or point at one span JSON file.")
+    if replay_file.suffix != ".json":
+        raise ValueError(f"Replay file {replay_file} must be a span JSON file. YAML replay payloads are no longer supported.")
 
 
-def _apply_overrides(
-    payload: ConversationReplay | TaskReplay | FlowReplay,
-    overrides: list[str],
-) -> ConversationReplay | TaskReplay | FlowReplay:
-    """Apply --set KEY=VALUE overrides with YAML parsing and Pydantic validation."""
-    if not overrides:
-        return payload
-
-    updates: dict[str, Any] = {}
-    for item in overrides:
-        if "=" not in item:
-            raise ValueError(f"Invalid --set format: '{item}'. Expected KEY=VALUE (e.g., --set model=grok-4.1-fast).")
-        key, value = item.split("=", 1)
-        field_names = set(type(payload).model_fields)
-        if key not in field_names:
-            raise ValueError(f"Unknown field '{key}' for {type(payload).__name__}. Valid fields: {', '.join(sorted(field_names))}.")
-        updates[key] = yaml.safe_load(value)
-
-    updated_data = payload.model_dump(mode="python")
-    updated_data.update(updates)
-    return type(payload).model_validate(updated_data)
+def _read_span_id_from_json_file(replay_file: Path) -> UUID:
+    raw_value = json.loads(replay_file.read_text(encoding="utf-8"))
+    if not isinstance(raw_value, dict):
+        raise TypeError(f"Expected JSON object in {replay_file}, got {type(raw_value).__name__}.")
+    span_id_raw = raw_value.get("span_id")
+    if not isinstance(span_id_raw, str):
+        raise TypeError(f"Replay file {replay_file} is missing string field 'span_id'.")
+    return UUID(span_id_raw)
 
 
-def _format_result(result: Any) -> str:
-    """Format an execution result for terminal output."""
-    if hasattr(result, "content") and hasattr(result, "usage"):
-        content = result.content or ""
-        preview = content[:_CONTENT_PREVIEW_LENGTH] + ("..." if len(content) > _CONTENT_PREVIEW_LENGTH else "")
-        lines = [preview]
-        if result.usage:
-            lines.append(f"\n[tokens: {result.usage.total_tokens}, cost: ${result.cost:.4f}]")
-        if hasattr(result, "parsed") and result.parsed is not None:
-            lines.append(f"[parsed: {type(result.parsed).__name__}]")
-        return "\n".join(lines)
-
-    if isinstance(result, Document):
-        doc = cast("Document[Any]", result)
-        return f"[Document: {type(doc).__name__}] {doc.name} ({len(doc.content)} bytes)"
-
-    if isinstance(result, (list, tuple)):
-        results = cast("list[Any] | tuple[Any, ...]", result)
-        items: list[str] = []
-        for item in results:
-            if isinstance(item, Document):
-                typed_doc = cast("Document[Any]", item)
-                items.append(f"  {type(typed_doc).__name__}: {typed_doc.name}")
-                continue
-            items.append(f"  {item!r}")
-        return f"[{len(results)} result(s)]\n" + "\n".join(items)
-
-    return repr(result)
+async def _load_span_from_file_path(replay_file: Path, database: DatabaseReader) -> SpanRecord:
+    await asyncio.to_thread(_validate_replay_file, replay_file)
+    try:
+        span_id = UUID(replay_file.stem)
+    except ValueError:
+        span_id = await asyncio.to_thread(_read_span_id_from_json_file, replay_file)
+    return await _load_span_from_database(database, span_id)
 
 
 def _serialize_result(result: Any) -> dict[str, Any]:
-    """Serialize an execution result to a dict for YAML output."""
     output: dict[str, Any] = {"timestamp": datetime.now(UTC).isoformat()}
-
     if hasattr(result, "content") and hasattr(result, "usage"):
         output["type"] = "conversation"
         output["content"] = result.content or ""
-        if result.usage:
-            usage = result.usage
-            output["usage"] = usage.model_dump() if isinstance(usage, BaseModel) else {"total_tokens": usage.total_tokens}
         output["cost"] = result.cost
-        if hasattr(result, "parsed") and result.parsed is not None:
-            output["parsed_type"] = type(result.parsed).__qualname__
-            output["parsed"] = result.parsed.model_dump() if isinstance(result.parsed, BaseModel) else str(result.parsed)
+        usage = result.usage
+        output["usage"] = usage.model_dump() if isinstance(usage, BaseModel) else {"total_tokens": usage.total_tokens}
         return output
-
     if isinstance(result, Document):
-        doc = cast("Document[Any]", result)
         output["type"] = "document"
-        output["class_name"] = type(doc).__name__
-        output["name"] = doc.name
-        output["content_bytes"] = len(doc.content)
-        output["sha256"] = doc.sha256
+        output["name"] = result.name
+        output["sha256"] = result.sha256
         return output
-
-    if isinstance(result, (list, tuple)):
-        results = cast("list[Any] | tuple[Any, ...]", result)
+    if isinstance(result, tuple) and all(isinstance(item, Document) for item in result):
         output["type"] = "document_list"
-        output["count"] = len(results)
-        documents: list[dict[str, Any]] = []
-        for item in results:
-            if isinstance(item, Document):
-                typed_doc = cast("Document[Any]", item)
-                documents.append({
-                    "class_name": type(typed_doc).__name__,
-                    "name": typed_doc.name,
-                    "content_bytes": len(typed_doc.content),
-                    "sha256": typed_doc.sha256,
-                })
-                continue
-            documents.append({"value": repr(item)})
-        output["documents"] = documents
+        output["documents"] = [{"name": item.name, "sha256": item.sha256} for item in result]
         return output
-
-    output["type"] = "unknown"
+    output["type"] = type(result).__name__
     output["value"] = repr(result)
     return output
 
 
+def _format_result(result: Any) -> str:
+    if hasattr(result, "content") and hasattr(result, "usage"):
+        content = result.content or ""
+        preview = content[:_CONTENT_PREVIEW_LENGTH]
+        if len(content) > _CONTENT_PREVIEW_LENGTH:
+            preview += "..."
+        return preview
+    if isinstance(result, Document):
+        return f"{type(result).__name__}: {result.name}"
+    if isinstance(result, tuple) and all(isinstance(item, Document) for item in result):
+        return "\n".join(f"{type(item).__name__}: {item.name}" for item in result)
+    return repr(result)
+
+
 def _write_output(output_dir: Path, result: Any) -> Path:
-    """Write replay execution output to output_dir/output.yaml."""
-    output_data = _serialize_result(result)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "output.yaml"
     output_path.write_text(
-        yaml.dump(output_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
+        yaml.dump(_serialize_result(result), sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
     return output_path
 
 
-def _print_run_header(
-    payload: ConversationReplay | TaskReplay | FlowReplay,
-    source_label: str,
-    database_label: str,
-    output_dir: Path | None,
-) -> None:
-    """Print replay execution header with payload details."""
-    print(f"Replaying {type(payload).__name__} from {source_label}")
-    if isinstance(payload, ConversationReplay):
-        print(f"  model: {payload.model}")
-    else:
-        print(f"  function: {payload.function_path}")
-    print(f"  database: {database_label}")
-    if output_dir is not None:
-        print(f"  output: {output_dir}")
-    print()
-
-
-def _resolve_database_for_file(replay_file: Path, db_path: str | None) -> tuple[Database, str]:
-    """Open the database used to resolve document refs for a replay YAML file."""
-    resolved_path = Path(db_path).resolve() if db_path else _infer_db_path(replay_file)
-    return FilesystemDatabase(resolved_path), str(resolved_path)
-
-
-def _resolve_database_for_node(db_path: str | None) -> tuple[Database, str]:
-    """Open the database used to load a replay payload by node id."""
-    if db_path is not None:
-        resolved_path = Path(db_path).resolve()
-        return FilesystemDatabase(resolved_path), str(resolved_path)
-
-    settings = Settings()
-    if not settings.clickhouse_host:
-        raise ValueError(
-            "--from-db without --db-path requires ClickHouse settings. Set CLICKHOUSE_HOST or provide --db-path pointing at a FilesystemDatabase snapshot."
-        )
-    return create_database_from_settings(settings), "clickhouse"
-
-
-async def _execute_with_database(
-    payload: ConversationReplay | TaskReplay | FlowReplay,
-    database: Database,
-) -> Any:
-    """Execute a replay payload and always close the database."""
-    try:
-        return await payload.execute(database)
-    finally:
-        await database.shutdown()
-
-
 def _default_output_dir(replay_file: Path | None, from_db: str | None) -> Path:
-    """Compute the default output directory for a replay run."""
     if replay_file is not None:
         return replay_file.parent / f"{replay_file.stem}_replay"
     if from_db is not None:
-        return Path.cwd() / f"node_{from_db[:8]}_replay"
+        return Path.cwd() / f"span_{from_db[:8]}_replay"
     return Path.cwd() / "replay_output"
 
 
+def _load_response_format(path: str) -> type[BaseModel]:
+    loaded = import_by_path(path)
+    if not isinstance(loaded, type) or not issubclass(loaded, BaseModel):
+        raise TypeError(f"Replay override response_format={path!r} resolved to {type(loaded).__name__}, not a BaseModel subclass.")
+    return loaded
+
+
+def _build_overrides(args: argparse.Namespace) -> ExperimentOverrides | None:
+    model_options: dict[str, Any] = {}
+    override_values: dict[str, Any] = {}
+    if args.model:
+        override_values["model"] = args.model
+    for item in args.set or []:
+        if "=" not in item:
+            raise ValueError(f"Invalid --set value {item!r}. Use KEY=VALUE.")
+        key, raw_value = item.split("=", 1)
+        value = yaml.safe_load(raw_value)
+        if key == "model":
+            override_values["model"] = value
+            continue
+        if key == "response_format":
+            if not isinstance(value, str):
+                raise TypeError("--set response_format=... requires an import path string.")
+            override_values["response_format"] = _load_response_format(value)
+            continue
+        model_options[key] = value
+    if model_options:
+        override_values["model_options"] = model_options
+    if not override_values:
+        return None
+    return ExperimentOverrides(**override_values)
+
+
+def _print_show(span: SpanRecord) -> None:
+    meta = parse_json_object(span.meta_json, context=f"Span {span.span_id}", field_name="meta_json")
+    metrics = parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json")
+    print(f"Kind: {span.kind}")
+    print(f"Span ID: {span.span_id}")
+    print(f"Name: {span.name}")
+    print(f"Status: {span.status}")
+    print(f"Target: {span.target or '<non-replayable>'}")
+    print("\nmeta_json:")
+    print(json.dumps(meta, indent=2, sort_keys=True))
+    print("\nmetrics_json:")
+    print(json.dumps(metrics, indent=2, sort_keys=True))
+
+
+async def _run_span(
+    *,
+    span_id: UUID,
+    database: DatabaseReader,
+) -> Any:
+    return await execute_span(span_id, source_db=database)
+
+
+async def _run_experiment_span(
+    *,
+    span_id: UUID,
+    database: DatabaseReader,
+    overrides: ExperimentOverrides,
+) -> Any:
+    result = await experiment_span(
+        span_id,
+        source_db=database,
+        overrides=overrides,
+    )
+    return result.result
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
-    """Execute a replay YAML file or a replay payload loaded from the database."""
-    imported_modules: list[str] = args.modules or []
-    _import_modules(imported_modules)
-
+    imported_modules = args.modules or []
     replay_file = Path(args.replay_file).resolve() if args.replay_file else None
-    payload: ConversationReplay | TaskReplay | FlowReplay
     database: Database | None = None
-    source_label: str
-    database_label: str
-
     try:
+        _import_modules(imported_modules)
+        overrides = _build_overrides(args)
         if args.from_db:
-            node_id = UUID(args.from_db)
-            database, database_label = _resolve_database_for_node(args.db_path)
-            try:
-                payload = asyncio.run(_load_payload_from_database(database, node_id))
-            except Exception:
-                asyncio.run(database.shutdown())
-                raise
-            source_label = f"database node {node_id}"
+            database, database_label = _resolve_database_for_span(args.db_path)
+            span_id = UUID(args.from_db)
+            source_label = f"database span {span_id}"
+            span = asyncio.run(_load_span_from_database(database, span_id))
         else:
             if replay_file is None:
-                raise ValueError("Replay file is required unless --from-db is used.")
-            if not replay_file.exists():
-                print(f"Error: File not found: {replay_file}", file=sys.stderr)
-                return 1
-            payload = _load_payload(replay_file)
+                raise ValueError("run requires a replay file or --from-db <span_id>.")
             database, database_label = _resolve_database_for_file(replay_file, args.db_path)
             source_label = replay_file.name
-
-        payload = _remap_main_references(payload, imported_modules)
-        payload = _apply_overrides(payload, args.set or [])
-    except (FileNotFoundError, TypeError, ValueError, yaml.YAMLError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
-    output_dir = Path(args.output_dir).resolve() if args.output_dir else _default_output_dir(replay_file, args.from_db)
-    _print_run_header(payload, source_label, database_label, output_dir)
-    assert database is not None
-
-    try:
-        result = asyncio.run(_execute_with_database(payload, database))
-    except Exception as exc:
-        print(f"Error during execution: {exc}", file=sys.stderr)
-        logger.debug("Replay execution failed", exc_info=True)
-        return 1
-
-    print(_format_result(result))
-
-    try:
+            span = asyncio.run(_load_span_from_file_path(replay_file, database))
+        print(f"Replaying {span.kind} span from {source_label}")
+        print(f"  span_id: {span.span_id}")
+        print(f"  database: {database_label}\n")
+        if overrides is None:
+            result = asyncio.run(_run_span(span_id=span.span_id, database=database))
+        else:
+            result = asyncio.run(_run_experiment_span(span_id=span.span_id, database=database, overrides=overrides))
+        print(_format_result(result))
+        output_dir = Path(args.output_dir).resolve() if args.output_dir else _default_output_dir(replay_file, args.from_db)
         _write_output(output_dir, result)
         print(f"\n[output: {output_dir}]")
-    except OSError as exc:
-        print(f"Warning: Could not save output: {exc}", file=sys.stderr)
-
-    return 0
+        return 0
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        logger.debug("Replay run failed", exc_info=True)
+        return 1
+    finally:
+        if database is not None:
+            asyncio.run(database.shutdown())
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
-    """Pretty-print a replay YAML file."""
-    replay_file = Path(args.replay_file).resolve()
-    if not replay_file.exists():
-        print(f"Error: File not found: {replay_file}", file=sys.stderr)
-        return 1
-
+    replay_file = Path(args.replay_file).resolve() if args.replay_file else None
+    database: Database | None = None
     try:
-        payload = _load_payload(replay_file)
-    except (TypeError, ValueError, yaml.YAMLError) as exc:
+        if args.from_db:
+            database, _database_label = _resolve_database_for_span(args.db_path)
+            span = asyncio.run(_load_span_from_database(database, UUID(args.from_db)))
+        else:
+            if replay_file is None:
+                raise ValueError("show requires a replay file or --from-db <span_id>.")
+            database, _database_label = _resolve_database_for_file(replay_file, args.db_path)
+            span = asyncio.run(_load_span_from_file_path(replay_file, database))
+        _print_show(span)
+        return 0
+    except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if database is not None:
+            asyncio.run(database.shutdown())
 
-    print(f"Type: {type(payload).__name__}")
 
-    if isinstance(payload, ConversationReplay):
-        print(f"Model: {payload.model}")
-        if payload.model_options:
-            print(f"Options: {payload.model_options}")
-        if payload.response_format:
-            print(f"Response format: {payload.response_format}")
-        print(f"Context docs: {len(payload.context)}")
-        print(f"History entries: {len(payload.history)}")
-        print(f"\nPrompt:\n  {payload.prompt}")
-    elif isinstance(payload, TaskReplay):
-        print(f"Function: {payload.function_path}")
-        print(f"Arguments: {len(payload.arguments)}")
-        for key, value in payload.arguments.items():
-            preview = str(value)[:80]
-            if isinstance(value, dict) and "$doc_ref" in value:
-                print(f"  {key}: [doc_ref {value['$doc_ref'][:12]}...]")
-                continue
-            print(f"  {key}: {preview}")
-    else:
-        print(f"Function: {payload.function_path}")
-        print(f"Run ID: {payload.run_id}")
-        print(f"Documents: {len(payload.documents)}")
-        if payload.flow_options:
-            print(f"Flow options: {payload.flow_options}")
-
-    return 0
+def _cmd_batch(args: argparse.Namespace) -> int:
+    database: Database | None = None
+    try:
+        database, database_label = _resolve_database_for_span(args.db_path)
+        _import_modules(args.modules or [])
+        overrides = _build_overrides(args)
+        span_ids = asyncio.run(
+            find_experiment_span_ids(
+                database,
+                UUID(args.from_deployment),
+                kind=args.kind,
+                purpose=args.purpose,
+                task_class=args.task_class,
+            )
+        )
+        results = asyncio.run(
+            experiment_batch(
+                span_ids,
+                source_db=database,
+                overrides=overrides,
+                concurrency=args.concurrency,
+            )
+        )
+        print(f"Ran {len(results)} replay experiments from {database_label}")
+        for result in results:
+            print(f"{result.source_span_id} model={result.model_used or '<none>'} duration={result.duration_seconds:.2f}s cost=${result.cost_usd:.4f}")
+        return 0
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        logger.debug("Replay batch failed", exc_info=True)
+        return 1
+    finally:
+        if database is not None:
+            asyncio.run(database.shutdown())
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point for replay operations."""
-    parser = argparse.ArgumentParser(prog="ai-replay", description="Execute or inspect replay payloads")
+    """Run the replay CLI."""
+    parser = argparse.ArgumentParser(prog="ai-replay", description="Execute or inspect replayable spans")
     subparsers = parser.add_subparsers(dest="command")
 
-    run_parser = subparsers.add_parser("run", help="Execute a replay payload")
-    run_parser.add_argument("replay_file", nargs="?", help="Path to replay YAML file (conversation.yaml, task.yaml, flow.yaml)")
-    run_parser.add_argument("--from-db", type=str, help="Load replay payload from an execution node ID in the database")
-    run_parser.add_argument("--db-path", type=str, help="Use a FilesystemDatabase at this path instead of ClickHouse or auto-discovery")
-    run_parser.add_argument("--set", action="append", metavar="KEY=VALUE", help="Override a field before execution (repeatable)")
-    run_parser.add_argument(
-        "--import",
-        dest="modules",
-        action="append",
-        metavar="MODULE",
-        help="Import a module before replay (registers Document subclasses and functions)",
-    )
-    run_parser.add_argument(
-        "--output-dir",
-        type=str,
-        default=None,
-        help="Output directory for replay results",
-    )
+    run_parser = subparsers.add_parser("run", help="Execute one replayable span")
+    run_parser.add_argument("replay_file", nargs="?", help="Path to a span JSON file from a snapshot")
+    run_parser.add_argument("--from-db", type=str, help="Load a span by span ID from the database")
+    run_parser.add_argument("--db-path", type=str, help="Use a FilesystemDatabase at this path instead of ClickHouse")
+    run_parser.add_argument("--model", type=str, default=None, help="Override model for replayed conversation spans")
+    run_parser.add_argument("--set", action="append", metavar="KEY=VALUE", help="Set ExperimentOverrides fields or model_options values")
+    run_parser.add_argument("--output-dir", type=str, default=None, help="Output directory for replay results")
+    run_parser.add_argument("--import", dest="modules", action="append", metavar="MODULE", help="Import a module before replay")
 
-    show_parser = subparsers.add_parser("show", help="Pretty-print a replay YAML file")
-    show_parser.add_argument("replay_file", help="Path to replay YAML file")
+    show_parser = subparsers.add_parser("show", help="Inspect one replayable span")
+    show_parser.add_argument("replay_file", nargs="?", help="Path to a span JSON file from a snapshot")
+    show_parser.add_argument("--from-db", type=str, help="Load a span by span ID from the database")
+    show_parser.add_argument("--db-path", type=str, help="Use a FilesystemDatabase at this path instead of ClickHouse")
+
+    batch_parser = subparsers.add_parser("batch", help="Run replay experiments over many spans")
+    batch_parser.add_argument("--from-deployment", required=True, type=str, help="Deployment/root_deployment_id to search")
+    batch_parser.add_argument("--db-path", type=str, help="Use a FilesystemDatabase at this path instead of ClickHouse")
+    batch_parser.add_argument("--kind", type=str, default=None, help="Filter spans by kind")
+    batch_parser.add_argument("--purpose", type=str, default=None, help="Filter conversation spans by purpose")
+    batch_parser.add_argument("--task-class", type=str, default=None, help="Filter task spans by module:Class path")
+    batch_parser.add_argument("--model", type=str, default=None, help="Override model for replayed conversation spans")
+    batch_parser.add_argument("--set", action="append", metavar="KEY=VALUE", help="Set ExperimentOverrides fields or model_options values")
+    batch_parser.add_argument("--concurrency", type=int, default=5, help="Maximum concurrent experiments")
+    batch_parser.add_argument("--import", dest="modules", action="append", metavar="MODULE", help="Import a module before replay")
 
     args = parser.parse_args(argv)
 
     if args.command == "run":
         if args.replay_file is None and args.from_db is None:
-            parser.error("run requires either a replay_file or --from-db <node_id>")
+            parser.error("run requires either a replay_file or --from-db <span_id>")
         if args.replay_file is not None and args.from_db is not None:
-            parser.error("run accepts a replay_file or --from-db <node_id>, not both")
+            parser.error("run accepts a replay_file or --from-db <span_id>, not both")
+        return _cmd_run(args)
+    if args.command == "show":
+        if args.replay_file is None and args.from_db is None:
+            parser.error("show requires either a replay_file or --from-db <span_id>")
+        if args.replay_file is not None and args.from_db is not None:
+            parser.error("show accepts a replay_file or --from-db <span_id>, not both")
+        return _cmd_show(args)
+    if args.command == "batch":
+        return _cmd_batch(args)
 
-    handlers: dict[str, Any] = {"run": _cmd_run, "show": _cmd_show}
-    handler = handlers.get(args.command)
-    if handler is None:
-        parser.print_help()
-        return 1
-
-    return handler(args)
-
-
-__all__ = ["main"]
+    parser.print_help()
+    return 1

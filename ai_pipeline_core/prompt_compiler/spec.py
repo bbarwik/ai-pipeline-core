@@ -1,18 +1,18 @@
 """PromptSpec base class with import-time validation."""
 
+import annotationlib
 import re
 import typing
 from collections.abc import Mapping
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, ClassVar, Generic, cast
+from typing import Any, ClassVar, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.fields import FieldInfo
-from typing_extensions import TypeVar
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 from .components import Guide, OutputRule, Role, Rule
 
@@ -80,13 +80,36 @@ def _validate_component_tuple(
     return validated
 
 
+def _declared_annotations(cls: type) -> dict[str, Any]:
+    """Return annotations declared directly on ``cls`` using Python 3.14 annotationlib."""
+    annotate = annotationlib.get_annotate_from_class_namespace(cls.__dict__)
+    if callable(annotate):
+        annotations = cast(dict[str, Any], annotationlib.call_annotate_function(cast(Any, annotate), format=annotationlib.Format.FORWARDREF))
+        return annotations
+
+    return cast(dict[str, Any], annotationlib.get_annotations(cls, format=annotationlib.Format.FORWARDREF))
+
+
+def _declared_field_names(cls: type) -> set[str]:
+    """Return field names declared directly on ``cls`` during __init_subclass__."""
+    annotated_fields = set(_declared_annotations(cls))
+    field_info_names = {name for name, value in cls.__dict__.items() if not name.startswith("_") and isinstance(value, FieldInfo)}
+    inherited_model_fields = {
+        name for base in cls.__bases__ for name in (set(getattr(base, "__pydantic_fields__", {})) | set(getattr(base, "model_fields", {})))
+    }
+    own_model_fields = {
+        name for name in (set(getattr(cls, "__pydantic_fields__", {})) | set(getattr(cls, "model_fields", {}))) if name not in inherited_model_fields
+    }
+    return annotated_fields | field_info_names | own_model_fields
+
+
 def _check_unknown_attrs(cls: type, name: str) -> None:
     """Detect unknown class attributes that are likely typos.
 
-    Runs during __init_subclass__ (before model_fields is populated), so uses
-    cls.__annotations__ to identify Pydantic field declarations.
+    Runs during __init_subclass__ (before model_fields is populated), so it
+    inspects only annotations declared directly on this class.
     """
-    own_annotations: set[str] = set(cls.__annotations__) if hasattr(cls, "__annotations__") else set()
+    own_annotations = _declared_field_names(cls)
     for attr_name in cls.__dict__:
         if attr_name.startswith("_"):
             continue
@@ -104,11 +127,10 @@ def _check_unknown_attrs(cls: type, name: str) -> None:
 def _check_field_descriptions(cls: type, name: str) -> None:
     """Validate that all Pydantic fields have Field(description=...).
 
-    Uses cls.__annotations__ + cls.__dict__ directly because model_fields
-    is not yet populated during __init_subclass__.
+    Uses definition-time annotations plus cls.__dict__ directly because
+    model_fields is not yet populated during __init_subclass__.
     """
-    own_annotations = cls.__annotations__ if hasattr(cls, "__annotations__") else {}
-    for field_name in own_annotations:
+    for field_name in _declared_field_names(cls):
         if field_name in _SPEC_KNOWN_ATTRS:
             continue
         default = cls.__dict__.get(field_name)
@@ -126,8 +148,7 @@ def _check_task_field_placeholders(cls: type, name: str) -> None:
     Field values are rendered automatically in the Context section by the framework.
     """
     task = str(getattr(cls, "task", ""))
-    own_annotations = cls.__annotations__ if hasattr(cls, "__annotations__") else {}
-    field_names = {fn for fn in own_annotations if fn not in _SPEC_KNOWN_ATTRS}
+    field_names = {fn for fn in _declared_field_names(cls) if fn not in _SPEC_KNOWN_ATTRS}
     if not field_names:
         return
 
@@ -178,7 +199,7 @@ def _warn_large_task(name: str, task: str) -> None:
     )
 
 
-def _validate_prompt_spec(cls: type, name: str, follows: type["PromptSpec"] | None) -> None:  # noqa: C901, PLR0912, PLR0915
+def _validate_prompt_spec(cls: type, name: str, follows: type[PromptSpec] | None) -> None:  # noqa: C901, PLR0912, PLR0915
     """Validate a PromptSpec subclass at definition time."""
     # Block inheritance chains — must inherit directly from PromptSpec (or PromptSpec[T]).
     # Pydantic creates concrete classes for PromptSpec[T] with names like "PromptSpec[MyModel]".
@@ -303,7 +324,7 @@ def _validate_prompt_spec(cls: type, name: str, follows: type["PromptSpec"] | No
                     f"output_structure automatically adds <result> wrapping — remove XML instructions from the OutputRule."
                 )
 
-    # Validate Pydantic field descriptions (uses __annotations__ + FieldInfo directly)
+    # Validate Pydantic field descriptions (uses definition-time field metadata directly)
     _check_field_descriptions(cls, name)
 
     # Detect {field_name} placeholders in task text that reference declared fields
@@ -313,7 +334,7 @@ def _validate_prompt_spec(cls: type, name: str, follows: type["PromptSpec"] | No
     _check_unknown_attrs(cls, name)
 
 
-class PromptSpec(BaseModel, Generic[OutputT]):
+class PromptSpec[OutputT = str](BaseModel):
     r"""Base class for all prompt specifications.
 
     Generic parameter ``OutputT`` determines the output type:
@@ -370,7 +391,7 @@ class PromptSpec(BaseModel, Generic[OutputT]):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    _follows: ClassVar[type["PromptSpec"] | None]
+    _follows: ClassVar[type[PromptSpec] | None]
     input_documents: ClassVar[tuple[type[Document], ...]]
     role: ClassVar[type[Role] | None]
     task: ClassVar[str]
@@ -380,7 +401,7 @@ class PromptSpec(BaseModel, Generic[OutputT]):
     _output_type: ClassVar[type[str] | type[BaseModel]]
     output_structure: ClassVar[str | None]
 
-    def __init_subclass__(cls, *, follows: type["PromptSpec"] | None = None, **kwargs: Any) -> None:
+    def __init_subclass__(cls, *, follows: type[PromptSpec] | None = None, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
         # Pydantic creates concrete subclasses for parameterized generics (e.g. PromptSpec[str]).

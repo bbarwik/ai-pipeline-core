@@ -20,7 +20,7 @@ async def test_task_failure_still_emits_failed_event(monkeypatch: pytest.MonkeyP
     from ai_pipeline_core.documents import Document
     from ai_pipeline_core.deployment._types import TaskFailedEvent, _MemoryPublisher
     from ai_pipeline_core.pipeline import PipelineTask, pipeline_test_context
-    from ai_pipeline_core.pipeline._execution_context import FlowFrame, set_execution_context, reset_execution_context
+    from ai_pipeline_core.pipeline._execution_context import FlowFrame, set_execution_context
 
     class FailInputDoc(Document):
         pass
@@ -47,12 +47,9 @@ async def test_task_failure_still_emits_failed_event(monkeypatch: pytest.MonkeyP
     )
 
     with pipeline_test_context(publisher=publisher) as ctx:
-        token = set_execution_context(ctx.with_flow(flow_frame))
-        try:
+        with set_execution_context(ctx.with_flow(flow_frame)):
             with pytest.raises(ValueError, match="intentional task failure"):
                 await AlwaysFailTask.run((doc,))
-        finally:
-            reset_execution_context(token)
 
     failed_events = [e for e in publisher.events if isinstance(e, TaskFailedEvent)]
     assert len(failed_events) == 1

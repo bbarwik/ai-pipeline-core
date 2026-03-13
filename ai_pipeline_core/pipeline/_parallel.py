@@ -5,7 +5,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, TypeGuard, cast
+from typing import Any, TypeIs, cast
 
 from ai_pipeline_core.documents import Document
 
@@ -70,7 +70,7 @@ def _to_handle(awaitable: TaskAwaitable) -> TaskHandle[tuple[Document[Any], ...]
     )
 
 
-def _is_handle_sequence(value: TaskAwaitableGroup) -> TypeGuard[Sequence[TaskAwaitable]]:
+def _is_handle_sequence(value: TaskAwaitableGroup) -> TypeIs[Sequence[TaskAwaitable]]:
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes, TaskHandle))
 
 

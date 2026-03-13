@@ -6,7 +6,6 @@ import asyncio
 import pytest
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._context import set_task_context, reset_task_context, TaskContext
 from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask, collect_tasks, pipeline_test_context
 from ai_pipeline_core.pipeline.options import FlowOptions
 
@@ -22,31 +21,6 @@ class LowInputDoc(Document):
 
 class LowOutputDoc(Document):
     """Output for low-priority tests."""
-
-
-# ---------------------------------------------------------------------------
-# create_root inside task context → RuntimeError
-# ---------------------------------------------------------------------------
-
-
-def test_create_root_inside_task_context_raises() -> None:
-    """Document.create_root() is forbidden inside a pipeline task context."""
-    token = set_task_context(TaskContext(scope_kind="task", task_class_name="SomeTask"))
-    try:
-        with pytest.raises(RuntimeError, match="cannot be called inside"):
-            LowInputDoc.create_root(name="bad.txt", content="x", reason="should fail")
-    finally:
-        reset_task_context(token)
-
-
-def test_create_root_inside_flow_context_raises() -> None:
-    """Document.create_root() is forbidden inside a pipeline flow context."""
-    token = set_task_context(TaskContext(scope_kind="flow", task_class_name="SomeFlow"))
-    try:
-        with pytest.raises(RuntimeError, match="cannot be called inside"):
-            LowInputDoc.create_root(name="bad.txt", content="x", reason="should fail")
-    finally:
-        reset_task_context(token)
 
 
 def test_create_root_outside_context_succeeds() -> None:

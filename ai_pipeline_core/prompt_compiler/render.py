@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 from .spec import PromptSpec, _is_multi_line_field
 

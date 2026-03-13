@@ -1,362 +1,385 @@
-"""Tests for ClickHouseDatabase backend.
+"""Tests for ClickHouseDatabase DDL, schema versioning, and basic availability checks."""
 
-Auto-skips when ClickHouse is not available (no CLICKHOUSE_HOST env var).
-"""
-
-import os
-from types import SimpleNamespace
-from datetime import UTC, datetime
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from clickhouse_connect.driver.summary import QuerySummary
 
-from ai_pipeline_core.database import BlobRecord, DocumentRecord, ExecutionLog, ExecutionNode, NodeKind, NodeStatus
-
-pytestmark = pytest.mark.clickhouse
-
-CLICKHOUSE_NOT_AVAILABLE = pytest.mark.skipif(
-    not os.environ.get("CLICKHOUSE_HOST"),
-    reason="ClickHouse not available (CLICKHOUSE_HOST not set)",
+from ai_pipeline_core.database.clickhouse._connection import SchemaVersionError, _ensure_schema, reset_schema_check
+from ai_pipeline_core.database.clickhouse._ddl import (
+    BLOBS_DDL,
+    DDL_STATEMENTS,
+    DOCUMENTS_DDL,
+    LOGS_DDL,
+    SCHEMA_META_DDL,
+    SCHEMA_META_TABLE,
+    SCHEMA_VERSION,
+    SPANS_DDL,
 )
 
+HTTP_PORT = 8123
 
-def _get_db():
-    """Create a ClickHouseDatabase connected to the test instance."""
-    from ai_pipeline_core.database._clickhouse import ClickHouseDatabase
+
+@pytest.fixture(scope="module")
+def clickhouse_container(require_docker):
+    """Start a ClickHouse container once per module, exposing the HTTP port."""
+    from testcontainers.clickhouse import ClickHouseContainer
+
+    container = ClickHouseContainer(port=HTTP_PORT)
+    container.with_exposed_ports(HTTP_PORT)
+    with container:
+        yield container
+
+
+@pytest.fixture(scope="module")
+def clickhouse_settings(clickhouse_container):
+    """Build Settings pointing at the testcontainer ClickHouse instance."""
     from ai_pipeline_core.settings import Settings
 
-    return ClickHouseDatabase(Settings())
+    return Settings(
+        clickhouse_host=clickhouse_container.get_container_host_ip(),
+        clickhouse_port=int(clickhouse_container.get_exposed_port(HTTP_PORT)),
+        clickhouse_database=clickhouse_container.dbname,
+        clickhouse_user=clickhouse_container.username,
+        clickhouse_password=clickhouse_container.password,
+        clickhouse_secure=False,
+    )
 
 
-def _make_node(**kwargs: object) -> ExecutionNode:
-    did = kwargs.pop("_deployment_id", None) or uuid4()
-    rid = kwargs.pop("_root_deployment_id", None) or did
-    defaults: dict[str, object] = {
-        "node_id": uuid4(),
-        "node_kind": NodeKind.TASK,
-        "deployment_id": did,
-        "root_deployment_id": rid,
-        "run_id": f"test-run-{uuid4().hex[:8]}",
-        "run_scope": f"test-run/scope-{uuid4().hex[:8]}",
-        "deployment_name": "test-pipeline",
-        "name": "TestTask",
-        "sequence_no": 0,
-    }
-    defaults.update(kwargs)
-    return ExecutionNode(**defaults)  # type: ignore[arg-type]
+def _extract_table_body(ddl: str) -> str:
+    start = ddl.find("(")
+    if start == -1:
+        raise AssertionError(f"DDL is missing a column list: {ddl}")
+    depth = 0
+    for index in range(start, len(ddl)):
+        char = ddl[index]
+        if char == "(":
+            depth += 1
+            continue
+        if char != ")":
+            continue
+        depth -= 1
+        if depth == 0:
+            return ddl[start + 1 : index]
+    raise AssertionError(f"DDL has unbalanced parentheses: {ddl}")
 
 
-def _make_document(**kwargs: object) -> DocumentRecord:
-    defaults: dict[str, object] = {
-        "document_sha256": f"sha_{uuid4().hex[:8]}",
-        "content_sha256": f"content_{uuid4().hex[:8]}",
-        "deployment_id": uuid4(),
-        "producing_node_id": uuid4(),
-        "document_type": "TestDocument",
-        "name": "test.md",
-    }
-    defaults.update(kwargs)
-    return DocumentRecord(**defaults)  # type: ignore[arg-type]
+def _extract_column_lines(ddl: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in _extract_table_body(ddl).splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("INDEX "):
+            continue
+        lines.append(line.rstrip(","))
+    return lines
 
 
-def _make_log(**kwargs: object) -> ExecutionLog:
-    deployment_id = kwargs.pop("_deployment_id", None) or uuid4()
-    defaults: dict[str, object] = {
-        "node_id": uuid4(),
-        "deployment_id": deployment_id,
-        "root_deployment_id": deployment_id,
-        "flow_id": None,
-        "task_id": None,
-        "timestamp": datetime.now(UTC),
-        "sequence_no": 0,
-        "level": "INFO",
-        "category": "framework",
-        "logger_name": "ai_pipeline_core.tests",
-        "message": "test log",
-    }
-    defaults.update(kwargs)
-    return ExecutionLog(**defaults)  # type: ignore[arg-type]
+def _extract_index_lines(ddl: str) -> list[str]:
+    return [line.strip().rstrip(",") for line in _extract_table_body(ddl).splitlines() if line.strip().startswith("INDEX ")]
 
 
-@CLICKHOUSE_NOT_AVAILABLE
-class TestClickHouseNodeOperations:
-    async def test_insert_and_get(self) -> None:
-        db = _get_db()
+def test_ddl_statement_list_includes_all_tables() -> None:
+    assert DDL_STATEMENTS == [SCHEMA_META_DDL, SPANS_DDL, DOCUMENTS_DDL, BLOBS_DDL, LOGS_DDL]
+
+
+def test_spans_ddl_matches_expected_shape() -> None:
+    assert len(_extract_column_lines(SPANS_DDL)) == 30
+    assert "ENGINE = ReplacingMergeTree(version)" in SPANS_DDL
+    assert "ORDER BY (root_deployment_id, deployment_id, span_id)" in SPANS_DDL
+    assert len(_extract_index_lines(SPANS_DDL)) == 11
+    assert "detail_json" not in SPANS_DDL
+
+
+def test_documents_ddl_matches_expected_shape() -> None:
+    assert "description String DEFAULT ''" in DOCUMENTS_DDL
+    assert "mime_type LowCardinality(String) DEFAULT ''" in DOCUMENTS_DDL
+    assert "attachments Nested(" in DOCUMENTS_DDL
+    assert "ENGINE = ReplacingMergeTree(created_at)" in DOCUMENTS_DDL
+    assert "detail_json" not in DOCUMENTS_DDL
+    assert "version" not in DOCUMENTS_DDL
+    assert "CODEC(ZSTD(3))" not in DOCUMENTS_DDL.split("summary String DEFAULT ''", 1)[1].split("\n", 1)[0]
+    assert len(_extract_index_lines(DOCUMENTS_DDL)) == 4
+
+
+def test_blobs_and_logs_ddl_match_expected_shape() -> None:
+    assert len(_extract_column_lines(BLOBS_DDL)) == 3
+    assert "ORDER BY (content_sha256)" in BLOBS_DDL
+    assert len(_extract_column_lines(LOGS_DDL)) == 11
+    assert "ORDER BY (deployment_id, span_id, timestamp, sequence_no)" in LOGS_DDL
+
+
+def test_schema_meta_ddl_shape() -> None:
+    assert f"CREATE TABLE IF NOT EXISTS {SCHEMA_META_TABLE}" in SCHEMA_META_DDL
+    assert "version UInt32" in SCHEMA_META_DDL
+    assert "applied_at DateTime64(3, 'UTC')" in SCHEMA_META_DDL
+    assert "framework_version String" in SCHEMA_META_DDL
+    assert "ENGINE = MergeTree()" in SCHEMA_META_DDL
+    assert "ORDER BY version" in SCHEMA_META_DDL
+
+
+def test_schema_version_is_positive_integer() -> None:
+    assert isinstance(SCHEMA_VERSION, int)
+    assert SCHEMA_VERSION >= 1
+
+
+def test_schema_meta_ddl_is_first_in_ddl_statements() -> None:
+    assert DDL_STATEMENTS[0] is SCHEMA_META_DDL
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _ensure_schema (mocked ClickHouse client)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_schema_flag():
+    """Reset the process-level schema check flag before and after each test."""
+    reset_schema_check()
+    yield
+    reset_schema_check()
+
+
+def _mock_client(*, table_exists: bool, db_version: int | None = None) -> AsyncMock:
+    """Build a mock AsyncClient for _ensure_schema tests."""
+    client = AsyncMock()
+
+    # _table_exists queries system.tables
+    query_result = MagicMock()
+    if table_exists:
+        if db_version is not None:
+            query_result.result_rows = [(db_version,)]
+        else:
+            query_result.result_rows = [(0,)]
+        # First call: system.tables check (returns rows = table exists)
+        # Second call: SELECT max(version)
+        system_result = MagicMock()
+        system_result.result_rows = [(1,)]
+        client.query = AsyncMock(side_effect=[system_result, query_result])
+    else:
+        # system.tables check returns no rows = table doesn't exist
+        system_result = MagicMock()
+        system_result.result_rows = []
+        client.query = AsyncMock(return_value=system_result)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_creates_tables_on_fresh_db() -> None:
+    client = _mock_client(table_exists=False)
+
+    await _ensure_schema(client, "default")
+
+    # DDL_STATEMENTS has 5 entries + 1 INSERT for the version stamp
+    assert client.command.call_count == len(DDL_STATEMENTS) + 1
+    last_call_sql = client.command.call_args_list[-1].args[0]
+    assert SCHEMA_META_TABLE in last_call_sql
+    assert "INSERT" in last_call_sql
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_passes_on_matching_version() -> None:
+    client = _mock_client(table_exists=True, db_version=SCHEMA_VERSION)
+
+    await _ensure_schema(client, "default")
+
+    # No DDL should have been run — only 2 queries (system.tables + max(version))
+    client.command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_raises_on_outdated_db() -> None:
+    client = _mock_client(table_exists=True, db_version=SCHEMA_VERSION - 1)
+
+    with pytest.raises(SchemaVersionError, match="older than the framework expects"):
+        await _ensure_schema(client, "default")
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_raises_on_newer_db() -> None:
+    client = _mock_client(table_exists=True, db_version=SCHEMA_VERSION + 1)
+
+    with pytest.raises(SchemaVersionError, match="newer than the framework supports"):
+        await _ensure_schema(client, "default")
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_runs_only_once_per_process() -> None:
+    client = _mock_client(table_exists=True, db_version=SCHEMA_VERSION)
+
+    await _ensure_schema(client, "default")
+    initial_query_count = client.query.call_count
+
+    # Second call should be a no-op (process-level flag is set)
+    await _ensure_schema(client, "default")
+    assert client.query.call_count == initial_query_count
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_raises_on_zero_version_in_existing_table() -> None:
+    client = _mock_client(table_exists=True, db_version=0)
+
+    with pytest.raises(SchemaVersionError, match="older than the framework expects"):
+        await _ensure_schema(client, "default")
+
+
+@pytest.mark.asyncio
+async def test_reset_schema_check_allows_recheck() -> None:
+    client = _mock_client(table_exists=True, db_version=SCHEMA_VERSION)
+
+    await _ensure_schema(client, "default")
+    reset_schema_check()
+
+    # After reset, a new client should trigger a fresh check
+    client2 = _mock_client(table_exists=True, db_version=SCHEMA_VERSION)
+    await _ensure_schema(client2, "default")
+    assert client2.query.call_count == 2  # system.tables + max(version)
+
+
+# ---------------------------------------------------------------------------
+# Integration tests (require running ClickHouse)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.clickhouse
+def test_clickhouse_database_can_connect(clickhouse_settings) -> None:
+    from ai_pipeline_core.database.clickhouse._backend import ClickHouseDatabase
+
+    database = ClickHouseDatabase(settings=clickhouse_settings)
+    assert database is not None
+
+
+@pytest.mark.clickhouse
+def test_clickhouse_schema_auto_init_creates_tables_and_stamps_version(clickhouse_settings) -> None:
+    """On a fresh database, get_async_clickhouse_client auto-creates all tables and stamps the schema version."""
+    from clickhouse_connect import get_async_client
+
+    from ai_pipeline_core.database.clickhouse._connection import get_async_clickhouse_client
+
+    test_database = f"schema_test_{uuid4().hex[:12]}"
+
+    async def _run() -> None:
+        admin_client = await get_async_client(
+            host=clickhouse_settings.clickhouse_host,
+            port=clickhouse_settings.clickhouse_port,
+            database=clickhouse_settings.clickhouse_database,
+            username=clickhouse_settings.clickhouse_user,
+            password=clickhouse_settings.clickhouse_password,
+            secure=clickhouse_settings.clickhouse_secure,
+            connect_timeout=clickhouse_settings.clickhouse_connect_timeout,
+            send_receive_timeout=clickhouse_settings.clickhouse_send_receive_timeout,
+        )
         try:
-            node = _make_node(node_kind=NodeKind.DEPLOYMENT)
-            await db.insert_node(node)
-            result = await db.get_node(node.node_id)
-            assert result is not None
-            assert result.node_id == node.node_id
-            assert result.name == node.name
+            await admin_client.command(f"CREATE DATABASE IF NOT EXISTS {test_database}")
         finally:
-            await db.shutdown()
+            await admin_client.close()
 
-    async def test_update_node(self) -> None:
-        db = _get_db()
         try:
-            node = _make_node(node_kind=NodeKind.DEPLOYMENT, status=NodeStatus.RUNNING)
-            await db.insert_node(node)
-            await db.update_node(node.node_id, status=NodeStatus.COMPLETED, ended_at=datetime.now(UTC))
-            result = await db.get_node(node.node_id)
-            assert result is not None
-            assert result.status == NodeStatus.COMPLETED
-            assert result.version == 2
-        finally:
-            await db.shutdown()
+            reset_schema_check()
+            from ai_pipeline_core.settings import Settings
 
-    async def test_get_children(self) -> None:
-        db = _get_db()
-        try:
-            deploy_id = uuid4()
-            run_id = f"test-{uuid4().hex[:8]}"
-            deploy = _make_node(node_kind=NodeKind.DEPLOYMENT, _deployment_id=deploy_id, run_id=run_id)
-            child = _make_node(node_kind=NodeKind.FLOW, _deployment_id=deploy_id, parent_node_id=deploy.node_id, sequence_no=1, run_id=run_id)
-            await db.insert_node(deploy)
-            await db.insert_node(child)
-            children = await db.get_children(deploy.node_id)
-            assert len(children) >= 1
-            child_ids = {c.node_id for c in children}
-            assert child.node_id in child_ids
-        finally:
-            await db.shutdown()
-
-    async def test_get_deployment_by_run_id(self) -> None:
-        db = _get_db()
-        try:
-            run_id = f"unique-run-{uuid4().hex[:8]}"
-            deploy = _make_node(node_kind=NodeKind.DEPLOYMENT, run_id=run_id)
-            await db.insert_node(deploy)
-            result = await db.get_deployment_by_run_id(run_id)
-            assert result is not None
-            assert result.node_kind == NodeKind.DEPLOYMENT
-        finally:
-            await db.shutdown()
-
-
-class TestClickHouseUpdateNodeRetries:
-    def _make_stub_database(self):
-        from ai_pipeline_core.database._clickhouse import ClickHouseDatabase
-
-        database = ClickHouseDatabase.__new__(ClickHouseDatabase)
-        database._ddl = []
-        database._cb = SimpleNamespace(client=MagicMock())
-        database._ensure_tables = lambda: None
-        database._execute_sync = lambda fn: fn()
-        return database
-
-    def test_update_node_retries_when_first_write_conflicts(self) -> None:
-        database = self._make_stub_database()
-        node_id = uuid4()
-        initial = _make_node(node_id=node_id, status=NodeStatus.RUNNING, version=1)
-        retried = _make_node(node_id=node_id, status=NodeStatus.RUNNING, version=2)
-        completed = _make_node(node_id=node_id, status=NodeStatus.COMPLETED, version=3)
-        database._get_node_sync = MagicMock(side_effect=[initial, retried, completed])
-        database._cb.client.command.side_effect = [
-            QuerySummary({"written_rows": "0"}),
-            QuerySummary({"written_rows": "1"}),
-        ]
-
-        database._update_node_sync(node_id, {"status": NodeStatus.COMPLETED})
-
-        assert database._get_node_sync.call_count == 3
-        assert database._cb.client.command.call_count == 2
-
-    def test_update_node_missing_node_raises_key_error(self) -> None:
-        database = self._make_stub_database()
-        node_id = uuid4()
-        database._get_node_sync = MagicMock(return_value=None)
-
-        with pytest.raises(KeyError, match=str(node_id)):
-            database._update_node_sync(node_id, {"status": NodeStatus.COMPLETED})
-
-    def test_update_node_retries_when_successful_write_is_immediately_overwritten(self) -> None:
-        database = self._make_stub_database()
-        node_id = uuid4()
-        ended_at = datetime.now(UTC)
-        initial = _make_node(node_id=node_id, status=NodeStatus.RUNNING, version=1, ended_at=None, error_message="")
-        overwritten = _make_node(node_id=node_id, status=NodeStatus.RUNNING, version=2, ended_at=None, error_message="other writer")
-        merged = _make_node(node_id=node_id, status=NodeStatus.RUNNING, version=3, ended_at=ended_at, error_message="other writer")
-        database._get_node_sync = MagicMock(side_effect=[initial, overwritten, overwritten, merged])
-        database._cb.client.command.side_effect = [
-            QuerySummary({"written_rows": "1"}),
-            QuerySummary({"written_rows": "1"}),
-        ]
-
-        database._update_node_sync(node_id, {"ended_at": ended_at})
-
-        assert database._cb.client.command.call_count == 2
-        assert database._get_node_sync.call_count == 4
-
-
-@CLICKHOUSE_NOT_AVAILABLE
-class TestClickHouseDocumentOperations:
-    async def test_save_and_get_document(self) -> None:
-        db = _get_db()
-        try:
-            sha = f"doc_{uuid4().hex[:8]}"
-            doc = _make_document(document_sha256=sha, run_scope="prod/clickhouse")
-            await db.save_document(doc)
-            result = await db.get_document(sha)
-            assert result is not None
-            assert result.document_sha256 == sha
-            assert result.run_scope == "prod/clickhouse"
-        finally:
-            await db.shutdown()
-
-    async def test_save_and_get_blob(self) -> None:
-        db = _get_db()
-        try:
-            sha = f"blob_{uuid4().hex[:8]}"
-            blob = BlobRecord(content_sha256=sha, content=b"hello", size_bytes=5)
-            await db.save_blob(blob)
-            result = await db.get_blob(sha)
-            assert result is not None
-            assert result.content == b"hello"
-        finally:
-            await db.shutdown()
-
-    async def test_check_existing_documents(self) -> None:
-        db = _get_db()
-        try:
-            sha = f"exists_{uuid4().hex[:8]}"
-            doc = _make_document(document_sha256=sha)
-            await db.save_document(doc)
-            result = await db.check_existing_documents([sha, "nonexistent"])
-            assert sha in result
-            assert "nonexistent" not in result
-        finally:
-            await db.shutdown()
-
-
-@CLICKHOUSE_NOT_AVAILABLE
-class TestClickHouseTableCreation:
-    async def test_ensure_tables_idempotent(self) -> None:
-        """Verify ensure_tables can be called multiple times without error."""
-        db = _get_db()
-        try:
-            db._ensure_tables()
-            db._ensure_tables()
-        finally:
-            await db.shutdown()
-
-
-@CLICKHOUSE_NOT_AVAILABLE
-class TestClickHouseExecutionLogs:
-    async def test_save_and_get_node_logs(self) -> None:
-        db = _get_db()
-        try:
-            deployment_id = uuid4()
-            node_id = uuid4()
-            await db.save_logs_batch([
-                _make_log(node_id=node_id, _deployment_id=deployment_id, sequence_no=0, category="lifecycle"),
-                _make_log(node_id=node_id, _deployment_id=deployment_id, sequence_no=1, level="ERROR", category="framework"),
-            ])
-            logs = await db.get_node_logs(node_id)
-            assert [log.sequence_no for log in logs] == [0, 1]
-        finally:
-            await db.shutdown()
-
-    async def test_get_deployment_logs_filters_category(self) -> None:
-        db = _get_db()
-        try:
-            deployment_id = uuid4()
-            await db.save_logs_batch([
-                _make_log(_deployment_id=deployment_id, category="framework"),
-                _make_log(_deployment_id=deployment_id, category="dependency", level="WARNING"),
-            ])
-            logs = await db.get_deployment_logs(deployment_id, category="dependency")
-            assert len(logs) == 1
-            assert logs[0].level == "WARNING"
-        finally:
-            await db.shutdown()
-
-
-@CLICKHOUSE_NOT_AVAILABLE
-class TestClickHousePhase15Queries:
-    async def test_phase15_document_queries_and_deployment_listing(self) -> None:
-        db = _get_db()
-        try:
-            deployment_id = uuid4()
-            deployment = _make_node(
-                node_kind=NodeKind.DEPLOYMENT,
-                _deployment_id=deployment_id,
-                name="clickhouse-deployment",
-                status=NodeStatus.COMPLETED,
-                started_at=datetime(2024, 1, 2, tzinfo=UTC),
+            test_settings = Settings(
+                clickhouse_host=clickhouse_settings.clickhouse_host,
+                clickhouse_port=clickhouse_settings.clickhouse_port,
+                clickhouse_database=test_database,
+                clickhouse_user=clickhouse_settings.clickhouse_user,
+                clickhouse_password=clickhouse_settings.clickhouse_password,
+                clickhouse_secure=clickhouse_settings.clickhouse_secure,
             )
-            older_deployment = _make_node(
-                node_kind=NodeKind.DEPLOYMENT,
-                name="older-deployment",
-                status=NodeStatus.COMPLETED,
-                started_at=datetime(2024, 1, 1, tzinfo=UTC),
-            )
-            await db.insert_node(deployment)
-            await db.insert_node(older_deployment)
-            await db.insert_node(
-                _make_node(
-                    node_kind=NodeKind.CONVERSATION_TURN,
-                    _deployment_id=deployment_id,
-                    cost_usd=1.25,
-                    tokens_input=10,
-                    tokens_output=5,
-                )
-            )
+            client = await get_async_clickhouse_client(test_settings)
+            try:
+                result = await client.query(f"SELECT max(version) FROM {SCHEMA_META_TABLE}")
+                assert result.result_rows[0][0] == SCHEMA_VERSION
 
-            root = _make_document(
-                document_sha256=f"root_{uuid4().hex[:8]}",
-                deployment_id=deployment_id,
-                producing_node_id=None,
-                name="report.md",
-                run_scope="scope/a",
-                created_at=datetime(2024, 1, 1, tzinfo=UTC),
-            )
-            child = _make_document(
-                document_sha256=f"child_{uuid4().hex[:8]}",
-                deployment_id=deployment_id,
-                producing_node_id=None,
-                name="report.md",
-                run_scope="scope/a",
-                created_at=datetime(2024, 1, 2, tzinfo=UTC),
-                derived_from=(root.document_sha256,),
-            )
-            triggered = _make_document(
-                document_sha256=f"triggered_{uuid4().hex[:8]}",
-                deployment_id=deployment_id,
-                producing_node_id=None,
-                name="notes.md",
-                run_scope="scope/b",
-                created_at=datetime(2024, 1, 3, tzinfo=UTC),
-                triggered_by=(root.document_sha256,),
-            )
-            await db.save_document_batch([root, child, triggered])
-
-            by_name = await db.find_document_by_name("report.md")
-            assert by_name is not None
-            assert by_name.document_sha256 == child.document_sha256
-
-            ancestry = await db.get_document_ancestry(child.document_sha256)
-            assert root.document_sha256 in ancestry
-
-            origin_docs = await db.find_documents_by_origin(root.document_sha256)
-            assert {doc.document_sha256 for doc in origin_docs} >= {child.document_sha256, triggered.document_sha256}
-
-            scopes = await db.list_run_scopes(limit=10)
-            assert [scope.run_scope for scope in scopes][:2] == ["scope/b", "scope/a"]
-
-            search = await db.search_documents(name="report", document_type=None, run_scope="scope/a", limit=10, offset=0)
-            assert {doc.document_sha256 for doc in search} >= {root.document_sha256, child.document_sha256}
-
-            cost, tokens = await db.get_deployment_cost_totals(deployment_id)
-            assert cost == 1.25
-            assert tokens == 15
-
-            scope_docs = await db.get_documents_by_run_scope("scope/a")
-            assert {doc.document_sha256 for doc in scope_docs} >= {root.document_sha256, child.document_sha256}
-
-            deployments = await db.list_deployments(limit=2, status="completed")
-            assert deployments[0].started_at >= deployments[1].started_at
+                for table in ("spans", "documents", "blobs", "logs"):
+                    exists_result = await client.query(
+                        "SELECT 1 FROM system.tables WHERE database = {db:String} AND name = {tbl:String}",
+                        parameters={"db": test_database, "tbl": table},
+                    )
+                    assert len(exists_result.result_rows) > 0, f"Table {table} was not created"
+            finally:
+                await client.close()
         finally:
-            await db.shutdown()
+            cleanup_client = await get_async_client(
+                host=clickhouse_settings.clickhouse_host,
+                port=clickhouse_settings.clickhouse_port,
+                database=clickhouse_settings.clickhouse_database,
+                username=clickhouse_settings.clickhouse_user,
+                password=clickhouse_settings.clickhouse_password,
+                secure=clickhouse_settings.clickhouse_secure,
+                connect_timeout=clickhouse_settings.clickhouse_connect_timeout,
+                send_receive_timeout=clickhouse_settings.clickhouse_send_receive_timeout,
+            )
+            try:
+                await cleanup_client.command(f"DROP DATABASE IF EXISTS {test_database} SYNC")
+            finally:
+                await cleanup_client.close()
+            reset_schema_check()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.clickhouse
+def test_clickhouse_schema_version_mismatch_raises(clickhouse_settings) -> None:
+    """When schema_meta exists with a higher version than the framework, SchemaVersionError is raised."""
+    from clickhouse_connect import get_async_client
+
+    from ai_pipeline_core.database.clickhouse._connection import get_async_clickhouse_client
+
+    test_database = f"schema_mismatch_{uuid4().hex[:12]}"
+
+    async def _run() -> None:
+        admin_client = await get_async_client(
+            host=clickhouse_settings.clickhouse_host,
+            port=clickhouse_settings.clickhouse_port,
+            database=clickhouse_settings.clickhouse_database,
+            username=clickhouse_settings.clickhouse_user,
+            password=clickhouse_settings.clickhouse_password,
+            secure=clickhouse_settings.clickhouse_secure,
+            connect_timeout=clickhouse_settings.clickhouse_connect_timeout,
+            send_receive_timeout=clickhouse_settings.clickhouse_send_receive_timeout,
+        )
+        try:
+            await admin_client.command(f"CREATE DATABASE IF NOT EXISTS {test_database}")
+            await admin_client.command(
+                f"CREATE TABLE {test_database}.{SCHEMA_META_TABLE} "
+                "(version UInt32, applied_at DateTime64(3, 'UTC'), framework_version String) "
+                "ENGINE = MergeTree() ORDER BY version"
+            )
+            future_version = SCHEMA_VERSION + 99
+            await admin_client.command(f"INSERT INTO {test_database}.{SCHEMA_META_TABLE} VALUES ({future_version}, now64(3), 'future-version')")
+        finally:
+            await admin_client.close()
+
+        try:
+            reset_schema_check()
+            from ai_pipeline_core.settings import Settings
+
+            test_settings = Settings(
+                clickhouse_host=clickhouse_settings.clickhouse_host,
+                clickhouse_port=clickhouse_settings.clickhouse_port,
+                clickhouse_database=test_database,
+                clickhouse_user=clickhouse_settings.clickhouse_user,
+                clickhouse_password=clickhouse_settings.clickhouse_password,
+                clickhouse_secure=clickhouse_settings.clickhouse_secure,
+            )
+            with pytest.raises(SchemaVersionError, match="newer than the framework supports"):
+                await get_async_clickhouse_client(test_settings)
+        finally:
+            cleanup_client = await get_async_client(
+                host=clickhouse_settings.clickhouse_host,
+                port=clickhouse_settings.clickhouse_port,
+                database=clickhouse_settings.clickhouse_database,
+                username=clickhouse_settings.clickhouse_user,
+                password=clickhouse_settings.clickhouse_password,
+                secure=clickhouse_settings.clickhouse_secure,
+                connect_timeout=clickhouse_settings.clickhouse_connect_timeout,
+                send_receive_timeout=clickhouse_settings.clickhouse_send_receive_timeout,
+            )
+            try:
+                await cleanup_client.command(f"DROP DATABASE IF EXISTS {test_database} SYNC")
+            finally:
+                await cleanup_client.close()
+            reset_schema_check()
+
+    asyncio.run(_run())

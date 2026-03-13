@@ -6,14 +6,13 @@ from uuid import UUID
 
 from prefect import flow
 
-from ai_pipeline_core.database import create_database_from_settings
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline import PipelineFlow
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
-from ._helpers import _create_publisher
+from ._helpers import _create_publisher, _create_span_database_from_settings
 from ._resolve import DocumentInput, resolve_document_inputs
 
 __all__ = [
@@ -68,15 +67,11 @@ def build_prefect_flow(deployment: Any) -> Any:
         document_inputs: list[DocumentInput],
         options: FlowOptions,
         parent_execution_id: str | None = None,
-        deployment_node_id: str | None = None,
         parent_deployment_task_id: str | None = None,
         root_deployment_id: str | None = None,
-        input_document_sha256s: list[str] | None = None,
     ) -> Any:
-        _ = input_document_sha256s
-
         publisher = _create_publisher(settings, deployment.pubsub_service_type)
-        database = create_database_from_settings(settings)
+        database = _create_span_database_from_settings(settings)
         try:
             built_flows = list(cast(Sequence[PipelineFlow], deployment.build_flows(cast(Any, options))))
             if not built_flows:
@@ -89,15 +84,13 @@ def build_prefect_flow(deployment: Any) -> Any:
                 start_step_input_types=start_step_input_types,
             )
             parent_uuid = UUID(parent_execution_id) if parent_execution_id else None
-            if deployment_node_id is not None:
-                dep_node_uuid = UUID(deployment_node_id)
-                root_dep_uuid = UUID(root_deployment_id) if root_deployment_id else dep_node_uuid
+            if root_deployment_id is not None or parent_deployment_task_id is not None:
+                root_dep_uuid = UUID(root_deployment_id) if root_deployment_id else None
                 parent_task_uuid = UUID(parent_deployment_task_id) if parent_deployment_task_id else None
                 return await deployment._run_with_context(
                     run_id,
                     typed_docs,
                     cast(Any, options),
-                    deployment_node_id=dep_node_uuid,
                     root_deployment_id=root_dep_uuid,
                     parent_deployment_task_id=parent_task_uuid,
                     publisher=publisher,

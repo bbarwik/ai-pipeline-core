@@ -53,9 +53,9 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 
 - Modules/agents/tools form **acyclic dependency graph**
 - Clear module boundaries with defined inputs/outputs
-- All inputs and outputs must be JSON serializable
-- **Context as typed schema** — Context documents have defined types with role, citation policy, and usage description
-- Missing required context documents warned at runtime (via `send_spec()`)
+- Task inputs support typed parameters: scalars, enums, frozen BaseModels, `Conversation`, `Document`, and typed containers thereof
+- **Context as document types** — Prompt specs declare `input_documents: tuple[type[Document], ...]` for expected context
+- Missing documents warned at runtime (via `send_spec()`)
 
 ### 1.4 Configuration
 
@@ -124,7 +124,7 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 
 **Definition-Time Validation (`__init_subclass__`):**
 - Rejects class names starting with "Test" (pytest conflict)
-- Rejects custom fields beyond allowed set (`name`, `description`, `content`, `derived_from`, `triggered_by`, `attachments`)
+- Rejects custom fields beyond allowed set (`name`, `description`, `summary`, `content`, `derived_from`, `triggered_by`, `attachments`)
 - Detects canonical name collisions between Document subclasses
 - Validates `FILES` enum if defined
 
@@ -145,8 +145,7 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - Subclass with `async def run(self, documents: tuple[...], options: FlowOptions) -> tuple[...]`
 - Extracts input/output document types from `run()` annotations at class definition time
 - Validates: exactly 3 parameters (`self`, `documents`, `options`), correct types, no input/output type overlap
-- Sets RunContext for document and run-scope scoping
-- Use `get_run_id()` from `ai_pipeline_core.pipeline` to access the current run ID inside a flow or task
+- Use `get_run_id()` from `ai_pipeline_core.pipeline` to access the current run ID inside a flow or task (RunContext is set by the deployment runtime in `deployment/base.py`)
 
 **`PipelineTask` Return Type Validation:**
 - Return type must be `Document | None | list[Document] | tuple[Document, ...]`
@@ -157,6 +156,17 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - Return type must be `tuple[Document, ...]` (e.g., `tuple[MyDoc, ...]` or `tuple[DocA | DocB, ...]`)
 - Enforced at both definition time and runtime
 
+**`traced_operation()` helper:**
+- `async with traced_operation(name, description=""):` creates a lightweight traced `OPERATION` span inside an active deployment run
+- No-op outside deployment/database context
+- Nested spans are supported, and `Conversation.send()` calls inside the span become child `CONVERSATION` nodes whose metrics roll up onto the span node
+
+**Execution Hierarchy:**
+- Span kinds: `DEPLOYMENT`, `FLOW`, `TASK`, `OPERATION`, `CONVERSATION`, `LLM_ROUND`, `TOOL_CALL` (7 total)
+- Primary execution tree: `DEPLOYMENT -> FLOW -> TASK -> CONVERSATION`; `OPERATION` spans are created by `traced_operation()` as nested spans within the task branch
+- `CONVERSATION` spans contain child `LLM_ROUND` and `TOOL_CALL` spans for detailed LLM interaction tracking
+- `previous_conversation_id` links each conversation node to the immediately preceding conversation in the same chain; sequential sends form a linked list, and forks point to the shared parent or warmup node
+
 **Graceful Degradation:**
 - `safe_gather(*coros)` / `safe_gather_indexed(*coros)` execute coroutines in parallel, logging individual failures while returning successes
 - By default raises `RuntimeError` if all tasks fail (`raise_if_all_fail=True`)
@@ -165,15 +175,21 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 ### 2.4 Database (`database/`)
 
 **Public API — `DatabaseReader` protocol** (read-only, exported at top level):
-- Load and query execution nodes, documents, blobs, deployments, and logs
+- Load and query spans, documents, blobs, deployments, and logs
 - Power replay, `ai-trace`, and downloaded `FilesystemDatabase` snapshots
 
-**Internal — `DatabaseWriter` protocol** (`_protocol.py`, full read/write):
-- Adds write operations used by `PipelineTask`, deployments, replay capture, and execution logging
+**SpanRecord Shape:**
+- `SpanRecord` stores hierarchy via `parent_span_id`, with `root_deployment_id` for tree queries and `previous_conversation_id` for conversation-chain reconstruction
+- Span kinds are exactly `deployment`, `flow`, `task`, `operation`, `conversation`, `llm_round`, and `tool_call`
+- Conversation chains and warmup/fork trees are reconstructed from `previous_conversation_id`; replay state is stored across span fields (`target`, `receiver_json`, `input_json`, `output_json`, `meta_json`, `metrics_json`) and child spans
+
+**`DatabaseWriter` protocol** (exported from `ai_pipeline_core.database`, full read/write):
+- Adds append-only write operations used by `PipelineTask`, deployments, replay, and execution logging
 - `supports_remote: bool` property — indicates whether the backend supports Prefect-based remote deployment execution
 
-**Backends** (all internal, prefixed with `_`):
-- `ClickHouseDatabase` (production), `FilesystemDatabase` (CLI/download/replay), `MemoryDatabase` (testing)
+**Backends** (class names are public, residing in internal modules):
+- `ClickHouseDatabase` (production, `database/clickhouse/`), `FilesystemDatabase` (CLI/download/replay, `database/filesystem/`), `MemoryDatabase` (testing, exported from `database/`)
+- Downloaded `FilesystemDatabase` snapshots persist span JSON files under `runs/`, document metadata under `documents/`, blobs under `blobs/`, and logs in `logs.jsonl`
 
 ### 2.5 Deployment (`deployment/`)
 
@@ -184,16 +200,15 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - Pub/Sub event publishing (per-flow start/completion via `PUBSUB_PROJECT_ID`, `PUBSUB_TOPIC_ID` environment variables on `Settings`)
 - CLI interface with `--start`/`--end` step control
 - Prefect deployment generation via `as_prefect_flow()`
+- Deployment execution trees follow `DEPLOYMENT -> FLOW -> TASK -> CONVERSATION`; `traced_operation()` inserts additional nested `OPERATION` spans inside the active flow/task branch when needed
 
 **RemoteDeployment:**
 - Typed client for calling a remote `PipelineDeployment` via Prefect
 - Generic typing: `RemoteDeployment[TOptions, TResult]` (2 type parameters: options and result)
-- Mirror types — local Document subclasses whose `class_name` must match remote types
 
 **Progress Tracking:**
-- `await progress.progress_update(fraction, message)` for intra-flow progress
-- Pub/Sub push + Prefect labels pull
-- Weighted calculation based on `estimated_minutes`
+- Automatic flow-level progress derived from execution state and `estimated_minutes` on each `PipelineFlow`
+- Pub/Sub events (`FlowStartedEvent`/`FlowCompletedEvent`) report step/total_steps
 
 **Concurrency Limits:**
 - `PipelineLimit` and `LimitKind` for declaring cross-run concurrency/rate limits
@@ -242,34 +257,32 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 ### 2.7 Observability (`observability/`)
 
 **Execution Data:**
-- Execution structure is stored in `execution_nodes`
-- Execution logs are stored in `execution_logs`
-- LLM calls persist full prompt/response payloads and replay payloads for debugging and replay
+- Execution structure is stored in `spans`
+- Execution logs are stored in `logs`
+- LLM calls persist full prompt/response payloads across span fields (`input_json`, `output_json`, `meta_json`, `metrics_json`) for debugging and replay. Conversation spans include both base `model_options` (for replay) and `effective_model_options` (for audit). Multimodal content in `request_messages` uses `{"$doc_ref": "<sha256>"}` references to the `blobs` table instead of inline base64.
 
 **CLI:**
 - `ai-trace list` lists deployments from the database
-- `ai-trace show <id>` renders the execution tree plus logs
-- `ai-trace download <id>` exports a portable `FilesystemDatabase` snapshot
+- `ai-trace show <id>` renders the execution tree plus logs, with `CONVERSATION` leaf lines showing purpose, duration, model, token counts, cache hits, and cost
+- `ai-trace download <id> -o <output-dir>` exports a portable `FilesystemDatabase` snapshot plus summary artifacts such as `summary.md`, `costs.md`, `llm_calls.jsonl`, `errors.md` (when failures exist), and `documents.md` (when documents exist)
 
-**Logging API:**
+**Logging API** (in `logger/` module, not `observability/`):
 - `get_pipeline_logger()` — Configured logger with context
-- `ExecutionLogHandler` — stdlib logging handler that routes root-logger records into the active execution log buffer, persisted to `execution_logs` during deployment runs
+- `ExecutionLogHandler` — stdlib logging handler that routes root-logger records into the active execution log buffer, persisted to `logs` during deployment runs
 - Logs flow into the database-backed execution log pipeline automatically during deployment runs
 
 ### 2.8 Replay (`replay/`)
 
-**Automatic capture and re-execution of any pipeline boundary** — every LLM conversation, `PipelineTask`, and `PipelineFlow` call produces a typed replay payload that can be serialized to YAML for inspection or replay.
+**Automatic capture and re-execution of any pipeline boundary** — every LLM conversation, `PipelineTask`, and `PipelineFlow` call records replayable state across span fields (`target`, `input_json`, `output_json`, `meta_json`) plus child spans.
 
-**Three Payload Types (frozen Pydantic models):**
-- `ConversationReplay` — captures `Conversation.send()`/`send_structured()`: model, model_options, prompt, context docs, multi-turn history, response_format class path
-- `TaskReplay` — captures `PipelineTask`: class path (`module:qualname`), all arguments (Documents as `$doc_ref` references, BaseModels as dicts, primitives as-is)
-- `FlowReplay` — captures `PipelineFlow`: class path, run_id, document references, flow_options
+**Replay Entry Points:**
+- Task replay loads the task class from `target`, resolves `$doc_ref` arguments from the database, and executes the task
+- Flow replay loads the flow class from `target`, resolves input documents, and executes the flow
+- Conversation replay reconstructs prior history from `previous_conversation_id` plus child `llm_round` and `tool_call` spans
 
-**Each payload type has:** `to_yaml()`, `from_yaml(text)`, `execute(database)` methods.
+**Document References** — documents are referenced by SHA256 (`$doc_ref`), resolved from a `DatabaseReader` during replay. This includes both task arguments and multimodal content (images, PDFs) in LLM round `request_messages`.
 
-**Document References** — documents are referenced by SHA256 (`$doc_ref`), resolved from a `DatabaseReader` during replay.
-
-**CLI Tool** (`ai-replay`): `run <file>` to execute, `run --from-db <node_id>` to replay directly from the database, and `show <file>` to inspect. Supports `--db-path`, `--set KEY=VALUE`, `--import MODULE`, and `--output-dir`.
+**CLI Tool** (`ai-replay`): `run --from-db <span_id>` executes a replay, and `show --from-db <span_id>` inspects one. File inputs are span JSON files from downloaded snapshots. Passing a directory is rejected with guidance to use `--from-db` or a span JSON file. Supports `--db-path`, `--set KEY=VALUE`, `--import MODULE`, and `--output-dir`.
 
 **Output:** Results are saved to `output_dir/output.yaml`. Downloaded bundles remain replayable by pointing `--db-path` at the exported `FilesystemDatabase` root.
 
@@ -402,7 +415,7 @@ When documents are added to LLM context, the framework wraps them:
 
 This XML boundary separates data from instructions — the **prompt injection defense**. The system prompt instructs the LLM to treat document content as data, not executable instructions.
 
-**All structured data for LLM context must be wrapped in a Document** — use `Document.create()` to wrap dicts, lists, or BaseModel instances. Never construct XML manually (e.g., f-string `<document>` tags). The framework handles escaping, ID generation, and consistent formatting.
+**All structured data for LLM context must be wrapped in a Document** — use `Document.create()` (requires provenance via `derived_from` or `triggered_by`) or `Document.create_root(reason=...)` (for pipeline inputs without provenance) to wrap dicts, lists, or BaseModel instances. Never construct XML manually (e.g., f-string `<document>` tags). The framework handles escaping, ID generation, and consistent formatting.
 
 ### 3.10 Thinking Models
 
@@ -465,7 +478,7 @@ The framework auto-generates documentation for AI coding agents via `docs_genera
 - Public/private determined by `_` prefix convention
 - Full source code with comments included
 - Examples extracted from test suite
-- 50KB warning threshold per guide
+- 40KB warning threshold per guide
 - CI-enforced freshness
 
 **Visibility by Naming Convention:**
@@ -619,7 +632,7 @@ logger.warning(
 |----------|--------|-------|
 | Orchestrator | Prefect | Flow/task orchestration, state management |
 | LLM Proxy | LiteLLM (primary), OpenRouter (compatible) | Unified multi-provider access |
-| Database | ClickHouse (production), filesystem (CLI/replay), in-memory (testing) | Unified storage: `execution_nodes`, `documents`, `document_blobs`, `execution_logs`. Content-addressed with SHA256 deduplication |
+| Database | ClickHouse (production), filesystem (CLI/replay), in-memory (testing) | Unified storage: `spans`, `documents`, `blobs`, `logs`. Content-addressed with SHA256 deduplication |
 
 ---
 

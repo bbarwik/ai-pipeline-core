@@ -1,16 +1,19 @@
-"""First-class replay system for AI pipeline debugging.
+"""Generic replay and experimentation entry points."""
 
-Replay payloads capture everything needed to re-execute an LLM call,
-pipeline task, or pipeline flow. Documents are referenced by SHA256 hash
-and resolved through the unified database backends at replay time.
-"""
-
-from .types import ConversationReplay, DocumentRef, FlowReplay, HistoryEntry, TaskReplay
+from ._execute import execute_span
+from ._experiment import (
+    ExperimentOverrides,
+    ExperimentResult,
+    experiment_batch,
+    experiment_span,
+    find_experiment_span_ids,
+)
 
 __all__ = [
-    "ConversationReplay",
-    "DocumentRef",
-    "FlowReplay",
-    "HistoryEntry",
-    "TaskReplay",
+    "ExperimentOverrides",
+    "ExperimentResult",
+    "execute_span",
+    "experiment_batch",
+    "experiment_span",
+    "find_experiment_span_ids",
 ]

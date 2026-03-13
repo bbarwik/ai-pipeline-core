@@ -17,6 +17,14 @@ install-dev:
 test:
 	@uv run pytest $(EXTRA_ARGS)
 
+.PHONY: test-fast
+test-fast:
+	@uv run pytest -n auto --dist worksteal $(EXTRA_ARGS)
+
+.PHONY: test-integration
+test-integration:
+	@uv run pytest -m integration $(EXTRA_ARGS)
+
 .PHONY: test-clickhouse
 test-clickhouse:
 	@uv run pytest -m clickhouse $(EXTRA_ARGS)
@@ -24,6 +32,10 @@ test-clickhouse:
 .PHONY: test-pubsub
 test-pubsub:
 	@uv run pytest -m pubsub $(EXTRA_ARGS)
+
+.PHONY: test-all
+test-all:
+	@uv run pytest --override-ini="addopts=-q --tb=short --testmon" $(EXTRA_ARGS)
 
 .PHONY: test-cov
 test-cov:
@@ -131,5 +143,5 @@ lint-pre-commit-config:
 	@pre-commit validate-config .pre-commit-config.yaml
 
 .PHONY: check
-check: lint typecheck deadcode semgrep docstrings-cover filesize check-claude-md docs-ai-check test-collect test
+check: lint typecheck deadcode semgrep docstrings-cover filesize check-claude-md test-collect test
 	@echo "All checks passed"

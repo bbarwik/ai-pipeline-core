@@ -131,7 +131,7 @@ class TestCreatePublisher:
         mock_settings.pubsub_project_id = "my-project"
         mock_settings.pubsub_topic_id = "events"
 
-        with patch("ai_pipeline_core.deployment._pubsub.PubSubPublisher") as mock_pub_cls:
+        with patch("ai_pipeline_core.deployment._helpers.PubSubPublisher") as mock_pub_cls:
             mock_pub_cls.return_value = MagicMock(spec=ResultPublisher)
             _create_publisher(mock_settings, "research")
             mock_pub_cls.assert_called_once_with(
@@ -168,7 +168,7 @@ class TestRunPublisherIntegration:
         completed_events = [e for e in pub.events if isinstance(e, RunCompletedEvent)]
         assert len(completed_events) == 1
         assert completed_events[0].run_id == "run-1"
-        assert completed_events[0].node_id
+        assert completed_events[0].span_id
         assert completed_events[0].root_deployment_id
 
     async def test_publishes_failed_event_on_error(self):

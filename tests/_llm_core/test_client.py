@@ -578,3 +578,42 @@ class TestGenerateImpl:
         opts = ModelOptions(retries=0, cache_ttl="300s")
         result = await _generate_impl([ctx_msg, user_msg], model="test-model", model_options=opts, context_count=1)
         assert result.content == "OK"
+
+    @patch("ai_pipeline_core._llm_core.client.settings")
+    @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
+    @patch("ai_pipeline_core._llm_core.client.detect_output_degeneration", return_value=None)
+    async def test_generate_retries_when_provider_returns_tool_calls_without_tools(self, mock_degen, mock_aoai, mock_settings):
+        from ai_pipeline_core._llm_core.client import _generate_impl
+        from ai_pipeline_core._llm_core.types import ModelOptions
+
+        mock_settings.openai_api_key = "key"
+        mock_settings.openai_base_url = "http://localhost:4000"
+
+        bad_resp = _make_response(content="")
+        bad_resp.choices[0].message.tool_calls = [
+            SimpleNamespace(
+                id="call_1",
+                function=SimpleNamespace(name="unexpected_tool", arguments="{}"),
+            )
+        ]
+        bad_raw = MagicMock()
+        bad_raw.parse.return_value = bad_resp
+        bad_raw.headers = {}
+
+        good_resp = _make_response(content="Recovered answer", prompt=10, completion=5)
+        good_raw = MagicMock()
+        good_raw.parse.return_value = good_resp
+        good_raw.headers = {}
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.with_raw_response.create = AsyncMock(side_effect=[bad_raw, good_raw])
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_aoai.return_value = mock_client
+
+        msg = CoreMessage(role=Role.USER, content="hi")
+        opts = ModelOptions(retries=1, retry_delay_seconds=0, cache_ttl=None)
+        result = await _generate_impl([msg], model="test-model", model_options=opts)
+
+        assert result.content == "Recovered answer"
+        assert mock_client.chat.completions.with_raw_response.create.call_count == 2

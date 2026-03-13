@@ -9,7 +9,7 @@ with proper step numbering.
 import pytest
 from google.api_core.exceptions import GoogleAPICallError
 
-from ai_pipeline_core.database import create_database
+from ai_pipeline_core.database._memory import MemoryDatabase
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
 from ai_pipeline_core.deployment._types import EventType, _NoopPublisher
 
@@ -55,7 +55,7 @@ class TestResumedFlowCachedStatus:
         """Run TwoStageDeployment twice; second run's skipped events have correct step numbering."""
         deployment = TwoStageDeployment()
         doc = make_input_doc()
-        db = create_database(backend="memory")
+        db = MemoryDatabase()
 
         # First run: use _NoopPublisher (we don't care about its events)
         await run_pipeline(deployment, _NoopPublisher(), docs=[doc], database=db)
@@ -103,11 +103,11 @@ class TestResumedFlowCachedStatus:
         finally:
             try:
                 sub_client.delete_subscription(subscription=sub_path)
-            except (OSError, GoogleAPICallError):
+            except OSError, GoogleAPICallError:
                 pass
             try:
                 pub_client.delete_topic(topic=topic_path)
-            except (OSError, GoogleAPICallError):
+            except OSError, GoogleAPICallError:
                 pass
 
 
@@ -121,7 +121,7 @@ class TestResumedPipelineLifecycle:
         """SingleStageDeployment run twice: second run still has run.started and run.completed."""
         deployment = SingleStageDeployment()
         doc = make_input_doc()
-        db = create_database(backend="memory")
+        db = MemoryDatabase()
 
         # First run: use _NoopPublisher
         await run_pipeline(deployment, _NoopPublisher(), docs=[doc], database=db)
@@ -169,11 +169,11 @@ class TestResumedPipelineLifecycle:
         finally:
             try:
                 sub_client.delete_subscription(subscription=sub_path)
-            except (OSError, GoogleAPICallError):
+            except OSError, GoogleAPICallError:
                 pass
             try:
                 pub_client.delete_topic(topic=topic_path)
-            except (OSError, GoogleAPICallError):
+            except OSError, GoogleAPICallError:
                 pass
 
 
@@ -189,7 +189,7 @@ class TestPartialResumeMix:
         """
         deployment = ThreeStageDeployment()
         doc = make_input_doc()
-        db = create_database(backend="memory")
+        db = MemoryDatabase()
 
         # First run to populate the database with documents and completions
         await run_pipeline(deployment, _NoopPublisher(), docs=[doc], database=db)
@@ -246,9 +246,9 @@ class TestPartialResumeMix:
         finally:
             try:
                 sub_client.delete_subscription(subscription=sub_path)
-            except (OSError, GoogleAPICallError):
+            except OSError, GoogleAPICallError:
                 pass
             try:
                 pub_client.delete_topic(topic=topic_path)
-            except (OSError, GoogleAPICallError):
+            except OSError, GoogleAPICallError:
                 pass

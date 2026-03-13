@@ -3,33 +3,29 @@
 import asyncio
 import contextlib
 import hashlib
+import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import replace
-from datetime import UTC, datetime
-from importlib import import_module
+from collections.abc import Sequence
+from pathlib import Path
 from threading import Lock
 from typing import Any
-from uuid import UUID, uuid4
 
-from ai_pipeline_core.database import Database, ExecutionLog, ExecutionNode, NodeKind, NodeStatus
-from ai_pipeline_core.documents import Document, RunScope
+from ai_pipeline_core.database import LogRecord
+from ai_pipeline_core.database._factory import Database, create_database_from_settings
+from ai_pipeline_core.documents import Document
 from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
-from ai_pipeline_core.logging import ExecutionLogBuffer, ExecutionLogHandler, get_pipeline_logger
-from ai_pipeline_core.logging._buffer import MAX_PENDING_EXECUTION_LOGS
-from ai_pipeline_core.pipeline._execution_context import (
-    get_execution_context,
-    record_lifecycle_event,
-    reset_execution_context,
-    set_execution_context,
-)
+from ai_pipeline_core.logger import get_pipeline_logger
+from ai_pipeline_core.logger._buffer import MAX_PENDING_EXECUTION_LOGS, ExecutionLogBuffer
+from ai_pipeline_core.logger._handler import ExecutionLogHandler
+from ai_pipeline_core.pipeline._parallel import TaskHandle
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import Settings
 
-from ._types import ErrorCode, FlowSkippedEvent, ResultPublisher, _NoopPublisher
+from ._pubsub import PubSubPublisher
+from ._types import ErrorCode, ResultPublisher, _NoopPublisher
 
 logger = get_pipeline_logger(__name__)
-_logging: Any = import_module("logging")
+_PUBSUB_DEPENDENCY_AVAILABLE = True
 
 __all__ = [
     "MAX_RUN_ID_LENGTH",
@@ -38,14 +34,15 @@ __all__ = [
     "_HANDLE_CANCEL_GRACE_SECONDS",
     "_HEARTBEAT_INTERVAL_SECONDS",
     "_MILLISECONDS_PER_SECOND",
-    "_build_log_summary",
+    "_build_flow_cache_key",
+    "_cancel_dispatched_handles",
     "_classify_error",
-    "_compute_run_scope",
+    "_compute_input_fingerprint",
     "_create_publisher",
+    "_create_span_database_from_settings",
     "_ensure_execution_log_handler_installed",
-    "_execution_log_flush_loop",
     "_heartbeat_loop",
-    "_record_terminal_flow_node",
+    "_log_flush_loop",
     "class_name_to_deployment_name",
     "extract_generic_params",
     "validate_run_id",
@@ -65,8 +62,8 @@ SKIP_EXECUTION_LOG_ATTR = "_skip_execution_log"
 _execution_log_handler_lock = Lock()
 
 
-def _trim_pending_execution_logs(pending_logs: list[ExecutionLog]) -> tuple[list[ExecutionLog], int]:
-    """Cap pending execution logs and report how many oldest entries were dropped."""
+def _trim_pending_logs(pending_logs: list[LogRecord]) -> tuple[list[LogRecord], int]:
+    """Cap pending logs and report how many oldest entries were dropped."""
     if len(pending_logs) <= MAX_PENDING_EXECUTION_LOGS:
         return pending_logs, 0
     dropped_count = len(pending_logs) - MAX_PENDING_EXECUTION_LOGS
@@ -137,8 +134,6 @@ def _create_publisher(settings_obj: Settings, service_type: str) -> ResultPublis
     if not service_type:
         return _NoopPublisher()
     if settings_obj.pubsub_project_id and settings_obj.pubsub_topic_id:
-        from ._pubsub import PubSubPublisher
-
         return PubSubPublisher(
             project_id=settings_obj.pubsub_project_id,
             topic_id=settings_obj.pubsub_topic_id,
@@ -147,56 +142,80 @@ def _create_publisher(settings_obj: Settings, service_type: str) -> ResultPublis
     return _NoopPublisher()
 
 
-def _compute_run_scope(run_id: str, documents: Sequence[Document], options: FlowOptions) -> RunScope:
-    """Compute a run scope that fingerprints inputs and options.
-
-    Different inputs or options produce a different scope, preventing
-    stale cache hits when re-running with the same run_id.
-    """
+def _compute_input_fingerprint(documents: Sequence[Document], options: FlowOptions) -> str:
+    """Compute the redesign input fingerprint from sorted input SHAs and serialized options."""
     exclude = set(_CLI_FIELDS & set(type(options).model_fields))
     options_json = options.model_dump_json(exclude=exclude, exclude_none=True)
-
-    if not documents:
-        fingerprint = hashlib.sha256(options_json.encode()).hexdigest()[:16]
-        return RunScope(f"{run_id}:{fingerprint}")
-
     sha256s = sorted(doc.sha256 for doc in documents)
-    fingerprint = hashlib.sha256(f"{':'.join(sha256s)}|{options_json}".encode()).hexdigest()[:16]
-    return RunScope(f"{run_id}:{fingerprint}")
+    fingerprint_source = "\n".join([*sha256s, options_json])
+    return hashlib.sha256(fingerprint_source.encode()).hexdigest()[:16]
+
+
+def _build_flow_cache_key(
+    *,
+    input_fingerprint: str,
+    flow_class: type[Any],
+    step: int,
+) -> str:
+    """Build the deterministic cross-deployment flow cache key."""
+    return f"flow:{input_fingerprint}:{flow_class.__module__}:{flow_class.__qualname__}:{step}"
+
+
+def _create_span_database_from_settings(
+    settings_obj: Settings,
+    *,
+    base_path: Path | None = None,
+) -> Database:
+    """Create a span-era database backend from settings."""
+    return create_database_from_settings(settings_obj, base_path=base_path)
 
 
 def _ensure_execution_log_handler_installed() -> None:
     """Install the process-wide execution log handler on the root logger once."""
-    root_logger = _logging.getLogger()
+    root_logger = logging.getLogger()
     with _execution_log_handler_lock:
         if any(isinstance(handler, ExecutionLogHandler) for handler in root_logger.handlers):
             return
         root_logger.addHandler(ExecutionLogHandler())
 
 
-def _build_log_summary(log_buffer: ExecutionLogBuffer | None, node_id: UUID) -> dict[str, int | str]:
-    """Return lightweight log counters for the given execution node."""
-    if log_buffer is None:
-        return {"total": 0, "warnings": 0, "errors": 0, "last_error": ""}
-    return log_buffer.get_summary(node_id)
+async def _cancel_dispatched_handles(
+    active_handles: set[object],
+    *,
+    baseline_handles: set[object],
+) -> None:
+    """Cancel handles dispatched within a flow and wait briefly for shutdown."""
+    new_handles: list[TaskHandle[tuple[Document[Any], ...]]] = [
+        handle for handle in list(active_handles) if handle not in baseline_handles and isinstance(handle, TaskHandle)
+    ]
+    if not new_handles:
+        return
+
+    for handle in new_handles:
+        handle.cancel()
+
+    pending_tasks: list[asyncio.Task[tuple[Document[Any], ...]]] = [handle._task for handle in new_handles if not handle.done]
+    if pending_tasks:
+        _done, pending = await asyncio.wait(pending_tasks, timeout=_HANDLE_CANCEL_GRACE_SECONDS)
+        if pending:
+            for task in pending:
+                task.cancel()
+            with contextlib.suppress(Exception):
+                await asyncio.gather(*pending, return_exceptions=True)
+
+    for handle in new_handles:
+        active_handles.discard(handle)
 
 
-def _consume_log_summary(log_buffer: ExecutionLogBuffer | None, node_id: UUID) -> dict[str, int | str]:
-    """Return and clear lightweight log counters for a terminal execution node."""
-    if log_buffer is None:
-        return {"total": 0, "warnings": 0, "errors": 0, "last_error": ""}
-    return log_buffer.consume_summary(node_id)
-
-
-async def _flush_execution_logs_once(
-    database: Database | None,
+async def _flush_logs_once(
+    database: Any,
     log_buffer: ExecutionLogBuffer | None,
-    pending_logs: list[ExecutionLog],
-) -> list[ExecutionLog]:
+    pending_logs: list[LogRecord],
+) -> list[LogRecord]:
     """Drain buffered logs, save them, and retain any batch that failed to persist."""
     if log_buffer is not None:
         pending_logs.extend(log_buffer.drain())
-    pending_logs, dropped_from_backlog = _trim_pending_execution_logs(pending_logs)
+    pending_logs, dropped_from_backlog = _trim_pending_logs(pending_logs)
     if dropped_from_backlog > 0:
         logger.warning(
             "Execution log backlog exceeded %d entries. Dropping %d oldest log(s) to keep memory bounded while database writes are failing.",
@@ -228,21 +247,21 @@ async def _flush_execution_logs_once(
     return []
 
 
-async def _execution_log_flush_loop(
-    database: Database | None,
+async def _log_flush_loop(
+    database: Any,
     log_buffer: ExecutionLogBuffer | None,
     flush_event: asyncio.Event,
 ) -> None:
     """Flush buffered execution logs on a timer or when the buffer reaches capacity."""
-    pending_logs: list[ExecutionLog] = []
+    pending_logs: list[LogRecord] = []
     try:
         while True:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(flush_event.wait(), timeout=LOG_BUFFER_FLUSH_INTERVAL_SECONDS)
             flush_event.clear()
-            pending_logs = await _flush_execution_logs_once(database, log_buffer, pending_logs)
+            pending_logs = await _flush_logs_once(database, log_buffer, pending_logs)
     except asyncio.CancelledError:
-        pending_logs = await _flush_execution_logs_once(database, log_buffer, pending_logs)
+        pending_logs = await _flush_logs_once(database, log_buffer, pending_logs)
         if pending_logs:
             logger.warning(
                 "Execution log flush stopped with %d pending log(s). The database write path is still failing; inspect earlier log flush warnings.",
@@ -252,97 +271,11 @@ async def _execution_log_flush_loop(
         raise
 
 
-async def _record_terminal_flow_node(
-    *,
-    insert_node: Callable[[Database | None, ExecutionNode], Awaitable[None]],
-    update_node: Callable[..., Awaitable[None]],
-    database: Database | None,
-    publisher: ResultPublisher,
-    deployment_name: str,
-    deployment_node_id: UUID,
-    root_deployment_id: UUID,
-    run_id: str,
-    run_scope: RunScope,
-    flow_name: str,
-    flow_class_name: str,
-    step: int,
-    total_steps: int,
-    root_id_str: str,
-    parent_task_id_str: str | None,
-    status: NodeStatus,
-    publish_reason: str,
-    log_buffer: ExecutionLogBuffer | None,
-    lifecycle_event: str,
-    lifecycle_message: str,
-    lifecycle_fields: Mapping[str, Any],
-    payload: Mapping[str, Any] | None = None,
-    output_document_shas: tuple[str, ...] = (),
-) -> None:
-    """Insert a terminal flow node, emit lifecycle logs, and persist its log summary."""
-    node_id = uuid4()
-    node_payload = dict(payload or {})
-    await insert_node(
-        database,
-        ExecutionNode(
-            node_id=node_id,
-            node_kind=NodeKind.FLOW,
-            deployment_id=deployment_node_id,
-            root_deployment_id=root_deployment_id,
-            parent_node_id=deployment_node_id,
-            run_id=run_id,
-            run_scope=run_scope,
-            deployment_name=deployment_name,
-            name=flow_name,
-            sequence_no=step,
-            flow_class=flow_class_name,
-            status=status,
-            ended_at=datetime.now(UTC),
-            output_document_shas=output_document_shas,
-            payload=node_payload,
-        ),
-    )
-    await publisher.publish_flow_skipped(
-        FlowSkippedEvent(
-            run_id=run_id,
-            node_id=str(node_id),
-            root_deployment_id=root_id_str,
-            parent_deployment_task_id=parent_task_id_str or "",
-            flow_name=flow_name,
-            step=step,
-            total_steps=total_steps,
-            reason=publish_reason,
-        )
-    )
-
-    current_exec_ctx = get_execution_context()
-    if current_exec_ctx is None:
-        return
-
-    node_exec_ctx = replace(
-        current_exec_ctx,
-        current_node_id=node_id,
-        flow_node_id=node_id,
-    )
-    execution_token = set_execution_context(node_exec_ctx)
-    try:
-        record_lifecycle_event(lifecycle_event, lifecycle_message, **lifecycle_fields)
-        await update_node(
-            database,
-            node_id,
-            payload={
-                **node_payload,
-                "log_summary": _consume_log_summary(log_buffer, node_id),
-            },
-        )
-    finally:
-        reset_execution_context(execution_token)
-
-
-async def _heartbeat_loop(publisher: ResultPublisher, run_id: str) -> None:
+async def _heartbeat_loop(publisher: ResultPublisher, run_id: str, *, root_deployment_id: str = "", span_id: str = "") -> None:
     """Publish heartbeat signals at regular intervals until cancelled."""
     while True:
         await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
         try:
-            await publisher.publish_heartbeat(run_id)
+            await publisher.publish_heartbeat(run_id, root_deployment_id=root_deployment_id, span_id=span_id)
         except Exception as e:
             logger.warning("Heartbeat publish failed: %s", e)

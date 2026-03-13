@@ -1,6 +1,7 @@
 """Comprehensive tests for ModelResponse[T] features."""
 
 import json
+from typing import Any
 
 import pytest
 
@@ -187,7 +188,7 @@ class TestModelResponseSerialization:
         )
 
         json_str = response.model_dump_json()
-        restored = ModelResponse.model_validate_json(json_str)
+        restored = ModelResponse[Any].model_validate_json(json_str)
 
         assert restored.content == response.content
         assert restored.reasoning_content == response.reasoning_content
@@ -204,7 +205,7 @@ class TestModelResponseSerialization:
         response = create_test_structured_model_response(parsed=parsed)
 
         json_str = response.model_dump_json()
-        restored = ModelResponse.model_validate_json(json_str)
+        restored = ModelResponse[Any].model_validate_json(json_str)
 
         # After deserialization, parsed is a dict
         assert isinstance(restored.parsed, dict)

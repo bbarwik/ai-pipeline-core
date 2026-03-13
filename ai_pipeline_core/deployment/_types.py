@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
+from ai_pipeline_core._lifecycle_events import DocumentRef, TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent
+
 
 # Enum
 class EventType(StrEnum):
@@ -37,40 +39,42 @@ class ErrorCode(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class DocumentRef:
-    """Lightweight document reference for event payloads."""
-
-    sha256: str
-    class_name: str
-    name: str
-    summary: str = ""
-    publicly_visible: bool = False
-    derived_from: tuple[str, ...] = ()
-    triggered_by: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class RunStartedEvent:
     """Pipeline execution started."""
 
     run_id: str
-    node_id: str
+    span_id: str
     root_deployment_id: str
     parent_deployment_task_id: str | None
-    run_scope: str
+    input_fingerprint: str
+    status: str
+    deployment_name: str = ""
+    deployment_class: str = ""
     flow_plan: list[dict[str, Any]] = field(default_factory=list)
+    parent_span_id: str = ""
+    input_document_sha256s: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class RunCompletedEvent:
-    """Pipeline completed successfully."""
+    """Pipeline completed successfully.
+
+    output_document_sha256s contains the SHA256 hashes of the LAST flow's
+    output documents — these are the pipeline's final deliverables. Intermediate
+    documents from earlier flows are available via the database (ai-trace show).
+    """
 
     run_id: str
-    node_id: str
+    span_id: str
     root_deployment_id: str
     parent_deployment_task_id: str | None
+    status: str
     result: dict[str, Any]
+    deployment_name: str = ""
+    deployment_class: str = ""
+    duration_ms: int = 0
     output_document_sha256s: tuple[str, ...] = ()
+    parent_span_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,11 +82,16 @@ class RunFailedEvent:
     """Pipeline execution failed."""
 
     run_id: str
-    node_id: str
+    span_id: str
     root_deployment_id: str
     parent_deployment_task_id: str | None
+    status: str
     error_code: ErrorCode
     error_message: str
+    deployment_name: str = ""
+    deployment_class: str = ""
+    duration_ms: int = 0
+    parent_span_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,15 +99,18 @@ class FlowStartedEvent:
     """Flow execution started."""
 
     run_id: str
-    node_id: str
+    span_id: str
     root_deployment_id: str
     parent_deployment_task_id: str | None
     flow_name: str
     flow_class: str
     step: int
     total_steps: int
+    status: str
     expected_tasks: list[str] = field(default_factory=list)
     flow_params: dict[str, Any] = field(default_factory=dict)
+    parent_span_id: str = ""
+    input_document_sha256s: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,15 +118,18 @@ class FlowCompletedEvent:
     """Flow execution completed."""
 
     run_id: str
-    node_id: str
+    span_id: str
     root_deployment_id: str
     parent_deployment_task_id: str | None
     flow_name: str
     flow_class: str
     step: int
     total_steps: int
+    status: str
     duration_ms: int
     output_documents: tuple[DocumentRef, ...] = field(default_factory=tuple)
+    parent_span_id: str = ""
+    input_document_sha256s: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,14 +137,17 @@ class FlowFailedEvent:
     """Flow execution failed."""
 
     run_id: str
-    node_id: str
+    span_id: str
     root_deployment_id: str
     parent_deployment_task_id: str | None
     flow_name: str
     flow_class: str
     step: int
     total_steps: int
+    status: str
     error_message: str
+    parent_span_id: str = ""
+    input_document_sha256s: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,58 +155,17 @@ class FlowSkippedEvent:
     """Flow skipped because it was resumed or intentionally bypassed."""
 
     run_id: str
-    node_id: str
+    span_id: str
     root_deployment_id: str
     parent_deployment_task_id: str | None
     flow_name: str
+    flow_class: str
     step: int
     total_steps: int
+    status: str
     reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class TaskStartedEvent:
-    """Task execution started."""
-
-    run_id: str
-    node_id: str
-    root_deployment_id: str
-    parent_deployment_task_id: str | None
-    flow_name: str
-    step: int
-    task_name: str
-    task_class: str
-
-
-@dataclass(frozen=True, slots=True)
-class TaskCompletedEvent:
-    """Task execution completed."""
-
-    run_id: str
-    node_id: str
-    root_deployment_id: str
-    parent_deployment_task_id: str | None
-    flow_name: str
-    step: int
-    task_name: str
-    task_class: str
-    duration_ms: int
-    output_documents: tuple[DocumentRef, ...] = field(default_factory=tuple)
-
-
-@dataclass(frozen=True, slots=True)
-class TaskFailedEvent:
-    """Task execution failed."""
-
-    run_id: str
-    node_id: str
-    root_deployment_id: str
-    parent_deployment_task_id: str | None
-    flow_name: str
-    step: int
-    task_name: str
-    task_class: str
-    error_message: str
+    parent_span_id: str = ""
+    input_document_sha256s: tuple[str, ...] = ()
 
 
 # Protocol
@@ -208,7 +185,7 @@ class ResultPublisher(Protocol):
         """Publish a pipeline failure event."""
         ...
 
-    async def publish_heartbeat(self, run_id: str) -> None:
+    async def publish_heartbeat(self, run_id: str, *, root_deployment_id: str = "", span_id: str = "") -> None:
         """Publish a heartbeat signal."""
         ...
 
@@ -257,7 +234,7 @@ class _NoopPublisher:
     async def publish_run_failed(self, event: RunFailedEvent) -> None:
         """Accept and discard a run failed event."""
 
-    async def publish_heartbeat(self, run_id: str) -> None:
+    async def publish_heartbeat(self, run_id: str, *, root_deployment_id: str = "", span_id: str = "") -> None:
         """Accept and discard a heartbeat."""
 
     async def publish_flow_started(self, event: FlowStartedEvent) -> None:
@@ -301,7 +278,7 @@ class _MemoryPublisher:
             | TaskCompletedEvent
             | TaskFailedEvent
         ] = []
-        self.heartbeats: list[str] = []
+        self.heartbeats: list[dict[str, str]] = []
 
     async def publish_run_started(self, event: RunStartedEvent) -> None:
         """Record a run started event."""
@@ -315,9 +292,9 @@ class _MemoryPublisher:
         """Record a run failed event."""
         self.events.append(event)
 
-    async def publish_heartbeat(self, run_id: str) -> None:
+    async def publish_heartbeat(self, run_id: str, *, root_deployment_id: str = "", span_id: str = "") -> None:
         """Record a heartbeat."""
-        self.heartbeats.append(run_id)
+        self.heartbeats.append({"run_id": run_id, "root_deployment_id": root_deployment_id, "span_id": span_id})
 
     async def publish_flow_started(self, event: FlowStartedEvent) -> None:
         """Record a flow started event."""
@@ -351,10 +328,6 @@ class _MemoryPublisher:
         """No resources to release."""
 
 
-_BUILTIN_PUBLISHER_IMPLEMENTATIONS = (_NoopPublisher, _MemoryPublisher)
-"""Internal registry of built-in publisher implementations kept for tests and helpers."""
-
-
 __all__ = [
     "DocumentRef",
     "ErrorCode",
@@ -370,4 +343,6 @@ __all__ = [
     "TaskCompletedEvent",
     "TaskFailedEvent",
     "TaskStartedEvent",
+    "_MemoryPublisher",
+    "_NoopPublisher",
 ]

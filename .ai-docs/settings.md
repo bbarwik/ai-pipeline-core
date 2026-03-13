@@ -1,7 +1,7 @@
 # MODULE: settings
 # CLASSES: Settings
 # DEPENDS: BaseSettings
-# VERSION: 0.14.0
+# VERSION: 0.15.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -43,11 +43,11 @@ Inherit to add application-specific fields::
     clickhouse_secure: bool = True
     clickhouse_connect_timeout: int = 10
     clickhouse_send_receive_timeout: int = 30
-    tracking_enabled: bool = True  # When False, disables ClickHouse tracking even if ClickHouse is configured
     doc_summary_enabled: bool = True
     doc_summary_model: str = 'gemini-3.1-flash-lite'
     pubsub_project_id: str = ''
     pubsub_topic_id: str = ''
+    lmnr_project_api_key: str = ''
 
 
 ```
@@ -66,6 +66,21 @@ def test_settings_singleton(self):
     from ai_pipeline_core.settings import settings as settings2
 
     assert settings is settings2
+```
+
+**Settings singleton is settings instance** (`tests/test_settings_singleton.py:21`)
+
+```python
+def test_settings_singleton_is_settings_instance() -> None:
+    assert isinstance(settings, Settings)
+```
+
+**Execution context does not replace settings singleton** (`tests/test_settings_singleton.py:25`)
+
+```python
+def test_execution_context_does_not_replace_settings_singleton() -> None:
+    with set_execution_context(_build_context()):
+        assert isinstance(settings, Settings)
 ```
 
 **Model config attributes** (`tests/test_settings.py:110`)
@@ -132,46 +147,6 @@ def test_extra_env_ignored(self):
     # Unknown vars are not added as attributes
     assert not hasattr(s, "unknown_setting")
     assert not hasattr(s, "random_var")
-```
-
-**Env file loading** (`tests/test_settings.py:60`)
-
-```python
-def test_env_file_loading(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test loading from .env file."""
-    # Create a temporary .env file
-    env_file = tmp_path / ".env"
-    env_file.write_text("""
-OPENAI_API_KEY=from-env-file
-PREFECT_API_URL=http://localhost:4200
-""")
-
-    # Change to temp directory
-    monkeypatch.chdir(tmp_path)
-
-    # Create new Settings instance (will look for .env in current dir)
-    s = Settings()
-
-    assert s.openai_api_key == "from-env-file"
-    assert s.prefect_api_url == "http://localhost:4200"
-```
-
-**Env var overrides env file** (`tests/test_settings.py:79`)
-
-```python
-@patch.dict(os.environ, {"OPENAI_API_KEY": "from-env-var"})
-def test_env_var_overrides_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test that environment variables override .env file."""
-    # Create .env file
-    env_file = tmp_path / ".env"
-    env_file.write_text("OPENAI_API_KEY=from-env-file")
-
-    monkeypatch.chdir(tmp_path)
-
-    s = Settings()
-
-    # Environment variable should win
-    assert s.openai_api_key == "from-env-var"
 ```
 
 

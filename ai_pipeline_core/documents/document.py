@@ -5,16 +5,13 @@ SHA256 hashing, and serialization. All documents must be concrete subclasses of 
 """
 
 import base64
-import functools
 import json
-import threading
 from enum import StrEnum
 from functools import cached_property
 from io import BytesIO
 from typing import (
     Any,
     ClassVar,
-    Generic,
     Self,
     TypeVar,
     cast,
@@ -25,7 +22,6 @@ from typing import (
     override,
 )
 
-import tiktoken
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -35,14 +31,13 @@ from pydantic import (
     model_validator,
 )
 from ruamel.yaml import YAML
-from typing_extensions import TypeVar as TypeVarWithDefault
 
-from ai_pipeline_core._llm_core.types import TOKENS_PER_IMAGE
-from ai_pipeline_core.documents._context import DocumentSha256, _suppress_document_registration, get_task_context, is_registration_suppressed
+from ai_pipeline_core._token_estimates import estimate_binary_tokens, estimate_image_tokens, estimate_pdf_tokens, estimate_text_tokens
+from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
+from ai_pipeline_core.documents.exceptions import DocumentNameError, DocumentSizeError
 from ai_pipeline_core.documents.utils import _DATA_URI_PATTERN, is_document_sha256
-from ai_pipeline_core.exceptions import DocumentNameError, DocumentSizeError
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 from ._mime_type import (
     detect_mime_type,
@@ -55,26 +50,17 @@ from .attachment import Attachment
 
 __all__ = [
     "Document",
-    "get_inline_summary",
-    "pop_inline_summary",
-    "set_inline_summary",
 ]
 
 logger = get_pipeline_logger(__name__)
 
 TModel = TypeVar("TModel", bound=BaseModel)
-TContent = TypeVarWithDefault("TContent", bound=BaseModel, default=Any)
 
 _STRUCTURED_EXTENSIONS: frozenset[str] = frozenset({".json", ".yaml", ".yml"})
 
 # Registry of class __name__ -> Document subclass for collision detection.
 # Only non-test classes are registered. Test modules (tests.*, conftest, etc.) are skipped.
-_class_name_registry: dict[str, type["Document"]] = {}  # nosemgrep: no-mutable-module-globals
-
-# Optional inline summaries provided during Document.create(..., summary=...),
-# keyed by document identity hash for later persistence/event enrichment.
-_document_summaries: dict[DocumentSha256, str] = {}  # nosemgrep: no-mutable-module-globals
-_document_summaries_lock = threading.Lock()
+_class_name_registry: dict[str, type[Document]] = {}  # nosemgrep: no-mutable-module-globals
 
 # Metadata keys added by serialize_model() that should be stripped before validation.
 _DOCUMENT_SERIALIZE_METADATA_KEYS: frozenset[str] = frozenset({
@@ -94,25 +80,7 @@ def _is_test_module(cls: type) -> bool:
     return any(p == "tests" or p.startswith("test_") or p == "conftest" for p in parts)
 
 
-def get_inline_summary(document_sha256: DocumentSha256) -> str | None:
-    """Get an inline summary registered at document creation time, if any."""
-    with _document_summaries_lock:
-        return _document_summaries.get(document_sha256)
-
-
-def pop_inline_summary(document_sha256: DocumentSha256) -> str | None:
-    """Consume and remove an inline summary for a document, if any."""
-    with _document_summaries_lock:
-        return _document_summaries.pop(document_sha256, None)
-
-
-def set_inline_summary(document_sha256: DocumentSha256, summary: str) -> None:
-    """Set or replace an inline summary for a document."""
-    with _document_summaries_lock:
-        _document_summaries[document_sha256] = summary
-
-
-def _warn_content_type_issues(cls: type["Document"]) -> None:
+def _warn_content_type_issues(cls: type[Document]) -> None:
     """Warn about content type misconfigurations on a Document subclass (non-test only)."""
     if _is_test_module(cls):
         return
@@ -146,12 +114,6 @@ def _warn_content_type_issues(cls: type["Document"]) -> None:
                 cls.__name__,
                 ", ".join(expected),
             )
-
-
-@functools.cache
-def _get_tiktoken_encoding() -> tiktoken.Encoding:
-    """Lazy-cached tiktoken encoding. Deferred to first use, cached forever."""
-    return tiktoken.encoding_for_model("gpt-4")
 
 
 def _serialize_structured(name: str, data: Any) -> bytes:
@@ -210,7 +172,7 @@ def _validate_content_schema(
         raise TypeError(f"Content does not validate against {content_type.__name__}: {e}") from e
 
 
-class Document(BaseModel, Generic[TContent]):
+class Document[TContent: BaseModel = Any](BaseModel):
     """Immutable base class for all pipeline documents. Cannot be instantiated directly — must be subclassed.
 
     Content is stored as bytes. Use `create()` for automatic conversion from str/dict/list/BaseModel.
@@ -278,7 +240,7 @@ class Document(BaseModel, Generic[TContent]):
 
         # Check that the Document's model_fields only contain the allowed fields
         # It prevents AI models from adding additional fields to documents
-        allowed = {"name", "description", "content", "derived_from", "attachments", "triggered_by"}
+        allowed = {"name", "description", "summary", "content", "derived_from", "attachments", "triggered_by"}
         current = set(getattr(cls, "model_fields", {}).keys())
         extras = current - allowed
         if extras:
@@ -292,6 +254,9 @@ class Document(BaseModel, Generic[TContent]):
             name = cls.__name__
             existing = _class_name_registry.get(name)
             if existing is not None and existing is not cls:
+                if existing.__module__ == cls.__module__ and existing.__qualname__ == cls.__qualname__:
+                    _class_name_registry[name] = cls
+                    return
                 raise TypeError(
                     f"Document subclass '{name}' (in {cls.__module__}) collides with "
                     f"existing class in {existing.__module__}. "
@@ -307,6 +272,7 @@ class Document(BaseModel, Generic[TContent]):
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
         reason: str,
         description: str | None = None,
+        summary: str = "",
         attachments: tuple[Attachment, ...] | None = None,
     ) -> Self:
         """Create a root document (pipeline input) with no provenance.
@@ -316,25 +282,20 @@ class Document(BaseModel, Generic[TContent]):
         """
         if not reason.strip():
             raise ValueError(f"{cls.__name__}.create_root(reason=...) requires a non-empty reason.")
-        ctx = get_task_context()
-        if ctx is not None and ctx.scope_kind != "test":
-            raise RuntimeError(
-                f"{cls.__name__}.create_root() cannot be called inside pipeline task/flow execution. Use create()/derive() with provenance in task code."
-            )
 
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
             _validate_content_schema(cls._content_type, content, content_bytes, name)
         logger.info("Creating root document '%s' (%s): %s", name, cls.__name__, reason)
-        with _suppress_document_registration():
-            return cls(
-                name=name,
-                content=content_bytes,
-                description=description,
-                derived_from=(),
-                triggered_by=(),
-                attachments=attachments,
-            )
+        return cls(
+            name=name,
+            content=content_bytes,
+            description=description,
+            summary=summary,
+            derived_from=(),
+            triggered_by=(),
+            attachments=attachments,
+        )
 
     @classmethod
     def create(
@@ -343,17 +304,16 @@ class Document(BaseModel, Generic[TContent]):
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
         description: str | None = None,
+        summary: str = "",
         derived_from: tuple[str, ...] | None = None,
         triggered_by: tuple[DocumentSha256, ...] | None = None,
         attachments: tuple[Attachment, ...] | None = None,
-        summary: str | None = None,
     ) -> Self:
         """Create a document with automatic content-to-bytes conversion.
 
         Must be called within a PipelineTask or PipelineFlow context.
         Must provide derived_from or triggered_by for provenance tracking.
         For root inputs (no provenance), use create_root(reason='...') instead.
-        Optional summary is stored in an inline registry for later persistence/event publishing.
         All created documents must be returned from the task — unreturned documents are flagged as orphans.
         Serialization is extension-driven: .json → JSON, .yaml → YAML, others → UTF-8.
         Reversible via parse(). Cannot be called on Document directly — must use a subclass.
@@ -363,27 +323,26 @@ class Document(BaseModel, Generic[TContent]):
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
             _validate_content_schema(cls._content_type, content, content_bytes, name)
-        doc = cls(
+        return cls(
             name=name,
             content=content_bytes,
             description=description,
+            summary=summary,
             derived_from=derived_from,
             triggered_by=triggered_by,
             attachments=attachments,
         )
-        if summary is not None:
-            set_inline_summary(doc.sha256, summary)
-        return doc
 
     @classmethod
     def derive(
         cls,
         *,
-        from_documents: tuple["Document", ...],
+        from_documents: tuple[Document, ...],
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
-        triggered_by: tuple["Document", ...] = (),
+        triggered_by: tuple[Document, ...] = (),
         description: str | None = None,
+        summary: str = "",
         attachments: tuple[Attachment, ...] | None = None,
     ) -> Self:
         """Create a document derived from other documents. The 95% API path.
@@ -396,6 +355,7 @@ class Document(BaseModel, Generic[TContent]):
         return cls.create(
             name=name,
             content=content,
+            summary=summary,
             derived_from=tuple(d.sha256 for d in from_documents),
             triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by) if triggered_by else None,
             description=description,
@@ -408,6 +368,7 @@ class Document(BaseModel, Generic[TContent]):
         name: str,
         content: bytes,
         description: str | None = None,
+        summary: str = "",
         derived_from: tuple[str, ...] | None = None,
         triggered_by: tuple[DocumentSha256, ...] | None = None,
         attachments: tuple[Attachment, ...] | None = None,
@@ -420,28 +381,15 @@ class Document(BaseModel, Generic[TContent]):
             name=name,
             content=content,
             description=description,
+            summary=summary,
             derived_from=derived_from or (),
             triggered_by=triggered_by or (),
             attachments=attachments or (),
         )
-        # Register with task context for lifecycle tracking (skip during deserialization)
-        if not is_registration_suppressed():
-            ctx = get_task_context()
-            if ctx is None:
-                raise RuntimeError(
-                    f"{type(self).__name__} created outside pipeline task context. "
-                    "Documents must be created inside a PipelineTask.run() or PipelineFlow.run() method. "
-                    "Use create_root(...) only for deployment-boundary root inputs, "
-                    "or _suppress_document_registration() for deserialization paths."
-                )
-            if ctx.scope_kind not in {"task", "flow", "test"}:
-                raise RuntimeError(
-                    f"{type(self).__name__} created in {ctx.scope_kind} body. Documents must be created inside a PipelineTask or PipelineFlow execution scope."
-                )
-            ctx.created.add(self.sha256)
 
     name: str
     description: str | None = None
+    summary: str = ""
     content: bytes
     derived_from: tuple[str, ...] = ()
     """Content provenance: documents and references this document's content was directly
@@ -665,24 +613,25 @@ class Document(BaseModel, Generic[TContent]):
 
     @cached_property
     def approximate_tokens_count(self) -> int:
-        """Approximate token count (tiktoken gpt-4 encoding). Images=TOKENS_PER_IMAGE, PDFs/other=1024."""
-        enc = _get_tiktoken_encoding()
+        """Approximate token count across primary content and attachments."""
         if self.is_text:
-            total = len(enc.encode(self.text))
+            total = estimate_text_tokens(self.text)
         elif self.is_image:
-            total = TOKENS_PER_IMAGE
+            total = estimate_image_tokens()
+        elif self.is_pdf:
+            total = estimate_pdf_tokens()
         else:
-            total = 1024
+            total = estimate_binary_tokens()
 
         for att in self.attachments:
             if att.is_image:
-                total += TOKENS_PER_IMAGE
+                total += estimate_image_tokens()
             elif att.is_pdf:
-                total += 1024
+                total += estimate_pdf_tokens()
             elif att.is_text:
-                total += len(enc.encode(att.text))
+                total += estimate_text_tokens(att.text)
             else:
-                total += 1024
+                total += estimate_binary_tokens()
 
         return total
 
@@ -772,7 +721,7 @@ class Document(BaseModel, Generic[TContent]):
         """Non-hash reference strings from derived_from (URLs, file paths, etc.)."""
         return tuple(src for src in self.derived_from if not is_document_sha256(src))
 
-    def has_derived_from(self, source: "Document | str") -> bool:
+    def has_derived_from(self, source: Document | str) -> bool:
         """Check if a source (Document or string) is in this document's derived_from."""
         if isinstance(source, str):
             return source in self.derived_from
@@ -820,8 +769,7 @@ class Document(BaseModel, Generic[TContent]):
         if cleaned.get("attachments"):
             cleaned["attachments"] = [{k: v for k, v in att.items() if k not in Attachment.SERIALIZE_METADATA_KEYS} for att in cleaned["attachments"]]
 
-        with _suppress_document_registration():
-            return cls.model_validate(cleaned)
+        return cls.model_validate(cleaned)
 
     @override
     def model_copy(self, *args: Any, **kwargs: Any) -> Self:

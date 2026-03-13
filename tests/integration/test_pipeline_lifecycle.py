@@ -1,524 +1,305 @@
+"""Span-era integration tests for deployment lifecycle and cache behavior."""
+
 # pyright: reportPrivateUsage=false
-"""Pipeline lifecycle integration tests.
 
-Covers multi-flow document provenance, error propagation with partial docs,
-leaked handle cancellation, flow resume via completion keys, replay YAML
-roundtrip, and parallel task persistence with events.
-"""
-
-import asyncio
+import json
+from collections.abc import Generator, Sequence
+from datetime import timedelta
+from typing import Any
 
 import pytest
+from pydantic import BaseModel, Field
 
-from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment
-from ai_pipeline_core.deployment._types import (
-    ErrorCode,
-    FlowCompletedEvent,
-    FlowSkippedEvent,
-    RunFailedEvent,
-    TaskCompletedEvent,
-    TaskFailedEvent,
-    TaskStartedEvent,
-    _MemoryPublisher,
-)
-from ai_pipeline_core.deployment.base import _compute_run_scope
-from ai_pipeline_core.documents._context import _suppress_document_registration
-from ai_pipeline_core.exceptions import LLMError
-from ai_pipeline_core.pipeline import (
-    PipelineFlow,
-    PipelineTask,
-    collect_tasks,
-    pipeline_test_context,
-)
-from ai_pipeline_core.pipeline._execution_context import FlowFrame, reset_execution_context, set_execution_context
-from ai_pipeline_core.replay.types import TaskReplay
+from ai_pipeline_core import Conversation, DeploymentResult, Document, FlowOptions, PipelineDeployment, Tool, ToolOutput, traced_operation
+from ai_pipeline_core._llm_core.model_response import ModelResponse
+from ai_pipeline_core._llm_core.types import RawToolCall, TokenUsage
+from ai_pipeline_core.database import CostTotals, SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.deployment._helpers import _build_flow_cache_key, _compute_input_fingerprint
+from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask
+from tests.llm.conftest import make_tool_call
 
 
 @pytest.fixture(autouse=True)
-def _suppress_registration():
-    with _suppress_document_registration():
-        yield
+def _suppress_registration() -> Generator[None]:
+    return
 
 
-# ---------------------------------------------------------------------------
-# Document types (prefixed per gap to avoid collisions)
-# ---------------------------------------------------------------------------
+class LifecycleInputDocument(Document):
+    """Input document for lifecycle integration tests."""
 
 
-class G1InputDoc(Document):
-    """Provenance test: input document."""
+class LifecycleOutputDocument(Document):
+    """Output document for lifecycle integration tests."""
 
 
-class G1MiddleDoc(Document):
-    """Provenance test: intermediate document produced by flow 1."""
+class LifecycleSearchTool(Tool):
+    """Tool used to force a traced tool loop inside the deployment lifecycle."""
+
+    class Input(BaseModel):
+        query: str = Field(description="Search query.")
+
+    async def execute(self, input: Input) -> ToolOutput:
+        return ToolOutput(content=f"Search result for {input.query}")
 
 
-class G1OutputDoc(Document):
-    """Provenance test: final document produced by flow 2."""
+class LifecycleTask(PipelineTask):
+    """Task that emits task, operation, conversation, llm_round, and tool_call spans."""
 
-
-class G2InputDoc(Document):
-    """Error propagation test: input document."""
-
-
-class G2MiddleDoc(Document):
-    """Error propagation test: intermediate document (flow 1 output)."""
-
-
-class G2OutputDoc(Document):
-    """Error propagation test: final document (flow 2 output, never produced)."""
-
-
-class G3InputDoc(Document):
-    """Cancellation test: input document."""
-
-
-class G3FastDoc(Document):
-    """Cancellation test: fast document returned by flow."""
-
-
-class G3LateDoc(Document):
-    """Cancellation test: late document from leaked task."""
-
-
-class G4InputDoc(Document):
-    """Resume test: input document."""
-
-
-class G4OutputDoc(Document):
-    """Resume test: output document."""
-
-
-class G5InputDoc(Document):
-    """Replay test: input document."""
-
-
-class G5OutputDoc(Document):
-    """Replay test: output document."""
-
-
-class G6InputDoc(Document):
-    """Parallel tasks test: input document."""
-
-
-class G6OutputDoc(Document):
-    """Parallel tasks test: output document."""
-
-
-# ---------------------------------------------------------------------------
-# Tasks
-# ---------------------------------------------------------------------------
-
-
-class G1ToMiddle(PipelineTask):
     @classmethod
-    async def run(cls, documents: tuple[G1InputDoc, ...]) -> tuple[G1MiddleDoc, ...]:
-        return (G1MiddleDoc.derive(from_documents=(documents[0],), name="middle.txt", content="middle"),)
+    async def run(cls, documents: tuple[LifecycleInputDocument, ...]) -> tuple[LifecycleOutputDocument, ...]:
+        async with traced_operation("prepare-answer", description="integration traced operation"):
+            conv = Conversation(model="test-model", enable_substitutor=False, include_date=False)
+            conv = await conv.send(
+                "Use the tool to answer the question.",
+                purpose="integration-lifecycle",
+                tools=[LifecycleSearchTool()],
+            )
+        return (
+            LifecycleOutputDocument.derive(
+                from_documents=(documents[0],),
+                name="answer.txt",
+                content=conv.content,
+                description="Lifecycle integration output",
+            ),
+        )
 
 
-class G1ToOutput(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[G1MiddleDoc, ...]) -> tuple[G1OutputDoc, ...]:
-        return (G1OutputDoc.derive(from_documents=(documents[0],), name="output.txt", content="output"),)
+class LifecycleFlow(PipelineFlow):
+    """Single-flow deployment used for end-to-end lifecycle assertions."""
+
+    async def run(self, documents: tuple[LifecycleInputDocument, ...], options: FlowOptions) -> tuple[LifecycleOutputDocument, ...]:
+        _ = options
+        return await LifecycleTask.run(documents)
 
 
-class G2ToMiddle(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[G2InputDoc, ...]) -> tuple[G2MiddleDoc, ...]:
-        return (G2MiddleDoc.derive(from_documents=(documents[0],), name="middle.txt", content="middle"),)
-
-
-class G2FailingTask(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[G2MiddleDoc, ...]) -> tuple[G2OutputDoc, ...]:
-        raise LLMError("provider exploded")
-
-
-class G3SlowTask(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[G3InputDoc, ...], delay: float) -> tuple[G3LateDoc, ...]:
-        await asyncio.sleep(delay)
-        return (G3LateDoc.derive(from_documents=(documents[0],), name="late.txt", content="late"),)
-
-
-class G3FastTask(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[G3InputDoc, ...]) -> tuple[G3FastDoc, ...]:
-        return (G3FastDoc.derive(from_documents=(documents[0],), name="fast.txt", content="fast"),)
-
-
-class G5EchoTask(PipelineTask):
-    @classmethod
-    async def run(cls, source: G5InputDoc, suffix: str) -> G5OutputDoc:
-        return G5OutputDoc.derive(from_documents=(source,), name="echo.txt", content=f"{source.text}{suffix}")
-
-
-class G6ShardTask(PipelineTask):
-    @classmethod
-    async def run(cls, documents: tuple[G6InputDoc, ...], shard: int) -> tuple[G6OutputDoc, ...]:
-        await asyncio.sleep(0.01 * shard)
-        return (G6OutputDoc.derive(from_documents=(documents[0],), name=f"shard_{shard}.txt", content=str(shard)),)
-
-
-# ---------------------------------------------------------------------------
-# Flows
-# ---------------------------------------------------------------------------
-
-
-class G1FlowOne(PipelineFlow):
-    name = "g1-flow-one"
-
-    async def run(self, documents: tuple[G1InputDoc, ...], options: FlowOptions) -> tuple[G1MiddleDoc, ...]:
-        return await G1ToMiddle.run(documents)
-
-
-class G1FlowTwo(PipelineFlow):
-    name = "g1-flow-two"
-
-    async def run(self, documents: tuple[G1MiddleDoc, ...], options: FlowOptions) -> tuple[G1OutputDoc, ...]:
-        return await G1ToOutput.run(documents)
-
-
-class G2FlowOne(PipelineFlow):
-    name = "g2-flow-one"
-
-    async def run(self, documents: tuple[G2InputDoc, ...], options: FlowOptions) -> tuple[G2MiddleDoc, ...]:
-        return await G2ToMiddle.run(documents)
-
-
-class G2FlowTwo(PipelineFlow):
-    name = "g2-flow-two"
-
-    async def run(self, documents: tuple[G2MiddleDoc, ...], options: FlowOptions) -> tuple[G2OutputDoc, ...]:
-        return await G2FailingTask.run(documents)
-
-
-class G3LeakyFlow(PipelineFlow):
-    name = "g3-leaky-flow"
-
-    async def run(self, documents: tuple[G3InputDoc, ...], options: FlowOptions) -> tuple[G3FastDoc, ...]:
-        # Dispatch slow task but DON'T await — it should be cancelled by the deployment
-        _ = G3SlowTask.run(documents, delay=0.5)
-        return await G3FastTask.run(documents)
-
-
-class G4Flow(PipelineFlow):
-    name = "g4-flow"
-    run_count: int = 0
-
-    async def run(self, documents: tuple[G4InputDoc, ...], options: FlowOptions) -> tuple[G4OutputDoc, ...]:
-        type(self).run_count += 1
-        return (G4OutputDoc.derive(from_documents=(documents[0],), name="g4.txt", content="fresh"),)
-
-
-# ---------------------------------------------------------------------------
-# Deployments
-# ---------------------------------------------------------------------------
-
-
-class _GapResult(DeploymentResult):
+class LifecycleResult(DeploymentResult):
     output_count: int = 0
 
 
-class G1Deployment(PipelineDeployment[FlowOptions, _GapResult]):
+class LifecycleDeployment(PipelineDeployment[FlowOptions, LifecycleResult]):
+    """Deployment used to validate the full span-based lifecycle."""
+
+    cache_ttl = None
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
-        return [G1FlowOne(), G1FlowTwo()]
+        _ = options
+        return [LifecycleFlow()]
 
     @staticmethod
-    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> _GapResult:
-        return _GapResult(success=True, output_count=len(documents))
+    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> LifecycleResult:
+        _ = (run_id, options)
+        return LifecycleResult(success=True, output_count=len(documents))
 
 
-class G2Deployment(PipelineDeployment[FlowOptions, _GapResult]):
-    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
-        return [G2FlowOne(), G2FlowTwo()]
+class CachedLifecycleDeployment(LifecycleDeployment):
+    """Same lifecycle deployment with cross-run flow caching enabled."""
 
-    @staticmethod
-    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> _GapResult:
-        return _GapResult(success=True)
+    cache_ttl = timedelta(hours=24)
 
 
-class G3Deployment(PipelineDeployment[FlowOptions, _GapResult]):
-    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
-        return [G3LeakyFlow()]
+def _make_response(
+    *,
+    content: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int = 0,
+    reasoning_tokens: int = 0,
+    cost: float = 0.0,
+    response_id: str = "resp-integration",
+    tool_calls: tuple[RawToolCall, ...] = (),
+) -> ModelResponse[str]:
+    return ModelResponse[str](
+        content=content,
+        parsed=content,
+        usage=TokenUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            cached_tokens=cached_tokens,
+            reasoning_tokens=reasoning_tokens,
+        ),
+        cost=cost,
+        model="test-model",
+        response_id=response_id,
+        metadata={"time_taken": 0.2, "first_token_time": 0.1},
+        citations=(),
+        reasoning_content="reasoning",
+        tool_calls=tool_calls,
+    )
 
-    @staticmethod
-    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> _GapResult:
-        return _GapResult(success=True, output_count=len(documents))
+
+class _GenerateSequence:
+    def __init__(self, responses: Sequence[ModelResponse[str] | BaseException]) -> None:
+        self._responses = list(responses)
+        self.call_count = 0
+
+    async def __call__(self, *args: object, **kwargs: object) -> ModelResponse[str]:
+        _ = (args, kwargs)
+        if not self._responses:
+            raise AssertionError("core_generate was called more times than expected in the integration test.")
+        self.call_count += 1
+        next_item = self._responses.pop(0)
+        if isinstance(next_item, BaseException):
+            raise next_item
+        return next_item
 
 
-class G4Deployment(PipelineDeployment[FlowOptions, _GapResult]):
-    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
-        return [G4Flow()]
+async def _run_deployment(
+    deployment: PipelineDeployment[Any, Any],
+    database: MemoryDatabase,
+    *,
+    run_id: str,
+    documents: Sequence[Document] | None = None,
+) -> Any:
+    resolved_documents = (
+        list(documents)
+        if documents is not None
+        else [
+            LifecycleInputDocument.create_root(
+                name="input.txt",
+                content="seed",
+                reason="integration",
+            )
+        ]
+    )
+    return await deployment._run_with_context(run_id, resolved_documents, FlowOptions(), database=database)
 
-    @staticmethod
-    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> _GapResult:
-        return _GapResult(success=True, output_count=len(documents))
+
+def _sorted_spans(database: MemoryDatabase, kind: str, *, status: str | None = None) -> list[SpanRecord]:
+    spans = [span for span in database._spans.values() if span.kind == kind]
+    if status is not None:
+        spans = [span for span in spans if span.status == status]
+    return sorted(spans, key=lambda span: (span.started_at, span.sequence_no, str(span.span_id)))
 
 
-# ---------------------------------------------------------------------------
-# Full document lifecycle through multi-flow pipeline
-# ---------------------------------------------------------------------------
+def _token_totals(llm_round_spans: Sequence[SpanRecord]) -> CostTotals:
+    totals = CostTotals()
+    for span in llm_round_spans:
+        detail = json.loads(span.metrics_json)
+        totals = CostTotals(
+            cost_usd=totals.cost_usd + span.cost_usd,
+            tokens_input=totals.tokens_input + int(detail.get("tokens_input", 0)),
+            tokens_output=totals.tokens_output + int(detail.get("tokens_output", 0)),
+            tokens_cache_read=totals.tokens_cache_read + int(detail.get("tokens_cache_read", 0)),
+            tokens_reasoning=totals.tokens_reasoning + int(detail.get("tokens_reasoning", 0)),
+        )
+    return totals
 
 
 @pytest.mark.asyncio
-async def test_multiflow_document_lifecycle_preserves_provenance() -> None:
-    """Documents persist across flows with correct derived_from chain."""
-    publisher = _MemoryPublisher()
-    input_doc = G1InputDoc.create_root(name="input.txt", content="seed", reason="gap-1 test")
-    run_id = "gap1-lifecycle"
-    options = FlowOptions()
+async def test_full_deployment_lifecycle_records_complete_span_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    generate = _GenerateSequence([
+        _make_response(
+            content="",
+            prompt_tokens=10,
+            completion_tokens=1,
+            cached_tokens=3,
+            reasoning_tokens=2,
+            response_id="resp-round-1",
+            tool_calls=(make_tool_call("tool-1", "lifecycle_search_tool", '{"query": "pipeline spans"}'),),
+        ),
+        _make_response(
+            content="final integrated answer",
+            prompt_tokens=16,
+            completion_tokens=5,
+            cached_tokens=4,
+            reasoning_tokens=1,
+            cost=0.42,
+            response_id="resp-round-2",
+        ),
+    ])
+    monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", generate)
 
-    result = await G1Deployment().run(run_id, [input_doc], options, publisher=publisher)
+    database = MemoryDatabase()
+    input_doc = LifecycleInputDocument.create_root(name="input.txt", content="seed", reason="integration lifecycle")
+    result = await _run_deployment(LifecycleDeployment(), database, run_id="integration-lifecycle", documents=[input_doc])
 
     assert result.success
     assert result.output_count >= 1
 
-    # Verify both flows completed via events
-    flow_completed = [e for e in publisher.events if isinstance(e, FlowCompletedEvent)]
-    assert len(flow_completed) == 2
+    deployment_span = _sorted_spans(database, SpanKind.DEPLOYMENT)[0]
+    flow_span = _sorted_spans(database, SpanKind.FLOW)[0]
+    task_span = _sorted_spans(database, SpanKind.TASK)[0]
+    operation_span = _sorted_spans(database, SpanKind.OPERATION)[0]
+    conversation_span = _sorted_spans(database, SpanKind.CONVERSATION)[0]
+    llm_round_spans = _sorted_spans(database, SpanKind.LLM_ROUND)
+    tool_call_span = _sorted_spans(database, SpanKind.TOOL_CALL)[0]
+    tree = await database.get_deployment_tree(deployment_span.root_deployment_id)
 
+    assert {span.kind for span in tree} == {
+        SpanKind.DEPLOYMENT,
+        SpanKind.FLOW,
+        SpanKind.TASK,
+        SpanKind.OPERATION,
+        SpanKind.CONVERSATION,
+        SpanKind.LLM_ROUND,
+        SpanKind.TOOL_CALL,
+    }
+    assert flow_span.parent_span_id == deployment_span.span_id
+    assert task_span.parent_span_id == flow_span.span_id
+    assert operation_span.parent_span_id == task_span.span_id
+    assert conversation_span.parent_span_id == operation_span.span_id
+    assert [span.parent_span_id for span in llm_round_spans] == [conversation_span.span_id, conversation_span.span_id]
+    assert tool_call_span.parent_span_id == conversation_span.span_id
+    assert [span.kind for span in sorted(await database.get_child_spans(conversation_span.span_id), key=lambda span: span.sequence_no)] == [
+        SpanKind.LLM_ROUND,
+        SpanKind.TOOL_CALL,
+        SpanKind.LLM_ROUND,
+    ]
 
-# ---------------------------------------------------------------------------
-# Error propagation Task → Flow → Deployment
-# ---------------------------------------------------------------------------
+    totals = await database.get_deployment_cost_totals(deployment_span.root_deployment_id)
+    expected_totals = _token_totals(llm_round_spans)
+    assert totals == expected_totals
+    assert all(span.cost_usd == 0.0 for span in tree if span.kind != SpanKind.LLM_ROUND)
 
-
-@pytest.mark.asyncio
-async def test_error_propagation_preserves_partial_docs_and_emits_events() -> None:
-    """Task failure in flow 2 emits correct events."""
-    publisher = _MemoryPublisher()
-    input_doc = G2InputDoc.create_root(name="input.txt", content="seed", reason="gap-2 test")
-    run_id = "gap2-error"
-    options = FlowOptions()
-
-    with pytest.raises(LLMError, match="provider exploded"):
-        await G2Deployment().run(run_id, [input_doc], options, publisher=publisher)
-
-    # TaskFailedEvent emitted for the failing task
-    task_failed = [e for e in publisher.events if isinstance(e, TaskFailedEvent)]
-    assert len(task_failed) == 1
-    assert "provider exploded" in task_failed[0].error_message
-
-    # RunFailedEvent with correct error code
-    run_failed = [e for e in publisher.events if isinstance(e, RunFailedEvent)]
-    assert len(run_failed) == 1
-    assert run_failed[0].error_code == ErrorCode.PROVIDER_ERROR
-
-    # No FlowCompletedEvent for flow 2 (it failed)
-    flow2_completed = [e for e in publisher.events if isinstance(e, FlowCompletedEvent) and e.flow_name == "g2-flow-two"]
-    assert flow2_completed == []
-
-
-# ---------------------------------------------------------------------------
-# Leaked handle cancellation prevents late writes
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_leaked_handles_cancelled_no_late_writes() -> None:
-    """Un-awaited task handles in a flow are cancelled."""
-    publisher = _MemoryPublisher()
-    input_doc = G3InputDoc.create_root(name="input.txt", content="seed", reason="gap-3 test")
-    run_id = "gap3-cancel"
-    options = FlowOptions()
-
-    result = await G3Deployment().run(run_id, [input_doc], options, publisher=publisher)
-
-    # Wait longer than the SlowTask delay to ensure it didn't write late
-    await asyncio.sleep(0.7)
-
-    assert result.success
-    # Only one flow completed (the fast flow)
-    flow_completed = [e for e in publisher.events if isinstance(e, FlowCompletedEvent)]
-    assert len(flow_completed) == 1
-
-
-# ---------------------------------------------------------------------------
-# Flow resume via completion_name format (flow_name:step)
-# ---------------------------------------------------------------------------
+    output_sha = task_span.output_document_shas[0]
+    assert task_span.output_document_shas == (output_sha,)
+    assert flow_span.output_document_shas == (output_sha,)
+    assert deployment_span.output_document_shas == (output_sha,)
+    persisted_output = await database.get_document(output_sha)
+    assert persisted_output is not None
+    assert persisted_output.document_type == "LifecycleOutputDocument"
+    assert persisted_output.derived_from == (input_doc.sha256,)
 
 
 @pytest.mark.asyncio
-async def test_flow_completion_with_new_key_format_enables_resume() -> None:
-    """Pre-seeded flow completion in the database DAG is honored for resume."""
-    from datetime import UTC, datetime
-    from uuid import uuid4
-
-    from ai_pipeline_core.database import NULL_PARENT, ExecutionNode, MemoryDatabase, NodeKind, NodeStatus
-
-    db = MemoryDatabase()
-    publisher = _MemoryPublisher()
-    G4Flow.run_count = 0
-
-    input_doc = G4InputDoc.create_root(name="input.txt", content="seed", reason="gap-4 test")
-    run_id = "gap4-resume"
-    options = FlowOptions()
-    run_scope = _compute_run_scope(run_id, [input_doc], options)
-
-    # Pre-seed completion node with cache_key matching flow:{run_scope}:{flow_name}:{step}
-    cached_output = G4OutputDoc.derive(from_documents=(input_doc,), name="cached.txt", content="cached")
-    cache_key = f"flow:{run_scope}:g4-flow:1"
-    deployment_id = uuid4()
-    await db.insert_node(
-        ExecutionNode(
-            node_id=uuid4(),
-            node_kind=NodeKind.FLOW,
-            deployment_id=deployment_id,
-            root_deployment_id=deployment_id,
-            parent_node_id=NULL_PARENT,
-            run_id=run_id,
-            run_scope=run_scope,
-            deployment_name="G4Deployment",
-            name="g4-flow",
-            sequence_no=1,
-            status=NodeStatus.COMPLETED,
-            ended_at=datetime.now(UTC),
-            cache_key=cache_key,
-            output_document_shas=(cached_output.sha256,),
-        )
-    )
-
-    # Save the document blob+record so load_documents_from_database can reconstruct it
-    from ai_pipeline_core.database import BlobRecord, DocumentRecord
-
-    await db.save_blob(BlobRecord(content_sha256=cached_output.sha256, content=cached_output.content, size_bytes=len(cached_output.content)))
-    await db.save_document(
-        DocumentRecord(
-            document_sha256=cached_output.sha256,
-            content_sha256=cached_output.sha256,
-            deployment_id=deployment_id,
-            producing_node_id=None,
-            document_type="G4OutputDoc",
-            name=cached_output.name,
-            description=cached_output.description or "",
-            derived_from=tuple(cached_output.derived_from),
-        )
-    )
-
-    await G4Deployment()._run_with_context(
-        run_id,
-        [input_doc],
-        options,
-        deployment_node_id=deployment_id,
-        root_deployment_id=deployment_id,
-        parent_deployment_task_id=None,
-        publisher=publisher,
-        database=db,
-    )
-
-    # Flow was skipped (not executed)
-    assert G4Flow.run_count == 0
-    skipped = [e for e in publisher.events if isinstance(e, FlowSkippedEvent)]
-    assert len(skipped) == 1
-
-
-@pytest.mark.asyncio
-async def test_fresh_run_without_resume_executes_flow() -> None:
-    """Without pre-seeded completion, the flow executes normally."""
-    publisher = _MemoryPublisher()
-    G4Flow.run_count = 0
-
-    input_doc = G4InputDoc.create_root(name="input.txt", content="seed", reason="gap-4 fresh")
-    run_id = "gap4-fresh"
-    options = FlowOptions()
-
-    await G4Deployment().run(run_id, [input_doc], options, publisher=publisher)
-
-    # Flow was executed
-    assert G4Flow.run_count == 1
-
-
-# ---------------------------------------------------------------------------
-# Replay capture-to-YAML round-trip (no LLM)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_task_replay_capture_yaml_roundtrip() -> None:
-    """Replay payload persisted on the task node round-trips through YAML."""
-    from uuid import uuid4
-
-    from ai_pipeline_core.database import MemoryDatabase, NodeKind
+async def test_flow_cache_keys_hit_across_runs_with_new_root_deployments(monkeypatch: pytest.MonkeyPatch) -> None:
+    generate = _GenerateSequence([
+        _make_response(
+            content="",
+            prompt_tokens=9,
+            completion_tokens=1,
+            response_id="resp-cache-1",
+            tool_calls=(make_tool_call("tool-cache", "lifecycle_search_tool", '{"query": "cache"}'),),
+        ),
+        _make_response(
+            content="cached answer source",
+            prompt_tokens=14,
+            completion_tokens=4,
+            cost=0.31,
+            response_id="resp-cache-2",
+        ),
+    ])
+    monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", generate)
 
     database = MemoryDatabase()
-    source_doc = G5InputDoc.create_root(name="input.txt", content="seed", reason="gap-5 test")
-    with pipeline_test_context() as ctx:
-        deployment_id = uuid4()
-        ctx.database = database
-        ctx.deployment_id = deployment_id
-        ctx.root_deployment_id = deployment_id
-        ctx.deployment_name = "gap5-deployment"
-        await G5EchoTask.run(source_doc, suffix="::done")
+    input_doc = LifecycleInputDocument.create_root(name="input.txt", content="seed", reason="cache integration")
+    deployment = CachedLifecycleDeployment()
 
-    task_nodes = [node for node in database._nodes.values() if node.node_kind == NodeKind.TASK]
-    assert len(task_nodes) == 1
-    payload_dict = task_nodes[0].payload["replay_payload"]
+    await _run_deployment(deployment, database, run_id="cache-run-1", documents=[input_doc])
+    await _run_deployment(deployment, database, run_id="cache-run-2", documents=[input_doc])
 
-    # Verify payload structure
-    assert payload_dict["payload_type"] == "pipeline_task"
-    assert "G5EchoTask" in payload_dict["function_path"]
-    assert payload_dict["arguments"]["suffix"] == "::done"
+    deployment_spans = _sorted_spans(database, SpanKind.DEPLOYMENT)
+    completed_flow = _sorted_spans(database, SpanKind.FLOW, status=SpanStatus.COMPLETED)[0]
+    cached_flow = _sorted_spans(database, SpanKind.FLOW, status=SpanStatus.CACHED)[0]
+    fingerprint = _compute_input_fingerprint([input_doc], FlowOptions())
+    expected_key = _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=LifecycleFlow, step=1)
 
-    # YAML round-trip
-    replay = TaskReplay.model_validate(payload_dict)
-    yaml_text = replay.to_yaml()
-    roundtripped = TaskReplay.from_yaml(yaml_text)
-
-    assert roundtripped.function_path == replay.function_path
-    assert roundtripped.payload_type == "pipeline_task"
-
-
-# ---------------------------------------------------------------------------
-# Parallel TaskHandle + persistence + task events
-# ---------------------------------------------------------------------------
-
-
-def _flow_frame(name: str) -> FlowFrame:
-    return FlowFrame(
-        name=name,
-        flow_class_name="GapTestFlow",
-        step=1,
-        total_steps=1,
-        flow_minutes=(1.0,),
-        completed_minutes=0.0,
-        flow_params={},
-    )
-
-
-@pytest.mark.asyncio
-async def test_parallel_tasks_persist_all_docs_and_emit_events() -> None:
-    """Concurrent tasks via collect_tasks emit started/completed events and return all outputs."""
-    publisher = _MemoryPublisher()
-    input_doc = G6InputDoc.create_root(name="input.txt", content="seed", reason="gap-6 test")
-    with pipeline_test_context(publisher=publisher) as ctx:
-        token = set_execution_context(ctx.with_flow(_flow_frame("g6-flow")))
-        try:
-            batch = await collect_tasks(
-                G6ShardTask.run((input_doc,), shard=1),
-                G6ShardTask.run((input_doc,), shard=2),
-                G6ShardTask.run((input_doc,), shard=3),
-            )
-        finally:
-            reset_execution_context(token)
-
-    # All 3 tasks completed
-    assert len(batch.completed) == 3
-    assert batch.incomplete == []
-
-    # All 3 task results returned
-    all_docs = [doc for result in batch.completed for doc in result]
-    result_names = {d.name for d in all_docs}
-    assert result_names == {"shard_1.txt", "shard_2.txt", "shard_3.txt"}
-
-    # 3 started + 3 completed events
-    started = [e for e in publisher.events if isinstance(e, TaskStartedEvent)]
-    completed = [e for e in publisher.events if isinstance(e, TaskCompletedEvent)]
-    assert len(started) == 3
-    assert len(completed) == 3
-
-    # Each started event has a matching completed event
-    started_classes = {e.task_class for e in started}
-    completed_classes = {e.task_class for e in completed}
-    assert started_classes == {"G6ShardTask"}
-    assert completed_classes == {"G6ShardTask"}
+    assert len(deployment_spans) == 2
+    assert deployment_spans[0].root_deployment_id != deployment_spans[1].root_deployment_id
+    assert completed_flow.cache_key == expected_key
+    assert cached_flow.cache_key == expected_key
+    assert completed_flow.root_deployment_id != cached_flow.root_deployment_id
+    assert cached_flow.output_document_shas == completed_flow.output_document_shas
+    assert generate.call_count == 2

@@ -8,13 +8,11 @@ import pytest
 from pydantic import BaseModel, Field, RootModel
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._context import _suppress_document_registration
 
 
 @pytest.fixture(autouse=True)
 def _suppress_registration():
-    with _suppress_document_registration():
-        yield
+    return
 
 
 class SampleModel(BaseModel, frozen=True):
@@ -160,8 +158,7 @@ class TestParsedProperty:
         model = SampleModel(goal="roundtrip", score=55)
         doc = SampleTypedDoc.create_root(name="data.json", content=model, reason="test")
         serialized = doc.serialize_model()
-        with _suppress_document_registration():
-            restored = SampleTypedDoc.from_dict(serialized)
+        restored = SampleTypedDoc.from_dict(serialized)
         assert restored.parsed.goal == "roundtrip"
         assert restored.parsed.score == 55
 
@@ -260,8 +257,7 @@ class TestSerializationRoundtrip:
         doc = SampleTypedDoc.create_root(name="data.json", content=model, reason="test")
         serialized = doc.serialize_model()
 
-        with _suppress_document_registration():
-            restored = SampleTypedDoc.from_dict(serialized)
+        restored = SampleTypedDoc.from_dict(serialized)
 
         assert restored.parsed.goal == "serialize"
         assert restored.parsed.score == 42

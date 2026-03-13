@@ -129,7 +129,7 @@ class TestFlowOptionsInheritance:
             temperature: float = Field(default=0.7, ge=0.0, le=2.0)
 
             @model_validator(mode="after")
-            def validate_temperature_model_combination(self) -> "ValidatedFlowOptions":
+            def validate_temperature_model_combination(self) -> ValidatedFlowOptions:
                 if self.temperature > 1.5 and self.core_model == self.small_model:
                     raise ValueError("High temperature requires different core and small models")
                 return self

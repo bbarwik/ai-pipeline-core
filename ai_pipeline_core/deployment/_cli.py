@@ -9,26 +9,51 @@ import sys
 from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from prefect.logging import disable_run_logger
 from prefect.testing.utilities import prefect_test_harness
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
+from ai_pipeline_core.database._factory import Database
+from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
+from ai_pipeline_core.database.snapshot._download import generate_run_artifacts
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logging import get_pipeline_logger, setup_logging
+from ai_pipeline_core.logger import get_pipeline_logger, setup_logging
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
-from ._helpers import _create_publisher, validate_run_id
-from .base import DeploymentResult, PipelineDeployment
+from ._helpers import _create_publisher, _create_span_database_from_settings, validate_run_id
 
 logger = get_pipeline_logger(__name__)
 
 
-def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
-    deployment: PipelineDeployment[TOptions, TResult],
-    initializer: Callable[[TOptions], tuple[str, tuple[Document, ...]]] | None = None,
+async def _generate_run_artifacts(database: Database, output_dir: Path) -> None:
+    """Generate summary.md, costs.md, llm_calls.jsonl, errors.md, documents.md after a CLI run."""
+    if not isinstance(database, FilesystemDatabase):
+        return
+    deployments = await database.list_deployments(limit=1, status=None)
+    if not deployments:
+        return
+    await generate_run_artifacts(database, deployments[0].root_deployment_id, output_dir)
+    logger.info("Run artifacts saved to %s", output_dir)
+
+
+async def _shutdown_database(database: Database) -> None:
+    """Flush and shut down the CLI database after artifact generation completes."""
+    try:
+        await database.flush()
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("Database flush failed: %s", exc)
+    try:
+        await database.shutdown()
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("Database shutdown failed: %s", exc)
+
+
+def run_cli_for_deployment(
+    deployment: Any,
+    initializer: Callable[..., tuple[str, tuple[Document, ...]]] | None = None,
     cli_mixin: type[BaseSettings] | None = None,
 ) -> None:
     """Execute pipeline from CLI arguments with --start/--end step control."""
@@ -39,7 +64,7 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
 
     options_base = deployment.options_type
     if cli_mixin is not None:
-        options_base = type(deployment.options_type)(  # pyright: ignore[reportGeneralTypeIssues]
+        options_base = type(deployment.options_type)(
             "_OptionsBase",
             (cli_mixin, deployment.options_type),
             {"__module__": __name__, "__annotations__": {}},
@@ -48,20 +73,23 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
     class _CliOptions(
         options_base,
         BaseSettings,
-        cli_parse_args=True,
-        cli_kebab_case=True,
-        cli_exit_on_error=True,
-        cli_prog_name=deployment.name,
-        cli_use_class_docs_for_groups=True,
     ):
         working_directory: CliPositionalArg[Path]
         run_id: str | None = None
         start: int = 1
         end: int | None = None
 
-        model_config = SettingsConfigDict(frozen=True, extra="ignore")
+        model_config = SettingsConfigDict(
+            frozen=True,
+            extra="ignore",
+            cli_parse_args=True,
+            cli_kebab_case=True,
+            cli_exit_on_error=True,
+            cli_prog_name=deployment.name,
+            cli_use_class_docs_for_groups=True,
+        )
 
-    opts = cast(TOptions, _CliOptions())  # pyright: ignore[reportCallIssue]
+    opts = cast(FlowOptions, _CliOptions())
 
     wd = cast(Path, opts.working_directory)  # pyright: ignore[reportAttributeAccessIssue]
     wd.mkdir(parents=True, exist_ok=True)
@@ -79,28 +107,35 @@ def run_cli_for_deployment[TOptions: FlowOptions, TResult: DeploymentResult](
     validate_run_id(run_id)
 
     publisher = _create_publisher(settings, deployment.pubsub_service_type)
+    database = _create_span_database_from_settings(settings, base_path=wd)
 
-    with ExitStack() as stack:
-        under_pytest = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
-        if not settings.prefect_api_key and not under_pytest:
-            stack.enter_context(prefect_test_harness())
-            stack.enter_context(disable_run_logger())
+    try:
+        with ExitStack() as stack:
+            under_pytest = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+            if not settings.prefect_api_key and not under_pytest:
+                stack.enter_context(prefect_test_harness())
+                stack.enter_context(disable_run_logger())
 
-        try:
-            result = asyncio.run(
-                deployment.run(
-                    run_id=run_id,
-                    documents=initial_documents,
-                    options=opts,
-                    publisher=publisher,
-                    start_step=start_step,
-                    end_step=end_step,
+            try:
+                result = asyncio.run(
+                    deployment.run(
+                        run_id=run_id,
+                        documents=initial_documents,
+                        options=opts,
+                        publisher=publisher,
+                        start_step=start_step,
+                        end_step=end_step,
+                        database=database,
+                    )
                 )
-            )
-        finally:
-            if hasattr(publisher, "close"):
-                asyncio.run(publisher.close())
+            finally:
+                if hasattr(publisher, "close"):
+                    asyncio.run(publisher.close())
 
-    result_file = wd / "result.json"
-    result_file.write_text(result.model_dump_json(indent=2))
-    logger.info("Result saved to %s", result_file)
+        result_file = wd / "result.json"
+        result_file.write_text(result.model_dump_json(indent=2))
+        logger.info("Result saved to %s", result_file)
+
+        asyncio.run(_generate_run_artifacts(database, wd))
+    finally:
+        asyncio.run(_shutdown_database(database))

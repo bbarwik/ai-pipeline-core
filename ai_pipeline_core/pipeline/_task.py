@@ -18,323 +18,69 @@ Runtime behavior:
 """
 
 import asyncio
+import contextlib
 import inspect
-import json
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import timedelta
 from functools import update_wrapper
 from types import MappingProxyType
 from typing import Any, ClassVar, cast
-from uuid import UUID, uuid4
+from uuid import UUID, uuid7
 
-from pydantic import BaseModel
-
-from ai_pipeline_core.database import NULL_PARENT, BlobRecord, DocumentRecord, ExecutionNode, NodeKind, NodeStatus
-from ai_pipeline_core.deployment._types import DocumentRef, TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent
-from ai_pipeline_core.documents import Document, DocumentSha256, RunScope
-from ai_pipeline_core.documents._context import TaskContext, _TaskDocumentContext, reset_task_context, set_task_context
-from ai_pipeline_core.documents._hashing import compute_content_sha256
-from ai_pipeline_core.documents.document import get_inline_summary, pop_inline_summary
-from ai_pipeline_core.llm.conversation import Conversation
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core._lifecycle_events import DocumentRef, TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent
+from ai_pipeline_core._llm_core import CoreMessage, Role
+from ai_pipeline_core._llm_core import generate as core_generate
+from ai_pipeline_core.database import SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database._documents import load_documents_from_database
+from ai_pipeline_core.documents import Document
+from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._execution_context import (
-    ConversationTurnData,
     ExecutionContext,
     FlowFrame,
+    TaskContext,
     TaskFrame,
+    _TaskDocumentContext,
     get_execution_context,
+    get_sinks,
     record_lifecycle_event,
-    reset_conversation_turns,
-    reset_execution_context,
-    set_conversation_turns,
     set_execution_context,
+    set_task_context,
 )
 from ai_pipeline_core.pipeline._parallel import TaskHandle
+from ai_pipeline_core.pipeline._task_cache import build_task_cache_key, build_task_description
+from ai_pipeline_core.pipeline._task_runtime import (
+    _attach_task_attempt,
+    _class_name,
+    _get_task_attempt,
+    _input_documents,
+    _maybe_with_timeout,
+    _ordered_unique_document_types,
+    _persist_documents_to_database,
+    _TaskRunSpec,
+)
+from ai_pipeline_core.pipeline._track_span import track_span
 from ai_pipeline_core.pipeline._type_validation import (
     resolve_type_hints,
     validate_task_argument_value,
     validate_task_input_annotation,
     validate_task_return_annotation,
 )
-from ai_pipeline_core.replay._capture import serialize_kwargs
+from ai_pipeline_core.settings import settings
 
 logger = get_pipeline_logger(__name__)
 
 MILLISECONDS_PER_SECOND = 1000
 
 EVENT_PUBLISH_EXCEPTIONS = (OSError, RuntimeError, ValueError, TypeError)
+SUMMARY_GENERATION_EXCEPTIONS = (Exception,)
 TASK_EXECUTION_EXCEPTIONS = (Exception, asyncio.CancelledError)
-REPLAY_CAPTURE_EXCEPTIONS = (Exception,)
 RETRY_CAPTURE_EXCEPTIONS = (Exception,)
-
-DATABASE_EXCEPTIONS = (Exception,)
+SUMMARY_EXCERPT_MAX_CHARS = 6000
+_SUMMARY_PROMPT = "Write a concise 1-2 sentence summary of document '{name}'. Focus on the main topic and purpose.\n\nExcerpt:\n{excerpt}"
+DEFAULT_TASK_LOG_SUMMARY = {"total": 0, "warnings": 0, "errors": 0, "last_error": ""}
 
 __all__ = ["PipelineTask"]
-
-
-async def _insert_db_node_safe(database: Any, node: ExecutionNode) -> None:
-    """Insert an execution node, logging warnings on failure."""
-    if database is None:
-        return
-    try:
-        await database.insert_node(node)
-    except DATABASE_EXCEPTIONS as exc:
-        logger.warning("Database node insert failed for %s %s: %s", node.node_kind, node.node_id, exc)
-
-
-async def _update_db_node_safe(database: Any, node_id: UUID, **updates: Any) -> None:
-    """Update an execution node, logging warnings on failure."""
-    if database is None:
-        return
-    try:
-        await database.update_node(node_id, **updates)
-    except DATABASE_EXCEPTIONS as exc:
-        logger.warning("Database node update failed for %s: %s", node_id, exc)
-
-
-async def _persist_documents_to_database(
-    documents: Sequence[Document],
-    database: Any,
-    deployment_id: UUID | None,
-    run_scope: RunScope,
-    producing_node_id: UUID | None,
-) -> None:
-    """Persist documents and blobs to the new database backend (fire-and-forget)."""
-    if database is None or deployment_id is None:
-        return
-
-    doc_records: list[DocumentRecord] = []
-    blob_records: list[BlobRecord] = []
-    seen_content_sha256s: set[str] = set()
-
-    for doc in documents:
-        content_sha = compute_content_sha256(doc.content)
-        doc_records.append(
-            DocumentRecord(
-                document_sha256=doc.sha256,
-                content_sha256=content_sha,
-                deployment_id=deployment_id,
-                producing_node_id=producing_node_id,
-                document_type=type(doc).__name__,
-                name=doc.name,
-                run_scope=run_scope,
-                description=doc.description or "",
-                mime_type=doc.mime_type,
-                size_bytes=doc.size,
-                publicly_visible=getattr(type(doc), "publicly_visible", False),
-                derived_from=doc.derived_from,
-                triggered_by=doc.triggered_by,
-                attachment_names=tuple(att.name for att in doc.attachments),
-                attachment_descriptions=tuple(att.description or "" for att in doc.attachments),
-                attachment_sha256s=tuple(compute_content_sha256(att.content) for att in doc.attachments),
-                attachment_mime_types=tuple(att.mime_type for att in doc.attachments),
-                attachment_sizes=tuple(att.size for att in doc.attachments),
-            )
-        )
-        if content_sha not in seen_content_sha256s:
-            seen_content_sha256s.add(content_sha)
-            blob_records.append(
-                BlobRecord(
-                    content_sha256=content_sha,
-                    content=doc.content,
-                    size_bytes=len(doc.content),
-                )
-            )
-        # Also persist attachment blobs
-        for att in doc.attachments:
-            att_sha = compute_content_sha256(att.content)
-            if att_sha not in seen_content_sha256s:
-                seen_content_sha256s.add(att_sha)
-                blob_records.append(
-                    BlobRecord(
-                        content_sha256=att_sha,
-                        content=att.content,
-                        size_bytes=len(att.content),
-                    )
-                )
-
-    try:
-        if blob_records:
-            await database.save_blob_batch(blob_records)
-        if doc_records:
-            await database.save_document_batch(doc_records)
-    except DATABASE_EXCEPTIONS as exc:
-        logger.warning("Database document persistence failed: %s", exc)
-
-
-async def _create_conversation_turn_nodes(
-    turns: list[ConversationTurnData],
-    task_node_id: UUID,
-    execution_ctx: ExecutionContext,
-) -> None:
-    """Create conversation and conversation_turn nodes from captured turn data."""
-    database = execution_ctx.database
-    if database is None or execution_ctx.deployment_id is None:
-        return
-
-    # Group turns by conversation_id (stable UUID) so two Conversation objects
-    # with the same purpose produce separate nodes, and a single Conversation
-    # that changes purpose stays unified.
-    conversations: dict[str, list[tuple[int, ConversationTurnData]]] = {}
-    for idx, turn in enumerate(turns):
-        conversations.setdefault(turn.conversation_id, []).append((idx, turn))
-
-    for conv_seq, conv_turns in enumerate(conversations.values(), start=1):
-        conv_node_id = uuid4()
-        conv_display_name = conv_turns[0][1].conversation_name
-        conversation_status = NodeStatus.FAILED if any(turn.status == "failed" for _, turn in conv_turns) else NodeStatus.COMPLETED
-
-        # Create conversation node
-        conv_node = ExecutionNode(
-            node_id=conv_node_id,
-            node_kind=NodeKind.CONVERSATION,
-            deployment_id=execution_ctx.deployment_id,
-            root_deployment_id=execution_ctx.root_deployment_id or execution_ctx.deployment_id,
-            parent_node_id=task_node_id,
-            run_id=execution_ctx.run_id,
-            run_scope=RunScope(str(execution_ctx.run_scope)),
-            deployment_name=execution_ctx.deployment_name,
-            name=conv_display_name,
-            sequence_no=conv_seq,
-            task_id=task_node_id,
-            status=conversation_status,
-            started_at=conv_turns[0][1].started_at,
-            ended_at=conv_turns[-1][1].ended_at,
-            turn_count=len(conv_turns),
-            context_document_shas=conv_turns[0][1].context_document_shas,
-            payload={
-                "model_options": conv_turns[0][1].model_options_json,
-                "response_format_class": conv_turns[0][1].response_format_class,
-                "purpose": conv_display_name,
-            },
-        )
-        await _insert_db_node_safe(database, conv_node)
-
-        # Create turn nodes
-        for turn_seq, (_, turn) in enumerate(conv_turns):
-            turn_node_id = uuid4()
-            turn_node = ExecutionNode(
-                node_id=turn_node_id,
-                node_kind=NodeKind.CONVERSATION_TURN,
-                deployment_id=execution_ctx.deployment_id,
-                root_deployment_id=execution_ctx.root_deployment_id or execution_ctx.deployment_id,
-                parent_node_id=conv_node_id,
-                run_id=execution_ctx.run_id,
-                run_scope=RunScope(str(execution_ctx.run_scope)),
-                deployment_name=execution_ctx.deployment_name,
-                name=f"{conv_display_name}:turn-{turn_seq}",
-                sequence_no=turn_seq,
-                task_id=task_node_id,
-                conversation_id=conv_node_id,
-                model=turn.model,
-                cost_usd=turn.cost_usd,
-                tokens_input=turn.tokens_input,
-                tokens_output=turn.tokens_output,
-                tokens_cache_read=turn.tokens_cache_read,
-                tokens_reasoning=turn.tokens_reasoning,
-                status=NodeStatus.FAILED if turn.status == "failed" else NodeStatus.COMPLETED,
-                started_at=turn.started_at,
-                ended_at=turn.ended_at,
-                error_type=turn.error_type,
-                error_message=turn.error_message,
-                payload={
-                    "prompt_content": turn.prompt_content,
-                    "response_content": turn.response_content,
-                    "reasoning_content": turn.reasoning_content,
-                    "response_format_class": turn.response_format_class,
-                    "response_id": turn.response_id,
-                    "citations_json": turn.citations_json,
-                    "first_token_time": turn.first_token_time,
-                    "time_taken": turn.time_taken,
-                    "replay_payload": json.loads(turn.replay_payload_json) if turn.replay_payload_json else {},
-                },
-            )
-            await _insert_db_node_safe(database, turn_node)
-
-
-def _aggregate_conversation_turn_metrics(turns: Sequence[ConversationTurnData]) -> dict[str, int | float]:
-    """Aggregate LLM usage captured during a task for task-level execution metrics."""
-    return {
-        "cost_usd": sum(turn.cost_usd for turn in turns),
-        "tokens_input": sum(turn.tokens_input for turn in turns),
-        "tokens_output": sum(turn.tokens_output for turn in turns),
-        "tokens_cache_read": sum(turn.tokens_cache_read for turn in turns),
-        "tokens_reasoning": sum(turn.tokens_reasoning for turn in turns),
-        "turn_count": len(turns),
-    }
-
-
-def _consume_log_summary(execution_ctx: ExecutionContext, node_id: UUID) -> dict[str, int | str]:
-    """Return and clear lightweight log counters for a terminal task node."""
-    if execution_ctx.log_buffer is None:
-        return {"total": 0, "warnings": 0, "errors": 0, "last_error": ""}
-    return execution_ctx.log_buffer.consume_summary(node_id)
-
-
-@dataclass(frozen=True, slots=True)
-class _TaskRunSpec:
-    """Validated task run metadata stored on the task class."""
-
-    user_run: Callable[..., Awaitable[Any]]
-    signature: inspect.Signature
-    hints: Mapping[str, Any]
-    input_document_types: tuple[type[Document], ...]
-    output_document_types: tuple[type[Document], ...]
-
-
-def _class_name(value: Any) -> str:
-    return getattr(value, "__name__", str(value))
-
-
-def _ordered_unique_document_types(document_types: list[type[Document]]) -> tuple[type[Document], ...]:
-    ordered: dict[str, type[Document]] = {}
-    for document_type in document_types:
-        ordered.setdefault(document_type.__name__, document_type)
-    return tuple(ordered.values())
-
-
-async def _maybe_with_timeout[T](timeout_seconds: int | None, call: Callable[[], Awaitable[T]]) -> T:
-    if timeout_seconds is None:
-        return await call()
-    async with asyncio.timeout(timeout_seconds):
-        return await call()
-
-
-def _collect_documents(value: Any, collected_docs: list[Document]) -> None:
-    """Collect Documents nested in supported task input values."""
-    if isinstance(value, Document):
-        collected_docs.append(cast(Document[Any], value))
-        return
-    if isinstance(value, Conversation):
-        for document in value.context:
-            _collect_documents(document, collected_docs)
-        for message in value.messages:
-            _collect_documents(message, collected_docs)
-        return
-    if isinstance(value, (list, tuple)):
-        for item in cast(Sequence[Any], value):
-            _collect_documents(item, collected_docs)
-        return
-    if isinstance(value, dict):
-        for item in cast(dict[Any, Any], value).values():
-            _collect_documents(item, collected_docs)
-        return
-    if isinstance(value, BaseModel):
-        for field_name in type(value).model_fields:
-            _collect_documents(getattr(value, field_name), collected_docs)
-
-
-def _input_documents(arguments: Mapping[str, Any]) -> tuple[Document, ...]:
-    """Flatten Document inputs from task arguments while preserving order."""
-    collected_docs: list[Document] = []
-    for value in arguments.values():
-        _collect_documents(value, collected_docs)
-    deduped: dict[str, Document] = {}
-    for document in collected_docs:
-        deduped.setdefault(document.sha256, document)
-    return tuple(deduped.values())
 
 
 class PipelineTask:
@@ -367,6 +113,9 @@ class PipelineTask:
     retries: ClassVar[int] = 0
     retry_delay_seconds: ClassVar[int] = 20
     timeout_seconds: ClassVar[int | None] = None
+    cacheable: ClassVar[bool] = False
+    cache_version: ClassVar[int] = 1
+    cache_ttl_seconds: ClassVar[int | None] = None
     _abstract_task: ClassVar[bool] = False
     expected_cost: ClassVar[float | None] = None
 
@@ -412,6 +161,10 @@ class PipelineTask:
             raise TypeError(f"PipelineTask '{cls.__name__}' has retries={cls.retries}. Use a value >= 0.")
         if cls.timeout_seconds is not None and cls.timeout_seconds <= 0:
             raise TypeError(f"PipelineTask '{cls.__name__}' has timeout_seconds={cls.timeout_seconds}. Use a positive integer timeout or None.")
+        if cls.cache_version < 1:
+            raise TypeError(f"PipelineTask '{cls.__name__}' has cache_version={cls.cache_version}. Use an integer >= 1.")
+        if cls.cache_ttl_seconds is not None and cls.cache_ttl_seconds <= 0:
+            raise TypeError(f"PipelineTask '{cls.__name__}' has cache_ttl_seconds={cls.cache_ttl_seconds}. Use a positive integer number of seconds or None.")
 
     @classmethod
     def _validate_run_signature(cls, run_descriptor: Any) -> _TaskRunSpec:
@@ -493,7 +246,7 @@ class PipelineTask:
 
     @classmethod
     def _build_run_wrapper(cls, spec: _TaskRunSpec) -> Callable[..., TaskHandle[tuple[Document[Any], ...]]]:
-        def wrapped(task_cls: type["PipelineTask"], *args: Any, **kwargs: Any) -> TaskHandle[tuple[Document[Any], ...]]:
+        def wrapped(task_cls: type[PipelineTask], *args: Any, **kwargs: Any) -> TaskHandle[tuple[Document[Any], ...]]:
             arguments = task_cls._bind_run_arguments(args, kwargs)
             try:
                 asyncio.get_running_loop()
@@ -529,31 +282,20 @@ class PipelineTask:
     async def _persist_documents(
         cls,
         documents: tuple[Document, ...],
-        task_ctx: TaskContext,
     ) -> tuple[Document, ...]:
-        """Deduplicate, validate provenance, and persist documents to the database."""
+        """Deduplicate and persist documents to the database."""
         deduped = _TaskDocumentContext.deduplicate(list(documents))
         if not deduped:
             return ()
 
-        lifecycle_ctx = _TaskDocumentContext(created=set(task_ctx.created))
-        for orphan in lifecycle_ctx.finalize(deduped):
-            logger.warning("[%s] Orphaned document %s — created but not returned", cls.__name__, orphan[:12])
-
         execution_ctx = get_execution_context()
         if execution_ctx is not None:
-            await _persist_documents_to_database(
-                deduped,
-                execution_ctx.database,
-                execution_ctx.deployment_id,
-                execution_ctx.run_scope,
-                producing_node_id=execution_ctx.current_node_id,
-            )
+            await _persist_documents_to_database(deduped, execution_ctx.database)
 
         return tuple(deduped)
 
     @classmethod
-    async def _run_with_retries(cls, arguments: Mapping[str, Any]) -> tuple[Document, ...]:
+    async def _run_with_retries(cls, arguments: Mapping[str, Any]) -> tuple[tuple[Document, ...], int]:
         attempts = cls.retries + 1
         last_error: Exception | None = None
 
@@ -573,17 +315,131 @@ class PipelineTask:
                     await asyncio.sleep(cls.retry_delay_seconds)
                 continue
             if isinstance(outcome, BaseException):
-                raise outcome
-            return outcome
+                raise _attach_task_attempt(outcome, attempt)
+            return outcome, attempt
 
         if last_error is None:
             raise RuntimeError(f"PipelineTask '{cls.__name__}' failed without raising a concrete exception.")
-        raise last_error
+        raise _attach_task_attempt(last_error, attempts - 1)
 
     @classmethod
     async def _run_and_normalize(cls, arguments: Mapping[str, Any]) -> tuple[Document, ...]:
         result = await cls._run_spec.user_run(cls, **dict(arguments))
         return cls._normalize_result_documents(result)
+
+    @classmethod
+    def _task_cache_ttl(cls, execution_ctx: ExecutionContext) -> timedelta | None:
+        if execution_ctx.disable_cache:
+            return None
+        if cls.cache_ttl_seconds is not None:
+            return timedelta(seconds=cls.cache_ttl_seconds)
+        return execution_ctx.cache_ttl
+
+    @classmethod
+    async def _load_cached_outputs(
+        cls,
+        database: Any,
+        output_document_shas: tuple[str, ...],
+    ) -> tuple[Document, ...] | None:
+        if not output_document_shas:
+            logger.warning(
+                "Task cache span for '%s' has no output_document_shas. Persist cached task outputs on the completed span before expecting cache reuse.",
+                cls.__name__,
+            )
+            return None
+        documents = await load_documents_from_database(
+            database,
+            set(output_document_shas),
+            filter_types=list(cls.output_document_types) if cls.output_document_types else None,
+        )
+        documents_by_sha = {str(document.sha256): document for document in documents}
+        missing_shas = [sha for sha in output_document_shas if sha not in documents_by_sha]
+        if missing_shas:
+            logger.warning(
+                "Task cache hit for '%s' could not hydrate cached documents %s. "
+                "Persist every cached output document and blob before reusing task cache entries.",
+                cls.__name__,
+                ", ".join(missing_shas),
+            )
+            return None
+        return tuple(documents_by_sha[sha] for sha in output_document_shas)
+
+    @classmethod
+    async def _reuse_cached_output(
+        cls,
+        *,
+        arguments: Mapping[str, Any],
+        execution_ctx: ExecutionContext,
+        task_frame: TaskFrame,
+        task_span_id: UUID,
+        parent_span_id: UUID | None,
+        task_description: str,
+        input_docs: tuple[Document, ...],
+        task_cache_key: str,
+        task_cache_source_span: SpanRecord,
+        database: Any,
+    ) -> tuple[Document, ...] | None:
+        cached_documents = await cls._load_cached_outputs(database, task_cache_source_span.output_document_shas)
+        if cached_documents is None:
+            return None
+
+        start_time = time.monotonic()
+        output_refs = cls._build_output_refs(cached_documents)
+        flow_step = execution_ctx.flow_frame.step if execution_ctx.flow_frame is not None else 0
+        cached_input_sha256s = tuple(doc.sha256 for doc in input_docs)
+        await cls._emit_task_completed(
+            execution_ctx,
+            execution_ctx.flow_frame,
+            step=flow_step,
+            task_name=cls.name,
+            task_class_name=cls.__name__,
+            span_id=str(task_span_id),
+            start_time=start_time,
+            output_documents=output_refs,
+            status=str(SpanStatus.CACHED),
+            input_document_sha256s=cached_input_sha256s,
+        )
+        record_lifecycle_event(
+            "task.cached",
+            f"Reused cached task output for {cls.name}",
+            task_name=cls.name,
+            task_class=cls.__name__,
+            flow_name=execution_ctx.flow_frame.name if execution_ctx.flow_frame is not None else "",
+            step=flow_step,
+            cache_key=task_cache_key,
+            cache_source_span_id=str(task_cache_source_span.span_id),
+        )
+        with contextlib.ExitStack() as cached_stack:
+            cached_stack.enter_context(set_execution_context(execution_ctx.with_task(task_frame)))
+            async with track_span(
+                SpanKind.TASK,
+                cls.name,
+                f"classmethod:{cls.__module__}:{cls.__qualname__}.run",
+                sinks=get_sinks(),
+                span_id=task_span_id,
+                parent_span_id=parent_span_id,
+                encode_receiver={"mode": "constructor_args", "value": {"task_class": cls}},
+                encode_input=dict(arguments),
+                db=database,
+                input_preview={
+                    "task_class": cls.__name__,
+                    "input_documents": [doc.name for doc in input_docs],
+                },
+            ) as span_ctx:
+                span_ctx.set_status(SpanStatus.CACHED)
+                span_ctx.set_meta(
+                    attempt=0,
+                    retries=cls.retries,
+                    retry_delay_seconds=cls.retry_delay_seconds,
+                    timeout_seconds=cls.timeout_seconds,
+                    cache_hit=True,
+                    cache_key=task_cache_key,
+                    cache_source_span_id=str(task_cache_source_span.span_id),
+                    description=task_description,
+                )
+                span_ctx.set_output_preview({"documents": [doc.name for doc in cached_documents]})
+                span_ctx._set_output_value(cached_documents)
+        return cached_documents
 
     @classmethod
     def _normalize_result_documents(cls, result: Any) -> tuple[Document[Any], ...]:
@@ -620,7 +476,8 @@ class PipelineTask:
         step: int,
         task_name: str,
         task_class_name: str,
-        node_id: str,
+        span_id: str,
+        input_document_sha256s: tuple[str, ...] = (),
     ) -> None:
         if flow_frame is None:
             return
@@ -628,13 +485,17 @@ class PipelineTask:
             await execution_ctx.publisher.publish_task_started(
                 TaskStartedEvent(
                     run_id=execution_ctx.run_id,
-                    node_id=node_id,
+                    span_id=span_id,
                     root_deployment_id=str(execution_ctx.root_deployment_id or ""),
                     parent_deployment_task_id=str(execution_ctx.parent_deployment_task_id) if execution_ctx.parent_deployment_task_id else None,
                     flow_name=flow_frame.name,
                     step=step,
+                    total_steps=flow_frame.total_steps,
+                    status=str(SpanStatus.RUNNING),
                     task_name=task_name,
                     task_class=task_class_name,
+                    parent_span_id=str(execution_ctx.flow_span_id or ""),
+                    input_document_sha256s=input_document_sha256s,
                 )
             )
         except EVENT_PUBLISH_EXCEPTIONS as exc:
@@ -648,9 +509,11 @@ class PipelineTask:
         step: int,
         task_name: str,
         task_class_name: str,
-        node_id: str,
+        span_id: str,
         start_time: float,
         output_documents: tuple[DocumentRef, ...],
+        status: str = str(SpanStatus.COMPLETED),
+        input_document_sha256s: tuple[str, ...] = (),
     ) -> None:
         if flow_frame is None:
             return
@@ -658,15 +521,19 @@ class PipelineTask:
             await execution_ctx.publisher.publish_task_completed(
                 TaskCompletedEvent(
                     run_id=execution_ctx.run_id,
-                    node_id=node_id,
+                    span_id=span_id,
                     root_deployment_id=str(execution_ctx.root_deployment_id or ""),
                     parent_deployment_task_id=str(execution_ctx.parent_deployment_task_id) if execution_ctx.parent_deployment_task_id else None,
                     flow_name=flow_frame.name,
                     step=step,
+                    total_steps=flow_frame.total_steps,
+                    status=status,
                     task_name=task_name,
                     task_class=task_class_name,
                     duration_ms=int((time.monotonic() - start_time) * MILLISECONDS_PER_SECOND),
                     output_documents=output_documents,
+                    parent_span_id=str(execution_ctx.flow_span_id or ""),
+                    input_document_sha256s=input_document_sha256s,
                 )
             )
         except EVENT_PUBLISH_EXCEPTIONS as exc:
@@ -680,8 +547,9 @@ class PipelineTask:
         step: int,
         task_name: str,
         task_class_name: str,
-        node_id: str,
+        span_id: str,
         error_message: str,
+        input_document_sha256s: tuple[str, ...] = (),
     ) -> None:
         if flow_frame is None:
             return
@@ -689,51 +557,58 @@ class PipelineTask:
             await execution_ctx.publisher.publish_task_failed(
                 TaskFailedEvent(
                     run_id=execution_ctx.run_id,
-                    node_id=node_id,
+                    span_id=span_id,
                     root_deployment_id=str(execution_ctx.root_deployment_id or ""),
                     parent_deployment_task_id=str(execution_ctx.parent_deployment_task_id) if execution_ctx.parent_deployment_task_id else None,
                     flow_name=flow_frame.name,
                     step=step,
+                    total_steps=flow_frame.total_steps,
+                    status=str(SpanStatus.FAILED),
                     task_name=task_name,
                     task_class=task_class_name,
                     error_message=error_message,
+                    parent_span_id=str(execution_ctx.flow_span_id or ""),
+                    input_document_sha256s=input_document_sha256s,
                 )
             )
         except EVENT_PUBLISH_EXCEPTIONS as exc:
             logger.warning("Task failed event publish failed for '%s': %s", task_name, exc)
 
     @staticmethod
-    def _collect_summaries(documents: Sequence[Document]) -> dict[DocumentSha256, str]:
-        """Collect inline summaries already set on documents."""
-        summary_by_sha: dict[DocumentSha256, str] = {}
+    async def _generate_summaries(documents: Sequence[Document]) -> None:
+        """Generate missing summaries via LLM and set them directly on documents."""
         for document in documents:
-            inline_summary = get_inline_summary(document.sha256)
-            if inline_summary is not None:
-                summary_by_sha[document.sha256] = inline_summary
-        return summary_by_sha
+            if document.summary:
+                continue
+            if not settings.doc_summary_enabled or not document.is_text:
+                continue
+            try:
+                excerpt = document.text[:SUMMARY_EXCERPT_MAX_CHARS]
+                response = await core_generate(
+                    [CoreMessage(role=Role.USER, content=_SUMMARY_PROMPT.format(name=document.name, excerpt=excerpt))],
+                    model=settings.doc_summary_model,
+                    purpose="doc_summary",
+                )
+                generated = response.content.strip()
+                if generated:
+                    object.__setattr__(document, "summary", generated)
+            except SUMMARY_GENERATION_EXCEPTIONS as exc:
+                logger.warning("Inline summary generation failed for '%s': %s", document.name, exc)
 
     @staticmethod
-    def _build_output_refs(
-        documents: Sequence[Document],
-        summary_by_sha: dict[DocumentSha256, str],
-    ) -> tuple[DocumentRef, ...]:
+    def _build_output_refs(documents: Sequence[Document]) -> tuple[DocumentRef, ...]:
         return tuple(
             DocumentRef(
                 sha256=document.sha256,
                 class_name=type(document).__name__,
                 name=document.name,
-                summary=summary_by_sha.get(document.sha256, ""),
+                summary=document.summary,
                 publicly_visible=getattr(type(document), "publicly_visible", False),
                 derived_from=tuple(document.derived_from),
                 triggered_by=tuple(document.triggered_by),
             )
             for document in documents
         )
-
-    @staticmethod
-    def _cleanup_task_artifacts(task_ctx: TaskContext) -> None:
-        for created_sha in task_ctx.created:
-            pop_inline_summary(created_sha)
 
     @classmethod
     async def _execute_lifecycle(
@@ -742,12 +617,12 @@ class PipelineTask:
         *,
         execution_ctx: ExecutionContext,
         flow_frame: FlowFrame | None,
-        task_ctx: TaskContext,
         task_name: str,
-        node_id: str,
+        span_id: str,
         flow_step: int,
         start_time: float,
-    ) -> tuple[Document, ...]:
+        input_document_sha256s: tuple[str, ...] = (),
+    ) -> tuple[tuple[Document, ...], int]:
         """Execute task lifecycle with events and persistence."""
         await cls._emit_task_started(
             execution_ctx,
@@ -755,7 +630,8 @@ class PipelineTask:
             step=flow_step,
             task_name=task_name,
             task_class_name=cls.__name__,
-            node_id=node_id,
+            span_id=span_id,
+            input_document_sha256s=input_document_sha256s,
         )
         record_lifecycle_event(
             "task.started",
@@ -766,10 +642,10 @@ class PipelineTask:
             step=flow_step,
         )
         try:
-            documents = await cls._run_with_retries(arguments)
+            documents, attempt = await cls._run_with_retries(arguments)
 
-            summary_by_sha = cls._collect_summaries(documents)
-            persisted_docs = await cls._persist_documents(documents, task_ctx)
+            await cls._generate_summaries(documents)
+            persisted_docs = await cls._persist_documents(documents)
 
             await cls._emit_task_completed(
                 execution_ctx,
@@ -777,9 +653,10 @@ class PipelineTask:
                 step=flow_step,
                 task_name=task_name,
                 task_class_name=cls.__name__,
-                node_id=node_id,
+                span_id=span_id,
                 start_time=start_time,
-                output_documents=cls._build_output_refs(persisted_docs, summary_by_sha),
+                output_documents=cls._build_output_refs(persisted_docs),
+                input_document_sha256s=input_document_sha256s,
             )
             record_lifecycle_event(
                 "task.completed",
@@ -790,17 +667,17 @@ class PipelineTask:
                 step=flow_step,
                 output_count=len(persisted_docs),
             )
-            return persisted_docs
+            return persisted_docs, attempt
         except TASK_EXECUTION_EXCEPTIONS as exc:
-            cls._cleanup_task_artifacts(task_ctx)
             await cls._emit_task_failed(
                 execution_ctx,
                 flow_frame,
                 step=flow_step,
                 task_name=task_name,
                 task_class_name=cls.__name__,
-                node_id=node_id,
+                span_id=span_id,
                 error_message=str(exc),
+                input_document_sha256s=input_document_sha256s,
             )
             record_lifecycle_event(
                 "task.failed",
@@ -825,120 +702,120 @@ class PipelineTask:
             )
 
         parent_task = execution_ctx.task_frame
-        task_node_id = uuid4()
+        task_span_id = uuid7()
         task_function_path = f"{cls.__module__}:{cls.__qualname__}"
         task_frame = TaskFrame(
             task_class_name=cls.__name__,
-            task_id=str(task_node_id),
+            task_id=str(task_span_id),
             depth=(parent_task.depth + 1) if parent_task else 0,
             parent=parent_task,
         )
-        try:
-            task_replay_payload = {
-                "version": 1,
-                "payload_type": "pipeline_task",
-                "function_path": task_function_path,
-                "arguments": serialize_kwargs(dict(arguments)),
-                "original": {},
-            }
-        except REPLAY_CAPTURE_EXCEPTIONS:
-            task_replay_payload = {}
 
-        # Insert task node into execution DAG (fire-and-forget)
         database = execution_ctx.database
-        task_payload = {
-            "function_path": task_function_path,
-            "expected_cost": cls.expected_cost,
-            "replay_payload": task_replay_payload,
-        }
-        if database is not None and execution_ctx.deployment_id is not None:
-            parent_id = execution_ctx.current_node_id or NULL_PARENT
-            task_node = ExecutionNode(
-                node_id=task_node_id,
-                node_kind=NodeKind.TASK,
-                deployment_id=execution_ctx.deployment_id,
-                root_deployment_id=execution_ctx.root_deployment_id or execution_ctx.deployment_id,
-                parent_node_id=parent_id,
-                run_id=execution_ctx.run_id,
-                run_scope=RunScope(str(execution_ctx.run_scope)),
-                deployment_name=execution_ctx.deployment_name,
-                name=cls.name,
-                sequence_no=execution_ctx.next_child_sequence(parent_id),
-                task_class=cls.__name__,
-                flow_class=execution_ctx.flow_frame.flow_class_name if execution_ctx.flow_frame else "",
-                flow_id=execution_ctx.flow_node_id,
-                status=NodeStatus.RUNNING,
-                payload=task_payload,
-            )
-            await _insert_db_node_safe(database, task_node)
+        input_docs = _input_documents(arguments)
+        parent_span_id = execution_ctx.current_span_id or execution_ctx.span_id
+        task_description = build_task_description(arguments)
+        task_cache_key = ""
+        task_cache_source_span: SpanRecord | None = None
+        if cls.cacheable:
+            task_cache_ttl = cls._task_cache_ttl(execution_ctx)
+            if database is not None and task_cache_ttl is not None:
+                task_cache_key = build_task_cache_key(
+                    task_class_path=task_function_path,
+                    cache_version=cls.cache_version,
+                    arguments=arguments,
+                )
+                task_cache_source_span = await cast(Any, database).get_cached_completion(task_cache_key, max_age=task_cache_ttl)
+                if task_cache_source_span is not None:
+                    cached_documents = await cls._reuse_cached_output(
+                        arguments=arguments,
+                        execution_ctx=execution_ctx,
+                        task_frame=task_frame,
+                        task_span_id=task_span_id,
+                        parent_span_id=parent_span_id,
+                        task_description=task_description,
+                        input_docs=tuple(input_docs),
+                        task_cache_key=task_cache_key,
+                        task_cache_source_span=task_cache_source_span,
+                        database=database,
+                    )
+                    if cached_documents is not None:
+                        return cached_documents
 
-        # Update execution context with task node as current node
-        task_exec_ctx = execution_ctx.with_task(task_frame).with_node(task_node_id)
-        execution_token = set_execution_context(task_exec_ctx)
+        task_exec_ctx = execution_ctx.with_task(task_frame)
         task_ctx = TaskContext(task_class_name=cls.__name__)
-        task_token = set_task_context(task_ctx)
-
-        # Set up conversation turn capture
-        conversation_turns: list[ConversationTurnData] = []
-        turns_token = set_conversation_turns(conversation_turns)
 
         start_time = time.monotonic()
         task_name = cls.name
         flow_frame = execution_ctx.flow_frame
+        input_doc_names = [doc.name for doc in input_docs]
+        task_target = f"classmethod:{cls.__module__}:{cls.__qualname__}.run"
+        task_receiver = {"mode": "constructor_args", "value": {"task_class": cls}}
+        task_input_preview = {
+            "task_class": cls.__name__,
+            "input_documents": input_doc_names,
+        }
 
-        try:
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(set_execution_context(task_exec_ctx))
+            stack.enter_context(set_task_context(task_ctx))
+            task_attempt = 0
 
-            async def _execute() -> tuple[Document, ...]:
-                result = await cls._execute_lifecycle(
-                    arguments,
-                    execution_ctx=execution_ctx,
-                    flow_frame=flow_frame,
-                    task_ctx=task_ctx,
-                    task_name=task_name,
-                    node_id=task_frame.task_id,
-                    flow_step=flow_frame.step if flow_frame is not None else 0,
-                    start_time=start_time,
+            async with track_span(
+                SpanKind.TASK,
+                task_name,
+                task_target,
+                sinks=get_sinks(),
+                span_id=task_span_id,
+                parent_span_id=parent_span_id,
+                encode_receiver=task_receiver,
+                encode_input=dict(arguments),
+                db=database,
+                input_preview=task_input_preview,
+            ) as span_ctx:
+                span_ctx.set_meta(
+                    attempt=task_attempt,
+                    retries=cls.retries,
+                    retry_delay_seconds=cls.retry_delay_seconds,
+                    timeout_seconds=cls.timeout_seconds,
+                    cache_hit=False,
+                    description=task_description,
+                    cache_key=task_cache_key,
                 )
-                status = NodeStatus.COMPLETED
-                output_shas = tuple(doc.sha256 for doc in result)
-                input_docs = _input_documents(arguments)
-                input_shas = tuple(doc.sha256 for doc in input_docs)
-                task_turn_metrics = _aggregate_conversation_turn_metrics(conversation_turns)
-                await _update_db_node_safe(
-                    database,
-                    task_node_id,
-                    status=status,
-                    ended_at=datetime.now(UTC),
-                    input_document_shas=input_shas,
-                    output_document_shas=output_shas,
-                    **task_turn_metrics,
-                    payload={**task_payload, "log_summary": _consume_log_summary(execution_ctx, task_node_id)},
-                )
+                try:
+                    input_sha256s = tuple(doc.sha256 for doc in input_docs)
+                    result, task_attempt = await cls._execute_lifecycle(
+                        arguments,
+                        execution_ctx=execution_ctx,
+                        flow_frame=flow_frame,
+                        task_name=task_name,
+                        span_id=str(span_ctx.span_id),
+                        flow_step=flow_frame.step if flow_frame is not None else 0,
+                        start_time=start_time,
+                        input_document_sha256s=input_sha256s,
+                    )
+                except TASK_EXECUTION_EXCEPTIONS as exc:
+                    task_attempt = _get_task_attempt(exc)
+                    span_ctx.set_meta(
+                        attempt=task_attempt,
+                        retries=cls.retries,
+                        retry_delay_seconds=cls.retry_delay_seconds,
+                        timeout_seconds=cls.timeout_seconds,
+                        cache_hit=False,
+                        description=task_description,
+                        cache_key=task_cache_key,
+                    )
+                    raise
 
+                span_ctx.set_meta(
+                    attempt=task_attempt,
+                    retries=cls.retries,
+                    retry_delay_seconds=cls.retry_delay_seconds,
+                    timeout_seconds=cls.timeout_seconds,
+                    cache_hit=False,
+                    description=task_description,
+                    cache_key=task_cache_key,
+                )
+                span_ctx.set_output_preview({"documents": [doc.name for doc in result]})
+                span_ctx._set_output_value(result)
                 return result
-
-            try:
-                return await _execute()
-            except TASK_EXECUTION_EXCEPTIONS as exc:
-                task_turn_metrics = _aggregate_conversation_turn_metrics(conversation_turns)
-                # Update task node to FAILED
-                await _update_db_node_safe(
-                    database,
-                    task_node_id,
-                    status=NodeStatus.FAILED,
-                    ended_at=datetime.now(UTC),
-                    error_type=type(exc).__name__,
-                    error_message=str(exc),
-                    **task_turn_metrics,
-                    payload={**task_payload, "log_summary": _consume_log_summary(execution_ctx, task_node_id)},
-                )
-                raise
-            finally:
-                # Flush conversation turns on BOTH success and failure — partial
-                # conversation data on failed tasks is valuable for debugging.
-                if conversation_turns:
-                    await _create_conversation_turn_nodes(conversation_turns, task_node_id, task_exec_ctx)
-        finally:
-            reset_conversation_turns(turns_token)
-            reset_task_context(task_token)
-            reset_execution_context(execution_token)

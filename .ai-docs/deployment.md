@@ -2,7 +2,7 @@
 # CLASSES: DeploymentResult, FlowAction, FlowDirective, PipelineDeployment, RemoteDeployment, DocumentInput
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.14.0
+# VERSION: 0.15.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -80,8 +80,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     @final
     def as_prefect_flow(self) -> Callable[..., Any]:
         """Generate a Prefect flow for production deployment via ``ai-pipeline-deploy`` CLI."""
-        from ._prefect import build_prefect_flow
-
         return build_prefect_flow(self)
 
     def build_flows(self, options: TOptions) -> Sequence[PipelineFlow]:
@@ -126,20 +124,16 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         start_step: int = 1,
         end_step: int | None = None,
         parent_execution_id: UUID | None = None,
-        database: Database | None = None,
+        database: Any = None,
     ) -> TResult:
         """Execute flows with resume, per-flow uploads, and step control.
 
         run_id must match ``[a-zA-Z0-9_-]+``, max 100 chars.
         """
-        deployment_node_id = uuid4()
-        root_deployment_id = deployment_node_id
         return await self._run_with_context(
             run_id,
             documents,
             options,
-            deployment_node_id=deployment_node_id,
-            root_deployment_id=root_deployment_id,
             parent_deployment_task_id=None,
             publisher=publisher,
             start_step=start_step,
@@ -155,8 +149,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         cli_mixin: type | None = None,
     ) -> None:
         """Execute pipeline from CLI with positional working_directory and --start/--end flags."""
-        from ._cli import run_cli_for_deployment
-
         run_cli_for_deployment(self, initializer, cli_mixin)
 
     @final
@@ -184,7 +176,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             output_dir.mkdir(parents=True, exist_ok=True)
 
         with prefect_test_harness(), disable_run_logger():
-            result = asyncio.run(self.run(run_id, documents, options, publisher=publisher))
+            result = asyncio.run(self.run(run_id, documents, options, publisher=publisher, database=MemoryDatabase()))
 
         if output_dir:
             (output_dir / "result.json").write_text(result.model_dump_json(indent=2))
@@ -255,34 +247,10 @@ Set ``deployment_class`` to enable inline mode (test/local):
         deployment_id = exec_ctx.deployment_id if exec_ctx else None
         root_deployment_id = exec_ctx.root_deployment_id if exec_ctx else None
 
-        # Pre-allocate child deployment ID
-        child_deployment_id = uuid4()
-        subtask_node_id = uuid4()
-
-        # Create subtask node in caller's DAG
-        if exec_ctx is not None and database is not None and deployment_id is not None and root_deployment_id is not None:
-            current_node_id = exec_ctx.current_node_id
-            sequence_no = exec_ctx.next_child_sequence(current_node_id) if current_node_id else 0
-            subtask_node = ExecutionNode(
-                node_id=subtask_node_id,
-                node_kind=NodeKind.TASK,
-                deployment_id=deployment_id,
-                root_deployment_id=root_deployment_id,
-                parent_node_id=current_node_id or deployment_id,
-                run_id=run_id,
-                run_scope=exec_ctx.run_scope if exec_ctx else RunScope(run_id),
-                deployment_name=exec_ctx.deployment_name if exec_ctx else "",
-                name=f"remote:{self.name}",
-                sequence_no=sequence_no,
-                task_class=type(self).__name__,
-                status=NodeStatus.RUNNING,
-                remote_child_deployment_id=child_deployment_id,
-                input_document_shas=tuple(d.sha256 for d in documents),
-            )
-            try:
-                await database.insert_node(subtask_node)
-            except Exception as exc:
-                logger.warning("Failed to insert remote subtask node: %s", exc)
+        subtask_span_id = uuid7()
+        parent_span_id = (exec_ctx.current_span_id or deployment_id) if exec_ctx is not None else deployment_id
+        sequence_no = exec_ctx.next_child_sequence(parent_span_id) if exec_ctx is not None and parent_span_id is not None else 0
+        deployment_name = exec_ctx.deployment_name if exec_ctx is not None else ""
 
         # Determine backend mode
         use_inline = database is None
@@ -291,69 +259,133 @@ Set ``deployment_class`` to enable inline mode (test/local):
             use_inline = True
             inline_reason = "the active database backend does not support remote execution"
 
-        try:
-            if use_inline:
-                logger.warning(
-                    "RemoteDeployment '%s' is falling back to inline execution because %s. "
-                    "Configure a non-local deployment database to force Prefect remote execution.",
-                    self.name,
-                    inline_reason,
-                )
-                result = await self._run_inline(
-                    derived_run_id,
-                    documents,
-                    options,
-                    child_deployment_id=child_deployment_id,
-                    root_deployment_id=root_deployment_id or child_deployment_id,
-                    parent_deployment_task_id=subtask_node_id,
-                    database=cast(Database, database) if database is not None else None,
-                    publisher=exec_ctx.publisher if exec_ctx else None,
-                    parent_execution_id=exec_ctx.execution_id if exec_ctx else None,
-                )
-            else:
-                result = await self._run_remote(
-                    derived_run_id,
-                    documents,
-                    options,
-                    child_deployment_id=child_deployment_id,
-                    root_deployment_id=root_deployment_id or child_deployment_id,
-                    parent_deployment_task_id=subtask_node_id,
-                    parent_execution_id=exec_ctx.execution_id if exec_ctx else None,
-                )
+        publisher = exec_ctx.publisher if exec_ctx else None
+        flow_frame = exec_ctx.flow_frame if exec_ctx else None
+        flow_step = flow_frame.step if flow_frame is not None else 0
+        total_steps = flow_frame.total_steps if flow_frame is not None else 0
+        flow_name = flow_frame.name if flow_frame is not None else ""
+        parent_deployment_task_id = exec_ctx.parent_deployment_task_id if exec_ctx else None
+        input_sha256s = tuple(doc.sha256 for doc in documents)
+        task_name = f"remote:{self.name}"
+        task_start = time.monotonic()
 
-            # Update subtask to COMPLETED
-            if database is not None:
+        async with track_span(
+            SpanKind.TASK,
+            task_name,
+            "",
+            sinks=get_sinks(),
+            span_id=subtask_span_id,
+            parent_span_id=parent_span_id,
+            encode_input={"documents": tuple(documents), "options": options},
+            db=database,
+            input_preview={"deployment": self.name, "document_count": len(documents)},
+        ) as span_ctx:
+            span_ctx.set_meta(
+                deployment_name=deployment_name,
+                remote_mode="inline" if use_inline else "prefect",
+                sequence_no=sequence_no,
+            )
+            if publisher is not None and flow_frame is not None:
                 try:
-                    await database.update_node(
-                        subtask_node_id,
-                        status=NodeStatus.COMPLETED,
-                        ended_at=datetime.now(UTC),
+                    await publisher.publish_task_started(
+                        TaskStartedEvent(
+                            run_id=run_id,
+                            span_id=str(subtask_span_id),
+                            root_deployment_id=str(root_deployment_id or ""),
+                            parent_deployment_task_id=str(parent_deployment_task_id) if parent_deployment_task_id else None,
+                            flow_name=flow_name,
+                            step=flow_step,
+                            total_steps=total_steps,
+                            status=str(SpanStatus.RUNNING),
+                            task_name=task_name,
+                            task_class=type(self).__name__,
+                            parent_span_id=str(exec_ctx.flow_span_id) if exec_ctx is not None and exec_ctx.flow_span_id else "",
+                            input_document_sha256s=input_sha256s,
+                        )
                     )
-                except Exception as exc:
-                    logger.warning("Failed to update remote subtask node: %s", exc)
-
+                except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                    logger.warning("Remote task started event publish failed for '%s': %s", task_name, exc)
+            try:
+                if use_inline:
+                    logger.warning(
+                        "RemoteDeployment '%s' is falling back to inline execution because %s. "
+                        "Configure a non-local deployment database to force Prefect remote execution.",
+                        self.name,
+                        inline_reason,
+                    )
+                    result = await self._run_inline(
+                        derived_run_id,
+                        documents,
+                        options,
+                        root_deployment_id=root_deployment_id or deployment_id or subtask_span_id,
+                        parent_deployment_task_id=subtask_span_id,
+                        database=database,
+                        publisher=publisher,
+                        parent_execution_id=exec_ctx.execution_id if exec_ctx else None,
+                    )
+                else:
+                    result = await self._run_remote(
+                        derived_run_id,
+                        documents,
+                        options,
+                        root_deployment_id=root_deployment_id or deployment_id or subtask_span_id,
+                        parent_deployment_task_id=subtask_span_id,
+                        parent_execution_id=exec_ctx.execution_id if exec_ctx else None,
+                    )
+            except (Exception, asyncio.CancelledError) as exc:
+                if publisher is not None and flow_frame is not None:
+                    try:
+                        await publisher.publish_task_failed(
+                            TaskFailedEvent(
+                                run_id=run_id,
+                                span_id=str(subtask_span_id),
+                                root_deployment_id=str(root_deployment_id or ""),
+                                parent_deployment_task_id=str(parent_deployment_task_id) if parent_deployment_task_id else None,
+                                flow_name=flow_name,
+                                step=flow_step,
+                                total_steps=total_steps,
+                                status=str(SpanStatus.FAILED),
+                                task_name=task_name,
+                                task_class=type(self).__name__,
+                                error_message=str(exc),
+                                parent_span_id=str(exec_ctx.flow_span_id) if exec_ctx is not None and exec_ctx.flow_span_id else "",
+                                input_document_sha256s=input_sha256s,
+                            )
+                        )
+                    except (OSError, RuntimeError, ValueError, TypeError) as pub_exc:
+                        logger.warning("Remote task failed event publish failed for '%s': %s", task_name, pub_exc)
+                raise
+            if publisher is not None and flow_frame is not None:
+                try:
+                    await publisher.publish_task_completed(
+                        TaskCompletedEvent(
+                            run_id=run_id,
+                            span_id=str(subtask_span_id),
+                            root_deployment_id=str(root_deployment_id or ""),
+                            parent_deployment_task_id=str(parent_deployment_task_id) if parent_deployment_task_id else None,
+                            flow_name=flow_name,
+                            step=flow_step,
+                            total_steps=total_steps,
+                            status=str(SpanStatus.COMPLETED),
+                            task_name=task_name,
+                            task_class=type(self).__name__,
+                            duration_ms=int((time.monotonic() - task_start) * 1000),
+                            parent_span_id=str(exec_ctx.flow_span_id) if exec_ctx is not None and exec_ctx.flow_span_id else "",
+                            input_document_sha256s=input_sha256s,
+                        )
+                    )
+                except (OSError, RuntimeError, ValueError, TypeError) as pub_exc:
+                    logger.warning("Remote task completed event publish failed for '%s': %s", task_name, pub_exc)
+            span_ctx.set_output_preview(result.model_dump(mode="json"))
+            span_ctx._set_output_value(result)
             return result
-
-        except (Exception, asyncio.CancelledError) as exc:
-            # Update subtask to FAILED
-            if database is not None:
-                try:
-                    await database.update_node(
-                        subtask_node_id,
-                        status=NodeStatus.FAILED,
-                        ended_at=datetime.now(UTC),
-                        error_type=type(exc).__name__,
-                        error_message=str(exc),
-                    )
-                except Exception as update_exc:
-                    logger.warning("Failed to update remote subtask node on failure: %s", update_exc)
-            raise
 
 
 class DocumentInput(_InputBase):
     """Document provided to a deployment — inline content or a URL reference."""
     name: str = Field(default='', description="Document filename (e.g. 'task.md'). Auto-derived from URL path if omitted.")  # Document filename (e.g. 'task.md'). Auto-derived from URL path if omitted.
     description: str = Field(default='', description='Human-readable description of this document.')  # Human-readable description of this document.
+    summary: str = Field(default='', description='Inline summary of the document content.')  # Inline summary of the document content.
     class_name: str = Field(default='', description='Document type class name. Required when the pipeline accepts multiple input types.')  # Document type class name. Required when the pipeline accepts multiple input types.
     derived_from: tuple[str, ...] = Field(default=(), description='Content provenance: SHA256 hashes of source documents or URIs.')  # Content provenance: SHA256 hashes of source documents or URIs.
     triggered_by: tuple[str, ...] = Field(default=(), description='Causal provenance: SHA256 hashes of triggering documents.')  # Causal provenance: SHA256 hashes of triggering documents.
@@ -365,7 +397,7 @@ class DocumentInput(_InputBase):
 
 ## Examples
 
-**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:721`)
+**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:769`)
 
 ```python
 def test_format_starts_with_base_run_id(self):
@@ -386,7 +418,7 @@ def test_deployment_result_data(self):
     assert "success" in dumped
 ```
 
-**Document input fields have descriptions** (`tests/deployment/test_deploy.py:313`)
+**Document input fields have descriptions** (`tests/deployment/test_deploy.py:311`)
 
 ```python
 def test_document_input_fields_have_descriptions(self):
@@ -410,7 +442,7 @@ def test_extracts_remote_deployment_params(self):
     assert params[1] is SampleResult
 ```
 
-**Two args returned by helper** (`tests/deployment/test_remote_deployment.py:95`)
+**Two args returned by helper** (`tests/deployment/test_remote_deployment.py:124`)
 
 ```python
 def test_two_args_returned_by_helper(self):
@@ -423,7 +455,7 @@ def test_two_args_returned_by_helper(self):
     assert args[1] is SimpleResult
 ```
 
-**Two params from remote deployment** (`tests/deployment/test_remote_deployment.py:668`)
+**Two params from remote deployment** (`tests/deployment/test_remote_deployment.py:716`)
 
 ```python
 def test_two_params_from_remote_deployment(self):
@@ -436,7 +468,7 @@ def test_two_params_from_remote_deployment(self):
     assert result[1] is SimpleResult
 ```
 
-**Accepts deployment result subclass** (`tests/deployment/test_remote_deployment.py:135`)
+**Accepts deployment result subclass** (`tests/deployment/test_remote_deployment.py:164`)
 
 ```python
 def test_accepts_deployment_result_subclass(self):
@@ -446,7 +478,7 @@ def test_accepts_deployment_result_subclass(self):
     assert Foo.result_type is SimpleResult
 ```
 
-**Accepts flow options subclass** (`tests/deployment/test_remote_deployment.py:115`)
+**Accepts flow options subclass** (`tests/deployment/test_remote_deployment.py:144`)
 
 ```python
 def test_accepts_flow_options_subclass(self):
@@ -459,7 +491,7 @@ def test_accepts_flow_options_subclass(self):
     assert Good.options_type is CustomOpts
 ```
 
-**Auto derived** (`tests/deployment/test_remote_deployment.py:162`)
+**Auto derived** (`tests/deployment/test_remote_deployment.py:191`)
 
 ```python
 def test_auto_derived(self):
@@ -472,7 +504,7 @@ def test_auto_derived(self):
 
 ## Error Examples
 
-**Aggregates errors** (`tests/deployment/test_resolve.py:181`)
+**Aggregates errors** (`tests/deployment/test_resolve.py:179`)
 
 ```python
 async def test_aggregates_errors(self):
@@ -506,7 +538,7 @@ async def test_resolve_rejects_triggered_by_on_input() -> None:
         await resolve_document_inputs(inputs, [ResolveInputDoc])
 ```
 
-**Ambiguous raises** (`tests/deployment/test_resolve.py:148`)
+**Ambiguous raises** (`tests/deployment/test_resolve.py:146`)
 
 ```python
 async def test_ambiguous_raises(self):
@@ -515,7 +547,7 @@ async def test_ambiguous_raises(self):
         await resolve_document_inputs(inputs, [ResolveDoc, OtherDoc], start_step_input_types=[ResolveDoc, OtherDoc])
 ```
 
-**Attachment no name inline raises** (`tests/deployment/test_resolve.py:166`)
+**Attachment no name inline raises** (`tests/deployment/test_resolve.py:164`)
 
 ```python
 async def test_attachment_no_name_inline_raises(self):
@@ -525,7 +557,7 @@ async def test_attachment_no_name_inline_raises(self):
         await resolve_document_inputs(inputs, [ResolveDoc])
 ```
 
-**Both raises** (`tests/deployment/test_resolve.py:49`)
+**Both raises** (`tests/deployment/test_resolve.py:47`)
 
 ```python
 def test_both_raises(self):
@@ -533,7 +565,7 @@ def test_both_raises(self):
         DocumentInput(url="https://example.com", content="hello", name="d")
 ```
 
-**Deployment requires build flows override** (`tests/deployment/test_deployment_base.py:707`)
+**Deployment requires build flows override** (`tests/deployment/test_deployment_base.py:705`)
 
 ```python
 def test_deployment_requires_build_flows_override():

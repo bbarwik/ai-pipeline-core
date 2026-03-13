@@ -9,7 +9,7 @@ from io import BytesIO
 from PIL import Image
 from pypdf import PdfReader
 
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
 

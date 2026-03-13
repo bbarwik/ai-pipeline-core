@@ -134,6 +134,23 @@ def test_pipeline_task_extracts_document_types_from_flexible_signature() -> None
     assert GoodTask.name == "GoodTask"
 
 
+def test_pipeline_flow_init_accepts_forward_referenced_constructor_annotation() -> None:
+    class ConfiguredFlow(PipelineFlow):
+        config: FlowConfig
+
+        async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
+            _ = (documents, options)
+            return ()
+
+    class FlowConfig:
+        pass
+
+    config = FlowConfig()
+    flow = ConfiguredFlow(config=config)
+    assert flow.config is config
+    assert flow.get_params() == {"config": config}
+
+
 def test_pipeline_task_inherits_validated_run() -> None:
     class _BaseTask(PipelineTask):
         @classmethod
@@ -866,6 +883,14 @@ class TestNewTypeInputValidation:
             @classmethod
             async def run(cls, value: str) -> AlphaDocument:
                 return AlphaDocument(name="a.txt", content=b"a")
+
+    def test_bytes_input_rejected(self):
+        with pytest.raises(TypeError, match="unsupported input annotation"):
+
+            class BadBytesTask(PipelineTask):
+                @classmethod
+                async def run(cls, payload: bytes) -> AlphaDocument:
+                    return AlphaDocument(name="a.txt", content=b"a")
 
 
 def test_abstract_task_can_be_defined_without_run() -> None:

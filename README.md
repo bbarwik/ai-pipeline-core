@@ -2,7 +2,7 @@
 
 Production framework for building type-safe AI pipelines — designed to be developed and used by AI coding agents. Open-sourced by [research.tech](https://research.tech).
 
-[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
+[![Python Version](https://img.shields.io/badge/python-3.14%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Type Checked: Basedpyright](https://img.shields.io/badge/type%20checked-basedpyright-blue)](https://github.com/DetachHead/basedpyright)
@@ -26,7 +26,7 @@ This framework is the foundation of AI projects at [research.tech](https://resea
 - **Image Processing**: Automatic image tiling/splitting for LLM vision models with model-specific presets
 - **Observability**: Database-backed execution DAGs, logs, replay payloads, and `ai-trace` download support
 - **Prompt Compiler**: Type-safe prompt specifications replacing Jinja2 templates — typed Python classes for roles, rules, guides, and output formats with definition-time validation and a CLI tool for inspection
-- **Replay**: Capture and re-execute any LLM conversation, pipeline task, or flow from human-editable YAML files with document resolution via SHA256 references
+- **Replay**: Capture and re-execute any LLM conversation, pipeline task, or flow from recorded span JSON files or database-backed runs with document resolution via SHA256 references
 - **Deployment**: Unified pipeline execution for local, CLI, and production environments with per-flow resume and remote deployment support
 
 ## Installation
@@ -38,12 +38,12 @@ pip install ai-pipeline-core
 This installs four CLI commands:
 - `ai-prompt-compiler` — discover, inspect, render, and compile prompt specifications
 - `ai-pipeline-deploy` — build and deploy pipelines to Prefect Cloud
-- `ai-replay` — execute or inspect replay YAML files, or replay directly from database-backed runs
+- `ai-replay` — execute or inspect replayable span JSON files, or replay directly from database-backed runs
 - `ai-trace` — list, show, and download execution data from the database
 
 ### Requirements
 
-- Python 3.12 or higher
+- Python 3.14 or higher
 - Linux/macOS (Windows via WSL2)
 - [uv](https://astral.sh/uv) (recommended)
 
@@ -660,7 +660,7 @@ flow = ConfigurableFlow(model="gemini-3-pro", temperature=0.7)
 flow.get_params()  # {"model": "gemini-3-pro", "temperature": 0.7}
 ```
 
-**FlowOptions** is a base `BaseSettings` class for pipeline configuration. Subclass it to add flow-specific parameters:
+**FlowOptions** is a frozen `BaseModel` for pipeline configuration. Subclass it to add flow-specific parameters:
 
 ```python
 class ResearchOptions(FlowOptions):
@@ -728,7 +728,7 @@ prefect_flow = pipeline.as_prefect_flow()
 **Features:**
 - **Per-flow resume**: Skips flows with a cached completed execution node in the database (explicit completion tracking, not document-presence inference). Configurable `cache_ttl` (default 24h)
 - **Type chain validation**: At runtime, validates that at least one of each flow's declared input types is producible by preceding flows (union semantics)
-- **Event publishing**: 12 lifecycle events (run started/completed/failed, flow started/completed/failed/skipped, task started/completed/failed, heartbeat, progress) via Pub/Sub. Task events include `step`, `task_invocation_id` for correlation. `actual_cost` is aggregated from recorded conversation turns. Enabled by setting `pubsub_service_type` ClassVar. Requires `PUBSUB_PROJECT_ID` and `PUBSUB_TOPIC_ID` env vars
+- **Event publishing**: 12 lifecycle events (run started/completed/failed, flow started/completed/failed/skipped, task started/completed/failed, heartbeat, progress) via Pub/Sub. Task events include `step`, `task_invocation_id` for correlation. `actual_cost` is aggregated from recorded conversation nodes. Enabled by setting `pubsub_service_type` ClassVar. Requires `PUBSUB_PROJECT_ID` and `PUBSUB_TOPIC_ID` env vars
 - **Dynamic flow control**: `plan_next_flow()` returns `FlowDirective` to skip or continue flows based on runtime state
 - **Concurrency limits**: Cross-run enforcement via Prefect global concurrency limits
 - **CLI mode**: `--start N` / `--end N` for step control with the configured database backend
@@ -971,41 +971,28 @@ python -m ai_pipeline_core.prompt_compiler inspect AnalysisSpec
 
 ### Replay
 
-Every LLM conversation turn, pipeline task, and pipeline flow is automatically captured as a replay payload in the unified database. When you download a deployment with `ai-trace download`, the snapshot is a portable `FilesystemDatabase`, and replay YAML files can live anywhere inside that snapshot or alongside your own test bundles. Document references are resolved from the database backend by SHA256 at replay time.
+Every LLM conversation call, pipeline task, and pipeline flow is automatically captured as a replayable span in the unified database. When you download a deployment with `ai-trace download`, the snapshot is a portable `FilesystemDatabase`; `ai-replay` can load one recorded span JSON file from that bundle, or replay directly from the database with `--from-db`. Document references are resolved from the database backend by SHA256 at replay time.
 
-**Inspect a replay file:**
+**Inspect a recorded span file:**
 
 ```bash
-ai-replay show ./downloaded_bundle/runs/.../conversation.yaml
-# Type: ConversationReplay
-# Model: gemini-3-flash
-# Options: {'reasoning_effort': 'low'}
-# Response format: my_app.models:DocumentInsight
-# Context docs: 1
-# Prompt: Extract structured insights from the analysis.
+ai-replay show ./downloaded_bundle/runs/.../01_conv-a1b2c3d4.json --db-path ./downloaded_bundle
 ```
 
 **Re-execute with the same parameters:**
 
 ```bash
-ai-replay run ./downloaded_bundle/runs/.../conversation.yaml --db-path ./downloaded_bundle --import my_app.tasks
+ai-replay run ./downloaded_bundle/runs/.../01_task-build-summary.json --db-path ./downloaded_bundle --import my_app.tasks
 ```
 
 **Override fields before execution:**
 
 ```bash
-# Switch model
-ai-replay run ./downloaded_bundle/runs/.../conversation.yaml --db-path ./downloaded_bundle --import my_app --set model=grok-4.1-fast
+# Switch model for a recorded conversation span
+ai-replay run ./downloaded_bundle/runs/.../01_conv-a1b2c3d4.json --db-path ./downloaded_bundle --import my_app --model grok-4.1-fast
 
-# Change prompt
-ai-replay run ./downloaded_bundle/runs/.../conversation.yaml --db-path ./downloaded_bundle --import my_app --set prompt="Summarize in 3 bullet points"
-```
-
-**Replay task and flow payloads:**
-
-```bash
-ai-replay run ./downloaded_bundle/runs/.../task.yaml --db-path ./downloaded_bundle --import my_app
-ai-replay run ./downloaded_bundle/runs/.../flow.yaml --db-path ./downloaded_bundle --import my_app
+# Override model_options or response_format
+ai-replay run ./downloaded_bundle/runs/.../01_conv-a1b2c3d4.json --db-path ./downloaded_bundle --import my_app --set reasoning_effort=low
 ```
 
 The `--import` flag is required when the original script was run as `__main__` — it imports the module so Document subclasses and functions are registered, and automatically remaps `__main__:X` references to the correct module path.
@@ -1022,15 +1009,15 @@ conversation_replay/
 Override with `--output-dir`:
 
 ```bash
-ai-replay run conversation.yaml --import my_app --output-dir ./my_output
+ai-replay run ./downloaded_bundle/runs/.../01_task-build-summary.json --db-path ./downloaded_bundle --import my_app --output-dir ./my_output
 ```
 
 **Database-backed replay:**
 
-Replay now resolves document references from a database backend. Use `--db-path` for local snapshots or `--from-db` to replay directly from a node payload:
+Replay resolves document references from a database backend. Use `--db-path` for local snapshots or `--from-db` to replay directly from a recorded span. `show` supports the same database-backed path, and file-backed `show` / `run` reject directories with an actionable error telling you to pass one span JSON file or use `--from-db`.
 
 ```bash
-ai-replay run conversation.yaml --db-path ./downloaded_bundle
+ai-replay show --from-db 550e8400-e29b-41d4-a716-446655440000 --db-path ./downloaded_bundle
 ai-replay run --from-db 550e8400-e29b-41d4-a716-446655440000 --db-path ./downloaded_bundle
 ```
 
@@ -1040,24 +1027,17 @@ ai-replay run --from-db 550e8400-e29b-41d4-a716-446655440000 --db-path ./downloa
 from pathlib import Path
 
 from ai_pipeline_core.database._filesystem import FilesystemDatabase
-from ai_pipeline_core.replay import ConversationReplay
+from ai_pipeline_core.replay import execute_span
 
-# Load from YAML
-replay = ConversationReplay.from_yaml(yaml_text)
+# Open a downloaded bundle read-only
+database = FilesystemDatabase(Path("./downloaded_bundle"), read_only=True)
 
-# Modify fields
-replay = replay.model_copy(update={"model": "grok-4.1-fast"})
-
-# Execute
-database = FilesystemDatabase(Path("./downloaded_bundle"))
-result = await replay.execute(database)
-print(result.content)
+# Replay one recorded span by UUID
+result = await execute_span(span_id, source_db=database)
+print(result)
 ```
 
-**Three payload types:**
-- `ConversationReplay` — captures `Conversation.send()` / `send_structured()` with model, prompt, context docs, multi-turn history, and response_format
-- `TaskReplay` — captures `PipelineTask` calls with class path and all arguments (Documents as `$doc_ref` references)
-- `FlowReplay` — captures `PipelineFlow` calls with class path, run_id, documents, and flow_options
+Replayable span kinds are the same runtime boundaries the framework records: conversation, task, and flow.
 
 ### Deployment Downloads
 
@@ -1068,11 +1048,16 @@ downloaded_bundle/
   summary.md
   costs.md
   logs.jsonl
+  llm_calls.jsonl
+  validation.json
+  errors.md
+  documents.md
   runs/
+  documents/
   blobs/
 ```
 
-That snapshot is directly usable by `ai-replay --db-path`.
+`errors.md` is created only when failed nodes exist, and `documents.md` is created only when documents exist. `validation.json` summarizes the staged bundle validation that runs before publish. Under `runs/`, each deployment is stored under a date/name directory with `deployment.json` at the root plus sequence-prefixed child files such as `01_flow-analyze-flow.json`, `01_task-build-summary.json`, and `01_conv-a1b2c3d4.json`. The snapshot is opened read-only by `ai-trace --db-path` and `ai-replay --db-path`.
 
 ### `ai-trace` CLI
 
@@ -1230,9 +1215,9 @@ When building applications on this framework, include the relevant `.ai-docs/*.m
 The `examples/` directory contains:
 
 - **`showcase.py`** -- Full 3-stage pipeline: class-based PipelineTask/PipelineFlow, Conversation API, multi-turn LLM analysis, structured extraction, PipelineDeployment with CLI, resume/skip, progress tracking, image processing
-- **`showcase_database.py`** -- Database usage: class-based PipelineTask with auto-save, flow execution via `run_local()`, document provenance tracking
-- **`showcase_replay.py`** -- Replay system: database-backed replay flow demonstration
-- **`showcase_prompt_compiler.py`** -- Prompt compiler features: Role, Rule, OutputRule, Guide, PromptSpec, rendering, output_structure, follow-up specs, definition-time validation
+- **`showcase_database.py`** -- Database usage: run a real deployment into `MemoryDatabase`, inspect a recorded task span target plus parsed `meta_json` / `metrics_json`, and inspect output document ancestry
+- **`showcase_replay.py`** -- Replay system: record a real task span through `PipelineDeployment.run(...)`, then replay that stored span with `execute_span()`
+- **`showcase_prompt_compiler.py`** -- Prompt compiler features: Role, Rule, OutputRule, Guide, PromptSpec, rendering, `Conversation.send_spec()` usage patterns, follow-up specs, definition-time validation
 
 Run examples:
 ```bash

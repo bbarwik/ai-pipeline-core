@@ -13,14 +13,12 @@ from prefect.deployments.runner import RunnerDeployment
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment
 from ai_pipeline_core.deployment.deploy import _Deployer as Deployer
-from ai_pipeline_core.documents._context import _suppress_document_registration
 from ai_pipeline_core.pipeline import PipelineFlow
 
 
 @pytest.fixture(autouse=True)
 def _suppress_registration():
-    with _suppress_document_registration():
-        yield
+    return
 
 
 class TestDeployer:

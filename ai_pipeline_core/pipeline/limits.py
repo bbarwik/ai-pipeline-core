@@ -28,7 +28,7 @@ from prefect.concurrency.asyncio import (
     rate_limit,
 )
 
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
 
@@ -106,13 +106,8 @@ _limits_state: ContextVar[_LimitsState] = ContextVar("_pipeline_limits_state", d
 
 
 def _set_limits_state(state: _LimitsState) -> Token[_LimitsState]:
-    """Set limits state in ContextVar, returning token for reset."""
+    """Set limits state for the current scope."""
     return _limits_state.set(state)
-
-
-def _reset_limits_state(token: Token[_LimitsState]) -> None:
-    """Reset limits state to previous value."""
-    _limits_state.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +120,7 @@ async def pipeline_concurrency(
     name: str,
     *,
     timeout: int | None = None,
-) -> AsyncGenerator[None, None]:
+) -> AsyncGenerator[None]:
     """Acquire a concurrency/rate-limit slot for an operation.
 
     For CONCURRENT limits: slot held during block, released on exit.
@@ -247,7 +242,6 @@ __all__ = [
     "LimitKind",
     "PipelineLimit",
     "_ensure_concurrency_limits",
-    "_reset_limits_state",
     "_set_limits_state",
     "_validate_concurrency_limits",
     "pipeline_concurrency",

@@ -6,7 +6,7 @@ from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator, model_validator
 
-from ai_pipeline_core.exceptions import DocumentNameError
+from ai_pipeline_core.documents.exceptions import DocumentNameError
 
 from ._mime_type import (
     detect_mime_type,

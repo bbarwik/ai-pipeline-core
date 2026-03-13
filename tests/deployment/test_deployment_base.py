@@ -7,6 +7,7 @@ result serialization, contract models, flow chain validation, refactoring verifi
 # pyright: reportArgumentType=false, reportGeneralTypeIssues=false, reportPrivateUsage=false, reportUnusedClass=false, reportFunctionMemberAccess=false
 
 import inspect
+import json
 from datetime import UTC
 from typing import Any
 from uuid import uuid4
@@ -21,7 +22,8 @@ from ai_pipeline_core import (
     PipelineDeployment,
     PipelineFlow,
 )
-from ai_pipeline_core.database import MemoryDatabase, NodeKind
+from ai_pipeline_core.database import SpanKind, SpanStatus
+from ai_pipeline_core.database._memory import MemoryDatabase
 from ai_pipeline_core.deployment._contract import (
     CompletedRun,
     DeploymentResultData,
@@ -29,8 +31,6 @@ from ai_pipeline_core.deployment._contract import (
     PendingRun,
     ProgressRun,
 )
-from ai_pipeline_core.documents._context import _suppress_document_registration
-
 from .conftest import InputDoc, MiddleDoc, OutputDoc, StageOne, StageTwo, _TestOptions, _TestResult
 
 
@@ -294,56 +294,54 @@ class TestAllDocumentTypes:
         assert "OutputDoc" in type_names
 
 
-class TestComputeRunScope:
-    """Test _compute_run_scope function."""
+class TestComputeInputFingerprint:
+    """Test _compute_input_fingerprint function."""
 
     def test_different_options_produce_different_scope_with_documents(self):
-        """Test that different options produce different run_scope when documents are provided."""
-        from ai_pipeline_core.deployment.base import _compute_run_scope
+        """Different options must produce different fingerprints when documents are provided."""
+        from ai_pipeline_core.deployment._helpers import _compute_input_fingerprint
 
-        with _suppress_document_registration():
-            doc = InputDoc(name="input.txt", content=b"test")
+        doc = InputDoc(name="input.txt", content=b"test")
 
         class CustomOptions(FlowOptions):
             flag: bool = False
 
-        scope1 = _compute_run_scope("project", [doc], CustomOptions(flag=True))
-        scope2 = _compute_run_scope("project", [doc], CustomOptions(flag=False))
+        fingerprint1 = _compute_input_fingerprint([doc], CustomOptions(flag=True))
+        fingerprint2 = _compute_input_fingerprint([doc], CustomOptions(flag=False))
 
-        assert scope1 != scope2
-        assert scope1.startswith("project:")
-        assert scope2.startswith("project:")
+        assert fingerprint1 != fingerprint2
+        assert len(fingerprint1) == 16
+        assert len(fingerprint2) == 16
 
     def test_different_options_produce_different_scope_without_documents(self):
-        """Test that different options produce different run_scope even with empty documents."""
-        from ai_pipeline_core.deployment.base import _compute_run_scope
+        """Different options must produce different fingerprints even with empty documents."""
+        from ai_pipeline_core.deployment._helpers import _compute_input_fingerprint
 
         class CustomOptions(FlowOptions):
             flag: bool = False
 
-        scope1 = _compute_run_scope("project", [], CustomOptions(flag=True))
-        scope2 = _compute_run_scope("project", [], CustomOptions(flag=False))
+        fingerprint1 = _compute_input_fingerprint([], CustomOptions(flag=True))
+        fingerprint2 = _compute_input_fingerprint([], CustomOptions(flag=False))
 
-        assert scope1 != scope2
-        assert scope1.startswith("project:")
-        assert scope2.startswith("project:")
+        assert fingerprint1 != fingerprint2
+        assert len(fingerprint1) == 16
+        assert len(fingerprint2) == 16
 
     def test_same_inputs_produce_same_scope(self):
-        """Test that identical inputs produce identical run_scope."""
-        from ai_pipeline_core.deployment.base import _compute_run_scope
+        """Identical inputs must produce identical fingerprints."""
+        from ai_pipeline_core.deployment._helpers import _compute_input_fingerprint
 
-        with _suppress_document_registration():
-            doc = InputDoc(name="input.txt", content=b"test")
+        doc = InputDoc(name="input.txt", content=b"test")
 
-        scope1 = _compute_run_scope("project", [doc], FlowOptions())
-        scope2 = _compute_run_scope("project", [doc], FlowOptions())
+        fingerprint1 = _compute_input_fingerprint([doc], FlowOptions())
+        fingerprint2 = _compute_input_fingerprint([doc], FlowOptions())
 
-        assert scope1 == scope2
+        assert fingerprint1 == fingerprint2
 
     def test_cli_fields_are_excluded(self):
-        """Test that CLI-only fields do not affect run_scope."""
+        """CLI-only fields must not affect the input fingerprint."""
         from ai_pipeline_core.deployment._helpers import _CLI_FIELDS
-        from ai_pipeline_core.deployment.base import _compute_run_scope
+        from ai_pipeline_core.deployment._helpers import _compute_input_fingerprint
 
         class CliOptions(FlowOptions):
             working_directory: str = ""
@@ -360,16 +358,16 @@ class TestComputeRunScope:
         opts1 = CliOptions(working_directory="/path1", start=1, actual_option="same")
         opts2 = CliOptions(working_directory="/path2", start=5, actual_option="same")
 
-        scope1 = _compute_run_scope("project", [], opts1)
-        scope2 = _compute_run_scope("project", [], opts2)
+        fingerprint1 = _compute_input_fingerprint([], opts1)
+        fingerprint2 = _compute_input_fingerprint([], opts2)
 
-        assert scope1 == scope2
+        assert fingerprint1 == fingerprint2
 
         # But different actual_option values should produce different scope
         opts3 = CliOptions(actual_option="different")
-        scope3 = _compute_run_scope("project", [], opts3)
+        fingerprint3 = _compute_input_fingerprint([], opts3)
 
-        assert scope1 != scope3
+        assert fingerprint1 != fingerprint3
 
 
 # --- as_prefect_flow parameter schema tests ---
@@ -533,13 +531,13 @@ class TestRunContextIncludesExecutionId:
 
     @pytest.mark.asyncio
     async def test_run_context_has_execution_id(self):
-        from ai_pipeline_core.documents._context import _get_run_context
+        from ai_pipeline_core.pipeline._execution_context import get_execution_context
 
         captured_ctx: list[Any] = []
 
         class CtxFlow(PipelineFlow):
             async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
-                captured_ctx.append(_get_run_context())
+                captured_ctx.append(get_execution_context())
                 return (OutputDoc.derive(from_documents=(documents[0],), name="out.txt", content="ok"),)
 
         class CtxDeployment(PipelineDeployment[FlowOptions, ValidResult]):
@@ -554,8 +552,8 @@ class TestRunContextIncludesExecutionId:
         assert len(captured_ctx) == 1
         ctx = captured_ctx[0]
         assert ctx is not None
-        # execution_id may be None when no ClickHouse is configured, but run_scope must be set
-        assert ctx.run_scope
+        # execution_id may be None when no ClickHouse is configured, but run_id must be set
+        assert ctx.run_id
 
 
 class TestAsPrefectFlowParentParams:
@@ -579,7 +577,7 @@ class TestAsPrefectFlowParentParams:
         publisher.close = AsyncMock()
 
         with (
-            patch("ai_pipeline_core.deployment._prefect.create_database_from_settings", return_value=database),
+            patch("ai_pipeline_core.deployment._prefect._create_span_database_from_settings", return_value=database),
             patch("ai_pipeline_core.deployment._prefect._create_publisher", return_value=publisher),
             patch("ai_pipeline_core.deployment._prefect.resolve_document_inputs", new=AsyncMock(return_value=[])),
             patch.object(deployment, "run", new=AsyncMock(return_value=ValidResult(success=True))) as mock_run,
@@ -600,7 +598,7 @@ class TestAsPrefectFlowParentParams:
         publisher.close = AsyncMock()
 
         with (
-            patch("ai_pipeline_core.deployment._prefect.create_database_from_settings", return_value=database),
+            patch("ai_pipeline_core.deployment._prefect._create_span_database_from_settings", return_value=database),
             patch("ai_pipeline_core.deployment._prefect._create_publisher", return_value=publisher),
             patch("ai_pipeline_core.deployment._prefect.resolve_document_inputs", new=AsyncMock(return_value=[])) as mock_resolve,
             patch.object(deployment, "run", new=AsyncMock(return_value=ValidResult(success=True))),
@@ -634,7 +632,7 @@ async def test_deployment_run_executes_flow_instances(input_documents):
 
 
 @pytest.mark.asyncio
-async def test_deployment_persists_execution_logs_and_log_summaries(input_documents) -> None:
+async def test_deployment_persists_logs_and_log_summaries(input_documents) -> None:
     deployment = ExampleDeployment()
     database = MemoryDatabase()
 
@@ -642,15 +640,15 @@ async def test_deployment_persists_execution_logs_and_log_summaries(input_docume
 
     assert result.success is True
 
-    deployment_nodes = [node for node in database._nodes.values() if node.node_kind == NodeKind.DEPLOYMENT]
-    flow_nodes = [node for node in database._nodes.values() if node.node_kind == NodeKind.FLOW]
+    deployment_spans = [span for span in database._spans.values() if span.kind == SpanKind.DEPLOYMENT]
+    flow_spans = [span for span in database._spans.values() if span.kind == SpanKind.FLOW]
 
-    assert len(deployment_nodes) == 1
-    assert flow_nodes
-    assert deployment_nodes[0].payload["log_summary"]["total"] >= 2
-    assert flow_nodes[0].payload["log_summary"]["total"] >= 2
+    assert len(deployment_spans) == 1
+    assert flow_spans
+    assert json.loads(deployment_spans[0].metrics_json)["log_summary"]["total"] >= 1
+    assert json.loads(flow_spans[0].metrics_json)["log_summary"]["total"] >= 1
 
-    deployment_logs = await database.get_deployment_logs(deployment_nodes[0].deployment_id, category="lifecycle")
+    deployment_logs = await database.get_deployment_logs(deployment_spans[0].deployment_id, category="lifecycle")
     event_types = {log.event_type for log in deployment_logs}
     assert "deployment.started" in event_types
     assert "deployment.completed" in event_types
@@ -672,16 +670,16 @@ async def test_skipped_flow_persists_lifecycle_log_and_summary(input_documents) 
     database = MemoryDatabase()
     await SkipSecondFlowDeployment().run("run-skip-logs", input_documents, _TestOptions(), database=database)
 
-    deployment_node = max(
-        (node for node in database._nodes.values() if node.node_kind == NodeKind.DEPLOYMENT),
-        key=lambda node: node.started_at,
+    deployment_span = max(
+        (span for span in database._spans.values() if span.kind == SpanKind.DEPLOYMENT),
+        key=lambda span: span.started_at,
     )
-    skipped_nodes = [node for node in database._nodes.values() if node.node_kind == NodeKind.FLOW and node.status.value == "skipped"]
+    skipped_spans = [span for span in database._spans.values() if span.kind == SpanKind.FLOW and span.status == SpanStatus.SKIPPED]
 
-    lifecycle_logs = await database.get_deployment_logs(deployment_node.deployment_id, category="lifecycle")
+    lifecycle_logs = await database.get_deployment_logs(deployment_span.deployment_id, category="lifecycle")
     assert "flow.skipped" in {log.event_type for log in lifecycle_logs}
-    assert skipped_nodes
-    assert skipped_nodes[0].payload["log_summary"]["total"] >= 1
+    assert skipped_spans
+    assert json.loads(skipped_spans[0].metrics_json)["log_summary"]["total"] >= 1
 
 
 @pytest.mark.asyncio
@@ -692,16 +690,16 @@ async def test_cached_flow_persists_lifecycle_log_and_summary(input_documents) -
     await deployment.run("run-cache-logs", input_documents, _TestOptions(), database=database)
     await deployment.run("run-cache-logs", input_documents, _TestOptions(), database=database)
 
-    deployment_node = max(
-        (node for node in database._nodes.values() if node.node_kind == NodeKind.DEPLOYMENT),
-        key=lambda node: node.started_at,
+    deployment_span = max(
+        (span for span in database._spans.values() if span.kind == SpanKind.DEPLOYMENT),
+        key=lambda span: span.started_at,
     )
-    cached_nodes = [node for node in database._nodes.values() if node.node_kind == NodeKind.FLOW and node.status.value == "cached"]
+    cached_spans = [span for span in database._spans.values() if span.kind == SpanKind.FLOW and span.status == SpanStatus.CACHED]
 
-    lifecycle_logs = await database.get_deployment_logs(deployment_node.deployment_id, category="lifecycle")
+    lifecycle_logs = await database.get_deployment_logs(deployment_span.deployment_id, category="lifecycle")
     assert "flow.cached" in {log.event_type for log in lifecycle_logs}
-    assert cached_nodes
-    assert cached_nodes[0].payload["log_summary"]["total"] >= 1
+    assert cached_spans
+    assert json.loads(cached_spans[0].metrics_json)["log_summary"]["total"] >= 1
 
 
 def test_deployment_requires_build_flows_override():
@@ -722,10 +720,23 @@ async def test_deployment_captures_flow_replay_payload(input_documents: list[Doc
 
     await deployment.run("run-replay", input_documents, _TestOptions(), database=database)
 
-    flow_nodes = [node for node in database._nodes.values() if node.node_kind == NodeKind.FLOW]
-    assert flow_nodes, "No flow nodes were persisted"
-    replay_payload = flow_nodes[0].payload["replay_payload"]
-    assert replay_payload["payload_type"] == "pipeline_flow"
+    flow_spans = [span for span in database._spans.values() if span.kind == SpanKind.FLOW]
+    assert flow_spans, "No flow spans were persisted"
+    flow_input = json.loads(flow_spans[0].input_json)
+    assert flow_spans[0].target.endswith(":StageOne.run")
+    assert flow_input["options"]["data"] == {"value": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_flow_detail_includes_default_flow_options(input_documents: list[Document]) -> None:
+    database = MemoryDatabase()
+    await ExampleDeployment().run("run-flow-options", input_documents, _TestOptions(), database=database)
+
+    flow_spans = [span for span in database._spans.values() if span.kind == SpanKind.FLOW]
+    assert flow_spans, "No flow spans were persisted"
+    flow_input = json.loads(flow_spans[0].input_json)
+
+    assert flow_input["options"]["data"]["value"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -743,6 +754,23 @@ async def test_deployment_stores_parent_execution_id_on_deployment_node(input_do
         parent_execution_id=parent_execution_id,
     )
 
-    deployment_nodes = [node for node in database._nodes.values() if node.node_kind == NodeKind.DEPLOYMENT]
-    assert deployment_nodes
-    assert deployment_nodes[0].payload["parent_execution_id"] == str(parent_execution_id)
+    deployment_spans = [span for span in database._spans.values() if span.kind == SpanKind.DEPLOYMENT]
+    assert deployment_spans
+    assert deployment_spans[0].run_id == "run-parent-link"
+
+
+def test_run_local_forces_memory_database(monkeypatch: pytest.MonkeyPatch, input_documents: list[Document]) -> None:
+    deployment = ExampleDeployment()
+    called = False
+
+    def _unexpected_database_creation(*args: object, **kwargs: object) -> object:
+        nonlocal called
+        called = True
+        return MemoryDatabase()
+
+    monkeypatch.setattr("ai_pipeline_core.deployment.base._create_span_database_from_settings", _unexpected_database_creation)
+
+    result = deployment.run_local("run-local-memory", input_documents, _TestOptions())
+
+    assert result.success is True
+    assert called is False

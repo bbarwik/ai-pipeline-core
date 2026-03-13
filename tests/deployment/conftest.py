@@ -338,7 +338,7 @@ def pull_events(
                 max_messages=expected_count - len(events),
                 timeout=min(remaining, 5.0),
             )
-        except (OSError, TimeoutError, ValueError):
+        except OSError, TimeoutError, ValueError:
             continue
 
         ack_ids: list[str] = []
@@ -417,7 +417,7 @@ class PubSubEmulatorContainer(DockerContainer):  # pyright: ignore[reportUntyped
 
 
 @pytest.fixture(scope="session")
-def pubsub_emulator(require_docker) -> Generator[str, None, None]:
+def pubsub_emulator(require_docker) -> Generator[str]:
     """Start Pub/Sub emulator container for the test session."""
     container = PubSubEmulatorContainer().waiting_for(LogMessageWaitStrategy("Server started"))
     container.start()
@@ -437,7 +437,7 @@ def pubsub_emulator(require_docker) -> Generator[str, None, None]:
 
 
 @pytest.fixture
-def pubsub_test_resources(pubsub_emulator: str) -> Generator[PubsubTestResources, None, None]:
+def pubsub_test_resources(pubsub_emulator: str) -> Generator[PubsubTestResources]:
     """Create a unique topic + subscription per test, clean up after."""
     pub_client = PublisherClient()
     sub_client = SubscriberClient()

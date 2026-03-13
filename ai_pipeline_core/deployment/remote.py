@@ -1,12 +1,11 @@
 """Remote deployment utilities for calling PipelineDeployment flows via Prefect."""
 
 import asyncio
-import hashlib
 import importlib
+import time
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
-from uuid import UUID, uuid4
+from uuid import UUID, uuid7
 
 from prefect import get_client
 from prefect.client.orchestration import PrefectClient
@@ -15,17 +14,18 @@ from prefect.context import AsyncClientContext
 from prefect.deployments.flow_runs import run_deployment
 from prefect.exceptions import ObjectNotFound
 
-from ai_pipeline_core.database import Database, ExecutionNode, NodeKind, NodeStatus
+from ai_pipeline_core._lifecycle_events import TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent
+from ai_pipeline_core.database import SpanKind, SpanStatus
 from ai_pipeline_core.deployment._helpers import (
-    _CLI_FIELDS,
+    _compute_input_fingerprint,
     class_name_to_deployment_name,
     extract_generic_params,
     validate_run_id,
 )
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._context import RunScope
-from ai_pipeline_core.logging import get_pipeline_logger
-from ai_pipeline_core.pipeline._execution_context import get_execution_context, get_run_id
+from ai_pipeline_core.logger import get_pipeline_logger
+from ai_pipeline_core.pipeline._execution_context import get_execution_context, get_run_id, get_sinks
+from ai_pipeline_core.pipeline._track_span import track_span
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
@@ -38,11 +38,15 @@ __all__ = [
     "RemoteDeployment",
 ]
 
-TOptions = TypeVar("TOptions", bound=FlowOptions)
-TResult = TypeVar("TResult", bound=DeploymentResult)
+TOptions = TypeVar("TOptions", bound=FlowOptions, default=FlowOptions)
+TResult = TypeVar("TResult", bound=DeploymentResult, default=DeploymentResult)
 
 _POLL_INTERVAL = 5.0
 _REMOTE_RUN_ID_FINGERPRINT_LENGTH = 8
+
+
+def _import_module_by_name(module_path: str) -> Any:
+    return importlib.import_module(module_path)
 
 
 def _derive_remote_run_id(run_id: str, documents: Sequence[Document], options: FlowOptions) -> str:
@@ -51,10 +55,7 @@ def _derive_remote_run_id(run_id: str, documents: Sequence[Document], options: F
     Same documents + options produce the same derived run_id (enables worker resume).
     Different inputs produce different derived run_id (prevents collisions).
     """
-    sha256s = sorted(doc.sha256 for doc in documents)
-    exclude = set(_CLI_FIELDS & set(type(options).model_fields))
-    options_json = options.model_dump_json(exclude=exclude, exclude_none=True)
-    fingerprint = hashlib.sha256(f"{':'.join(sha256s)}|{options_json}".encode()).hexdigest()[:_REMOTE_RUN_ID_FINGERPRINT_LENGTH]
+    fingerprint = _compute_input_fingerprint(documents, options)[:_REMOTE_RUN_ID_FINGERPRINT_LENGTH]
     return f"{run_id}-{fingerprint}"
 
 
@@ -113,7 +114,7 @@ class RemoteDeployment(Generic[TOptions, TResult]):
                 f"{type(self).__name__}.deployment_class is not set. Set deployment_class = 'module.path:ClassName' to enable inline/test execution."
             )
         module_path, class_name = self.deployment_class.rsplit(":", 1)
-        module = importlib.import_module(module_path)
+        module = _import_module_by_name(module_path)
         return getattr(module, class_name)
 
     @final
@@ -138,34 +139,10 @@ class RemoteDeployment(Generic[TOptions, TResult]):
         deployment_id = exec_ctx.deployment_id if exec_ctx else None
         root_deployment_id = exec_ctx.root_deployment_id if exec_ctx else None
 
-        # Pre-allocate child deployment ID
-        child_deployment_id = uuid4()
-        subtask_node_id = uuid4()
-
-        # Create subtask node in caller's DAG
-        if exec_ctx is not None and database is not None and deployment_id is not None and root_deployment_id is not None:
-            current_node_id = exec_ctx.current_node_id
-            sequence_no = exec_ctx.next_child_sequence(current_node_id) if current_node_id else 0
-            subtask_node = ExecutionNode(
-                node_id=subtask_node_id,
-                node_kind=NodeKind.TASK,
-                deployment_id=deployment_id,
-                root_deployment_id=root_deployment_id,
-                parent_node_id=current_node_id or deployment_id,
-                run_id=run_id,
-                run_scope=exec_ctx.run_scope if exec_ctx else RunScope(run_id),
-                deployment_name=exec_ctx.deployment_name if exec_ctx else "",
-                name=f"remote:{self.name}",
-                sequence_no=sequence_no,
-                task_class=type(self).__name__,
-                status=NodeStatus.RUNNING,
-                remote_child_deployment_id=child_deployment_id,
-                input_document_shas=tuple(d.sha256 for d in documents),
-            )
-            try:
-                await database.insert_node(subtask_node)
-            except Exception as exc:
-                logger.warning("Failed to insert remote subtask node: %s", exc)
+        subtask_span_id = uuid7()
+        parent_span_id = (exec_ctx.current_span_id or deployment_id) if exec_ctx is not None else deployment_id
+        sequence_no = exec_ctx.next_child_sequence(parent_span_id) if exec_ctx is not None and parent_span_id is not None else 0
+        deployment_name = exec_ctx.deployment_name if exec_ctx is not None else ""
 
         # Determine backend mode
         use_inline = database is None
@@ -174,63 +151,126 @@ class RemoteDeployment(Generic[TOptions, TResult]):
             use_inline = True
             inline_reason = "the active database backend does not support remote execution"
 
-        try:
-            if use_inline:
-                logger.warning(
-                    "RemoteDeployment '%s' is falling back to inline execution because %s. "
-                    "Configure a non-local deployment database to force Prefect remote execution.",
-                    self.name,
-                    inline_reason,
-                )
-                result = await self._run_inline(
-                    derived_run_id,
-                    documents,
-                    options,
-                    child_deployment_id=child_deployment_id,
-                    root_deployment_id=root_deployment_id or child_deployment_id,
-                    parent_deployment_task_id=subtask_node_id,
-                    database=cast(Database, database) if database is not None else None,
-                    publisher=exec_ctx.publisher if exec_ctx else None,
-                    parent_execution_id=exec_ctx.execution_id if exec_ctx else None,
-                )
-            else:
-                result = await self._run_remote(
-                    derived_run_id,
-                    documents,
-                    options,
-                    child_deployment_id=child_deployment_id,
-                    root_deployment_id=root_deployment_id or child_deployment_id,
-                    parent_deployment_task_id=subtask_node_id,
-                    parent_execution_id=exec_ctx.execution_id if exec_ctx else None,
-                )
+        publisher = exec_ctx.publisher if exec_ctx else None
+        flow_frame = exec_ctx.flow_frame if exec_ctx else None
+        flow_step = flow_frame.step if flow_frame is not None else 0
+        total_steps = flow_frame.total_steps if flow_frame is not None else 0
+        flow_name = flow_frame.name if flow_frame is not None else ""
+        parent_deployment_task_id = exec_ctx.parent_deployment_task_id if exec_ctx else None
+        input_sha256s = tuple(doc.sha256 for doc in documents)
+        task_name = f"remote:{self.name}"
+        task_start = time.monotonic()
 
-            # Update subtask to COMPLETED
-            if database is not None:
+        async with track_span(
+            SpanKind.TASK,
+            task_name,
+            "",
+            sinks=get_sinks(),
+            span_id=subtask_span_id,
+            parent_span_id=parent_span_id,
+            encode_input={"documents": tuple(documents), "options": options},
+            db=database,
+            input_preview={"deployment": self.name, "document_count": len(documents)},
+        ) as span_ctx:
+            span_ctx.set_meta(
+                deployment_name=deployment_name,
+                remote_mode="inline" if use_inline else "prefect",
+                sequence_no=sequence_no,
+            )
+            if publisher is not None and flow_frame is not None:
                 try:
-                    await database.update_node(
-                        subtask_node_id,
-                        status=NodeStatus.COMPLETED,
-                        ended_at=datetime.now(UTC),
+                    await publisher.publish_task_started(
+                        TaskStartedEvent(
+                            run_id=run_id,
+                            span_id=str(subtask_span_id),
+                            root_deployment_id=str(root_deployment_id or ""),
+                            parent_deployment_task_id=str(parent_deployment_task_id) if parent_deployment_task_id else None,
+                            flow_name=flow_name,
+                            step=flow_step,
+                            total_steps=total_steps,
+                            status=str(SpanStatus.RUNNING),
+                            task_name=task_name,
+                            task_class=type(self).__name__,
+                            parent_span_id=str(exec_ctx.flow_span_id) if exec_ctx is not None and exec_ctx.flow_span_id else "",
+                            input_document_sha256s=input_sha256s,
+                        )
                     )
-                except Exception as exc:
-                    logger.warning("Failed to update remote subtask node: %s", exc)
-
+                except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                    logger.warning("Remote task started event publish failed for '%s': %s", task_name, exc)
+            try:
+                if use_inline:
+                    logger.warning(
+                        "RemoteDeployment '%s' is falling back to inline execution because %s. "
+                        "Configure a non-local deployment database to force Prefect remote execution.",
+                        self.name,
+                        inline_reason,
+                    )
+                    result = await self._run_inline(
+                        derived_run_id,
+                        documents,
+                        options,
+                        root_deployment_id=root_deployment_id or deployment_id or subtask_span_id,
+                        parent_deployment_task_id=subtask_span_id,
+                        database=database,
+                        publisher=publisher,
+                        parent_execution_id=exec_ctx.execution_id if exec_ctx else None,
+                    )
+                else:
+                    result = await self._run_remote(
+                        derived_run_id,
+                        documents,
+                        options,
+                        root_deployment_id=root_deployment_id or deployment_id or subtask_span_id,
+                        parent_deployment_task_id=subtask_span_id,
+                        parent_execution_id=exec_ctx.execution_id if exec_ctx else None,
+                    )
+            except (Exception, asyncio.CancelledError) as exc:
+                if publisher is not None and flow_frame is not None:
+                    try:
+                        await publisher.publish_task_failed(
+                            TaskFailedEvent(
+                                run_id=run_id,
+                                span_id=str(subtask_span_id),
+                                root_deployment_id=str(root_deployment_id or ""),
+                                parent_deployment_task_id=str(parent_deployment_task_id) if parent_deployment_task_id else None,
+                                flow_name=flow_name,
+                                step=flow_step,
+                                total_steps=total_steps,
+                                status=str(SpanStatus.FAILED),
+                                task_name=task_name,
+                                task_class=type(self).__name__,
+                                error_message=str(exc),
+                                parent_span_id=str(exec_ctx.flow_span_id) if exec_ctx is not None and exec_ctx.flow_span_id else "",
+                                input_document_sha256s=input_sha256s,
+                            )
+                        )
+                    except (OSError, RuntimeError, ValueError, TypeError) as pub_exc:
+                        logger.warning("Remote task failed event publish failed for '%s': %s", task_name, pub_exc)
+                raise
+            if publisher is not None and flow_frame is not None:
+                try:
+                    await publisher.publish_task_completed(
+                        TaskCompletedEvent(
+                            run_id=run_id,
+                            span_id=str(subtask_span_id),
+                            root_deployment_id=str(root_deployment_id or ""),
+                            parent_deployment_task_id=str(parent_deployment_task_id) if parent_deployment_task_id else None,
+                            flow_name=flow_name,
+                            step=flow_step,
+                            total_steps=total_steps,
+                            status=str(SpanStatus.COMPLETED),
+                            task_name=task_name,
+                            task_class=type(self).__name__,
+                            duration_ms=int((time.monotonic() - task_start) * 1000),
+                            parent_span_id=str(exec_ctx.flow_span_id) if exec_ctx is not None and exec_ctx.flow_span_id else "",
+                            input_document_sha256s=input_sha256s,
+                        )
+                    )
+                except (OSError, RuntimeError, ValueError, TypeError) as pub_exc:
+                    logger.warning("Remote task completed event publish failed for '%s': %s", task_name, pub_exc)
+            span_ctx.set_output_preview(result.model_dump(mode="json"))
+            span_ctx._set_output_value(result)
             return result
-
-        except (Exception, asyncio.CancelledError) as exc:
-            # Update subtask to FAILED
-            if database is not None:
-                try:
-                    await database.update_node(
-                        subtask_node_id,
-                        status=NodeStatus.FAILED,
-                        ended_at=datetime.now(UTC),
-                        error_type=type(exc).__name__,
-                        error_message=str(exc),
-                    )
-                except Exception as update_exc:
-                    logger.warning("Failed to update remote subtask node on failure: %s", update_exc)
-            raise
 
     async def _run_inline(
         self,
@@ -238,10 +278,9 @@ class RemoteDeployment(Generic[TOptions, TResult]):
         documents: Sequence[Document],
         options: TOptions,
         *,
-        child_deployment_id: UUID,
         root_deployment_id: UUID,
         parent_deployment_task_id: UUID,
-        database: Database | None,
+        database: Any,
         publisher: Any = None,
         parent_execution_id: UUID | None = None,
     ) -> TResult:
@@ -253,7 +292,6 @@ class RemoteDeployment(Generic[TOptions, TResult]):
             run_id,
             documents,
             options,
-            deployment_node_id=child_deployment_id,
             root_deployment_id=root_deployment_id,
             parent_deployment_task_id=parent_deployment_task_id,
             publisher=publisher,
@@ -273,7 +311,6 @@ class RemoteDeployment(Generic[TOptions, TResult]):
         documents: Sequence[Document],
         options: TOptions,
         *,
-        child_deployment_id: UUID,
         root_deployment_id: UUID,
         parent_deployment_task_id: UUID,
         parent_execution_id: UUID | None = None,
@@ -284,10 +321,8 @@ class RemoteDeployment(Generic[TOptions, TResult]):
             "document_inputs": _serialize_document_inputs(documents),
             "options": options,
             "parent_execution_id": str(parent_execution_id) if parent_execution_id is not None else None,
-            "deployment_node_id": str(child_deployment_id),
             "parent_deployment_task_id": str(parent_deployment_task_id),
             "root_deployment_id": str(root_deployment_id),
-            "input_document_sha256s": [doc.sha256 for doc in documents],
         }
 
         result = await _run_remote_deployment(

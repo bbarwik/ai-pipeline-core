@@ -1,28 +1,59 @@
-"""Document reconstruction from database records.
+"""Document reconstruction and serialization for span-era database records."""
 
-Converts DocumentRecord + BlobRecord pairs back into typed Document instances.
-Used for flow resume (loading cached flow outputs) and build_result().
-"""
-
+from ai_pipeline_core.database._hydrate import hydrate_document
 from ai_pipeline_core.database._protocol import DatabaseReader
-from ai_pipeline_core.database._types import DocumentRecord
-from ai_pipeline_core.documents._context import DocumentSha256, _suppress_document_registration
+from ai_pipeline_core.database._types import BlobRecord, DocumentRecord, HydratedDocument
+from ai_pipeline_core.documents._context import DocumentSha256
+from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.documents.document import Document, _class_name_registry
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 __all__ = [
+    "document_to_blobs",
+    "document_to_record",
     "load_documents_from_database",
 ]
 
 logger = get_pipeline_logger(__name__)
 
 
-def _find_document_class(class_name: str) -> type[Document] | None:
-    """Find a Document subclass by name from the registry."""
-    if class_name in _class_name_registry:
-        return _class_name_registry[class_name]
+def document_to_record(document: Document) -> DocumentRecord:
+    """Convert a Document instance to a DocumentRecord for database storage."""
+    return DocumentRecord(
+        document_sha256=document.sha256,
+        content_sha256=compute_content_sha256(document.content),
+        document_type=type(document).__name__,
+        name=document.name,
+        description=document.description or "",
+        mime_type=document.mime_type,
+        size_bytes=document.size,
+        summary=document.summary,
+        derived_from=document.derived_from,
+        triggered_by=document.triggered_by,
+        attachment_names=tuple(att.name for att in document.attachments),
+        attachment_descriptions=tuple((att.description or "") for att in document.attachments),
+        attachment_content_sha256s=tuple(compute_content_sha256(att.content) for att in document.attachments),
+        attachment_mime_types=tuple(att.mime_type for att in document.attachments),
+        attachment_size_bytes=tuple(att.size for att in document.attachments),
+    )
 
-    # Search all loaded Document subclasses (covers test-defined classes not in registry)
+
+def document_to_blobs(document: Document) -> list[BlobRecord]:
+    """Extract all BlobRecords (primary content + attachments) from a Document."""
+    blobs = [BlobRecord(content_sha256=compute_content_sha256(document.content), content=document.content)]
+    for att in document.attachments:
+        blobs.append(BlobRecord(content_sha256=compute_content_sha256(att.content), content=att.content))
+    return blobs
+
+
+def _find_document_class(class_name: str) -> type[Document] | None:
+    """Find a Document subclass by name from the registry, falling back to subclass search for test classes."""
+    registered = _class_name_registry.get(class_name)
+    if registered is not None:
+        return registered
+
+    # Test-defined Document subclasses are excluded from the registry by __init_subclass__.
+    # Walk the subclass tree to find them.
     queue: list[type[Document]] = list(Document.__subclasses__())
     while queue:
         cls = queue.pop()
@@ -38,7 +69,6 @@ def _reconstruct_document(
     content: bytes,
     attachment_contents: dict[str, bytes],
 ) -> Document | None:
-    """Reconstruct a typed Document from a DocumentRecord + content bytes."""
     doc_cls = _find_document_class(record.document_type)
     if doc_cls is None:
         logger.warning(
@@ -48,86 +78,47 @@ def _reconstruct_document(
         )
         return None
 
-    # Build attachments
-    from ai_pipeline_core.documents.attachment import Attachment
-
-    attachments: list[Attachment] = []
-    for i, att_name in enumerate(record.attachment_names):
-        att_sha = record.attachment_sha256s[i] if i < len(record.attachment_sha256s) else ""
-        att_content = attachment_contents.get(att_sha)
-        if att_content is None:
-            logger.warning("Attachment '%s' content not found (sha256=%s...)", att_name, att_sha[:12])
-            continue
-        att_desc = record.attachment_descriptions[i] if i < len(record.attachment_descriptions) else ""
-        attachments.append(
-            Attachment(
-                name=att_name,
-                content=att_content,
-                description=att_desc or None,
-            )
+    try:
+        return hydrate_document(
+            doc_cls,
+            HydratedDocument(
+                record=record,
+                content=content,
+                attachment_contents=attachment_contents,
+            ),
         )
-
-    with _suppress_document_registration():
-        return doc_cls(
-            name=record.name,
-            content=content,
-            description=record.description or None,
-            derived_from=record.derived_from,
-            triggered_by=tuple(DocumentSha256(t) for t in record.triggered_by),
-            attachments=tuple(attachments) if attachments else None,
-        )
+    except (TypeError, ValueError) as exc:
+        logger.warning("Cannot reconstruct document '%s': %s", record.name, exc)
+        return None
 
 
-async def load_documents_from_database(
-    reader: DatabaseReader,
-    sha256s: set[str],
-    *,
-    filter_types: list[type[Document]] | None = None,
+def _filtered_records(
+    records: dict[str, DocumentRecord],
+    filter_types: list[type[Document]] | None,
+) -> list[DocumentRecord]:
+    if filter_types is None:
+        return list(records.values())
+    filter_type_names = {document_type.__name__ for document_type in filter_types}
+    return [record for record in records.values() if record.document_type in filter_type_names]
+
+
+def _attachment_contents_for_record(
+    record: DocumentRecord,
+    blobs: dict[str, BlobRecord],
+) -> dict[str, bytes]:
+    return {
+        attachment_sha: attachment_blob.content
+        for attachment_sha in record.attachment_content_sha256s
+        if (attachment_blob := blobs.get(attachment_sha)) is not None
+    }
+
+
+def _reconstruct_documents(
+    records: list[DocumentRecord],
+    blobs: dict[str, BlobRecord],
 ) -> list[Document]:
-    """Load and reconstruct typed Document instances from the database.
-
-    Args:
-        reader: Database reader for fetching records and blobs.
-        sha256s: Set of document SHA256 hashes to load.
-        filter_types: If provided, only return documents matching these types.
-
-    Returns:
-        List of reconstructed Document instances.
-    """
-    if not sha256s:
-        return []
-
-    sha256_list = [DocumentSha256(s) for s in sha256s]
-    records = await reader.get_documents_batch(sha256_list)
-    if not records:
-        return []
-
-    filter_type_names: set[str] | None = None
-    if filter_types is not None:
-        filter_type_names = {t.__name__ for t in filter_types}
-
-    # Collect content SHA256s we need
-    content_sha256s: set[str] = set()
-    att_sha256s: set[str] = set()
-    filtered_records: list[DocumentRecord] = []
-
-    for record in records.values():
-        if filter_type_names is not None and record.document_type not in filter_type_names:
-            continue
-        filtered_records.append(record)
-        content_sha256s.add(record.content_sha256)
-        att_sha256s.update(record.attachment_sha256s)
-
-    if not filtered_records:
-        return []
-
-    # Batch-fetch content blobs
-    all_blob_sha256s = sorted(content_sha256s | att_sha256s)
-    blobs = await reader.get_blobs_batch(all_blob_sha256s)
-
-    # Reconstruct documents
     result: list[Document] = []
-    for record in filtered_records:
+    for record in records:
         blob = blobs.get(record.content_sha256)
         if blob is None:
             logger.warning(
@@ -136,15 +127,38 @@ async def load_documents_from_database(
                 record.content_sha256[:12],
             )
             continue
-
-        att_contents: dict[str, bytes] = {}
-        for att_sha in record.attachment_sha256s:
-            att_blob = blobs.get(att_sha)
-            if att_blob is not None:
-                att_contents[att_sha] = att_blob.content
-
-        doc = _reconstruct_document(record, blob.content, att_contents)
-        if doc is not None:
-            result.append(doc)
-
+        document = _reconstruct_document(
+            record,
+            blob.content,
+            _attachment_contents_for_record(record, blobs),
+        )
+        if document is not None:
+            result.append(document)
     return result
+
+
+async def load_documents_from_database(
+    reader: DatabaseReader,
+    sha256s: set[str],
+    *,
+    filter_types: list[type[Document]] | None = None,
+) -> list[Document]:
+    """Load and reconstruct typed Document instances from the database."""
+    if not sha256s:
+        return []
+
+    sha256_list = [str(DocumentSha256(sha256)) for sha256 in sha256s]
+    records = await reader.get_documents_batch(sha256_list)
+    if not records:
+        return []
+
+    filtered_records = _filtered_records(records, filter_types)
+    if not filtered_records:
+        return []
+
+    required_blob_shas = {record.content_sha256 for record in filtered_records}
+    for record in filtered_records:
+        required_blob_shas.update(record.attachment_content_sha256s)
+
+    blobs = await reader.get_blobs_batch(sorted(required_blob_shas))
+    return _reconstruct_documents(filtered_records, blobs)

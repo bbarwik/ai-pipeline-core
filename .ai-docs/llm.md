@@ -1,14 +1,14 @@
 # MODULE: llm
-# CLASSES: Citation, TokenUsage, ModelOptions, UserMessage, AssistantMessage, ToolResultMessage, Conversation, ToolOutput, Tool, ToolCallRecord
+# CLASSES: Citation, TokenUsage, ModelOptions, Conversation, ToolOutput, Tool, ToolCallRecord
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.14.0
+# VERSION: 0.15.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import Citation, Conversation, ConversationContent, ModelName, ModelOptions, TokenUsage, Tool, ToolCallRecord, ToolOutput
+from ai_pipeline_core import Citation, Conversation, ModelName, ModelOptions, TokenUsage, Tool, ToolOutput
 ```
 
 ## Types & Constants
@@ -34,10 +34,6 @@ type ModelName = (
 )
 
 MAX_TOOL_ROUNDS_DEFAULT = 10
-
-ConversationContent = str | Document | list[Document]
-
-AnyMessage = Document | ModelResponse[Any] | UserMessage | AssistantMessage | ToolResultMessage
 
 ```
 
@@ -126,26 +122,6 @@ Non-obvious behaviors:
         return kwargs
 
 
-@dataclass(frozen=True, slots=True)
-class UserMessage:
-    """Internal wrapper for user string messages (not a Document)."""
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class AssistantMessage:
-    """Internal wrapper for injected assistant messages (not from an LLM call)."""
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class ToolResultMessage:
-    """Internal wrapper for tool execution results in conversation history."""
-    tool_call_id: str
-    function_name: str
-    content: str
-
-
 class Conversation(BaseModel, Generic[T]):
     """Immutable conversation state for LLM interactions.
 
@@ -182,23 +158,31 @@ Attachment rendering in LLM context:
         total = 0
         for item in chain(self.context, self.messages):
             if isinstance(item, ModelResponse):
-                total += len(item.content) // _CHARS_PER_TOKEN
+                total += estimate_message_text_tokens(item.content)
                 if reasoning := item.reasoning_content:
-                    total += len(reasoning) // _CHARS_PER_TOKEN
+                    total += estimate_message_text_tokens(reasoning)
             elif isinstance(item, ToolResultMessage):
-                total += len(item.content) // _CHARS_PER_TOKEN
+                total += estimate_message_text_tokens(item.content)
             elif isinstance(item, (UserMessage, AssistantMessage)):
-                total += len(item.text) // _CHARS_PER_TOKEN
+                total += estimate_message_text_tokens(item.text)
             elif isinstance(item, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
                 if item.is_text:
-                    total += len(item.content) // _CHARS_PER_TOKEN
-                elif item.is_image or item.is_pdf:
-                    total += TOKENS_PER_IMAGE
+                    total += estimate_text_tokens(item.text)
+                elif item.is_image:
+                    total += estimate_image_tokens()
+                elif item.is_pdf:
+                    total += estimate_pdf_tokens()
+                else:
+                    total += estimate_binary_tokens()
                 for att in item.attachments:
                     if att.is_text:
-                        total += len(att.content) // _CHARS_PER_TOKEN
-                    elif att.is_image or att.is_pdf:
-                        total += TOKENS_PER_IMAGE
+                        total += estimate_text_tokens(att.text)
+                    elif att.is_image:
+                        total += estimate_image_tokens()
+                    elif att.is_pdf:
+                        total += estimate_pdf_tokens()
+                    else:
+                        total += estimate_binary_tokens()
         return total
 
     @property
@@ -248,6 +232,25 @@ Attachment rendering in LLM context:
         """Token usage from last send() call."""
         return r.usage if (r := self._last_response) else TokenUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
 
+    @classmethod
+    def __codec_load__(cls, state: dict[str, Any]) -> Self:  # noqa: PLW3201 - Required codec hook name from the replay protocol.
+        """Reconstruct a Conversation from codec state."""
+        public_state = {field_name: state[field_name] for field_name in cls.model_fields if field_name in state}
+        public_state["messages"] = tuple(_deserialize_message_from_codec(message) for message in public_state.get("messages", ()))
+        conversation = cls(**public_state)
+        tool_call_records = tuple(
+            ToolCallRecord(
+                tool=cast(type[Tool], record["tool"]),
+                input=cast(BaseModel, record["input"]),
+                output=cast(ToolOutput, record["output"]),
+                round=cast(int, record["round"]),
+            )
+            for record in cast(tuple[dict[str, Any], ...], state.get("_tool_call_records", ()))
+        )
+        object.__setattr__(conversation, "_conversation_id", cast(str, state.get("_conversation_id", "")))
+        object.__setattr__(conversation, "_tool_call_records", tool_call_records)
+        return conversation
+
     @field_validator("model")
     @classmethod
     def validate_model_not_empty(cls, v: str) -> str:
@@ -255,6 +258,24 @@ Attachment rendering in LLM context:
         if not v:
             raise ValueError("model must be non-empty")
         return v
+
+    def __codec_state__(self) -> dict[str, Any]:  # noqa: PLW3201 - Required codec hook name from the replay protocol.
+        """Return codec state including Pydantic private fields."""
+        conversation_id = cast(str, getattr(self, "_conversation_id", ""))
+        tool_call_records = cast(tuple[ToolCallRecord, ...], getattr(self, "_tool_call_records", ()))
+        state = {field_name: getattr(self, field_name) for field_name in type(self).model_fields}
+        state["messages"] = tuple(_serialize_message_for_codec(message) for message in self.messages)
+        state["_conversation_id"] = conversation_id
+        state["_tool_call_records"] = tuple(
+            {
+                "tool": record.tool,
+                "input": record.input,
+                "output": record.output,
+                "round": record.round,
+            }
+            for record in tool_call_records
+        )
+        return state
 
     async def send(
         self,
@@ -265,13 +286,13 @@ Attachment rendering in LLM context:
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[None]":
+    ) -> Conversation[None]:
         """Send message, returns NEW Conversation with response.
 
         Document content is wrapped in <document> XML tags with id, name, description.
         When tools are provided, runs an auto-loop: LLM → tool calls → execute → re-send.
         """
-        new_messages, _response, records = await self._execute_send(
+        new_messages, _response, records, new_conversation_id = await self._execute_send(
             content,
             None,
             purpose,
@@ -280,7 +301,7 @@ Attachment rendering in LLM context:
             tool_choice=tool_choice,
             max_tool_rounds=max_tool_rounds,
         )
-        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records})  # type: ignore[return-value]
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records, "_conversation_id": new_conversation_id})  # type: ignore[return-value]
 
     @overload
     async def send_spec(
@@ -294,7 +315,7 @@ Attachment rendering in LLM context:
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[None]": ...
+    ) -> Conversation[None]: ...
 
     @overload
     async def send_spec(
@@ -308,7 +329,7 @@ Attachment rendering in LLM context:
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[U]": ...
+    ) -> Conversation[U]: ...
 
     async def send_spec(
         self,
@@ -321,7 +342,7 @@ Attachment rendering in LLM context:
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[Any]":
+    ) -> Conversation[Any]:
         """Send a PromptSpec to the LLM.
 
         Adds documents to context (or messages for follow-up specs), renders the
@@ -412,7 +433,7 @@ Attachment rendering in LLM context:
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> "Conversation[U]":
+    ) -> Conversation[U]:
         """Send message expecting structured response, returns NEW Conversation[U] with .parsed.
 
         Quality degrades beyond ~2-3K output tokens or nesting >2 levels.
@@ -422,7 +443,7 @@ Attachment rendering in LLM context:
         When tools are provided, response_format is passed on every tool-loop round.
         Structured parsing occurs on the final response (when the LLM stops calling tools).
         """
-        new_messages, _response, records = await self._execute_send(
+        new_messages, _response, records, new_conversation_id = await self._execute_send(
             content,
             response_format,
             purpose,
@@ -431,7 +452,7 @@ Attachment rendering in LLM context:
             tool_choice=tool_choice,
             max_tool_rounds=max_tool_rounds,
         )
-        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records})  # type: ignore[return-value]
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records, "_conversation_id": new_conversation_id})  # type: ignore[return-value]
 
     def tool_calls_for(self, tool_cls: type[Tool]) -> tuple[ToolCallRecord, ...]:
         """Filter tool call records by tool class.
@@ -443,11 +464,11 @@ Attachment rendering in LLM context:
         """
         return tuple(r for r in self._tool_call_records if r.tool is tool_cls)
 
-    def with_assistant_message(self, content: str) -> "Conversation[T]":
+    def with_assistant_message(self, content: str) -> Conversation[T]:
         """Return NEW Conversation with an injected assistant turn in messages."""
         return self.model_copy(update={"messages": self.messages + (AssistantMessage(content),)})
 
-    def with_context(self, *docs: Document) -> "Conversation[T]":
+    def with_context(self, *docs: Document) -> Conversation[T]:
         """Return NEW Conversation with documents added to the cacheable context prefix.
 
         Always set context before the first send() — adding context mid-conversation
@@ -455,25 +476,25 @@ Attachment rendering in LLM context:
         """
         return self.model_copy(update={"context": self.context + docs})
 
-    def with_document(self, doc: Document) -> "Conversation[T]":
+    def with_document(self, doc: Document) -> Conversation[T]:
         """Return NEW Conversation with document appended to messages (dynamic suffix, not cached)."""
         return self.model_copy(update={"messages": self.messages + (doc,)})
 
-    def with_documents(self, docs: Sequence[Document]) -> "Conversation[T]":
+    def with_documents(self, docs: Sequence[Document]) -> Conversation[T]:
         """Return NEW Conversation with multiple documents appended to messages (not cached)."""
         return self.model_copy(update={"messages": self.messages + tuple(docs)})
 
-    def with_model(self, model: str) -> "Conversation[T]":
+    def with_model(self, model: str) -> Conversation[T]:
         """Return NEW Conversation with a different model, preserving all state."""
         if not model:
             raise ValueError("model must be non-empty")
         return self.model_copy(update={"model": model})
 
-    def with_model_options(self, options: ModelOptions) -> "Conversation[T]":
+    def with_model_options(self, options: ModelOptions) -> Conversation[T]:
         """Return NEW Conversation with updated model options."""
         return self.model_copy(update={"model_options": options})
 
-    def with_substitutor(self, enabled: bool = True) -> "Conversation[T]":
+    def with_substitutor(self, enabled: bool = True) -> Conversation[T]:
         """Return NEW Conversation with content protection enabled/disabled.
 
         Shortens URLs, blockchain addresses, and high-entropy strings before sending.
@@ -787,7 +808,7 @@ def test_tool_call_record_frozen() -> None:
     assert record.round == 1
 ```
 
-**Tool calls for empty when no match** (`tests/llm/test_conversation_tools.py:318`)
+**Tool calls for empty when no match** (`tests/llm/test_conversation_tools.py:200`)
 
 ```python
 def test_tool_calls_for_empty_when_no_match() -> None:
@@ -798,7 +819,7 @@ def test_tool_calls_for_empty_when_no_match() -> None:
     assert conv.tool_calls_for(ToolB) == ()
 ```
 
-**Tool calls for returns tuple** (`tests/llm/test_conversation_tools.py:326`)
+**Tool calls for returns tuple** (`tests/llm/test_conversation_tools.py:208`)
 
 ```python
 def test_tool_calls_for_returns_tuple() -> None:

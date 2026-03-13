@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import CoreMessage, Role
-from ai_pipeline_core.database import MemoryDatabase
 from ai_pipeline_core.llm.conversation import Conversation, ToolResultMessage
 from ai_pipeline_core.llm.tools import Tool, ToolCallRecord, ToolOutput
 
@@ -171,123 +170,6 @@ async def test_tool_choice_without_tools_raises() -> None:
     conv = Conversation(model="test")
     with pytest.raises(ValueError, match="tool_choice"):
         await conv.send("test", tool_choice="required")
-
-
-# ── Replay serialization round-trip ──────────────────────────────────────────
-
-
-def test_replay_serialize_tool_result_message() -> None:
-    """ToolResultMessage serializes to tool_result history entry."""
-    from ai_pipeline_core.replay._capture import serialize_prior_messages
-
-    msg = ToolResultMessage(tool_call_id="c42", function_name="search", content="found it")
-    entries = serialize_prior_messages((msg,))
-    assert len(entries) == 1
-    assert entries[0]["type"] == "tool_result"
-    assert entries[0]["tool_call_id"] == "c42"
-    assert entries[0]["function_name"] == "search"
-    assert entries[0]["content"] == "found it"
-
-
-def test_replay_serialize_model_response_with_tool_calls() -> None:
-    """ModelResponse with tool_calls serializes with tool_calls list."""
-    from ai_pipeline_core.replay._capture import serialize_prior_messages
-
-    tc = make_tool_call("c1", "get_weather", '{"city": "Paris"}')
-    resp = make_response(content="Let me check", tool_calls=(tc,))
-    entries = serialize_prior_messages((resp,))
-    assert len(entries) == 1
-    assert entries[0]["type"] == "response"
-    assert entries[0]["content"] == "Let me check"
-    assert "tool_calls" in entries[0]
-    assert entries[0]["tool_calls"][0]["id"] == "c1"
-    assert entries[0]["tool_calls"][0]["function_name"] == "get_weather"
-
-
-@pytest.mark.asyncio
-async def test_replay_deserialize_tool_result() -> None:
-    """tool_result history entry reconstructs ToolResultMessage."""
-    from ai_pipeline_core.replay._execute import _replay_history
-    from ai_pipeline_core.replay.types import ConversationReplay, HistoryEntry
-
-    payload = ConversationReplay(
-        model="test",
-        prompt="test",
-        history=(HistoryEntry(type="tool_result", tool_call_id="c1", function_name="search", content="result"),),
-    )
-    conv = Conversation(model="test")
-    conv = await _replay_history(conv, payload, MemoryDatabase())
-    assert len(conv.messages) == 1
-    msg = conv.messages[0]
-    assert isinstance(msg, ToolResultMessage)
-    assert msg.tool_call_id == "c1"
-    assert msg.function_name == "search"
-
-
-@pytest.mark.asyncio
-async def test_replay_deserialize_response_with_tool_calls() -> None:
-    """Response entry with tool_calls reconstructs ModelResponse, not AssistantMessage."""
-    from ai_pipeline_core.replay._execute import _replay_history
-    from ai_pipeline_core.replay.types import ConversationReplay, HistoryEntry
-
-    payload = ConversationReplay(
-        model="test",
-        prompt="test",
-        history=(
-            HistoryEntry(
-                type="response",
-                content="Let me search",
-                tool_calls=[{"id": "c1", "function_name": "search", "arguments": '{"q": "test"}'}],
-            ),
-        ),
-    )
-    conv = Conversation(model="test")
-    conv = await _replay_history(conv, payload, MemoryDatabase())
-    assert len(conv.messages) == 1
-    msg = conv.messages[0]
-    assert isinstance(msg, ModelResponse)
-    assert msg.has_tool_calls
-    assert msg.tool_calls[0].id == "c1"
-    assert msg.tool_calls[0].function_name == "search"
-
-
-@pytest.mark.asyncio
-async def test_replay_full_round_trip() -> None:
-    """Serialize then deserialize a complete tool round — data preserved."""
-    from ai_pipeline_core.replay._capture import serialize_prior_messages
-    from ai_pipeline_core.replay._execute import _replay_history
-    from ai_pipeline_core.replay.types import ConversationReplay, HistoryEntry
-
-    # Build original history
-    tc = make_tool_call("c1", "search", '{"q": "weather"}')
-    messages: tuple[Any, ...] = (
-        make_response(content="", tool_calls=(tc,)),
-        ToolResultMessage(tool_call_id="c1", function_name="search", content="Sunny 20°C"),
-        make_response(content="It's sunny and 20°C."),
-    )
-
-    # Serialize
-    entries = serialize_prior_messages(messages)
-    assert len(entries) == 3
-
-    # Deserialize
-    history_entries = tuple(HistoryEntry.model_validate(e) for e in entries)
-    payload = ConversationReplay(model="test", prompt="test", history=history_entries)
-    conv = Conversation(model="test")
-    conv = await _replay_history(conv, payload, MemoryDatabase())
-
-    assert len(conv.messages) == 3
-    # First: ModelResponse with tool_calls
-    assert isinstance(conv.messages[0], ModelResponse)
-    assert conv.messages[0].has_tool_calls
-    # Second: ToolResultMessage
-    assert isinstance(conv.messages[1], ToolResultMessage)
-    assert conv.messages[1].content == "Sunny 20°C"
-    # Third: response without tool_calls is reconstructed as AssistantMessage (via with_assistant_message)
-    from ai_pipeline_core.llm.conversation import AssistantMessage
-
-    assert isinstance(conv.messages[2], AssistantMessage)
-    assert conv.messages[2].text == "It's sunny and 20°C."
 
 
 # ── tool_calls_for ──────────────────────────────────────────────────────────

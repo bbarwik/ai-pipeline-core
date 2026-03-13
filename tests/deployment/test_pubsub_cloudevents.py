@@ -89,6 +89,7 @@ class TestCloudEventsFormat:
             # Verify it parses as a valid UUID
             parsed = UUID(event_id)
             assert str(parsed) == event_id
+            assert parsed.version == 7
             ids.add(event_id)
 
         assert len(ids) == TWO_FLOW_SUCCESS_EVENT_COUNT, f"Expected {TWO_FLOW_SUCCESS_EVENT_COUNT} unique event IDs, got {len(ids)}"

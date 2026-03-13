@@ -22,7 +22,7 @@ from ai_pipeline_core.docs_generator.extractor import (
     resolve_dependencies,
     unpack_class_field,
 )
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 
 logger = get_pipeline_logger(__name__)
 
@@ -49,7 +49,7 @@ README_ERROR_SIZE = 46_080  # 45KB — error threshold for README.md
 
 
 def manage_guide_size(
-    data: "GuideData",
+    data: GuideData,
     rendered_content: str,
     max_size: int = MAX_GUIDE_SIZE,
 ) -> str:

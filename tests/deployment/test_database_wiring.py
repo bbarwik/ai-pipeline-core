@@ -1,29 +1,22 @@
-"""Tests for database execution DAG wiring in PipelineDeployment.
-
-Verifies that deployment.run() creates execution nodes in the database:
-- Deployment node on start
-- Flow nodes for each flow (started, completed, failed, skipped, cached)
-- Deployment node updated on completion/failure
-- _run_with_context() accepts pre-allocated IDs
-"""
+"""Tests for span-based deployment database wiring."""
 
 # pyright: reportPrivateUsage=false
 
 import asyncio
+import json
 from collections.abc import Sequence
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID, uuid7
 
 import pytest
-from prefect.logging import disable_run_logger
-from prefect.testing.utilities import prefect_test_harness
-
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment
-from ai_pipeline_core.database import MemoryDatabase, NodeKind, NodeStatus
+from ai_pipeline_core._llm_core.model_response import ModelResponse
+from ai_pipeline_core._llm_core.types import TokenUsage
+from ai_pipeline_core.database import SpanKind, SpanStatus
+from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.deployment._helpers import _build_flow_cache_key, _compute_input_fingerprint
+from ai_pipeline_core.llm.conversation import Conversation
 from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask
-
-
-# --- Test document types ---
 
 
 class WireInputDoc(Document):
@@ -36,9 +29,6 @@ class WireMiddleDoc(Document):
 
 class WireOutputDoc(Document):
     pass
-
-
-# --- Test tasks ---
 
 
 class WireToMiddleTask(PipelineTask):
@@ -59,7 +49,12 @@ class WireFailingTask(PipelineTask):
         raise RuntimeError("deliberate test failure")
 
 
-# --- Test flows ---
+class WireConversationTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: tuple[WireInputDoc, ...]) -> tuple[WireOutputDoc, ...]:
+        conv = Conversation(model="test-model", enable_substitutor=False)
+        conv = await conv.send("hello", purpose="wire-llm")
+        return (WireOutputDoc.derive(from_documents=(documents[0],), name="output.txt", content=conv.content),)
 
 
 class WireFlowOne(PipelineFlow):
@@ -77,14 +72,13 @@ class WireFailingFlowTwo(PipelineFlow):
         return await WireFailingTask.run(documents)
 
 
-# --- Test result ---
+class WireConversationFlow(PipelineFlow):
+    async def run(self, documents: tuple[WireInputDoc, ...], options: FlowOptions) -> tuple[WireOutputDoc, ...]:
+        return await WireConversationTask.run(documents)
 
 
 class WireResult(DeploymentResult):
     doc_count: int = 0
-
-
-# --- Test deployments ---
 
 
 class WireTwoStageDeployment(PipelineDeployment[FlowOptions, WireResult]):
@@ -105,45 +99,55 @@ class WireFailingDeployment(PipelineDeployment[FlowOptions, WireResult]):
         return WireResult(success=False)
 
 
-class WireSingleFlowDeployment(PipelineDeployment[FlowOptions, WireResult]):
+class WireConversationDeployment(PipelineDeployment[FlowOptions, WireResult]):
     def build_flows(self, options: FlowOptions) -> Sequence[PipelineFlow]:
-        return [WireFlowOne()]
+        return [WireConversationFlow()]
 
     @staticmethod
     def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> WireResult:
         return WireResult(success=True, doc_count=len(documents))
 
 
-class DuplicateMiddleFlowA(PipelineFlow):
-    async def run(self, documents: tuple[WireInputDoc, ...], options: FlowOptions) -> tuple[WireMiddleDoc, ...]:
-        return (WireMiddleDoc.derive(from_documents=(documents[0],), name="middle.txt", content="same"),)
-
-
-class DuplicateMiddleFlowB(PipelineFlow):
-    async def run(self, documents: tuple[WireInputDoc, ...], options: FlowOptions) -> tuple[WireMiddleDoc, ...]:
-        return (WireMiddleDoc.derive(from_documents=(documents[0],), name="middle.txt", content="same"),)
-
-
-class CountMiddleDocsFlow(PipelineFlow):
-    async def run(self, documents: tuple[WireMiddleDoc, ...], options: FlowOptions) -> tuple[WireOutputDoc, ...]:
-        return (WireOutputDoc.derive(from_documents=tuple(documents), name="count.txt", content=str(len(documents))),)
-
-
-class DedupingDeployment(PipelineDeployment[FlowOptions, WireResult]):
-    def build_flows(self, options: FlowOptions) -> Sequence[PipelineFlow]:
-        return [DuplicateMiddleFlowA(), DuplicateMiddleFlowB(), CountMiddleDocsFlow()]
-
-    @staticmethod
-    def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> WireResult:
-        outputs = [doc for doc in documents if isinstance(doc, WireOutputDoc)]
-        return WireResult(success=True, doc_count=int(outputs[0].text))
-
-
-# --- Helpers ---
-
-
 def _make_input_doc() -> WireInputDoc:
     return WireInputDoc.create_root(name="input.txt", content="test", reason="wiring test")
+
+
+def _make_response(
+    *,
+    content: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int = 0,
+    reasoning_tokens: int = 0,
+    cost: float = 0.0,
+    model: str = "test-model",
+) -> ModelResponse[str]:
+    return ModelResponse[str](
+        content=content,
+        parsed=content,
+        usage=TokenUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            cached_tokens=cached_tokens,
+            reasoning_tokens=reasoning_tokens,
+        ),
+        cost=cost,
+        model=model,
+        response_id="resp-wire",
+        metadata={"time_taken": 0.2, "first_token_time": 0.1},
+        citations=(),
+        reasoning_content="reasoning",
+        tool_calls=(),
+    )
+
+
+def _make_fake_generate(result: ModelResponse[str]):
+    async def _fake_generate(*args: object, **kwargs: object) -> ModelResponse[str]:
+        _ = (args, kwargs)
+        return result
+
+    return _fake_generate
 
 
 async def _run_with_db(
@@ -152,25 +156,23 @@ async def _run_with_db(
     *,
     run_id: str = "wire-test",
     docs: list[Document] | None = None,
-    deployment_node_id: UUID | None = None,
+    deployment_span_id: UUID | None = None,
     root_deployment_id: UUID | None = None,
 ) -> Any:
-    """Run deployment with injected MemoryDatabase."""
     if docs is None:
         docs = [_make_input_doc()]
-    node_id = deployment_node_id or uuid4()
-    root_id = root_deployment_id or node_id
     return await deployment._run_with_context(
         run_id,
         docs,
         FlowOptions(),
-        deployment_node_id=node_id,
-        root_deployment_id=root_id,
+        deployment_span_id=deployment_span_id,
+        root_deployment_id=root_deployment_id,
         database=database,
     )
 
 
-# --- Tests ---
+def _spans(database: MemoryDatabase, kind: str) -> list[Any]:
+    return sorted((span for span in database._spans.values() if span.kind == kind), key=lambda span: span.sequence_no)
 
 
 @pytest.fixture
@@ -178,243 +180,121 @@ def db() -> MemoryDatabase:
     return MemoryDatabase()
 
 
-class TestDeploymentNodeCreation:
-    """Test that run() creates a deployment ExecutionNode."""
-
-    def test_deployment_node_created(self, db: MemoryDatabase) -> None:
-        deployment = WireTwoStageDeployment()
-        with prefect_test_harness(), disable_run_logger():
-            asyncio.run(_run_with_db(deployment, db))
-
-        nodes = list(db._nodes.values())
-        deployment_nodes = [n for n in nodes if n.node_kind == NodeKind.DEPLOYMENT]
-        assert len(deployment_nodes) == 1
-
-        dep_node = deployment_nodes[0]
-        assert dep_node.status == NodeStatus.COMPLETED
-        assert dep_node.deployment_name == "wire-two-stage-deployment"
-        assert dep_node.run_id == "wire-test"
-        assert dep_node.ended_at is not None
-
-    def test_deployment_node_has_flow_plan(self, db: MemoryDatabase) -> None:
-        deployment = WireTwoStageDeployment()
-        with prefect_test_harness(), disable_run_logger():
-            asyncio.run(_run_with_db(deployment, db))
-
-        dep_node = [n for n in db._nodes.values() if n.node_kind == NodeKind.DEPLOYMENT][0]
-        assert "flow_plan" in dep_node.payload
-        assert len(dep_node.payload["flow_plan"]) == 2
-
-    def test_deployment_node_has_result_on_completion(self, db: MemoryDatabase) -> None:
-        deployment = WireTwoStageDeployment()
-        with prefect_test_harness(), disable_run_logger():
-            asyncio.run(_run_with_db(deployment, db))
-
-        dep_node = [n for n in db._nodes.values() if n.node_kind == NodeKind.DEPLOYMENT][0]
-        assert "result" in dep_node.payload
-        assert dep_node.payload["result"]["success"] is True
-
-    def test_downstream_flows_receive_deduplicated_documents(self, db: MemoryDatabase) -> None:
-        deployment = DedupingDeployment()
-        with prefect_test_harness(), disable_run_logger():
-            result = asyncio.run(_run_with_db(deployment, db))
-
-        assert result.doc_count == 1
-
-    def test_root_input_documents_persist_with_run_scope(self, db: MemoryDatabase) -> None:
-        deployment = WireSingleFlowDeployment()
-        with prefect_test_harness(), disable_run_logger():
-            asyncio.run(_run_with_db(deployment, db))
-
-        deployment_node = next(n for n in db._nodes.values() if n.node_kind == NodeKind.DEPLOYMENT)
-        root_documents = [doc for doc in db._documents.values() if doc.producing_node_id is None]
-
-        assert root_documents
-        assert {doc.run_scope for doc in root_documents} == {deployment_node.run_scope}
-
-
-class TestFlowNodeCreation:
-    """Test that flow execution creates flow nodes."""
-
-    def test_flow_nodes_created_as_children(self, db: MemoryDatabase) -> None:
-        deployment = WireTwoStageDeployment()
-        with prefect_test_harness(), disable_run_logger():
-            asyncio.run(_run_with_db(deployment, db))
-
-        nodes = list(db._nodes.values())
-        flow_nodes = sorted(
-            [n for n in nodes if n.node_kind == NodeKind.FLOW],
-            key=lambda n: n.sequence_no,
+class TestDeploymentSpans:
+    def test_build_flow_cache_key_matches_redesign_format(self) -> None:
+        key = _build_flow_cache_key(
+            input_fingerprint="a1b2c3d4e5f6g7h8",
+            flow_class=WireFlowOne,
+            step=2,
         )
-        assert len(flow_nodes) == 2
 
-        dep_node = [n for n in nodes if n.node_kind == NodeKind.DEPLOYMENT][0]
-        for fn in flow_nodes:
-            assert fn.parent_node_id == dep_node.node_id
-            assert fn.deployment_id == dep_node.deployment_id
+        assert key == f"flow:a1b2c3d4e5f6g7h8:{WireFlowOne.__module__}:{WireFlowOne.__qualname__}:2"
 
-    def test_flow_nodes_have_correct_sequence(self, db: MemoryDatabase) -> None:
+    def test_deployment_span_created(self, db: MemoryDatabase) -> None:
         deployment = WireTwoStageDeployment()
-        with prefect_test_harness(), disable_run_logger():
-            asyncio.run(_run_with_db(deployment, db))
+        asyncio.run(_run_with_db(deployment, db))
 
-        flow_nodes = sorted(
-            [n for n in db._nodes.values() if n.node_kind == NodeKind.FLOW],
-            key=lambda n: n.sequence_no,
+        deployment_spans = _spans(db, SpanKind.DEPLOYMENT)
+        assert len(deployment_spans) == 1
+        deployment_span = deployment_spans[0]
+        assert deployment_span.status == SpanStatus.COMPLETED
+        assert deployment_span.deployment_id == deployment_span.span_id
+        output_payload = json.loads(deployment_span.output_json)
+        meta = json.loads(deployment_span.meta_json)
+        assert output_payload["result"]["data"]["success"] is True
+        assert meta["input_fingerprint"]
+        assert len(_spans(db, SpanKind.FLOW)) == 2
+
+    def test_root_input_documents_persist_content_addressed(self, db: MemoryDatabase) -> None:
+        deployment = WireTwoStageDeployment()
+        asyncio.run(_run_with_db(deployment, db))
+
+        assert len(db._documents) >= 1
+        input_doc = next(document for document in db._documents.values() if document.document_type == "WireInputDoc")
+        assert input_doc.name == "input.txt"
+
+    def test_flow_spans_are_children_of_deployment(self, db: MemoryDatabase) -> None:
+        deployment = WireTwoStageDeployment()
+        asyncio.run(_run_with_db(deployment, db))
+
+        deployment_span = _spans(db, SpanKind.DEPLOYMENT)[0]
+        flow_spans = _spans(db, SpanKind.FLOW)
+        assert [span.sequence_no for span in flow_spans] == [0, 1]
+        assert all(span.parent_span_id == deployment_span.span_id for span in flow_spans)
+        assert all(span.status == SpanStatus.COMPLETED for span in flow_spans)
+
+    def test_completed_flow_spans_persist_deterministic_cache_keys(self, db: MemoryDatabase) -> None:
+        deployment = WireTwoStageDeployment()
+        input_doc = _make_input_doc()
+        asyncio.run(_run_with_db(deployment, db, docs=[input_doc]))
+
+        fingerprint = _compute_input_fingerprint([input_doc], FlowOptions())
+        flow_spans = _spans(db, SpanKind.FLOW)
+
+        assert [span.cache_key for span in flow_spans] == [
+            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowOne, step=1),
+            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowTwo, step=2),
+        ]
+
+    def test_cached_flow_spans_keep_cache_key(self, db: MemoryDatabase) -> None:
+        deployment = WireTwoStageDeployment()
+        input_doc = _make_input_doc()
+        asyncio.run(_run_with_db(deployment, db, docs=[input_doc], run_id="first-run"))
+        asyncio.run(_run_with_db(deployment, db, docs=[input_doc], run_id="second-run"))
+
+        fingerprint = _compute_input_fingerprint([input_doc], FlowOptions())
+        cached_flow_spans = sorted(
+            (span for span in db._spans.values() if span.kind == SpanKind.FLOW and span.status == SpanStatus.CACHED),
+            key=lambda span: span.sequence_no,
         )
-        assert flow_nodes[0].sequence_no == 1
-        assert flow_nodes[1].sequence_no == 2
-        assert flow_nodes[0].name == "WireFlowOne"
-        assert flow_nodes[1].name == "WireFlowTwo"
 
-    def test_completed_flows_have_status_and_timing(self, db: MemoryDatabase) -> None:
-        deployment = WireTwoStageDeployment()
-        with prefect_test_harness(), disable_run_logger():
-            asyncio.run(_run_with_db(deployment, db))
+        assert [span.cache_key for span in cached_flow_spans] == [
+            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowOne, step=1),
+            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowTwo, step=2),
+        ]
 
-        flow_nodes = [n for n in db._nodes.values() if n.node_kind == NodeKind.FLOW]
-        for fn in flow_nodes:
-            assert fn.status == NodeStatus.COMPLETED
-            assert fn.ended_at is not None
-            assert fn.started_at <= fn.ended_at
+    def test_flow_spans_keep_zero_cost_rollup(self, db: MemoryDatabase, monkeypatch: pytest.MonkeyPatch) -> None:
+        deployment = WireConversationDeployment()
+        response = _make_response(content="hello", prompt_tokens=10, completion_tokens=4, cached_tokens=2, cost=0.42)
+        monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", _make_fake_generate(response))
 
+        asyncio.run(_run_with_db(deployment, db))
 
-class TestFlowFailure:
-    """Test that flow failure updates the flow node with error info."""
+        deployment_span = _spans(db, SpanKind.DEPLOYMENT)[0]
+        flow_span = _spans(db, SpanKind.FLOW)[0]
+        llm_round = _spans(db, SpanKind.LLM_ROUND)[0]
+        assert deployment_span.cost_usd == 0.0
+        assert flow_span.cost_usd == 0.0
+        assert llm_round.cost_usd == pytest.approx(0.42)
+        totals = asyncio.run(db.get_deployment_cost_totals(deployment_span.root_deployment_id))
+        assert totals.cost_usd == pytest.approx(0.42)
 
-    def test_failed_flow_has_error_info(self, db: MemoryDatabase) -> None:
+    def test_failing_flow_marks_flow_and_deployment_failed(self, db: MemoryDatabase) -> None:
         deployment = WireFailingDeployment()
-        with prefect_test_harness(), disable_run_logger():
-            with pytest.raises(RuntimeError, match="deliberate test failure"):
-                asyncio.run(_run_with_db(deployment, db))
+        with pytest.raises(RuntimeError, match="deliberate test failure"):
+            asyncio.run(_run_with_db(deployment, db))
 
-        flow_nodes = sorted(
-            [n for n in db._nodes.values() if n.node_kind == NodeKind.FLOW],
-            key=lambda n: n.sequence_no,
-        )
-        # First flow completed successfully
-        assert flow_nodes[0].status == NodeStatus.COMPLETED
+        deployment_span = _spans(db, SpanKind.DEPLOYMENT)[0]
+        flow_spans = _spans(db, SpanKind.FLOW)
+        assert deployment_span.status == SpanStatus.FAILED
+        assert flow_spans[0].status == SpanStatus.COMPLETED
+        assert flow_spans[1].status == SpanStatus.FAILED
+        assert flow_spans[1].error_type == "RuntimeError"
 
-        # Second flow failed
-        assert flow_nodes[1].status == NodeStatus.FAILED
-        assert flow_nodes[1].error_type == "RuntimeError"
-        assert "deliberate test failure" in flow_nodes[1].error_message
-
-    def test_deployment_node_fails_when_flow_fails(self, db: MemoryDatabase) -> None:
-        deployment = WireFailingDeployment()
-        with prefect_test_harness(), disable_run_logger():
-            with pytest.raises(RuntimeError):
-                asyncio.run(_run_with_db(deployment, db))
-
-        dep_node = [n for n in db._nodes.values() if n.node_kind == NodeKind.DEPLOYMENT][0]
-        assert dep_node.status == NodeStatus.FAILED
-        assert dep_node.error_type == "RuntimeError"
-        assert dep_node.ended_at is not None
-
-
-class TestRunWithContext:
-    """Test that _run_with_context() accepts pre-allocated IDs."""
-
-    def test_pre_allocated_ids(self, db: MemoryDatabase) -> None:
-        deployment = WireSingleFlowDeployment()
-        pre_id = uuid4()
-        root_id = uuid4()
-        with prefect_test_harness(), disable_run_logger():
-            asyncio.run(
-                _run_with_db(
-                    deployment,
-                    db,
-                    deployment_node_id=pre_id,
-                    root_deployment_id=root_id,
-                )
+    def test_run_with_context_accepts_preallocated_ids(self, db: MemoryDatabase) -> None:
+        deployment = WireTwoStageDeployment()
+        deployment_span_id = uuid7()
+        root_deployment_id = uuid7()
+        asyncio.run(
+            _run_with_db(
+                deployment,
+                db,
+                deployment_span_id=deployment_span_id,
+                root_deployment_id=root_deployment_id,
             )
-
-        dep_node = [n for n in db._nodes.values() if n.node_kind == NodeKind.DEPLOYMENT][0]
-        assert dep_node.node_id == pre_id
-        assert dep_node.deployment_id == pre_id
-        assert dep_node.root_deployment_id == root_id
-
-    def test_flow_nodes_inherit_deployment_ids(self, db: MemoryDatabase) -> None:
-        deployment = WireSingleFlowDeployment()
-        pre_id = uuid4()
-        root_id = uuid4()
-        with prefect_test_harness(), disable_run_logger():
-            asyncio.run(
-                _run_with_db(
-                    deployment,
-                    db,
-                    deployment_node_id=pre_id,
-                    root_deployment_id=root_id,
-                )
-            )
-
-        flow_nodes = [n for n in db._nodes.values() if n.node_kind == NodeKind.FLOW]
-        assert len(flow_nodes) == 1
-        assert flow_nodes[0].deployment_id == pre_id
-        assert flow_nodes[0].root_deployment_id == root_id
-
-
-class TestExecutionContextFields:
-    """Test that ExecutionContext carries database fields."""
-
-    def test_execution_context_has_database_fields(self, db: MemoryDatabase) -> None:
-        from ai_pipeline_core.pipeline._execution_context import ExecutionContext
-        from ai_pipeline_core.deployment._types import _NoopPublisher
-        from ai_pipeline_core.pipeline.limits import _SharedStatus
-
-        dep_id = uuid4()
-        root_id = uuid4()
-        ctx = ExecutionContext(
-            run_id="test",
-            run_scope="test/scope",
-            execution_id=None,
-            publisher=_NoopPublisher(),
-            limits={},
-            limits_status=_SharedStatus(),
-            database=db,
-            deployment_id=dep_id,
-            root_deployment_id=root_id,
-            deployment_name="test-deploy",
         )
-        assert ctx.database is db
-        assert ctx.deployment_id == dep_id
-        assert ctx.root_deployment_id == root_id
-        assert ctx.deployment_name == "test-deploy"
 
-    def test_with_node_returns_copy(self) -> None:
-        from ai_pipeline_core.pipeline._execution_context import ExecutionContext
-        from ai_pipeline_core.deployment._types import _NoopPublisher
-        from ai_pipeline_core.pipeline.limits import _SharedStatus
-
-        ctx = ExecutionContext(
-            run_id="test",
-            run_scope="test/scope",
-            execution_id=None,
-            publisher=_NoopPublisher(),
-            limits={},
-            limits_status=_SharedStatus(),
-        )
-        node_id = uuid4()
-        new_ctx = ctx.with_node(node_id)
-        assert new_ctx.current_node_id == node_id
-        assert ctx.current_node_id is None  # original unchanged
-
-
-class TestDatabaseFactoryFromSettings:
-    """Test create_database_from_settings."""
-
-    def test_memory_backend_when_no_config(self) -> None:
-        from ai_pipeline_core.database import create_database_from_settings
-        from ai_pipeline_core.settings import Settings
-
-        s = Settings(clickhouse_host="", openai_base_url="x", openai_api_key="x")
-        db = create_database_from_settings(s)
-        assert type(db).__name__ == "MemoryDatabase"
-
-    def test_filesystem_backend_when_base_path(self, tmp_path: Any) -> None:
-        from ai_pipeline_core.database import create_database_from_settings
-        from ai_pipeline_core.settings import Settings
-
-        s = Settings(clickhouse_host="", openai_base_url="x", openai_api_key="x")
-        db = create_database_from_settings(s, base_path=tmp_path)
-        assert type(db).__name__ == "FilesystemDatabase"
+        deployment_span = _spans(db, SpanKind.DEPLOYMENT)[0]
+        assert deployment_span.span_id == deployment_span_id
+        assert deployment_span.deployment_id == deployment_span_id
+        assert deployment_span.root_deployment_id == root_deployment_id

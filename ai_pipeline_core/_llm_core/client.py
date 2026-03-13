@@ -19,8 +19,9 @@ from openai.lib.streaming.chat import ChunkEvent, ContentDeltaEvent, ContentDone
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, ValidationError
 
+from ai_pipeline_core._token_estimates import estimate_image_tokens, estimate_message_text_tokens, estimate_pdf_tokens
 from ai_pipeline_core.exceptions import LLMError, OutputDegenerationError
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.settings import settings
 
 from ._degeneration import detect_output_degeneration
@@ -28,7 +29,6 @@ from ._validation import validate_image_content as _validate_image
 from .model_config import get_cache_min_tokens, get_openrouter_provider, supports_stop_sequences
 from .model_response import Citation, ModelResponse
 from .types import (
-    TOKENS_PER_IMAGE,
     ContentPart,
     CoreMessage,
     ImageContent,
@@ -167,13 +167,13 @@ def _estimate_token_count(messages: list[ChatCompletionMessageParam]) -> int:
     for msg in messages:
         content = msg.get("content", "")
         if isinstance(content, str):
-            total += len(content) // 4
+            total += estimate_message_text_tokens(content)
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict) and part.get("type") == "text":  # pyright: ignore[reportUnnecessaryIsInstance]
-                    total += len(part.get("text", "")) // 4
+                    total += estimate_message_text_tokens(part.get("text", ""))
                 elif isinstance(part, dict) and part.get("type") in {"image_url", "file"}:  # pyright: ignore[reportUnnecessaryIsInstance]
-                    total += TOKENS_PER_IMAGE
+                    total += estimate_image_tokens() if part.get("type") == "image_url" else estimate_pdf_tokens()
     return total
 
 
@@ -397,7 +397,6 @@ async def _generate_impl(
         raise ValueError("messages must not be empty")
     if not model:
         raise ValueError("model must be provided")
-
     # Inject system_prompt as first system message if provided
     effective_messages = list(messages)
     effective_context_count = context_count
@@ -451,6 +450,11 @@ async def _generate_impl(
                     if purpose:
                         metadata_update["purpose"] = purpose
                     model_response = model_response.model_copy(update={"metadata": metadata_update})
+
+                if model_response.has_tool_calls and not tools:
+                    raise ValueError(
+                        "Model returned tool calls even though no tools were provided. Pass tools=[...] to Conversation.send() only when tool use is allowed."
+                    )
 
                 # Detect output degeneration (token repetition loops) — skip for tool call responses
                 if not model_response.has_tool_calls and (explanation := detect_output_degeneration(model_response.content)):

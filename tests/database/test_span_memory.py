@@ -1,0 +1,338 @@
+"""Tests for the span-oriented in-memory database backend."""
+
+import json
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
+
+import pytest
+
+from ai_pipeline_core.database import BlobRecord, DocumentRecord, LogRecord, SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database._documents import load_documents_from_database
+from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.documents import Attachment, Document
+
+
+class MemoryLoadDoc(Document):
+    """Document type used for load_documents_from_database coverage."""
+
+
+def _make_span(**kwargs: object) -> SpanRecord:
+    deployment_id = kwargs.pop("deployment_id", uuid4())
+    root_deployment_id = kwargs.pop("root_deployment_id", deployment_id)
+    started_at: datetime = kwargs.pop("started_at", datetime(2026, 3, 11, 12, 0, tzinfo=UTC))
+    defaults: dict[str, object] = {
+        "span_id": kwargs.pop("span_id", uuid4()),
+        "parent_span_id": kwargs.pop("parent_span_id", None),
+        "deployment_id": deployment_id,
+        "root_deployment_id": root_deployment_id,
+        "run_id": kwargs.pop("run_id", f"run-{deployment_id}"),
+        "deployment_name": "example",
+        "kind": SpanKind.TASK,
+        "name": "ExampleTask",
+        "status": SpanStatus.COMPLETED,
+        "sequence_no": 0,
+        "started_at": started_at,
+        "ended_at": started_at + timedelta(seconds=1),
+        "version": 1,
+        "meta_json": "",
+        "metrics_json": "",
+    }
+    defaults.update(kwargs)
+    return SpanRecord(**defaults)
+
+
+def _make_document(**kwargs: object) -> DocumentRecord:
+    defaults: dict[str, object] = {
+        "document_sha256": f"doc-{uuid4().hex}",
+        "content_sha256": f"blob-{uuid4().hex}",
+        "document_type": "TestDocument",
+        "name": "example.md",
+        "description": "Example document",
+        "mime_type": "text/markdown",
+        "size_bytes": 20,
+        "summary": "",
+        "derived_from": (),
+        "triggered_by": (),
+        "attachment_names": (),
+        "attachment_descriptions": (),
+        "attachment_content_sha256s": (),
+        "attachment_mime_types": (),
+        "attachment_size_bytes": (),
+        "created_at": datetime(2026, 3, 11, 12, 0, tzinfo=UTC),
+    }
+    defaults.update(kwargs)
+    return DocumentRecord(**defaults)
+
+
+def _make_blob(**kwargs: object) -> BlobRecord:
+    defaults: dict[str, object] = {
+        "content_sha256": f"blob-{uuid4().hex}",
+        "content": b"blob-content",
+        "created_at": datetime(2026, 3, 11, 12, 0, tzinfo=UTC),
+    }
+    defaults.update(kwargs)
+    return BlobRecord(**defaults)
+
+
+def _make_log(**kwargs: object) -> LogRecord:
+    defaults: dict[str, object] = {
+        "deployment_id": uuid4(),
+        "span_id": uuid4(),
+        "timestamp": datetime(2026, 3, 11, 12, 0, tzinfo=UTC),
+        "sequence_no": 0,
+        "level": "INFO",
+        "category": "framework",
+        "event_type": "",
+        "logger_name": "ai_pipeline_core.tests",
+        "message": "log message",
+        "fields_json": "{}",
+        "exception_text": "",
+    }
+    defaults.update(kwargs)
+    return LogRecord(**defaults)
+
+
+async def _seed_database() -> tuple[MemoryDatabase, UUID, UUID]:
+    database = MemoryDatabase()
+    root_deployment_id = uuid4()
+    child_deployment_id = uuid4()
+    base = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
+
+    root = _make_span(
+        span_id=root_deployment_id,
+        deployment_id=root_deployment_id,
+        root_deployment_id=root_deployment_id,
+        kind=SpanKind.DEPLOYMENT,
+        name="RootDeployment",
+        started_at=base,
+    )
+    task = _make_span(
+        parent_span_id=root.span_id,
+        deployment_id=root_deployment_id,
+        root_deployment_id=root_deployment_id,
+        kind=SpanKind.TASK,
+        name="RootTask",
+        sequence_no=1,
+        started_at=base + timedelta(seconds=10),
+        output_document_shas=("doc-root",),
+    )
+    llm_round = _make_span(
+        parent_span_id=task.span_id,
+        deployment_id=root_deployment_id,
+        root_deployment_id=root_deployment_id,
+        kind=SpanKind.LLM_ROUND,
+        name="Round1",
+        sequence_no=1,
+        started_at=base + timedelta(seconds=11),
+        cost_usd=1.5,
+        metrics_json=json.dumps(
+            {
+                "tokens_input": 100,
+                "tokens_output": 25,
+                "tokens_cache_read": 10,
+                "tokens_reasoning": 5,
+            },
+            sort_keys=True,
+        ),
+    )
+    child = _make_span(
+        span_id=child_deployment_id,
+        parent_span_id=task.span_id,
+        deployment_id=child_deployment_id,
+        root_deployment_id=root_deployment_id,
+        kind=SpanKind.DEPLOYMENT,
+        name="ChildDeployment",
+        sequence_no=2,
+        started_at=base + timedelta(minutes=1),
+    )
+    child_task = _make_span(
+        parent_span_id=child.span_id,
+        deployment_id=child_deployment_id,
+        root_deployment_id=root_deployment_id,
+        kind=SpanKind.TASK,
+        name="ChildTask",
+        sequence_no=1,
+        started_at=base + timedelta(minutes=1, seconds=5),
+        input_document_shas=("doc-root",),
+    )
+
+    for span in (root, task, llm_round, child, child_task):
+        await database.insert_span(span)
+
+    document = _make_document(
+        document_sha256="doc-root",
+        content_sha256="blob-root",
+        document_type="RootDoc",
+        name="root.md",
+        attachment_names=("preview.png",),
+        attachment_descriptions=("Preview image",),
+        attachment_content_sha256s=("blob-preview",),
+        attachment_mime_types=("image/png",),
+        attachment_size_bytes=(7,),
+        created_at=base,
+    )
+    await database.save_document(document)
+    await database.save_blob(_make_blob(content_sha256="blob-root", content=b"root", created_at=base))
+    await database.save_blob(_make_blob(content_sha256="blob-preview", content=b"pngdata", created_at=base))
+    await database.save_logs_batch([
+        _make_log(
+            deployment_id=root_deployment_id,
+            span_id=task.span_id,
+            timestamp=base + timedelta(seconds=20),
+            sequence_no=1,
+            message="root log",
+        )
+    ])
+
+    return database, root_deployment_id, child_deployment_id
+
+
+@pytest.mark.asyncio
+async def test_memory_database_reads_spans_documents_blobs_and_logs() -> None:
+    database, root_deployment_id, _ = await _seed_database()
+
+    tree = await database.get_deployment_tree(root_deployment_id)
+    document = await database.get_document("doc-root")
+    hydrated = await database.get_document_with_content("doc-root")
+    totals = await database.get_deployment_cost_totals(root_deployment_id)
+    logs = await database.get_deployment_logs(root_deployment_id)
+
+    assert [span.kind for span in tree] == [
+        SpanKind.DEPLOYMENT,
+        SpanKind.TASK,
+        SpanKind.LLM_ROUND,
+        SpanKind.DEPLOYMENT,
+        SpanKind.TASK,
+    ]
+    assert document is not None
+    assert document.mime_type == "text/markdown"
+    assert hydrated is not None
+    assert hydrated.content == b"root"
+    assert hydrated.attachment_contents == {"blob-preview": b"pngdata"}
+    assert totals.cost_usd == 1.5
+    assert totals.tokens_input == 100
+    assert totals.tokens_output == 25
+    assert len(logs) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_all_document_shas_for_tree_collects_inputs_and_outputs() -> None:
+    database, root_deployment_id, _ = await _seed_database()
+
+    shas = await database.get_all_document_shas_for_tree(root_deployment_id)
+
+    assert shas == {"doc-root"}
+
+
+@pytest.mark.asyncio
+async def test_update_document_summary_replaces_document_by_created_at() -> None:
+    database = MemoryDatabase()
+    older = _make_document(document_sha256="doc-1", summary="old", created_at=datetime(2026, 3, 11, 12, 0, tzinfo=UTC))
+    newer = _make_document(document_sha256="doc-1", summary="new", created_at=datetime(2026, 3, 11, 12, 1, tzinfo=UTC))
+
+    await database.save_document(newer)
+    await database.save_document(older)
+    assert (await database.get_document("doc-1")) == newer
+
+    await database.update_document_summary("doc-1", "updated")
+    updated = await database.get_document("doc-1")
+
+    assert updated is not None
+    assert updated.summary == "updated"
+    assert updated.created_at >= newer.created_at
+
+
+@pytest.mark.asyncio
+async def test_get_document_with_content_raises_for_missing_attachment_blob() -> None:
+    database = MemoryDatabase()
+    await database.save_document(
+        _make_document(
+            document_sha256="doc-1",
+            content_sha256="blob-1",
+            attachment_names=("preview.png",),
+            attachment_descriptions=("Preview",),
+            attachment_content_sha256s=("blob-missing",),
+            attachment_mime_types=("image/png",),
+            attachment_size_bytes=(10,),
+        )
+    )
+    await database.save_blob(_make_blob(content_sha256="blob-1", content=b"root"))
+
+    with pytest.raises(ValueError, match="missing from storage"):
+        await database.get_document_with_content("doc-1")
+
+
+@pytest.mark.asyncio
+async def test_load_documents_from_database_reconstructs_attachments() -> None:
+    database = MemoryDatabase()
+    document = MemoryLoadDoc(
+        name="report.md",
+        content=b"# Report",
+        description="Stored report",
+        attachments=(Attachment(name="details.txt", content=b"details", description="More detail"),),
+    )
+    record = _make_document(
+        document_sha256=document.sha256,
+        content_sha256=document.content_sha256,
+        document_type=type(document).__name__,
+        name=document.name,
+        description=document.description or "",
+        mime_type=document.mime_type,
+        size_bytes=document.size,
+        attachment_names=tuple(attachment.name for attachment in document.attachments),
+        attachment_descriptions=tuple((attachment.description or "") for attachment in document.attachments),
+        attachment_content_sha256s=("blob-details",),
+        attachment_mime_types=tuple(attachment.mime_type for attachment in document.attachments),
+        attachment_size_bytes=tuple(attachment.size for attachment in document.attachments),
+    )
+    await database.save_document(record)
+    await database.save_blob(_make_blob(content_sha256=document.content_sha256, content=document.content))
+    await database.save_blob(_make_blob(content_sha256="blob-details", content=b"details"))
+
+    loaded = await load_documents_from_database(database, {document.sha256})
+
+    assert len(loaded) == 1
+    assert isinstance(loaded[0], MemoryLoadDoc)
+    assert loaded[0].description == "Stored report"
+    assert loaded[0].attachments[0].name == "details.txt"
+
+
+@pytest.mark.asyncio
+async def test_get_cached_completion_filters_by_max_age() -> None:
+    database = MemoryDatabase()
+    now = datetime.now(UTC)
+    recent = _make_span(
+        span_id=uuid4(),
+        cache_key="cache-key",
+        status=SpanStatus.COMPLETED,
+        started_at=now - timedelta(minutes=2),
+        ended_at=now - timedelta(minutes=1),
+    )
+    stale = _make_span(
+        span_id=uuid4(),
+        cache_key="cache-key",
+        status=SpanStatus.COMPLETED,
+        started_at=now - timedelta(days=2),
+        ended_at=now - timedelta(days=2) + timedelta(seconds=1),
+    )
+    await database.insert_span(recent)
+    await database.insert_span(stale)
+
+    cached = await database.get_cached_completion("cache-key", max_age=timedelta(hours=1))
+
+    assert cached == recent
+
+
+@pytest.mark.asyncio
+async def test_get_span_logs_filters_level_and_category() -> None:
+    database = MemoryDatabase()
+    span_id = uuid4()
+    deployment_id = uuid4()
+    await database.save_logs_batch([
+        _make_log(span_id=span_id, deployment_id=deployment_id, level="INFO", category="framework", message="a"),
+        _make_log(span_id=span_id, deployment_id=deployment_id, level="ERROR", category="user", message="b", sequence_no=1),
+    ])
+
+    logs = await database.get_span_logs(span_id, level="ERROR")
+
+    assert [log.message for log in logs] == ["b"]

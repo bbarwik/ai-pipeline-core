@@ -70,7 +70,7 @@ class SpecPayload(BaseModel):
 
 
 @pytest.fixture
-def temp_modules() -> Generator[list[str], None, None]:
+def temp_modules() -> Generator[list[str]]:
     created: list[str] = []
     yield created
     for module_name in created:
@@ -176,6 +176,20 @@ def test_check_field_descriptions_accepts_described_field() -> None:
     class Dummy:
         __annotations__ = {"item": str}
         item = Field(description="Item")
+
+    _check_field_descriptions(Dummy, "Dummy")
+
+
+def test_check_field_descriptions_accepts_declared_forward_ref_and_ignores_inherited_fields() -> None:
+    class Parent:
+        inherited = Field(description="Inherited")
+        __annotations__ = {"inherited": str}
+
+    class Dummy(Parent):
+        item: ForwardDeclared = Field(description="Item")
+
+    class ForwardDeclared:
+        pass
 
     _check_field_descriptions(Dummy, "Dummy")
 
@@ -1006,7 +1020,7 @@ def test_spec_allows_methods_and_descriptors() -> None:
             return self.item
 
         @classmethod
-        def build(cls, item: str) -> "HelperSpec":
+        def build(cls, item: str) -> HelperSpec:
             return cls(item=item)
 
         @staticmethod

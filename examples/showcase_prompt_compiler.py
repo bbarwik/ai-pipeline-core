@@ -10,9 +10,9 @@ Demonstrates every capability of the Prompt Compiler module:
   - follows: Typed follow-up spec chains
   - render_text(): Render spec instance to prompt string
   - render_preview(): Render spec class with placeholder values
-  - send_spec(): Single-call LLM interaction (requires LLM proxy)
+  - Conversation.send_spec(): PromptSpec dispatch through the Conversation API
   - Shared tuples: Reuse config across specs without inheritance
-  - Structured output: BaseModel as output_type for generate_structured()
+  - Structured output: PromptSpec[BaseModel] dispatches to Conversation.send_structured()
   - Multi-turn: render_text() with include_input_documents=False for follow-ups
   - Import-time validation: Catches errors before runtime
 
@@ -523,7 +523,7 @@ def main() -> None:
     verdict_text = render_text(verdict_spec)
     print(verdict_text)
     print(f"\n[output_type = {IssueVerdictSpec._output_type.__name__}]")
-    print("[send_spec() would use send_structured() automatically]")
+    print("[Conversation.send_spec() would use send_structured() automatically]")
 
     # --- Feature: Minimal spec with no dynamic fields ---
     print("\n" + "=" * 80)
@@ -587,32 +587,29 @@ def main() -> None:
 
     # --- Feature: send_spec usage (shown, not executed — requires LLM) ---
     print("\n" + "=" * 80)
-    print("\n--- 13. send_spec() usage pattern (not executed) ---\n")
+    print("\n--- 13. Conversation.send_spec() usage pattern (not executed) ---\n")
     print("""\
-    # Single-call LLM interaction:
-    conv = await send_spec(
+    conv = Conversation(model="gemini-3-flash")
+    conv = await conv.send_spec(
         IssueOptimisticSpec(item="Token liquidity: Low volume"),
-        model="gemini-3-flash",
         documents=[whitepaper, research1, research2],
     )
     print(conv.content)  # text response
 
-    # Structured output:
-    conv = await send_spec(
+    conv = Conversation(model="gemini-3-pro")
+    conv = await conv.send_spec(
         IssueVerdictSpec(item="Smart contract authority"),
-        model="gemini-3-pro",
         documents=docs,
     )
     print(conv.parsed)  # RiskVerdict instance
 
-    # Follow-up spec:
     conv = await conv.send_spec(
         DraftRevisionSpec(feedback="Add metrics"),
     )
     print(conv.content)  # revised text
 
-    # Warmup + fork for parallel calls:
-    warmup = await send_spec(warmup_spec, model=model, documents=docs)
+    conv = Conversation(model=model)
+    warmup = await conv.send_spec(warmup_spec, documents=docs)
     fork1, fork2 = await asyncio.gather(
         warmup.send(render_text(optimistic_spec, include_input_documents=False)),
         warmup.send(render_text(pessimistic_spec, include_input_documents=False)),
@@ -625,7 +622,7 @@ def main() -> None:
     verdict_text = render_text(verdict)
     print(verdict_text)
     print(f"\n[output_structure = {FinalVerdictSpec.output_structure is not None}]")
-    print("[send_spec() auto-extracts <result> tags — conv.content returns clean text]")
+    print("[Conversation.send_spec() auto-extracts <result> tags — conv.content returns clean text]")
 
     # --- Feature: output_structure validation ---
     print("\n" + "=" * 80)

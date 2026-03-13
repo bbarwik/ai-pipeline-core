@@ -1,11 +1,17 @@
-"""Database read/write protocols for execution DAG and document storage."""
+"""Database read/write protocols for the span-based schema."""
 
 from datetime import timedelta
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from ai_pipeline_core.database._types import BlobRecord, DocumentRecord, ExecutionLog, ExecutionNode, RunScopeInfo
-from ai_pipeline_core.documents._context import DocumentSha256, RunScope
+from ai_pipeline_core.database._types import (
+    BlobRecord,
+    CostTotals,
+    DocumentRecord,
+    HydratedDocument,
+    LogRecord,
+    SpanRecord,
+)
 
 __all__ = [
     "DatabaseReader",
@@ -13,24 +19,18 @@ __all__ = [
 ]
 
 
+# Protocol
 @runtime_checkable
 class DatabaseWriter(Protocol):
-    """Write protocol for framework-internal use.
-
-    Lifecycle-oriented methods for persisting execution nodes, documents, and blobs.
-    """
+    """Write protocol for the span/document/blob/log schema."""
 
     @property
     def supports_remote(self) -> bool:
         """Whether this backend supports Prefect-based remote deployment execution."""
         ...
 
-    async def insert_node(self, node: ExecutionNode) -> None:
-        """Insert a new execution node."""
-        ...
-
-    async def update_node(self, node_id: UUID, **updates: Any) -> None:
-        """Update fields on an existing execution node."""
+    async def insert_span(self, span: SpanRecord) -> None:
+        """Insert a span row. Lifecycle updates are written as new rows with higher versions."""
         ...
 
     async def save_document(self, record: DocumentRecord) -> None:
@@ -42,19 +42,19 @@ class DatabaseWriter(Protocol):
         ...
 
     async def save_blob(self, blob: BlobRecord) -> None:
-        """Persist a single binary blob."""
+        """Persist a single blob."""
         ...
 
     async def save_blob_batch(self, blobs: list[BlobRecord]) -> None:
-        """Persist multiple binary blobs in one operation."""
+        """Persist multiple blobs in one operation."""
         ...
 
-    async def save_logs_batch(self, logs: list[ExecutionLog]) -> None:
-        """Persist multiple execution logs in one operation."""
+    async def save_logs_batch(self, logs: list[LogRecord]) -> None:
+        """Persist multiple log records in one operation."""
         ...
 
-    async def update_document_summary(self, document_sha256: DocumentSha256, summary: str) -> None:
-        """Update the summary field of an existing document."""
+    async def update_document_summary(self, document_sha256: str, summary: str) -> None:
+        """Update the top-level summary field for a document row."""
         ...
 
     async def flush(self) -> None:
@@ -66,124 +66,102 @@ class DatabaseWriter(Protocol):
         ...
 
 
-class _ExecutionNodeReader(Protocol):
-    """Read protocol for execution nodes and deployment metadata."""
+# Protocol
+@runtime_checkable
+class DatabaseReader(Protocol):
+    """Read protocol for the span/document/blob/log schema."""
 
-    async def get_node(self, node_id: UUID) -> ExecutionNode | None:
-        """Retrieve an execution node by its ID."""
+    async def get_span(self, span_id: UUID) -> SpanRecord | None:
+        """Retrieve a span by its ID."""
         ...
 
-    async def get_children(self, parent_node_id: UUID) -> list[ExecutionNode]:
-        """Retrieve all direct child nodes of a parent node."""
+    async def get_child_spans(self, parent_span_id: UUID) -> list[SpanRecord]:
+        """Retrieve direct child spans ordered by sequence number."""
         ...
 
-    async def get_deployment_tree(self, deployment_id: UUID) -> list[ExecutionNode]:
-        """Retrieve all nodes belonging to a deployment."""
+    async def get_deployment_tree(self, root_deployment_id: UUID) -> list[SpanRecord]:
+        """Retrieve every span in a deployment tree as a flat list."""
         ...
 
-    async def get_deployment_by_run_id(self, run_id: str) -> ExecutionNode | None:
-        """Find the deployment node for a given run ID."""
+    async def get_deployment_by_run_id(self, run_id: str) -> SpanRecord | None:
+        """Find the newest deployment span for a run ID."""
         ...
 
-    async def get_deployment_by_run_scope(self, run_scope: RunScope) -> ExecutionNode | None:
-        """Find the deployment node for a given run scope."""
+    async def list_deployments(
+        self,
+        limit: int,
+        *,
+        status: str | None = None,
+    ) -> list[SpanRecord]:
+        """List deployment spans ordered by newest start time first."""
         ...
 
-    async def get_cached_completion(self, cache_key: str, max_age: timedelta | None = None) -> ExecutionNode | None:
-        """Find a completed node matching the cache key within the max age."""
+    async def get_cached_completion(
+        self,
+        cache_key: str,
+        *,
+        max_age: timedelta | None = None,
+    ) -> SpanRecord | None:
+        """Find a completed span matching the cache key within the max age window."""
         ...
 
-    async def list_deployments(self, limit: int, status: str | None) -> list[ExecutionNode]:
-        """List deployment nodes ordered by newest start time first."""
+    async def get_deployment_cost_totals(self, root_deployment_id: UUID) -> CostTotals:
+        """Aggregate llm_round cost and token totals for a deployment tree."""
         ...
 
-    async def get_deployment_cost_totals(self, deployment_id: UUID) -> tuple[float, int]:
-        """Return total conversation-turn cost and total tokens for a deployment."""
+    async def get_deployment_span_count(
+        self,
+        root_deployment_id: UUID,
+        *,
+        kinds: list[str] | None = None,
+    ) -> int:
+        """Count spans in a deployment tree, optionally filtering by span kind."""
         ...
 
-
-class _DocumentBlobReader(Protocol):
-    """Read protocol for document and blob lookup operations."""
-
-    async def get_document(self, document_sha256: DocumentSha256) -> DocumentRecord | None:
-        """Retrieve a document record by its SHA256."""
+    async def get_spans_referencing_document(
+        self,
+        document_sha256: str,
+        *,
+        kinds: list[str] | None = None,
+    ) -> list[SpanRecord]:
+        """Find spans that reference a SHA in document or blob input/output arrays."""
         ...
 
-    async def find_document_by_name(self, name: str) -> DocumentRecord | None:
-        """Find the newest document with an exact name match."""
+    async def get_document(self, document_sha256: str) -> DocumentRecord | None:
+        """Retrieve a document record by SHA256."""
         ...
 
-    async def get_documents_batch(self, sha256s: list[DocumentSha256]) -> dict[DocumentSha256, DocumentRecord]:
-        """Retrieve multiple document records by their SHA256s."""
+    async def get_documents_batch(self, sha256s: list[str]) -> dict[str, DocumentRecord]:
+        """Retrieve multiple document records keyed by SHA256."""
+        ...
+
+    async def get_document_with_content(
+        self,
+        document_sha256: str,
+    ) -> HydratedDocument | None:
+        """Load document metadata plus primary content and attachment blobs."""
+        ...
+
+    async def get_all_document_shas_for_tree(self, root_deployment_id: UUID) -> set[str]:
+        """Collect all document SHA256s referenced anywhere in a deployment tree."""
         ...
 
     async def get_blob(self, content_sha256: str) -> BlobRecord | None:
-        """Retrieve a binary blob by its content SHA256."""
+        """Retrieve a blob by content SHA256."""
         ...
 
     async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, BlobRecord]:
-        """Retrieve multiple binary blobs by their content SHA256s."""
+        """Retrieve blobs keyed by content SHA256."""
         ...
 
-    async def get_documents_by_deployment(self, deployment_id: UUID) -> list[DocumentRecord]:
-        """Retrieve all documents belonging to a deployment chain."""
-        ...
-
-    async def get_documents_by_node(self, node_id: UUID) -> list[DocumentRecord]:
-        """Retrieve all documents produced by a specific node."""
-        ...
-
-    async def get_all_document_shas_for_deployment(self, deployment_id: UUID) -> set[str]:
-        """Retrieve all document SHA256s referenced by a deployment's nodes."""
-        ...
-
-    async def check_existing_documents(self, sha256s: list[DocumentSha256]) -> set[DocumentSha256]:
-        """Return the subset of SHA256s that already exist in storage."""
-        ...
-
-    async def find_documents_by_source(self, source_sha256: DocumentSha256) -> list[DocumentRecord]:
-        """Find documents derived from a given source SHA256."""
-        ...
-
-    async def get_document_ancestry(self, sha256: DocumentSha256) -> dict[str, DocumentRecord]:
-        """Return all ancestor documents reachable from derived_from and triggered_by."""
-        ...
-
-    async def find_documents_by_origin(self, sha256: DocumentSha256) -> list[DocumentRecord]:
-        """Find documents that reference a SHA256 in derived_from or triggered_by."""
-        ...
-
-    async def list_run_scopes(self, limit: int) -> list[RunScopeInfo]:
-        """List non-empty document run scopes ordered by latest activity."""
-        ...
-
-    async def search_documents(
+    async def get_span_logs(
         self,
-        name: str | None,
-        document_type: str | None,
-        run_scope: str | None,
-        limit: int,
-        offset: int,
-    ) -> list[DocumentRecord]:
-        """Search documents by metadata with pagination."""
-        ...
-
-    async def get_documents_by_run_scope(self, run_scope: str) -> list[DocumentRecord]:
-        """Retrieve all documents for a run scope."""
-        ...
-
-
-class _ExecutionLogReader(Protocol):
-    """Read protocol for execution logs."""
-
-    async def get_node_logs(
-        self,
-        node_id: UUID,
+        span_id: UUID,
         *,
         level: str | None = None,
         category: str | None = None,
-    ) -> list[ExecutionLog]:
-        """Retrieve execution logs for a specific node."""
+    ) -> list[LogRecord]:
+        """Retrieve logs for a specific span."""
         ...
 
     async def get_deployment_logs(
@@ -192,16 +170,16 @@ class _ExecutionLogReader(Protocol):
         *,
         level: str | None = None,
         category: str | None = None,
-    ) -> list[ExecutionLog]:
-        """Retrieve execution logs for an entire deployment."""
+    ) -> list[LogRecord]:
+        """Retrieve logs for an entire deployment."""
         ...
 
-
-@runtime_checkable
-class DatabaseReader(
-    _ExecutionNodeReader,
-    _DocumentBlobReader,
-    _ExecutionLogReader,
-    Protocol,
-):
-    """Combined read protocol for execution nodes, documents, blobs, and logs."""
+    async def get_deployment_logs_batch(
+        self,
+        deployment_ids: list[UUID],
+        *,
+        level: str | None = None,
+        category: str | None = None,
+    ) -> list[LogRecord]:
+        """Retrieve logs for multiple deployments in one operation."""
+        ...

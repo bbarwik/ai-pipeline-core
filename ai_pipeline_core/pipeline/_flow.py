@@ -1,13 +1,14 @@
 """Class-based pipeline flow runtime and validation."""
 
+import annotationlib
 import ast
 import inspect
 import textwrap
 from collections.abc import Callable
-from typing import Any, ClassVar, get_origin
+from typing import Any, ClassVar, cast, get_origin
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logging import get_pipeline_logger
+from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._task import PipelineTask
 from ai_pipeline_core.pipeline._type_validation import collect_document_types, contains_bare_document, resolve_type_hints
 from ai_pipeline_core.pipeline.options import FlowOptions
@@ -17,6 +18,17 @@ logger = get_pipeline_logger(__name__)
 __all__ = [
     "PipelineFlow",
 ]
+
+
+def _declared_init_annotations(klass: type) -> set[str]:
+    """Return non-private annotations declared directly on ``klass``."""
+    annotate = annotationlib.get_annotate_from_class_namespace(klass.__dict__)
+    if callable(annotate):
+        annotations = cast(dict[str, Any], annotationlib.call_annotate_function(cast(Any, annotate), format=annotationlib.Format.FORWARDREF))
+        return {name for name in annotations if not name.startswith("_")}
+
+    annotations = annotationlib.get_annotations(klass, format=annotationlib.Format.FORWARDREF)
+    return {name for name in annotations if not name.startswith("_")}
 
 
 def _resolve_task_name(globals_dict: dict[str, Any], name: str) -> str | None:
@@ -44,7 +56,7 @@ def _parse_task_graph_from_source(run_fn: Any) -> list[tuple[str, str]]:
     try:
         source = textwrap.dedent(inspect.getsource(run_fn))
         tree = ast.parse(source)
-    except (OSError, TypeError, SyntaxError):
+    except OSError, TypeError, SyntaxError:
         return []
 
     graph: list[tuple[str, str]] = []
@@ -231,7 +243,7 @@ class PipelineFlow:
         cls = type(self)
         known_params: set[str] = set()
         for klass in cls.__mro__:
-            known_params.update(name for name in getattr(klass, "__annotations__", {}) if not name.startswith("_"))
+            known_params.update(_declared_init_annotations(klass))
             known_params.update(
                 name
                 for name, value in vars(klass).items()

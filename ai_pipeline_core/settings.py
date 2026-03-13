@@ -1,5 +1,7 @@
 """Core configuration settings for pipeline operations."""
 
+from typing import Self
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -55,9 +57,6 @@ class Settings(BaseSettings):
     clickhouse_connect_timeout: int = 10
     clickhouse_send_receive_timeout: int = 30
 
-    # Tracking behavior
-    tracking_enabled: bool = True  # When False, disables ClickHouse tracking even if ClickHouse is configured
-
     # Document summary generation (store-level)
     doc_summary_enabled: bool = True
     doc_summary_model: str = "gemini-3.1-flash-lite"
@@ -66,11 +65,14 @@ class Settings(BaseSettings):
     pubsub_project_id: str = ""
     pubsub_topic_id: str = ""
 
+    # Laminar tracing (set LMNR_PROJECT_API_KEY to enable)
+    lmnr_project_api_key: str = ""
+
     @model_validator(mode="after")
-    def _disable_summary_without_llm(self) -> "Settings":
+    def _disable_summary_without_llm(self) -> Self:
         """Auto-disable doc summary generation when LLM credentials are not configured."""
         if self.doc_summary_enabled and (not self.openai_api_key or not self.openai_base_url):
-            object.__setattr__(self, "doc_summary_enabled", False)  # noqa: PLC2801 — frozen model rejects normal setattr
+            object.__setattr__(self, "doc_summary_enabled", False)  # noqa: PLC2801 — frozen Pydantic model
         return self
 
 

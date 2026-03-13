@@ -25,3 +25,4 @@ input  # parameter of Tool.execute base method — used by subclass implementati
 # Prefect/deployment hooks — parameters in Prefect deployment function signatures
 input_document_sha256s  # Prefect deployment parameter — passed by RemoteDeployment caller
 created_by_task  # keyword-only parameter for _persist_documents — reserved for future use
+exc_type  # __exit__ parameter — required by context manager protocol

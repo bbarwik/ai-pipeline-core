@@ -388,7 +388,7 @@ class TestLLMIntegration:
         x-litellm-response-cost header, not in the usage JSON body.
         A random suffix prevents prompt caching (cached calls return cost=0).
         """
-        nonce = uuid.uuid4().hex[:12]
+        nonce = uuid.uuid7().hex[:12]
         conv = Conversation(
             model=model,
             model_options=ModelOptions(max_completion_tokens=100, reasoning_effort="low"),

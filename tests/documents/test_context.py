@@ -2,13 +2,12 @@
 
 import pytest
 
-from ai_pipeline_core.documents import Document, RunScope
-from ai_pipeline_core.documents._context import (
+from ai_pipeline_core.documents import Document
+from ai_pipeline_core.pipeline._execution_context import (
     RunContext,
     _TaskDocumentContext,
-    _get_run_context,
-    _suppress_document_registration,
-    _set_run_context,
+    _run_context,
+    set_run_context,
 )
 
 
@@ -25,10 +24,9 @@ def _make_doc(
     derived_from: tuple[str, ...] | None = None,
     triggered_by: tuple[str, ...] | None = None,
 ) -> SampleDoc:
-    with _suppress_document_registration():
-        if derived_from or triggered_by:
-            return SampleDoc.create(name=name, content=content, derived_from=derived_from, triggered_by=triggered_by)
-        return SampleDoc.create_root(name=name, content=content, reason="test fixture")
+    if derived_from or triggered_by:
+        return SampleDoc.create(name=name, content=content, derived_from=derived_from, triggered_by=triggered_by)
+    return SampleDoc.create_root(name=name, content=content, reason="test fixture")
 
 
 # ===== RunContext tests =====
@@ -36,70 +34,41 @@ def _make_doc(
 
 class TestRunContext:
     def test_creation(self):
-        ctx = RunContext(run_scope=RunScope("project/flow/run123"))
-        assert ctx.run_scope == "project/flow/run123"
+        ctx = RunContext(run_id="project/flow/run123")
+        assert ctx.run_id == "project/flow/run123"
 
     def test_frozen(self):
-        ctx = RunContext(run_scope=RunScope("test"))
+        ctx = RunContext(run_id="test")
         with pytest.raises(AttributeError):
-            ctx.run_scope = "changed"  # type: ignore[misc]
+            ctx.run_id = "changed"  # type: ignore[misc]
 
     def test_get_returns_none_by_default(self):
-        assert _get_run_context() is None
+        assert _run_context.get() is None
 
     def test_set_and_get(self):
-        ctx = RunContext(run_scope=RunScope("my-run"))
-        token = _set_run_context(ctx)
-        try:
-            assert _get_run_context() is ctx
-        finally:
-            from ai_pipeline_core.documents._context import _run_context
-
-            _run_context.reset(token)
+        ctx = RunContext(run_id="my-run")
+        with set_run_context(ctx):
+            assert _run_context.get() is ctx
 
     def test_token_restores_previous(self):
-        ctx1 = RunContext(run_scope=RunScope("first"))
-        ctx2 = RunContext(run_scope=RunScope("second"))
-        token1 = _set_run_context(ctx1)
-        token2 = _set_run_context(ctx2)
-        assert _get_run_context() is ctx2
-
-        from ai_pipeline_core.documents._context import _run_context
-
-        _run_context.reset(token2)
-        assert _get_run_context() is ctx1
-        _run_context.reset(token1)
-        assert _get_run_context() is None
+        ctx1 = RunContext(run_id="first")
+        ctx2 = RunContext(run_id="second")
+        with set_run_context(ctx1):
+            with set_run_context(ctx2):
+                assert _run_context.get() is ctx2
+            assert _run_context.get() is ctx1
+        assert _run_context.get() is None
 
     def test_execution_id_defaults_to_none(self):
-        ctx = RunContext(run_scope=RunScope("test"))
+        ctx = RunContext(run_id="test")
         assert ctx.execution_id is None
 
     def test_execution_id_stored(self):
         from uuid import uuid4
 
         uid = uuid4()
-        ctx = RunContext(run_scope=RunScope("test"), execution_id=uid)
+        ctx = RunContext(run_id="test", execution_id=uid)
         assert ctx.execution_id == uid
-
-
-# ===== _TaskDocumentContext.register_created =====
-
-
-class TestRegistration:
-    def test_register_created(self):
-        ctx = _TaskDocumentContext()
-        doc = _make_doc("a.txt")
-        ctx.register_created(doc)
-        assert doc.sha256 in ctx.created
-
-    def test_register_multiple(self):
-        ctx = _TaskDocumentContext()
-        doc_a = _make_doc("a.txt", "aaa")
-        doc_b = _make_doc("b.txt", "bbb")
-        ctx.register_created(doc_a)
-        ctx.register_created(doc_b)
-        assert len(ctx.created) == 2
 
 
 # ===== validate_provenance =====
@@ -160,23 +129,19 @@ class TestValidateProvenance:
         doc_a = _make_doc("a.txt", "aaa")
         doc_b = _make_doc("b.txt", "bbb", derived_from=(doc_a.sha256,))
         ctx = _TaskDocumentContext()
-        ctx.register_created(doc_a)
-        ctx.register_created(doc_b)
-        warnings = ctx.validate_provenance([doc_b], existing_sha256s=set())
-        assert len(warnings) == 1
-        assert "same task" in warnings[0]
+        warnings = ctx.validate_provenance([doc_a, doc_b], existing_sha256s=set())
+        same_task_warnings = [w for w in warnings if "same task" in w]
+        assert len(same_task_warnings) == 1
 
     def test_same_task_triggered_by_interdep(self):
         """triggered_by SHA256 created in the same task produces a warning."""
         doc_a = _make_doc("a.txt", "aaa")
         doc_b = _make_doc("b.txt", "bbb", triggered_by=(doc_a.sha256,))
         ctx = _TaskDocumentContext()
-        ctx.register_created(doc_a)
-        ctx.register_created(doc_b)
-        warnings = ctx.validate_provenance([doc_b], existing_sha256s=set())
-        assert len(warnings) == 1
-        assert "same task" in warnings[0]
-        assert "triggered_by" in warnings[0]
+        warnings = ctx.validate_provenance([doc_a, doc_b], existing_sha256s=set())
+        same_task_warnings = [w for w in warnings if "same task" in w]
+        assert len(same_task_warnings) == 1
+        assert "triggered_by" in same_task_warnings[0]
 
     def test_no_provenance_warning(self):
         """Document with no derived_from and no triggered_by gets a warning."""
@@ -235,52 +200,3 @@ class TestDeduplicate:
         doc2 = _make_doc("first.txt", "same content")
         result = _TaskDocumentContext.deduplicate([doc1, doc2])
         assert len(result) == 1
-
-
-# ===== finalize (orphan detection) =====
-
-
-class TestFinalize:
-    def test_no_orphans_when_all_returned(self):
-        ctx = _TaskDocumentContext()
-        doc_a = _make_doc("a.txt", "aaa")
-        doc_b = _make_doc("b.txt", "bbb")
-        ctx.register_created(doc_a)
-        ctx.register_created(doc_b)
-        orphans = ctx.finalize([doc_a, doc_b])
-        assert orphans == []
-
-    def test_detects_orphaned_documents(self):
-        ctx = _TaskDocumentContext()
-        doc_a = _make_doc("a.txt", "aaa")
-        doc_b = _make_doc("b.txt", "bbb")
-        ctx.register_created(doc_a)
-        ctx.register_created(doc_b)
-        orphans = ctx.finalize([doc_a])  # doc_b not returned
-        assert len(orphans) == 1
-        assert orphans[0] == doc_b.sha256
-
-    def test_all_orphaned(self):
-        ctx = _TaskDocumentContext()
-        doc = _make_doc("a.txt", "aaa")
-        ctx.register_created(doc)
-        orphans = ctx.finalize([])
-        assert len(orphans) == 1
-        assert orphans[0] == doc.sha256
-
-    def test_empty_context_no_orphans(self):
-        ctx = _TaskDocumentContext()
-        orphans = ctx.finalize([])
-        assert orphans == []
-
-    def test_returns_sorted_sha256s(self):
-        ctx = _TaskDocumentContext()
-        docs = [_make_doc(f"{i}.txt", f"content-{i}") for i in range(5)]
-        for d in docs:
-            ctx.register_created(d)
-        orphans = ctx.finalize([docs[2]])  # return only one
-        assert orphans == sorted(orphans)
-        assert len(orphans) == 4
-
-
-# ===== suppression flag =====

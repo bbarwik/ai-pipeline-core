@@ -20,7 +20,7 @@ from ai_pipeline_core.prompt_compiler.components import (
 
 
 @pytest.fixture
-def temp_modules() -> Generator[list[str], None, None]:
+def temp_modules() -> Generator[list[str]]:
     """Track fake modules added to sys.modules and clean up after test."""
     created: list[str] = []
     yield created

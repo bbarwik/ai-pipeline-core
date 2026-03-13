@@ -15,6 +15,13 @@ def test_showcase_database_imports() -> None:
     assert hasattr(m, "DatabaseShowcasePipeline")
 
 
+def test_showcase_replay_imports() -> None:
+    """examples/showcase_replay.py imports without errors."""
+    import examples.showcase_replay as m
+
+    assert hasattr(m, "ReplayUppercaseTask")
+
+
 def test_showcase_builds_flows() -> None:
     """ShowcasePipeline.build_flows() returns PipelineFlow instances."""
     from examples.showcase import ShowcasePipeline
