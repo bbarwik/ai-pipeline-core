@@ -47,6 +47,11 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
         """True if MIME type indicates text content."""
         return is_text_mime_type(self.mime_type)
 
+    @cached_property
+    def mime_type(self) -> str:
+        """Detected MIME type from content and filename. Cached."""
+        return detect_mime_type(self.content, self.name)
+
     @property
     def size(self) -> int:
         """Content size in bytes."""
@@ -58,11 +63,6 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
         if not self.is_text:
             raise ValueError(f"Attachment is not text: {self.name}")
         return self.content.decode("utf-8")
-
-    @cached_property
-    def mime_type(self) -> str:
-        """Detected MIME type from content and filename. Cached."""
-        return detect_mime_type(self.content, self.name)
 
 
 class Document(BaseModel):
@@ -118,6 +118,30 @@ Attachments:
             attachments=attachments or (),
         )
 
+    @cached_property
+    def approximate_tokens_count(self) -> int:
+        """Approximate token count across primary content and attachments."""
+        if self.is_text:
+            total = estimate_text_tokens(self.text)
+        elif self.is_image:
+            total = estimate_image_tokens()
+        elif self.is_pdf:
+            total = estimate_pdf_tokens()
+        else:
+            total = estimate_binary_tokens()
+
+        for att in self.attachments:
+            if att.is_image:
+                total += estimate_image_tokens()
+            elif att.is_pdf:
+                total += estimate_pdf_tokens()
+            elif att.is_text:
+                total += estimate_text_tokens(att.text)
+            else:
+                total += estimate_binary_tokens()
+
+        return total
+
     @property
     def content_documents(self) -> tuple[str, ...]:
         """Document SHA256 hashes from derived_from (filtered by is_document_sha256)."""
@@ -127,6 +151,12 @@ Attachments:
     def content_references(self) -> tuple[str, ...]:
         """Non-hash reference strings from derived_from (URLs, file paths, etc.)."""
         return tuple(src for src in self.derived_from if not is_document_sha256(src))
+
+    @final
+    @cached_property
+    def content_sha256(self) -> str:
+        """SHA256 hash of raw content bytes only. Used for content deduplication."""
+        return compute_content_sha256(self.content)
 
     @final
     @property
@@ -148,6 +178,31 @@ Attachments:
     def is_text(self) -> bool:
         """True if MIME type indicates text content."""
         return is_text_mime_type(self.mime_type)
+
+    @cached_property
+    def mime_type(self) -> str:
+        """Detected MIME type. Extension-based for known formats, content analysis for others. Cached."""
+        return detect_mime_type(self.content, self.name)
+
+    @final
+    @cached_property
+    def parsed(self) -> TContent:
+        """Content parsed against the declared generic type parameter. Cached.
+
+        Returns the Pydantic model declared via Document[ModelType].
+        Raises TypeError if the Document subclass has no declared content type.
+        Use parse(ModelType) for explicit parsing on untyped documents.
+        """
+        content_type = self.__class__._content_type
+        if content_type is None:
+            raise TypeError(f"{self.__class__.__name__} has no declared content type. Use parse(ModelType) for explicit parsing.")
+        return cast(TContent, self.as_pydantic_model(content_type))
+
+    @final
+    @cached_property
+    def sha256(self) -> DocumentSha256:
+        """Full SHA256 identity hash (name + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
+        return compute_document_sha256(self)
 
     @final
     @property
@@ -380,30 +435,6 @@ Attachments:
         """Blocked: pickle serialization is not supported for Documents."""
         raise TypeError("Document pickle serialization is not supported. Use JSON serialization (model_dump/model_validate).")
 
-    @cached_property
-    def approximate_tokens_count(self) -> int:
-        """Approximate token count across primary content and attachments."""
-        if self.is_text:
-            total = estimate_text_tokens(self.text)
-        elif self.is_image:
-            total = estimate_image_tokens()
-        elif self.is_pdf:
-            total = estimate_pdf_tokens()
-        else:
-            total = estimate_binary_tokens()
-
-        for att in self.attachments:
-            if att.is_image:
-                total += estimate_image_tokens()
-            elif att.is_pdf:
-                total += estimate_pdf_tokens()
-            elif att.is_text:
-                total += estimate_text_tokens(att.text)
-            else:
-                total += estimate_binary_tokens()
-
-        return total
-
     def as_json(self) -> Any:
         """Parse content as JSON."""
         return json.loads(self.text)
@@ -436,12 +467,6 @@ Attachments:
         yaml = YAML()
         return yaml.load(self.text)  # type: ignore[no-untyped-call, no-any-return]
 
-    @final
-    @cached_property
-    def content_sha256(self) -> str:
-        """SHA256 hash of raw content bytes only. Used for content deduplication."""
-        return compute_content_sha256(self.content)
-
     def has_derived_from(self, source: Document | str) -> bool:
         """Check if a source (Document or string) is in this document's derived_from."""
         if isinstance(source, str):
@@ -449,11 +474,6 @@ Attachments:
         if not isinstance(source, Document):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"Invalid source type: {type(source).__name__}. Expected Document or str.")  # pyright: ignore[reportUnreachable]
         return source.sha256 in self.derived_from
-
-    @cached_property
-    def mime_type(self) -> str:
-        """Detected MIME type. Extension-based for known formats, content analysis for others. Cached."""
-        return detect_mime_type(self.content, self.name)
 
     @override
     def model_copy(self, *args: Any, **kwargs: Any) -> Self:
@@ -479,20 +499,6 @@ Attachments:
         raise ValueError(f"Unsupported parse type: {type_}")
 
     @final
-    @cached_property
-    def parsed(self) -> TContent:
-        """Content parsed against the declared generic type parameter. Cached.
-
-        Returns the Pydantic model declared via Document[ModelType].
-        Raises TypeError if the Document subclass has no declared content type.
-        Use parse(ModelType) for explicit parsing on untyped documents.
-        """
-        content_type = self.__class__._content_type
-        if content_type is None:
-            raise TypeError(f"{self.__class__.__name__} has no declared content type. Use parse(ModelType) for explicit parsing.")
-        return cast(TContent, self.as_pydantic_model(content_type))
-
-    @final
     def serialize_model(self) -> dict[str, Any]:
         """Serialize to JSON-compatible dict for storage/transmission. Roundtrips with from_dict().
 
@@ -515,12 +521,6 @@ Attachments:
             att_dict["size"] = att_obj.size
 
         return result
-
-    @final
-    @cached_property
-    def sha256(self) -> DocumentSha256:
-        """Full SHA256 identity hash (name + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
-        return compute_document_sha256(self)
 
 
 class DocumentValidationError(Exception):

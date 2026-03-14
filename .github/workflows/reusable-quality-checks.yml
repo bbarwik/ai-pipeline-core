@@ -91,7 +91,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run tests with coverage (unit only)
-        run: uv run pytest -v --tb=short --maxfail=1 --durations=10 --cov=ai_pipeline_core --cov-report=term-missing --cov-fail-under=80 -n 4 -m "not pubsub and not clickhouse and not integration"
+        run: uv run pytest -v --tb=short --maxfail=1 --durations=10 --cov=ai_pipeline_core --cov-report=term-missing --cov-fail-under=80 -n 4 -m "not integration and not clickhouse and not pubsub and not pubsub_live"
 
   clickhouse-test:
     if: github.event_name == 'push' || github.event_name == 'workflow_call'

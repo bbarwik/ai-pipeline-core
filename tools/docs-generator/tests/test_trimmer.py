@@ -1,6 +1,6 @@
-from ai_pipeline_core.docs_generator.extractor import ClassInfo
-from ai_pipeline_core.docs_generator.guide_builder import GuideData, render_guide
-from ai_pipeline_core.docs_generator.guide_builder import (
+from docs_generator.extractor import ClassInfo
+from docs_generator.guide_builder import GuideData, render_guide
+from docs_generator.guide_builder import (
     MAX_GUIDE_SIZE,
     _measure,
     manage_guide_size,
@@ -68,20 +68,18 @@ def test_manage_guide_size_at_exact_limit():
     assert result == content
 
 
-def test_manage_guide_size_over_limit_logs_warning(caplog):
+def test_manage_guide_size_over_limit_logs_warning(capsys):
     data = _small_guide()
     content = render_guide(data)
-    with caplog.at_level("WARNING"):
-        manage_guide_size(data, content, max_size=1)
-    assert "small" in caplog.text
+    manage_guide_size(data, content, max_size=1)
+    assert "small" in capsys.readouterr().err
 
 
-def test_manage_guide_size_under_limit_no_warning(caplog):
+def test_manage_guide_size_under_limit_no_warning(capsys):
     data = _small_guide()
     content = render_guide(data)
-    with caplog.at_level("WARNING"):
-        manage_guide_size(data, content, max_size=100_000)
-    assert caplog.text == ""
+    manage_guide_size(data, content, max_size=100_000)
+    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------

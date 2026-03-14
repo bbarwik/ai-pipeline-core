@@ -97,7 +97,12 @@ repos:
           - pre-commit
       - id: check-ai-docs
         name: check .ai-docs/ freshness
-        entry: scripts/check_ai_docs_freshness.sh
+        entry: >-
+          bash -c 'python -m docs_generator generate > /dev/null 2>&1 || true;
+          if ! git diff --quiet -- .ai-docs/; then
+          echo "ERROR: .ai-docs/ is stale after regeneration.";
+          echo "Run: make docs-ai-build && git add .ai-docs/";
+          exit 1; fi'
         language: system
         pass_filenames: false
         files: \.py$
@@ -105,7 +110,7 @@ repos:
           - pre-commit
       - id: test-collect
         name: verify all test modules importable
-        entry: uv run pytest --collect-only -q --no-header
+        entry: pytest --collect-only -q --no-header
         language: system
         pass_filenames: false
         files: \.py$

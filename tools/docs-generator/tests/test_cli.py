@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from ai_pipeline_core.docs_generator.cli import (
-    EXCLUDED_MODULES,
+from docs_generator.cli import (
     README_FILENAME,
     TEST_DIR_OVERRIDES,
     _discover_modules,
@@ -10,8 +9,8 @@ from ai_pipeline_core.docs_generator.cli import (
     _run_generate,
     main,
 )
-from ai_pipeline_core.docs_generator.extractor import SymbolTable
-from ai_pipeline_core.docs_generator.guide_builder import README_ERROR_SIZE, GuideData
+from docs_generator.extractor import SymbolTable
+from docs_generator.guide_builder import README_ERROR_SIZE, GuideData
 
 
 def _make_repo(tmp_path):
@@ -48,7 +47,7 @@ def test_generate_writes_guides(tmp_path, monkeypatch):
     src, tests, output = _make_repo(tmp_path)
     table = SymbolTable()
 
-    from ai_pipeline_core.docs_generator.extractor import FunctionInfo
+    from docs_generator.extractor import FunctionInfo
 
     func = FunctionInfo(
         name="foo",
@@ -77,12 +76,12 @@ def test_generate_writes_guides(tmp_path, monkeypatch):
         return rendered_content
 
     monkeypatch.setattr(
-        "ai_pipeline_core.docs_generator.cli.build_symbol_table",
+        "docs_generator.cli.build_symbol_table",
         mock_build_symbol_table,
     )
-    monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_guide", mock_build_guide)
-    monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.render_guide", mock_render)
-    monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.manage_guide_size", mock_manage)
+    monkeypatch.setattr("docs_generator.cli.build_guide", mock_build_guide)
+    monkeypatch.setattr("docs_generator.cli.render_guide", mock_render)
+    monkeypatch.setattr("docs_generator.cli.manage_guide_size", mock_manage)
 
     result = _run_generate(src, tests, output, tmp_path)
     assert result == 0
@@ -102,10 +101,10 @@ def test_generate_writes_intro(tmp_path, monkeypatch):
         return _empty_guide_data(module_name)
 
     monkeypatch.setattr(
-        "ai_pipeline_core.docs_generator.cli.build_symbol_table",
+        "docs_generator.cli.build_symbol_table",
         mock_build_symbol_table,
     )
-    monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_guide", mock_build_guide)
+    monkeypatch.setattr("docs_generator.cli.build_guide", mock_build_guide)
 
     _run_generate(src, tests, output, tmp_path)
     assert (output / README_FILENAME).exists()
@@ -122,10 +121,10 @@ def test_generate_skips_empty_modules(tmp_path, monkeypatch):
         return _empty_guide_data(module_name)
 
     monkeypatch.setattr(
-        "ai_pipeline_core.docs_generator.cli.build_symbol_table",
+        "docs_generator.cli.build_symbol_table",
         mock_build_symbol_table,
     )
-    monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_guide", mock_build_guide)
+    monkeypatch.setattr("docs_generator.cli.build_guide", mock_build_guide)
 
     _run_generate(src, tests, output, tmp_path)
     # All modules are empty, so no guide .md files (only README.md)
@@ -147,10 +146,10 @@ def test_generate_cleans_stale_files(tmp_path, monkeypatch):
         return _empty_guide_data(module_name)
 
     monkeypatch.setattr(
-        "ai_pipeline_core.docs_generator.cli.build_symbol_table",
+        "docs_generator.cli.build_symbol_table",
         mock_build_symbol_table,
     )
-    monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_guide", mock_build_guide)
+    monkeypatch.setattr("docs_generator.cli.build_guide", mock_build_guide)
 
     _run_generate(src, tests, output, tmp_path)
     assert not (output / "old_module.md").exists()
@@ -209,7 +208,7 @@ def test_path_override(tmp_path):
 
 
 def test_module_auto_discovery():
-    src_dir = Path(__file__).resolve().parent.parent.parent / "ai_pipeline_core"
+    src_dir = Path(__file__).resolve().parent.parent.parent.parent / "ai_pipeline_core"
     discovered = _discover_modules(src_dir)
     assert "documents" in discovered
     assert "database" in discovered
@@ -217,13 +216,11 @@ def test_module_auto_discovery():
     assert "observability" in discovered
     assert "pipeline" in discovered
     assert "tracing" not in discovered  # moved into observability/
-    # Excluded modules must not appear
-    for excluded in EXCLUDED_MODULES:
-        assert excluded not in discovered
+    assert "docs_generator" not in discovered  # moved to separate package
 
 
 def test_test_dir_overrides_correctness():
-    tests_dir = Path(__file__).resolve().parent.parent
+    tests_dir = Path(__file__).resolve().parent.parent.parent.parent / "tests"
     for module_name, override in TEST_DIR_OVERRIDES.items():
         override_dir = tests_dir / override
         assert override_dir.is_dir(), f"Override dir {override_dir} for module {module_name} does not exist"
@@ -236,7 +233,7 @@ def test_render_readme_content():
         "llm": _empty_guide_data("llm"),
     }
     content = _render_readme(generated, guide_data_map, {}, "")
-    assert "<!-- Auto-generated by ai_pipeline_core.docs_generator" in content
+    assert "<!-- Auto-generated by docs_generator" in content
     assert "# ai-pipeline-core" in content
     assert "documents" in content
     assert "llm" in content
@@ -262,7 +259,7 @@ def test_render_readme_module_descriptions():
 
 
 def test_render_readme_module_sections():
-    from ai_pipeline_core.docs_generator.extractor import FunctionInfo
+    from docs_generator.extractor import FunctionInfo
 
     func = FunctionInfo(
         name="generate",
@@ -286,7 +283,7 @@ def test_render_readme_module_sections():
 
 
 def test_render_readme_class_summary():
-    from ai_pipeline_core.docs_generator.extractor import ClassInfo, MethodInfo
+    from docs_generator.extractor import ClassInfo, MethodInfo
 
     method = MethodInfo(
         name="send",
@@ -295,7 +292,9 @@ def test_render_readme_class_summary():
         source="def send(self, content: str) -> Conversation: ...",
         is_property=False,
         is_classmethod=False,
+        is_staticmethod=False,
         is_abstract=False,
+        is_async=False,
         line_count=1,
     )
     cls = ClassInfo(
@@ -322,7 +321,7 @@ def test_render_readme_class_summary():
 
 
 def test_render_readme_class_field_descriptions():
-    from ai_pipeline_core.docs_generator.extractor import ClassInfo
+    from docs_generator.extractor import ClassInfo
 
     cls = ClassInfo(
         name="Document",
@@ -354,7 +353,7 @@ def test_render_readme_class_field_descriptions():
 
 
 def test_read_module_purpose(tmp_path):
-    from ai_pipeline_core.docs_generator.cli import _read_module_purpose
+    from docs_generator.cli import _read_module_purpose
 
     src = tmp_path / "ai_pipeline_core"
     mod = src / "mymod"
@@ -365,7 +364,7 @@ def test_read_module_purpose(tmp_path):
 
 
 def test_read_module_purpose_missing_init(tmp_path):
-    from ai_pipeline_core.docs_generator.cli import _read_module_purpose
+    from docs_generator.cli import _read_module_purpose
 
     src = tmp_path / "ai_pipeline_core"
     src.mkdir(parents=True)
@@ -373,7 +372,7 @@ def test_read_module_purpose_missing_init(tmp_path):
 
 
 def test_read_module_purpose_no_docstring(tmp_path):
-    from ai_pipeline_core.docs_generator.cli import _read_module_purpose
+    from docs_generator.cli import _read_module_purpose
 
     src = tmp_path / "ai_pipeline_core"
     mod = src / "mymod"
@@ -388,7 +387,7 @@ def test_read_module_purpose_no_docstring(tmp_path):
 
 
 def test_build_import_map(tmp_path):
-    from ai_pipeline_core.docs_generator.cli import _build_import_map
+    from docs_generator.cli import _build_import_map
 
     src = tmp_path / "ai_pipeline_core"
     src.mkdir(parents=True)
@@ -409,14 +408,14 @@ def test_build_import_map(tmp_path):
 
 
 def test_read_version(tmp_path):
-    from ai_pipeline_core.docs_generator.cli import _read_version
+    from docs_generator.cli import _read_version
 
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "test"\nversion = "1.2.3"\n')
     assert _read_version(tmp_path) == "1.2.3"
 
 
 def test_read_version_missing_file(tmp_path):
-    from ai_pipeline_core.docs_generator.cli import _read_version
+    from docs_generator.cli import _read_version
 
     assert _read_version(tmp_path) == ""
 
@@ -428,14 +427,14 @@ def test_read_version_missing_file(tmp_path):
 
 class TestConsolidateCodeBlocks:
     def test_merges_consecutive_blocks(self):
-        from ai_pipeline_core.docs_generator.cli import _consolidate_code_blocks
+        from docs_generator.cli import _consolidate_code_blocks
 
         content = "```\n\n```python\ncode\n```"
         result = _consolidate_code_blocks(content)
         assert "```\n\n```python" not in result
 
     def test_no_change_without_consecutive(self):
-        from ai_pipeline_core.docs_generator.cli import _consolidate_code_blocks
+        from docs_generator.cli import _consolidate_code_blocks
 
         content = "```python\ncode\n```\n\nSome text\n```python\nmore code\n```"
         result = _consolidate_code_blocks(content)
@@ -444,14 +443,14 @@ class TestConsolidateCodeBlocks:
 
 class TestNormalizeWhitespace:
     def test_strips_trailing(self):
-        from ai_pipeline_core.docs_generator.cli import _normalize_whitespace
+        from docs_generator.cli import _normalize_whitespace
 
         result = _normalize_whitespace("line1   \nline2  \n")
         assert result == "line1\nline2\n\n" or result == "line1\nline2\n"
         assert "   " not in result  # trailing spaces stripped
 
     def test_ends_with_newline(self):
-        from ai_pipeline_core.docs_generator.cli import _normalize_whitespace
+        from docs_generator.cli import _normalize_whitespace
 
         result = _normalize_whitespace("content")
         assert result.endswith("\n")
@@ -459,13 +458,13 @@ class TestNormalizeWhitespace:
 
 class TestBuildImportMapEdgeCases:
     def test_no_init_file(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _build_import_map
+        from docs_generator.cli import _build_import_map
 
         result = _build_import_map(tmp_path / "nonexistent")
         assert result == {}
 
     def test_syntax_error(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _build_import_map
+        from docs_generator.cli import _build_import_map
 
         src = tmp_path / "pkg"
         src.mkdir()
@@ -474,7 +473,7 @@ class TestBuildImportMapEdgeCases:
         assert result == {}
 
     def test_no_all(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _build_import_map
+        from docs_generator.cli import _build_import_map
 
         src = tmp_path / "pkg"
         src.mkdir()
@@ -483,7 +482,7 @@ class TestBuildImportMapEdgeCases:
         assert result == {}
 
     def test_absolute_import(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _build_import_map
+        from docs_generator.cli import _build_import_map
 
         src = tmp_path / "ai_pipeline_core"
         src.mkdir()
@@ -494,7 +493,7 @@ class TestBuildImportMapEdgeCases:
 
 class TestBuildModuleImportMap:
     def test_discovers_subpackage_symbols(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _build_module_import_map
+        from docs_generator.cli import _build_module_import_map
 
         src = tmp_path / "pkg"
         src.mkdir()
@@ -506,7 +505,7 @@ class TestBuildModuleImportMap:
         assert "SubSymbol" in result.get("submod", [])
 
     def test_skips_private_modules(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _build_module_import_map
+        from docs_generator.cli import _build_module_import_map
 
         src = tmp_path / "pkg"
         src.mkdir()
@@ -520,7 +519,7 @@ class TestBuildModuleImportMap:
 
 class TestReadModulePurposeSyntaxError:
     def test_syntax_error_returns_empty(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _read_module_purpose
+        from docs_generator.cli import _read_module_purpose
 
         src = tmp_path / "pkg"
         mod = src / "bad"
@@ -534,16 +533,16 @@ class TestGenerateReadmeSizeLimit:
         src, tests, output = _make_repo(tmp_path)
         table = SymbolTable()
 
-        monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_symbol_table", lambda _: table)
+        monkeypatch.setattr("docs_generator.cli.build_symbol_table", lambda _: table)
         monkeypatch.setattr(
-            "ai_pipeline_core.docs_generator.cli.build_guide",
+            "docs_generator.cli.build_guide",
             lambda *a, **kw: _empty_guide_data(a[0]),
         )
 
         # Produce a README larger than the limit by injecting a bloated _render_readme
         bloated_content = "x" * (README_ERROR_SIZE + 1024)
         monkeypatch.setattr(
-            "ai_pipeline_core.docs_generator.cli._render_readme",
+            "docs_generator.cli._render_readme",
             lambda *a, **kw: bloated_content,
         )
 
@@ -554,15 +553,15 @@ class TestGenerateReadmeSizeLimit:
         src, tests, output = _make_repo(tmp_path)
         table = SymbolTable()
 
-        monkeypatch.setattr("ai_pipeline_core.docs_generator.cli.build_symbol_table", lambda _: table)
+        monkeypatch.setattr("docs_generator.cli.build_symbol_table", lambda _: table)
         monkeypatch.setattr(
-            "ai_pipeline_core.docs_generator.cli.build_guide",
+            "docs_generator.cli.build_guide",
             lambda *a, **kw: _empty_guide_data(a[0]),
         )
 
         small_content = "# Small README\n"
         monkeypatch.setattr(
-            "ai_pipeline_core.docs_generator.cli._render_readme",
+            "docs_generator.cli._render_readme",
             lambda *a, **kw: small_content,
         )
 
@@ -589,7 +588,7 @@ class TestMainCheckSubcommand:
 
 class TestParseAllNames:
     def test_empty_file(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _parse_init_all
+        from docs_generator.cli import _parse_init_all
 
         f = tmp_path / "empty.py"
         f.write_text("")
@@ -597,15 +596,129 @@ class TestParseAllNames:
         assert result == set()
 
     def test_nonexistent_file(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _parse_init_all
+        from docs_generator.cli import _parse_init_all
 
         result = _parse_init_all(tmp_path / "nope.py")
         assert result == set()
 
     def test_syntax_error(self, tmp_path):
-        from ai_pipeline_core.docs_generator.cli import _parse_init_all
+        from docs_generator.cli import _parse_init_all
 
         f = tmp_path / "bad.py"
         f.write_text("def broken(:\n")
         result = _parse_init_all(f)
         assert result == set()
+
+
+# ---------------------------------------------------------------------------
+# Async method stubs in README
+# ---------------------------------------------------------------------------
+
+
+def test_render_readme_async_method_stub():
+    from docs_generator.extractor import ClassInfo, MethodInfo
+
+    method = MethodInfo(
+        name="send",
+        signature="(self, content: str) -> Conversation",
+        docstring="Send a message.",
+        source="async def send(self, content: str) -> Conversation: ...",
+        is_property=False,
+        is_classmethod=False,
+        is_staticmethod=False,
+        is_abstract=False,
+        is_async=True,
+        line_count=1,
+    )
+    cls = ClassInfo(
+        name="Conversation",
+        bases=("BaseModel",),
+        docstring="Immutable conversation manager.",
+        is_public=True,
+        class_vars=(),
+        methods=(method,),
+        validators=(),
+        module_path="llm",
+    )
+    data = _empty_guide_data("llm")
+    data.classes = [cls]
+    generated = [("llm", 3000)]
+    guide_data_map = {"llm": data}
+    content = _render_readme(generated, guide_data_map, {}, "")
+    assert "async def send(self, content: str) -> Conversation:" in content
+
+
+# ---------------------------------------------------------------------------
+# Staticmethod stubs in README
+# ---------------------------------------------------------------------------
+
+
+def test_render_readme_staticmethod_stub():
+    from docs_generator.extractor import ClassInfo, MethodInfo
+
+    method = MethodInfo(
+        name="build_result",
+        signature="(data: dict) -> Result",
+        docstring="Build a result.",
+        source="@staticmethod\ndef build_result(data: dict) -> Result: ...",
+        is_property=False,
+        is_classmethod=False,
+        is_staticmethod=True,
+        is_abstract=False,
+        is_async=False,
+        line_count=1,
+    )
+    cls = ClassInfo(
+        name="Deployment",
+        bases=(),
+        docstring="Pipeline deployment.",
+        is_public=True,
+        class_vars=(),
+        methods=(method,),
+        validators=(),
+        module_path="deployment",
+    )
+    data = _empty_guide_data("deployment")
+    data.classes = [cls]
+    generated = [("deployment", 3000)]
+    guide_data_map = {"deployment": data}
+    content = _render_readme(generated, guide_data_map, {}, "")
+    assert "@staticmethod" in content
+
+
+# ---------------------------------------------------------------------------
+# Missing re-exported exceptions
+# ---------------------------------------------------------------------------
+
+
+def test_generate_includes_reexported_symbols(tmp_path):
+    """Symbols imported from private modules and re-exported via __all__ must appear in guides."""
+    src = tmp_path / "ai_pipeline_core"
+    src.mkdir()
+    (src / "__init__.py").write_text('"""Module."""\n')
+
+    # Private module defines the class
+    priv = src / "_base.py"
+    priv.write_text("class BaseError(Exception):\n    pass\n")
+
+    # Public module re-exports it
+    exc = src / "exceptions.py"
+    exc.write_text(
+        '"""Exception hierarchy."""\n'
+        "from ai_pipeline_core._base import BaseError\n"
+        '__all__ = ["BaseError", "SpecificError"]\n'
+        "class SpecificError(BaseError):\n"
+        "    pass\n"
+    )
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    output = tmp_path / ".ai-docs"
+
+    result = _run_generate(src, tests, output, tmp_path)
+    assert result == 0
+
+    guide = (output / "exceptions.md").read_text()
+    # Both SpecificError (defined here) and BaseError (re-exported) must appear
+    assert "class SpecificError" in guide
+    assert "class BaseError" in guide

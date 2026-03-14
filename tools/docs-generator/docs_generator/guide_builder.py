@@ -6,10 +6,11 @@ discovers and scores test examples, extracts rules, and renders guides.
 
 import ast
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ai_pipeline_core.docs_generator.extractor import (
+from docs_generator.extractor import (
     EXTERNAL_STUBS,
     ClassInfo,
     FunctionInfo,
@@ -22,9 +23,6 @@ from ai_pipeline_core.docs_generator.extractor import (
     resolve_dependencies,
     unpack_class_field,
 )
-from ai_pipeline_core.logger import get_pipeline_logger
-
-logger = get_pipeline_logger(__name__)
 
 __all__ = [
     "MAX_EXAMPLES",
@@ -57,11 +55,10 @@ def manage_guide_size(
     size = _measure(rendered_content)
     if size <= max_size:
         return rendered_content
-    logger.warning(
-        "%s guide is %s bytes (%dKB). Consider: move private helpers to _ prefixed functions, split large classes into separate modules",
-        data.module_name,
-        f"{size:,}",
-        size // 1024,
+    print(
+        f"WARNING: {data.module_name} guide is {size:,} bytes ({size // 1024}KB). "
+        f"Consider: move private helpers to _ prefixed functions, split large classes into separate modules",
+        file=sys.stderr,
     )
     return rendered_content
 
@@ -284,7 +281,9 @@ def flatten_methods(cls: ClassInfo, table: SymbolTable) -> tuple[MethodInfo, ...
                     source=method.source,
                     is_property=method.is_property,
                     is_classmethod=method.is_classmethod,
+                    is_staticmethod=method.is_staticmethod,
                     is_abstract=method.is_abstract,
+                    is_async=method.is_async,
                     line_count=method.line_count,
                     is_inherited=True,
                     inherited_from=source_class,
@@ -457,17 +456,15 @@ def build_guide(  # noqa: PLR0917
     # Discover and score tests
     tests = discover_tests(module_name, tests_dir, test_dir_overrides, repo_root)
     if not tests:
-        logger.warning("No tests found for %s", module_name)
+        print(f"No tests found for {module_name}", file=sys.stderr)
 
     symbol_names = root_names + [f.name for f in public_functions]
 
     for t in tests:
         if t.is_marked and not _has_symbol_overlap(t, symbol_names):
-            logger.warning(
-                "Marked test %s in %s has no symbol overlap with module %s",
-                t.name,
-                t.source_file,
-                module_name,
+            print(
+                f"Marked test {t.name} in {t.source_file} has no symbol overlap with module {module_name}",
+                file=sys.stderr,
             )
 
     example_budget = _compute_example_budget(len(flattened_classes))

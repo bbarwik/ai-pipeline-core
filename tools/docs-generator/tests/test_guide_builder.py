@@ -1,14 +1,14 @@
 from pathlib import Path
 
-from ai_pipeline_core.docs_generator.extractor import (
+from docs_generator.extractor import (
     ClassInfo,
     FunctionInfo,
     MethodInfo,
     SymbolTable,
     build_symbol_table,
 )
-from ai_pipeline_core.docs_generator.extractor import ValueInfo
-from ai_pipeline_core.docs_generator.guide_builder import (
+from docs_generator.extractor import ValueInfo
+from docs_generator.guide_builder import (
     BASE_EXAMPLE_BUDGET,
     MAX_EXAMPLE_BUDGET,
     GuideData,
@@ -79,7 +79,9 @@ def _make_method(
     source: str = "",
     is_property: bool = False,
     is_classmethod: bool = False,
+    is_staticmethod: bool = False,
     is_abstract: bool = False,
+    is_async: bool = False,
     line_count: int = 1,
     is_inherited: bool = False,
     inherited_from: str | None = None,
@@ -88,10 +90,12 @@ def _make_method(
         name=name,
         signature=signature,
         docstring=docstring,
-        source=source or f"def {name}{signature}: pass",
+        source=source or f"{'async ' if is_async else ''}def {name}{signature}: pass",
         is_property=is_property,
         is_classmethod=is_classmethod,
+        is_staticmethod=is_staticmethod,
         is_abstract=is_abstract,
+        is_async=is_async,
         line_count=line_count,
         is_inherited=is_inherited,
         inherited_from=inherited_from,
@@ -626,7 +630,7 @@ def test_select_examples_all_marked_all_errors():
 # ---------------------------------------------------------------------------
 
 
-def test_marked_zero_overlap_warning(tmp_path, caplog):
+def test_marked_zero_overlap_warning(tmp_path, capsys):
     src = tmp_path / "src"
     pkg = src / "mymod"
     pkg.mkdir(parents=True)
@@ -636,12 +640,9 @@ def test_marked_zero_overlap_warning(tmp_path, caplog):
     tests_dir.mkdir()
     (tests_dir / "test_mymod.py").write_text("import pytest\n\n@pytest.mark.ai_docs\ndef test_completely_unrelated():\n    assert 1 + 1 == 2\n")
 
-    import logging
-
     table = build_symbol_table(src)
-    with caplog.at_level(logging.WARNING):
-        build_guide("mymod", src, tests_dir, table)
-    assert "no symbol overlap" in caplog.text.lower()
+    build_guide("mymod", src, tests_dir, table)
+    assert "no symbol overlap" in capsys.readouterr().err.lower()
 
 
 # ---------------------------------------------------------------------------

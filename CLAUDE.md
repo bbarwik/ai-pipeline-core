@@ -1,6 +1,6 @@
-# AI Pipeline Core Framework Requirements
+# AI Pipeline Core — Coding Standards & Rules
 
-> Internal requirements for the ai-pipeline-core framework repository. This document defines what the framework must provide and how framework code must be written.
+> Rules and standards for the ai-pipeline-core framework repository. Governs how framework code must be written, not what the framework provides (see `.ai-docs/` for API documentation).
 
 ## Design Principles
 
@@ -28,7 +28,7 @@
 
 ---
 
-## 1. Core Architecture
+## 1. Architecture Rules
 
 ### 1.1 Async Execution
 
@@ -54,8 +54,7 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - Modules/agents/tools form **acyclic dependency graph**
 - Clear module boundaries with defined inputs/outputs
 - Task inputs support typed parameters: scalars, enums, frozen BaseModels, `Conversation`, `Document`, and typed containers thereof
-- **Context as document types** — Prompt specs declare `input_documents: tuple[type[Document], ...]` for expected context
-- Missing documents warned at runtime (via `send_spec()`)
+- **Context as document types** — Prompt specs declare `input_documents` for expected context; missing documents warned at runtime
 
 ### 1.4 Configuration
 
@@ -66,257 +65,34 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 
 ---
 
-## 2. What the Framework Provides
+## 2. LLM Implementation Rules
 
-### 2.1 LLM Interaction (`llm/`, `_llm_core/`)
+These rules govern how LLM-related code must be written.
 
-**Conversation Class (public API for all LLM interactions):**
-- Immutable, stateful conversation management
-- Separates **context** (cacheable prefix: documents, system instructions) from **messages** (dynamic suffix: conversation history)
-- **Immutability**: Every method returns a NEW `Conversation` instance. The original is never modified. This enables safe forking for warmup+fork pattern.
-- **Methods**: `send(content)`, `send_structured(content, response_format)`, `send_spec(spec, documents=...)`, `with_document(doc)`, `with_documents(docs)`, `with_context(*docs)`, `with_model(model)`, `with_model_options(options)`, `with_substitutor(enabled)`, `with_assistant_message(content)`
-- **Properties**: `.content`, `.reasoning_content`, `.usage`, `.cost`, `.parsed`, `.citations`, `.approximate_tokens_count`
-
-**Prompt Caching:**
-- Automatic prefix-based caching via `cache_ttl` parameter (default: 5 minutes)
-- Warmup + fork pattern supported (see §3.2 for implementation details)
-- **WARNING: Gemini requires ≥10k tokens in context for caching to be effective**
-
-**Image Handling:**
-- Automatic processing for images exceeding 3000x3000 pixels
-- `ImagePreset` enum for per-model optimization (framework handles downscaling internally)
-- Tall images: split vertically into tiles with 20% overlap
-- Wide images: trimmed (left-aligned crop)
-- Supported formats: JPEG, PNG, GIF, WebP. Re-encoded as WebP only when processing is needed; images within model limits are sent in original format.
-
-**Model Options:**
-- `ModelOptions` — `reasoning_effort`, `cache_ttl`, `retries`, `timeout`, `system_prompt`, `temperature`, `max_completion_tokens`, `stop`, and provider-specific options
-
-**Output Degeneration Detection:**
-- Automatic detection of token repetition loops in LLM responses
-- Raises `OutputDegenerationError` (subclass of `LLMError`) when degeneration is detected
-- Integrated with retry loop — degenerate responses trigger retries with cache disabled
-
-**Resilience:**
-- Configurable retries with fixed delay (`retry_delay_seconds`, default 20s). Cache disabled on retry to avoid repeating cached failures.
-- Model fallbacks (primary → secondary → tertiary) — configured via LiteLLM
-- Provider fallbacks (OpenAI → Gemini → Grok) — configured via LiteLLM
-
-**Content Protection:**
-- `URLSubstitutor` — Handles URLs, blockchain addresses, and high-entropy strings via two-tier shortening
-- Entropy-based detection identifies strings that are likely tokens/keys
-- Enabled by default in `Conversation`; auto-disabled for `-search` suffix models
-- Both `.content` and `.parsed` are eagerly restored after every `send()`/`send_structured()` call — no manual restoration needed
-
-### 2.2 Documents (`documents/`)
-
-**Document Class:**
-- Immutable Pydantic model wrapping binary content with metadata
-- SHA256 content-addressed storage (deduplication)
-- MIME type detection (extension-based + content analysis)
-- Automatic content conversion: `str | bytes | dict | list | BaseModel` → bytes
-- `derive(from_documents=..., name=..., content=...)` — Convenience method for creating documents from other documents (extracts SHA256 hashes automatically). The 95% API path.
-
-**Provenance Tracking:**
-- `derived_from` — Content provenance (document SHA256 hashes or URLs)
-- `triggered_by` — Causal provenance (document SHA256 hashes only)
-- Validation: same SHA256 cannot appear in both derived_from and triggered_by
-
-**Definition-Time Validation (`__init_subclass__`):**
-- Rejects class names starting with "Test" (pytest conflict)
-- Rejects custom fields beyond allowed set (`name`, `description`, `summary`, `content`, `derived_from`, `triggered_by`, `attachments`)
-- Detects canonical name collisions between Document subclasses
-- Validates `FILES` enum if defined
-
-**Attachments:**
-- `Attachment` class for multi-part documents (e.g., markdown + screenshot + PDF)
-- Primary content in `Document.content`, secondary in `attachments` tuple
-- Properties: `mime_type`, `is_image`, `is_pdf`, `is_text`, `size`, `text`
-
-### 2.3 Pipeline Classes (`pipeline/`)
-
-**`PipelineTask` base class:**
-- Subclass with `@classmethod async def run(cls, documents: tuple[...]) -> tuple[...]`
-- Automatic execution-node tracking and document persistence to the active database backend
-- Document lifecycle tracking (created, returned, orphaned)
-- Configurable retries, timeouts via ClassVars
-
-**`PipelineFlow` base class:**
-- Subclass with `async def run(self, documents: tuple[...], options: FlowOptions) -> tuple[...]`
-- Extracts input/output document types from `run()` annotations at class definition time
-- Validates: exactly 3 parameters (`self`, `documents`, `options`), correct types, no input/output type overlap
-- Use `get_run_id()` from `ai_pipeline_core.pipeline` to access the current run ID inside a flow or task (RunContext is set by the deployment runtime in `deployment/base.py`)
-
-**`PipelineTask` Return Type Validation:**
-- Return type must be `Document | None | list[Document] | tuple[Document, ...]`
-- Rejects mixed types (e.g., `str | Document`)
-- Rejects invalid containers (e.g., `dict[str, Document]`)
-
-**`PipelineFlow` Return Type Validation:**
-- Return type must be `tuple[Document, ...]` (e.g., `tuple[MyDoc, ...]` or `tuple[DocA | DocB, ...]`)
-- Enforced at both definition time and runtime
-
-**`traced_operation()` helper:**
-- `async with traced_operation(name, description=""):` creates a lightweight traced `OPERATION` span inside an active deployment run
-- No-op outside deployment/database context
-- Nested spans are supported, and `Conversation.send()` calls inside the span become child `CONVERSATION` nodes whose metrics roll up onto the span node
-
-**Execution Hierarchy:**
-- Span kinds: `DEPLOYMENT`, `FLOW`, `TASK`, `OPERATION`, `CONVERSATION`, `LLM_ROUND`, `TOOL_CALL` (7 total)
-- Primary execution tree: `DEPLOYMENT -> FLOW -> TASK -> CONVERSATION`; `OPERATION` spans are created by `traced_operation()` as nested spans within the task branch
-- `CONVERSATION` spans contain child `LLM_ROUND` and `TOOL_CALL` spans for detailed LLM interaction tracking
-- `previous_conversation_id` links each conversation node to the immediately preceding conversation in the same chain; sequential sends form a linked list, and forks point to the shared parent or warmup node
-
-**Graceful Degradation:**
-- `safe_gather(*coros)` / `safe_gather_indexed(*coros)` execute coroutines in parallel, logging individual failures while returning successes
-- By default raises `RuntimeError` if all tasks fail (`raise_if_all_fail=True`)
-- Document persistence failures in `PipelineTask` are logged as warnings, not errors
-
-### 2.4 Database (`database/`)
-
-**Public API — `DatabaseReader` protocol** (read-only, exported at top level):
-- Load and query spans, documents, blobs, deployments, and logs
-- Power replay, `ai-trace`, and downloaded `FilesystemDatabase` snapshots
-
-**SpanRecord Shape:**
-- `SpanRecord` stores hierarchy via `parent_span_id`, with `root_deployment_id` for tree queries and `previous_conversation_id` for conversation-chain reconstruction
-- Span kinds are exactly `deployment`, `flow`, `task`, `operation`, `conversation`, `llm_round`, and `tool_call`
-- Conversation chains and warmup/fork trees are reconstructed from `previous_conversation_id`; replay state is stored across span fields (`target`, `receiver_json`, `input_json`, `output_json`, `meta_json`, `metrics_json`) and child spans
-
-**`DatabaseWriter` protocol** (exported from `ai_pipeline_core.database`, full read/write):
-- Adds append-only write operations used by `PipelineTask`, deployments, replay, and execution logging
-- `supports_remote: bool` property — indicates whether the backend supports Prefect-based remote deployment execution
-
-**Backends** (class names are public, residing in internal modules):
-- `ClickHouseDatabase` (production, `database/clickhouse/`), `FilesystemDatabase` (CLI/download/replay, `database/filesystem/`), `MemoryDatabase` (testing, exported from `database/`)
-- Downloaded `FilesystemDatabase` snapshots persist span JSON files under `runs/`, document metadata under `documents/`, blobs under `blobs/`, and logs in `logs.jsonl`
-
-### 2.5 Deployment (`deployment/`)
-
-**PipelineDeployment Base Class:**
-- Generic typing: `PipelineDeployment[TOptions, TResult]`
-- Per-flow resume via database-backed execution nodes (explicit flow completion records, configurable `cache_ttl`)
-- Per-flow uploads (not just at pipeline end)
-- Pub/Sub event publishing (per-flow start/completion via `PUBSUB_PROJECT_ID`, `PUBSUB_TOPIC_ID` environment variables on `Settings`)
-- CLI interface with `--start`/`--end` step control
-- Prefect deployment generation via `as_prefect_flow()`
-- Deployment execution trees follow `DEPLOYMENT -> FLOW -> TASK -> CONVERSATION`; `traced_operation()` inserts additional nested `OPERATION` spans inside the active flow/task branch when needed
-
-**RemoteDeployment:**
-- Typed client for calling a remote `PipelineDeployment` via Prefect
-- Generic typing: `RemoteDeployment[TOptions, TResult]` (2 type parameters: options and result)
-
-**Progress Tracking:**
-- Automatic flow-level progress derived from execution state and `estimated_minutes` on each `PipelineFlow`
-- Pub/Sub events (`FlowStartedEvent`/`FlowCompletedEvent`) report step/total_steps
-
-**Concurrency Limits:**
-- `PipelineLimit` and `LimitKind` for declaring cross-run concurrency/rate limits
-- `pipeline_concurrency(name)` async context manager at call sites
-- `LimitKind.CONCURRENT` — Lease-based slots
-- `LimitKind.PER_MINUTE` / `PER_HOUR` — Token bucket rate limits
-- Auto-created in Prefect at pipeline start; unthrottled when Prefect unavailable
-
-### 2.6 Prompt Compiler (`prompt_compiler/`)
-
-**PromptSpec Class:**
-- Type-safe prompt specifications replacing Jinja2 templates
-- Typed Python classes for roles, rules, guides, and output formats
-- Definition-time validation at import time (not runtime)
-- ClassVars: `role`, `task`, `input_documents`, `rules`, `guides`, `output_rules`, `output_structure`
-- Dynamic fields via Pydantic `Field()` — short, single-line values inlined in Context section (max 500 chars; longer/multiline values are auto-promoted to multi-line treatment with a warning)
-- Multi-line fields via `MultiLineField(description=...)` — combined into a single XML-tagged user message (`<field_name>value</field_name>`) sent before the main prompt, referenced in Context as "(provided in <tag> tags in previous message)"
-
-**Components** (define once, reuse across specs):
-- `Role` — Actor definition ("experienced research analyst")
-- `Rule` — Behavioral constraints ("always cite evidence")
-- `OutputRule` — Output format constraints ("no markdown tables")
-- `Guide` — Reference material loaded from file at import time
-
-**Follow-up Chains:**
-- `follows=ParentSpec` keyword on `__init_subclass__` to declare follow-up specs
-- Follow-up specs don't require `role` or `input_documents`
-- Documents go to messages instead of context for follow-ups
-
-**Rendering:**
-- `render_text(spec, documents=...)` — Render prompt to string (multi-line fields excluded, shown as references)
-- `render_multi_line_messages(spec)` — Returns `list[tuple[str, str]]` of `(field_name, xml_block)` pairs for multi-line fields
-- `render_preview(spec_class)` — Preview with placeholder values; multi-line fields shown as XML blocks before `---` separator, then the main prompt
-- `Conversation.send_spec(spec, documents=...)` — Send to LLM (auto-dispatches text/structured); multi-line fields added as user messages automatically
-
-**Output Structure:**
-- `output_structure` enables `<result>` tag wrapping and stop sequence at `</result>`
-- Auto-extracted in `Conversation.content` property — `conv.content` returns clean text
-- `PromptSpec[SomeModel]` uses `send_structured()` automatically
-
-**CLI Tool** (`ai-prompt-compiler`):
-- `inspect SpecName` — Spec anatomy (role, docs, fields, rules, token estimate)
-- `render SpecName` — Render prompt preview
-- `compile` — Discover, list, and compile all specs to `.prompts/` directory
-
-### 2.7 Observability (`observability/`)
-
-**Execution Data:**
-- Execution structure is stored in `spans`
-- Execution logs are stored in `logs`
-- LLM calls persist full prompt/response payloads across span fields (`input_json`, `output_json`, `meta_json`, `metrics_json`) for debugging and replay. Conversation spans include both base `model_options` (for replay) and `effective_model_options` (for audit). Multimodal content in `request_messages` uses `{"$doc_ref": "<sha256>"}` references to the `blobs` table instead of inline base64.
-
-**CLI:**
-- `ai-trace list` lists deployments from the database
-- `ai-trace show <id>` renders the execution tree plus logs, with `CONVERSATION` leaf lines showing purpose, duration, model, token counts, cache hits, and cost
-- `ai-trace download <id> -o <output-dir>` exports a portable `FilesystemDatabase` snapshot plus summary artifacts such as `summary.md`, `costs.md`, `llm_calls.jsonl`, `errors.md` (when failures exist), and `documents.md` (when documents exist)
-
-**Logging API** (in `logger/` module, not `observability/`):
-- `get_pipeline_logger()` — Configured logger with context
-- `ExecutionLogHandler` — stdlib logging handler that routes root-logger records into the active execution log buffer, persisted to `logs` during deployment runs
-- Logs flow into the database-backed execution log pipeline automatically during deployment runs
-
-### 2.8 Replay (`replay/`)
-
-**Automatic capture and re-execution of any pipeline boundary** — every LLM conversation, `PipelineTask`, and `PipelineFlow` call records replayable state across span fields (`target`, `input_json`, `output_json`, `meta_json`) plus child spans.
-
-**Replay Entry Points:**
-- Task replay loads the task class from `target`, resolves `$doc_ref` arguments from the database, and executes the task
-- Flow replay loads the flow class from `target`, resolves input documents, and executes the flow
-- Conversation replay reconstructs prior history from `previous_conversation_id` plus child `llm_round` and `tool_call` spans
-
-**Document References** — documents are referenced by SHA256 (`$doc_ref`), resolved from a `DatabaseReader` during replay. This includes both task arguments and multimodal content (images, PDFs) in LLM round `request_messages`.
-
-**CLI Tool** (`ai-replay`): `run --from-db <span_id>` executes a replay, and `show --from-db <span_id>` inspects one. File inputs are span JSON files from downloaded snapshots. Passing a directory is rejected with guidance to use `--from-db` or a span JSON file. Supports `--db-path`, `--set KEY=VALUE`, `--import MODULE`, and `--output-dir`.
-
-**Output:** Results are saved to `output_dir/output.yaml`. Downloaded bundles remain replayable by pointing `--db-path` at the exported `FilesystemDatabase` root.
-
----
-
-## 3. LLM Implementation Rules
-
-These rules govern how the framework's LLM module must be implemented.
-
-### 3.1 Token Economics — Input Tokens Are Cheap
+### 2.1 Token Economics — Input Tokens Are Cheap
 
 **Core principle:** Input tokens are cheap; cached input tokens are near-free. Never sacrifice accuracy or context quality to reduce input size. Full context improves accuracy and is cheap.
 
-The framework must:
 - Support large contexts (100K-250K tokens)
 - **Never trim or summarize inputs** to "save tokens"
 - Implement prefix-based caching with configurable TTL
 - Prefer sending identical large prefixes across calls over sending tailored smaller prompts per call
 
-### 3.2 Warmup + Fork Pattern
+### 2.2 Warmup + Fork Pattern
 
-When multiple LLM calls share the same context, the framework must support the warmup + fork pattern:
+When multiple LLM calls share the same context:
 
 1. **Warmup call**: Send shared context with a short warmup message. This populates the cache.
 2. **Capture warmup response**: The LLM acknowledges. **This response must be kept** — it becomes part of the shared prefix for all forks.
 3. **Fork**: Create N parallel calls. Each fork's messages start with the warmup conversation (warmup message + warmup response), then append per-fork content.
 
-**Critical**: The warmup response is essential. Without it, fork messages diverge immediately after the warmup message — the provider only caches `context + warmup message` (a few hundred tokens). With it, the cached prefix includes `context + warmup message + warmup response`. Discarding the warmup response defeats the purpose of the warmup call.
+**Critical**: The warmup response is essential. Without it, fork messages diverge immediately after the warmup message — the provider only caches `context + warmup message` (a few hundred tokens). Discarding the warmup response defeats the purpose.
 
 **Timing constraint**: All forked calls must be sent within 5 minutes of the warmup call (cache TTL).
 
-### 3.3 Preparation-First Execution
+### 2.3 Preparation-First Execution
 
-Because cache lives at most 5 minutes, the framework must support preparation-first execution:
+Because cache lives at most 5 minutes:
 
 1. **Fetch phase**: Gather all external data (web content, screenshots, API responses)
 2. **Warmup phase**: Send shared context to LLM
@@ -324,7 +100,7 @@ Because cache lives at most 5 minutes, the framework must support preparation-fi
 
 **Anti-pattern**: Interleaving slow I/O with LLM calls causes cache misses because later calls may arrive after cache TTL expires.
 
-### 3.4 No Batching
+### 2.4 No Batching
 
 Do not batch multiple items into a single LLM call to "save tokens." With caching:
 - Separate calls are nearly as cheap as batched calls (shared prefix is cached)
@@ -332,7 +108,7 @@ Do not batch multiple items into a single LLM call to "save tokens." With cachin
 - Separate calls are easier to implement, retry, and debug
 - Separate calls return structured output per item without complex parsing
 
-### 3.5 Image Handling
+### 2.5 Image Handling
 
 Maximum image resolution is 3000x3000 pixels. The framework handles per-model downscaling internally via `ImagePreset`.
 
@@ -343,31 +119,21 @@ Maximum image resolution is 3000x3000 pixels. The framework handles per-model do
 4. **If wider than limit** — Trim width (left-aligned crop). Web content is left-aligned, so right-side content is typically less important.
 5. **Describe the split in text prompt** — "Screenshot was split into N sequential parts with overlap"
 
-The framework must:
-- Process images up to 3000x3000 maximum, with per-model downscaling via `ImagePreset`
-- Apply **20% overlap** between vertical tiles to prevent content loss at boundaries
-- Supported image formats: JPEG, PNG, GIF, WebP (all accepted by current providers)
-- Prefer larger tiles to minimize token cost
-
-### 3.6 Model Cost Tiers
-
-The framework should guide apps toward cost-effective model selection:
+### 2.6 Model Cost Tiers
 
 - **Expensive** (pro/flagship): gemini-3-pro, gpt-5.1. Use for complex reasoning, final synthesis.
 - **Cheap** (flash/fast): gemini-3-flash, grok-4.1-fast. Use for high-volume tasks, formatting, conversion, structured output extraction.
 - **Too small** (nano/lite): Insufficient for production pipeline tasks. Do not use.
 
-### 3.7 Model Reference Preservation
+### 2.7 Model Reference Preservation
 
 **Do not remove model references that appear unfamiliar.** Models are released frequently and the codebase may reference models that are newer than the AI coding agent's training data. If a model name exists in code, assume it is valid unless there is concrete evidence otherwise (e.g., provider returns "model not found" error).
 
-### 3.8 Structured Output
+### 2.8 Structured Output
 
-`Conversation.send_structured()` must:
-- Accept Pydantic BaseModel as `response_format`
-- Send schema to LLM automatically (never explain JSON structure in prompts)
-- Parse and validate response against model
-- Return a new `Conversation` with `.parsed` property returning the typed model instance
+Structured LLM output rules:
+- Send schema to LLM automatically via `response_format` (never explain JSON structure in prompts)
+- Parse and validate response against Pydantic model
 
 **Quality limits**:
 - Structured outputs degrade beyond ~2-3K tokens
@@ -398,26 +164,13 @@ class VerificationResult(BaseModel):
     is_valid: bool                # Decision follows from decomposition
 ```
 
-### 3.9 Document XML Wrapping
+### 2.9 Document XML Wrapping
 
-When documents are added to LLM context, the framework wraps them:
+When documents are added to LLM context, the framework wraps them in XML. This boundary separates data from instructions — the **prompt injection defense**.
 
-```xml
-<document>
-  <id>A7B2C9</id>
-  <name>report.md</name>
-  <description>Research report</description>
-  <content>
-  [full document text]
-  </content>
-</document>
-```
+**All structured data for LLM context must be wrapped in a Document.** Never construct XML manually (e.g., f-string `<document>` tags). The framework handles escaping, ID generation, and consistent formatting.
 
-This XML boundary separates data from instructions — the **prompt injection defense**. The system prompt instructs the LLM to treat document content as data, not executable instructions.
-
-**All structured data for LLM context must be wrapped in a Document** — use `Document.create()` (requires provenance via `derived_from` or `triggered_by`) or `Document.create_root(reason=...)` (for pipeline inputs without provenance) to wrap dicts, lists, or BaseModel instances. Never construct XML manually (e.g., f-string `<document>` tags). The framework handles escaping, ID generation, and consistent formatting.
-
-### 3.10 Thinking Models
+### 2.10 Thinking Models
 
 All LLMs (2026) perform internal reasoning. The framework must NOT add:
 - Chain-of-thought prompting
@@ -426,32 +179,29 @@ All LLMs (2026) perform internal reasoning. The framework must NOT add:
 
 These are redundant and can interfere with the model's native reasoning. Reasoning effort is controlled via `ModelOptions.reasoning_effort` where supported.
 
-### 3.11 Long Response Handling
+### 2.11 Long Response Handling
 
-LLMs produce quality degradation in responses longer than 3-5K tokens. The framework must support:
+LLMs produce quality degradation in responses longer than 3-5K tokens. Use:
 - Conversational follow-up patterns for building long outputs incrementally
 - Multi-turn exchanges where each follow-up receives previous responses as conversation history
 
 Tasks requiring long outputs should not use a single call requesting a large response.
 
-### 3.12 LLM Anti-Patterns
+### 2.12 Additional LLM Anti-Patterns
 
-The framework must **not** implement or encourage these patterns:
+Beyond the rules above (no batching §2.4, no CoT §2.10, no input trimming §2.1):
 
 | Anti-Pattern | Why It's Wrong |
 |--------------|----------------|
-| Batching multiple items in one call | Caching makes separate calls nearly as cheap; accuracy degrades with batching |
-| Generic `reasoning: str` scratchpad fields | Redundant with model's native reasoning; use domain-specific decomposition fields |
-| Chain-of-thought prompting | All 2026 models are thinking models; explicit CoT is redundant |
+| Generic `reasoning: str` scratchpad fields | Redundant with model's native reasoning; use domain-specific decomposition fields (§2.8) |
 | Numeric confidence scores without criteria | Each call interprets scale differently; hallucinated results |
-| Trimming inputs to "save tokens" | Input tokens are cheap; context improves accuracy |
 | Explaining JSON structure in prompts | Redundant with schema sent via `response_format`; degrades quality |
 
 ---
 
-## 4. Code Quality Standards
+## 3. Code Quality Standards
 
-### 4.1 Type Safety
+### 3.1 Type Safety
 
 - Complete type hints on all functions and return values
 - Pydantic models for all data structures
@@ -459,22 +209,29 @@ The framework must **not** implement or encourage these patterns:
 - Constrained strings must be custom types (NewType, Annotated, or wrapper class)
 - Definition-time validation via `__init_subclass__` where applicable
 
-### 4.2 Testing
+### 3.2 Testing
 
 - Tests serve as usage examples
 - Test mode allows running with cheaper/faster models (simple model swap via config)
 - Individual modules must be testable in isolation
 - Framework provides test harness utilities requiring zero configuration
 
-**Test-First Bug Fixing:**
-When a bug is discovered, write a failing test first. The test must assert the **correct** behavior and be marked `@pytest.mark.xfail(reason="...", strict=True)` so it proves the bug exists (xfail = expected failure). Only then implement the fix. After fixing, remove the `xfail` marker — the test becomes a permanent regression guard that prevents the bug from reappearing.
+**Bug Response Protocol:**
+When a bug is found or reported, do not jump to fixing it. Follow this order:
+
+1. **Investigate why it wasn't caught.** Why did existing linters, semgrep rules, type checks, and tests miss this? If a tool *should* have caught it, fix the tool configuration or add a rule so it catches this class of bug going forward.
+2. **Prevent, don't just fix.** The best fix is making the bug impossible. If an architecture change, a definition-time validation (`__init_subclass__`), a semgrep rule, or a type constraint can prevent this entire class of bug from ever occurring again, do that — even if it requires redesign. A one-line fix that leaves the door open for recurrence is inferior to a structural change that closes it.
+3. **Find all similar instances.** Before fixing the specific bug, search the codebase for the same pattern. If one place has this bug, others likely do too. Fix them all at once.
+4. **Prove with a test.** Write a failing test that asserts the **correct** behavior. Mark it `@pytest.mark.xfail(reason="...", strict=True)` so it proves the bug exists. Only then implement the fix. After fixing, remove the `xfail` marker — the test becomes a permanent regression guard.
+
+This is the purpose of the framework's extensive tooling (ruff, basedpyright, semgrep, vulture, interrogate, definition-time validation): prevent bugs from happening, or detect them before runtime. Every bug that reaches production is a signal that the prevention layer has a gap — close the gap, not just the bug.
 
 **No Suppression of Tooling Warnings:**
 When linters, type checkers, semgrep, tests, or CI/CD checks report an issue, investigate it fully and fix the root cause. Never use shortcuts: no `# noqa`, `# type: ignore`, `# nosemgrep`, `pytest.skip()`, `xfail` (except for TDD bug proving above), disabling rules, commenting out code, deleting the check, or any other form of suppression. These tools detect real coding problems — silencing them hides bugs instead of fixing them. If a warning is genuinely a false positive, document why in a comment next to the narrowest possible suppression (single line, specific rule code).
 
-### 4.3 AI-Focused Documentation
+### 3.3 AI-Focused Documentation
 
-The framework auto-generates documentation for AI coding agents via `docs_generator/`:
+The framework auto-generates documentation for AI coding agents via `tools/docs-generator/` (separate workspace package):
 - Public/private determined by `_` prefix convention
 - Full source code with comments included
 - Examples extracted from test suite
@@ -510,7 +267,7 @@ The framework auto-generates documentation for AI coding agents via `docs_genera
 - Prefer `class MyType(str)` over `NewType` for types that should appear in documentation with their own docstring
 - Protocol and Enum classes are tagged with a comment line (`# Protocol` / `# Enum`) above the class definition
 
-### 4.4 Module Cohesion
+### 3.4 Module Cohesion
 
 Each framework module produces one AI-docs guide. That guide must be **self-sufficient for usage**: an AI coding agent must be able to correctly use the module's public API by reading only that guide.
 
@@ -522,19 +279,19 @@ Each framework module produces one AI-docs guide. That guide must be **self-suff
 
 ---
 
-## 5. Code Hygiene Rules
+## 4. Code Hygiene Rules
 
-### 5.1 Protocol and Implementation Separation
+### 4.1 Protocol and Implementation Separation
 
 Protocol definitions must not be mixed with implementations in the same file. When a Protocol is needed, place it in a separate `_protocols.py` or `_types.py` module.
 
 **Exceptions:** Files explicitly excluded in semgrep config (protocol.py, base.py, _types.py).
 
-### 5.2 No Patch Reference Comments
+### 4.2 No Patch Reference Comments
 
 Comments referencing bug fixes (`# FIX 1:`, `# Fixes #123`, `# Fixes issue`, `# Patch for...`, `# Workaround for...`) are forbidden. Code must be self-explanatory. Bug fixes are documented by regression tests.
 
-### 5.3 Magic Number Constants
+### 4.3 Magic Number Constants
 
 Numeric literals used as thresholds, limits, or configuration values must be defined as module-level or class-level constants with descriptive names.
 
@@ -549,14 +306,14 @@ if len(url) < 40:
 MIN_URL_LENGTH_FOR_SHORTENING = 40
 ```
 
-### 5.4 Silent Exception Handling
+### 4.4 Silent Exception Handling
 
 `except Exception: pass` and `except: pass` are forbidden. Caught exceptions must be:
 1. Logged with context, OR
 2. Re-raised (possibly wrapped), OR
 3. Converted to a specific return value with a comment explaining why swallowing is safe
 
-### 5.5 File Size Limits
+### 4.5 File Size Limits
 
 - **Warning:** Files exceeding 500 lines (excluding blanks and comments)
 - **Error:** Files exceeding 1000 lines
@@ -566,18 +323,18 @@ MIN_URL_LENGTH_FOR_SHORTENING = 40
 - Pure functions/utilities → `_utils.py`
 - Constants/patterns → `_constants.py`
 
-### 5.6 Export Discipline
+### 4.6 Export Discipline
 
 Every module with public symbols must define `__all__` listing its public API. Internal modules must be prefixed with `_` (e.g., `_helpers.py`).
 
-### 5.7 Module Naming
+### 4.7 Module Naming
 
 Module and directory names must describe the domain problem, not implementation technique.
 
 **Anti-pattern:** `content_protection/` (describes technique)
 **Correct:** `token_reduction/` or `url_shortener/` (describes purpose)
 
-### 5.8 Algorithm Complexity
+### 4.8 Algorithm Complexity
 
 Operations on unbounded input should prefer O(n) or O(n log n). O(n²) is acceptable only when:
 - Input size has a known small bound (e.g., n ≤ 100), AND
@@ -585,11 +342,11 @@ Operations on unbounded input should prefer O(n) or O(n log n). O(n²) is accept
 
 Document size assumptions when using higher-complexity algorithms.
 
-### 5.9 Duplicate Logic
+### 4.9 Duplicate Logic
 
 Functions or match/case blocks with >80% structural similarity must be consolidated. Use parameterization, helper functions, or lookup tables.
 
-### 5.10 Actionable Error and Warning Messages
+### 4.10 Actionable Error and Warning Messages
 
 Warning and error messages must include not only what went wrong, but also how to fix it and how to do it correctly. The reader (often an AI coding agent) should be able to resolve the issue from the message alone without consulting documentation.
 
@@ -608,16 +365,16 @@ logger.warning(
 
 ---
 
-## 6. Deployment & Operations
+## 5. Deployment & Operations
 
-### 6.1 Deployment Safety
+### 5.1 Deployment Safety
 
 - New deployments must not break running workflows
 - Running processes finish on old version
 - New requests use new version
 - Graceful version transition
 
-### 6.2 Scalability
+### 5.2 Scalability
 
 - Horizontal scaling via additional workers
 - Centralized services handle coordination (LiteLLM, ClickHouse)
@@ -626,7 +383,7 @@ logger.warning(
 
 ---
 
-## 7. Decisions Made
+## 6. Decisions Made
 
 | Decision | Choice | Notes |
 |----------|--------|-------|
@@ -636,9 +393,7 @@ logger.warning(
 
 ---
 
-## 8. Not Yet Implemented
-
-These features are planned but not implemented:
+## 7. Not Yet Implemented
 
 | Feature | Description |
 |---------|-------------|
@@ -648,56 +403,79 @@ These features are planned but not implemented:
 
 ---
 
-## 9. Out of Scope
+## 8. Out of Scope
 
 - Compliance/regulatory features (GDPR, SOC2)
 - Multi-tenant isolation
 - Complex access control/RBAC
 - Custom orchestrator implementation
 
-## 10. Test Running Guidelines
+---
 
-### Infrastructure tests auto-skip
-ClickHouse, Pub/Sub, and LLM integration tests auto-skip when their requirements are unavailable. No flags or marker exclusions needed — `pytest tests/deployment/ -x -q` is always safe to run even without Docker.
+## 9. Dev CLI — Test, Lint, and Check Workflows
 
-### NEVER pipe pytest output through grep, head, tail, or any filter
-These cause buffering hangs. Use pytest's native flags instead.
+**Use the `dev` CLI for all test, lint, and type-check operations.** Do not run `pytest`, `ruff`, or `basedpyright` directly — a Claude Code hook will block these commands with an actionable message pointing to the correct `dev` command.
 
-### NEVER run the full test suite (`pytest tests/`) for small changes
-The full suite has 3000+ tests and takes 3-5 minutes. Run only the relevant test directory:
+### First thing: run `dev info`
 
-| Changed source | Test command |
-|---|---|
-| `ai_pipeline_core/documents/` | `pytest tests/documents/ -x -q` |
-| `ai_pipeline_core/llm/` | `pytest tests/llm/ -x -q` |
-| `ai_pipeline_core/pipeline/` | `pytest tests/pipeline/ -x -q` |
-| `ai_pipeline_core/deployment/` | `pytest tests/deployment/ -x -q` |
-| `ai_pipeline_core/database/` | `pytest tests/database/ -x -q` |
-| `ai_pipeline_core/prompt_compiler/` | `pytest tests/prompt_compiler/ -x -q` |
-| `ai_pipeline_core/observability/` | `pytest tests/observability/ -x -q` |
-| `ai_pipeline_core/replay/` | `pytest tests/replay/ -x -q` |
+Before running any tests or checks, **always start with `dev info`**. It prints the full usage guide, auto-detected check pipeline, available test scopes, runner configuration, and infrastructure status. Read its output — it tells you everything you need to know about the project's dev workflow.
 
-### Use -x to stop on first failure
-`pytest tests/pipeline/ -x -q` — fix one failure at a time.
+### Commands
 
-### Use --lf to rerun only failures
-After a failed run, `pytest --lf -x -q` reruns only what failed last time.
+```bash
+# Testing
+dev test                # Run affected tests (auto-scoped from git changes, uses testmon)
+dev test pipeline       # Run tests for a specific module
+dev test --lf           # Rerun only last-failed tests
+dev test --full         # Full suite in parallel (before commit)
+dev test --available    # Include infrastructure tests (auto-detects Docker/API keys)
+dev test --coverage    # Full suite with code coverage (80% threshold from pyproject.toml)
+dev test --coverage pipeline  # Coverage for pipeline tests (threshold not enforced)
+dev test --force        # Force rerun even if no files changed
 
-### Use --testmon to only run tests affected by your changes
-`pytest --testmon -q` — testmon tracks which source lines each test covers and only reruns affected tests. A cached run with no changes takes ~5 seconds instead of minutes. The `.testmondata` file persists across runs.
+# Code quality
+dev format              # Auto-fix lint + formatting (ruff format + ruff check --fix)
+dev lint                # Check lint without fixing
+dev typecheck           # Type checking (basedpyright)
 
-### Full suite validation (rare — only before final commit/PR)
-`pytest -n auto --dist worksteal -q` — parallel execution across all cores.
+# All checks in order (lint → typecheck → deadcode → semgrep → docstrings → tests)
+dev check               # Full validation pipeline
+dev check --fast        # Lint + typecheck only
 
-### pytest output flags (no grep needed)
-- `--tb=no` — pass/fail counts only
-- `--tb=line` — one line per failure
-- `--tb=short` — short tracebacks (default in pyproject.toml)
-- `-q` — quiet mode, minimal output
+# Utilities
+dev status              # Changed files, last run results, suggested next command
+dev info                # Usage guide + auto-detected config + infrastructure status
+```
 
-## 11. Bash Guidelines
+### Workflow
 
-### IMPORTANT: Avoid commands that cause output buffering issues
+1. Write code
+2. `dev format` — auto-fix lint/formatting
+3. `dev check --fast` — verify lint + types pass
+4. `dev test` — run affected tests
+5. If tests fail: fix code, then `dev test --lf`
+6. `dev check` — full validation before commit
+
+### What is blocked (and why)
+
+| Blocked command | Use instead | Reason |
+|---|---|---|
+| `pytest ...` | `dev test` | No output management, wrong flags, no scoping |
+| `ruff check/format` | `dev lint` / `dev format` | No output management |
+| `basedpyright`/`pyright`/`mypy` | `dev typecheck` | No output management |
+| `pytest ... \| grep/head/tail` | `dev test` | Buffering hangs, loses exit codes |
+| `uv sync` | `uv pip install --system` | Creates .venv in devcontainer |
+| `uv run ...` | Run commands directly | All tools are on PATH |
+
+### What is allowed
+
+`dev *`, `make *`, `uv pip install`, `uvx *`, `pytest --version`, `pytest --help`, `ruff --version`, `interrogate`, `vulture`, `semgrep`, `grep`, `pip install`.
+
+---
+
+## 10. Bash Guidelines
+
+### Avoid commands that cause output buffering issues
 - DO NOT pipe output through `head`, `tail`, `less`, `more`, or `grep` when monitoring or checking command output
 - DO NOT use `| head -n X` or `| tail -n X` to truncate output - these cause buffering problems
 - Instead, let commands complete fully, or use `--max-lines` flags if the command supports them

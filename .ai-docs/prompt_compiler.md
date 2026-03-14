@@ -174,6 +174,36 @@ Pydantic fields (dynamic input values):
 ## Functions
 
 ```python
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for prompt compiler operations (``ai-prompt-compiler`` command)."""
+    parser = argparse.ArgumentParser(prog="prompt_compiler", description="Prompt compiler CLI")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # inspect
+    inspect_parser = subparsers.add_parser("inspect", help="Show detailed anatomy of a single spec")
+    inspect_parser.add_argument("spec", help="Spec class name or module.path:ClassName")
+    inspect_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
+
+    # render
+    render_parser = subparsers.add_parser("render", help="Render a prompt preview with placeholder values")
+    render_parser.add_argument("spec", help="Spec class name or module.path:ClassName")
+    render_parser.add_argument("--no-input-documents", action="store_true", help="Hide input document listing")
+    render_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
+
+    # compile (also discovers and lists specs)
+    compile_parser = subparsers.add_parser("compile", help="Discover, list, and compile all specs to .prompts/")
+    compile_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
+
+    args = parser.parse_args(argv)
+
+    handlers = {"inspect": _cmd_inspect, "render": _cmd_render, "compile": _cmd_compile}
+    handler = handlers.get(args.command)
+    if handler is None:
+        parser.print_help()
+        return 1
+
+    return handler(args)
+
 def render_text(
     spec: PromptSpec[Any],
     *,
@@ -294,36 +324,6 @@ def MultiLineField(*, description: str, **kwargs: Any) -> Any:
     (``default``, ``default_factory``, etc.).
     """
     return Field(description=description, json_schema_extra={_MULTI_LINE_KEY: True}, **kwargs)
-
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point for prompt compiler operations (``ai-prompt-compiler`` command)."""
-    parser = argparse.ArgumentParser(prog="prompt_compiler", description="Prompt compiler CLI")
-    subparsers = parser.add_subparsers(dest="command")
-
-    # inspect
-    inspect_parser = subparsers.add_parser("inspect", help="Show detailed anatomy of a single spec")
-    inspect_parser.add_argument("spec", help="Spec class name or module.path:ClassName")
-    inspect_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
-
-    # render
-    render_parser = subparsers.add_parser("render", help="Render a prompt preview with placeholder values")
-    render_parser.add_argument("spec", help="Spec class name or module.path:ClassName")
-    render_parser.add_argument("--no-input-documents", action="store_true", help="Hide input document listing")
-    render_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
-
-    # compile (also discovers and lists specs)
-    compile_parser = subparsers.add_parser("compile", help="Discover, list, and compile all specs to .prompts/")
-    compile_parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root for class discovery")
-
-    args = parser.parse_args(argv)
-
-    handlers = {"inspect": _cmd_inspect, "render": _cmd_render, "compile": _cmd_compile}
-    handler = handlers.get(args.command)
-    if handler is None:
-        parser.print_help()
-        return 1
-
-    return handler(args)
 
 ```
 

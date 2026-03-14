@@ -23,7 +23,7 @@ dependencies = [
     "Jinja2>=3.1.6",
     "openai>=2.16.0",
     "Pillow>=12.1.0",
-    "prefect>=3.6.15",
+    "prefect==3.6.22",
     "pydantic-settings>=2.12.0",
     "pydantic>=2.12.5",
     "pypdf>=5.0.0",
@@ -51,6 +51,7 @@ Issues = "https://github.com/bbarwik/ai-pipeline-core/issues"
 dev = [
     "basedpyright==1.37.3",
     "bump2version>=1.0.1",
+    "docs-generator",
     "interrogate==1.7.0",
     "pre-commit>=4.3.0",
     "pytest-asyncio>=1.1.0",
@@ -63,17 +64,12 @@ dev = [
     "testcontainers[clickhouse,google]>=4.0.0",
     "vulture==2.14",
     "pylint>=3.0.0",
+    "dev-cli",
 ]
 [tool.pytest.ini_options]
 minversion = "8.0"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = '''
-  --quiet
-  --tb=short
-  --testmon
-  -m 'not integration and not clickhouse and not pubsub and not pubsub_live'
-'''
 strict = true
 testpaths = ["tests"]
 markers = [
@@ -87,11 +83,22 @@ markers = [
 [tool.coverage.run]
 source = ["ai_pipeline_core"]
 omit = ["*/tests/*", "*/test_*.py"]
+branch = true
+parallel = true
 
 [tool.coverage.report]
 fail_under = 80
 show_missing = true
 skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "@overload",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
+
+[tool.coverage.html]
+directory = ".tmp/dev-runs/coverage-html"
 
 [tool.ruff]
 # Configuration for the Ruff linter and formatter
@@ -201,7 +208,10 @@ max-public-methods = 30
 "ai_pipeline_core/logger/_buffer.py" = ["TID251"]
 "ai_pipeline_core/logger/_handler.py" = ["TID251"]
 "ai_pipeline_core/logger/logging_config.py" = ["TID251"]
-"ai_pipeline_core/docs_generator/cli.py" = ["T20"]
+".claude/**/*.py" = ["T20", "D", "DOC", "TID251", "S"]
+"tools/dev-cli/**/*.py" = ["T20", "D", "DOC", "TID251", "S", "ARG", "PLW", "PLR", "PLC0415", "PERF", "RUF059", "C901", "E741", "PIE"]
+"tools/docs-generator/**/*.py" = ["T20", "TID251"]
+"tools/docs-generator/tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "RUF069", "TID251", "A002"]
 
 [tool.ruff.format]
 # Use double quotes for strings
@@ -317,3 +327,16 @@ include = [
     "LICENSE",
     "pyproject.toml",
 ]
+
+[tool.uv.workspace]
+members = ["tools/docs-generator", "tools/dev-cli"]
+
+[tool.dev-cli.infrastructure]
+integration = { env = ["OPENAI_API_KEY", "OPENAI_BASE_URL"], label = "LLM API" }
+clickhouse  = { command = "docker info", label = "ClickHouse (Docker)" }
+pubsub      = { command = "docker info", label = "Pub/Sub emulator (Docker)" }
+pubsub_live = { env = ["PUBSUB_PROJECT_ID"], label = "Pub/Sub live (GCP)" }
+
+[tool.uv.sources]
+docs-generator = { workspace = true }
+dev-cli = { workspace = true }

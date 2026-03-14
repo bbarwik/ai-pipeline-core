@@ -1,4 +1,4 @@
-from ai_pipeline_core.docs_generator.extractor import (
+from docs_generator.extractor import (
     EXTERNAL_STUBS,
     ClassInfo,
     SymbolTable,
@@ -506,7 +506,7 @@ def test_remap_does_not_duplicate_qualified_class_in_build_guide(tmp_path):
     __all__ but not in known_symbols (which has "prompt:Role"), so it re-adds Role
     under the simple key "Role" → duplicate.
     """
-    from ai_pipeline_core.docs_generator.guide_builder import build_guide
+    from docs_generator.guide_builder import build_guide
 
     # Module A: _internal package with a public types.py defining Role
     internal = tmp_path / "_internal"
@@ -549,3 +549,81 @@ def test_remap_does_not_duplicate_qualified_class_in_build_guide(tmp_path):
     assert cls.class_vars[1][3] == "Inline comment value"
     assert cls.class_vars[2][0] == "below_docstring"
     assert cls.class_vars[2][3] == "Below docstring value."
+
+
+# ---------------------------------------------------------------------------
+# MethodInfo.is_async extraction
+# ---------------------------------------------------------------------------
+
+
+def test_parse_module_extracts_async_method(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text(
+        "class Svc:\n"
+        '    """Service class."""\n'
+        "    async def fetch(self, url: str) -> str:\n"
+        '        """Fetch data."""\n'
+        '        return ""\n'
+        "    def sync_method(self) -> None:\n"
+        '        """Sync method."""\n'
+        "        pass\n"
+    )
+    module = parse_module(src)
+    methods = {m.name: m for m in module.classes[0].methods}
+    assert methods["fetch"].is_async is True
+    assert methods["sync_method"].is_async is False
+
+
+# ---------------------------------------------------------------------------
+# cached_property detection
+# ---------------------------------------------------------------------------
+
+
+def test_parse_module_cached_property_detected(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text(
+        "from functools import cached_property\n"
+        "class Doc:\n"
+        '    """Document class."""\n'
+        "    @cached_property\n"
+        "    def mime_type(self) -> str:\n"
+        '        return "text/plain"\n'
+    )
+    module = parse_module(src)
+    method = module.classes[0].methods[0]
+    assert method.is_property is True
+
+
+# ---------------------------------------------------------------------------
+# staticmethod detection
+# ---------------------------------------------------------------------------
+
+
+def test_parse_module_extracts_staticmethod(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text(
+        'class Svc:\n    """Service class."""\n    @staticmethod\n    def create(name: str) -> str:\n        """Create something."""\n        return name\n'
+    )
+    module = parse_module(src)
+    method = module.classes[0].methods[0]
+    assert method.is_staticmethod is True
+
+
+# ---------------------------------------------------------------------------
+# Re-exported symbols from private modules
+# ---------------------------------------------------------------------------
+
+
+def test_build_symbol_table_discovers_root_level_reexports(tmp_path):
+    """Root-level .py files that import from private modules and re-export via __all__ must appear."""
+    # Private module defines the class
+    _write_py(tmp_path / "_base.py", "class BaseError(Exception):\n    pass\n")
+
+    # Root-level public file re-exports it
+    _write_py(tmp_path / "exceptions.py", 'from _base import BaseError\n__all__ = ["BaseError", "SpecificError"]\nclass SpecificError(BaseError):\n    pass\n')
+
+    table = build_symbol_table(tmp_path)
+    # SpecificError is defined directly and should be found
+    assert "SpecificError" in table.classes
+    # BaseError is re-exported from a private module — should also be found
+    assert "BaseError" in table.classes

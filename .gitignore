@@ -73,8 +73,10 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# claude and cursor
-.claude
+# claude and cursor (track hooks and settings, ignore the rest)
+.claude/*
+!.claude/hooks/
+!.claude/settings.json
 .cursor
 
 # Sphinx documentation

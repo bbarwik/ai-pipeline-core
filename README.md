@@ -1166,29 +1166,47 @@ from ai_pipeline_core.llm import ModelOptions
 
 ## Development
 
-### Running Tests
+### Dev CLI
+
+All test, lint, and type-check workflows go through the `dev` CLI. It captures full output to `.tmp/dev-runs/`, prints concise summaries, auto-detects affected tests from git changes, and skips reruns when code hasn't changed.
 
 ```bash
-make test              # Run all tests (infra tests auto-skip when Docker/API keys unavailable)
-make test-cov          # Run with coverage report
-make test-clickhouse   # ClickHouse integration tests (requires Docker)
-make test-pubsub       # Pub/Sub emulator integration tests (requires Docker)
-make test-collect      # Verify all test modules are importable
+# Testing
+dev test                # Run affected tests (auto-scoped from git changes, uses testmon)
+dev test pipeline       # Run tests for a specific module
+dev test --lf           # Rerun only last-failed tests
+dev test --full         # Full suite in parallel (before commit)
+dev test --available    # Include infrastructure tests (auto-detects Docker/API keys)
+dev test --coverage    # Full suite with code coverage (HTML + JSON reports)
+
+# Code quality
+dev format              # Auto-fix lint + formatting (ruff format + ruff check --fix)
+dev lint                # Check lint without fixing
+dev typecheck           # Type checking (basedpyright)
+
+# All checks in order (lint → typecheck → deadcode → semgrep → docstrings → tests)
+dev check               # Full validation pipeline
+dev check --fast        # Lint + typecheck only (quick sanity check)
+
+# Utilities
+dev status              # Show changed files, last run results, suggested next command
+dev info                # Detailed usage guide with auto-detected project config
+dev list-tests pipeline # List tests by scope
 ```
 
-Infrastructure tests (ClickHouse, Pub/Sub, LLM integration) auto-skip when their requirements are unavailable — no flags needed. `make test` is always safe to run.
+**Do not run `pytest`, `ruff`, or `basedpyright` directly** — use `dev` commands instead. A Claude Code hook enforces this in the devcontainer. The `dev` CLI handles correct flags, output management, marker expressions, and idempotency automatically.
 
-### Code Quality
+**Recommended workflow:**
+1. Write code
+2. `dev format` — auto-fix lint/formatting
+3. `dev check --fast` — verify lint + types
+4. `dev test` — run affected tests
+5. If tests fail: fix code, then `dev test --lf`
+6. `dev check` — full validation before commit
 
-```bash
-make check             # Run ALL checks (lint, typecheck, deadcode, semgrep, docstrings-cover, filesize, check-claude-md, docs-ai-check, tests)
-make lint              # Ruff linting (28 rule sets)
-make format            # Auto-format and auto-fix code with ruff
-make typecheck         # Type checking with basedpyright (strict mode)
-make deadcode          # Dead code detection with vulture
-make semgrep           # Project-specific AST pattern checks (.semgrep/ rules)
-make docstrings-cover  # Docstring coverage (100% required)
-```
+Infrastructure tests (ClickHouse, Pub/Sub, LLM integration) auto-skip when their requirements are unavailable. `dev test` is always safe to run. Use `dev info` to see which infrastructure is detected.
+
+`make` targets (`make test`, `make lint`, `make check`, etc.) delegate to `dev` and remain available as shortcuts.
 
 **Static analysis tools:**
 - **Ruff** — 28 rule sets including bugbear, security (bandit), complexity, async enforcement, exception patterns
@@ -1242,7 +1260,6 @@ ai-pipeline-core/
 |   |-- _llm_core/        # Internal LLM client, model types, and response handling
 |   |-- deployment/        # Pipeline deployment, deploy script, CLI bootstrap, progress, remote
 |   |-- database/          # Execution DAG, documents, blobs, logs, and download helpers
-|   |-- docs_generator/    # AI-focused documentation generator
 |   |-- documents/         # Document system (Document base class, attachments, context)
 |   |-- llm/               # Conversation class, Tool base class, tool loop, URLSubstitutor, image processing
 |   |-- logging/           # Logging infrastructure
@@ -1252,6 +1269,9 @@ ai-pipeline-core/
 |   |-- replay/            # Replay system (capture, serialize, resolve, execute)
 |   |-- settings.py        # Configuration management (Pydantic BaseSettings)
 |   +-- exceptions.py      # Framework exceptions (LLMError, DocumentNameError, etc.)
+|-- tools/
+|   |-- dev-cli/           # Dev CLI — enforces correct test/lint/check workflows
+|   +-- docs-generator/    # AI-focused documentation generator (separate workspace package)
 |-- .ai-docs/             # Auto-generated API guides for AI coding agents
 |-- tests/                 # Comprehensive test suite
 |-- examples/              # Usage examples
@@ -1262,7 +1282,7 @@ ai-pipeline-core/
 
 1. Fork the repository
 2. Create a feature branch
-3. Make changes — run `make check` (must pass all linting, type checking, semgrep, and tests)
+3. Make changes — run `dev check` (must pass all linting, type checking, semgrep, and tests)
 4. Open a Pull Request
 
 Note: This is an internal-first framework. External contributions are welcome but the architecture and infrastructure choices (Prefect, ClickHouse) are fixed.

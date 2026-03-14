@@ -37,7 +37,9 @@ class MethodInfo:
     source: str
     is_property: bool
     is_classmethod: bool
+    is_staticmethod: bool
     is_abstract: bool
+    is_async: bool
     line_count: int
     is_inherited: bool = False
     inherited_from: str | None = None
@@ -217,7 +219,7 @@ def build_symbol_table(source_dir: Path) -> SymbolTable:
     return table
 
 
-def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:  # noqa: C901, PLR0912
+def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:  # noqa: C901, PLR0912, PLR0915
     """Remap symbols defined in private modules to public modules that re-export them via __all__.
 
     Also discovers symbols from private files (e.g. _types.py) that are
@@ -235,6 +237,14 @@ def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:  # noq
         all_names = _parse_dunder_all(init_file)
         if all_names:
             public_exports[subdir.name] = all_names
+
+    # Also collect exports from root-level public .py files (e.g. exceptions.py)
+    for py_file in sorted(source_dir.glob("*.py")):
+        if py_file.name.startswith("_") or py_file.name == "__init__.py":
+            continue
+        all_names = _parse_dunder_all(py_file)
+        if all_names:
+            public_exports.setdefault(py_file.stem, set()).update(all_names)
 
     # Remap already-discovered symbols from private to public modules
     for symbol_map in (table.class_to_module, table.function_to_module, table.value_to_module):
@@ -260,7 +270,12 @@ def _remap_private_symbols(table: SymbolTable, source_dir: Path) -> None:  # noq
         if not missing:
             continue
         subdir = source_dir / public_module
-        for py_file in sorted(subdir.rglob("*.py")):
+        if subdir.is_dir():
+            scan_files = sorted(subdir.rglob("*.py"))
+        else:
+            # Root-level module (e.g. exceptions.py) — scan private .py files at source root
+            scan_files = sorted(f for f in source_dir.glob("_*.py") if f.name != "__init__.py")
+        for py_file in scan_files:
             if py_file.name == "__init__.py":
                 continue
             module = parse_module(py_file)
@@ -412,9 +427,11 @@ def _extract_method(
         signature=_extract_signature(node),
         docstring=ast.get_docstring(node) or "",
         source=get_source(source_lines, node),
-        is_property="property" in decorator_names,
+        is_property="property" in decorator_names or "cached_property" in decorator_names,
         is_classmethod="classmethod" in decorator_names,
+        is_staticmethod="staticmethod" in decorator_names,
         is_abstract="abstractmethod" in decorator_names,
+        is_async=isinstance(node, ast.AsyncFunctionDef),
         line_count=_body_line_count(node),
     )
 

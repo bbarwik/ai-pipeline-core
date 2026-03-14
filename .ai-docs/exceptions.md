@@ -1,13 +1,13 @@
 # MODULE: exceptions
-# CLASSES: LLMError, OutputDegenerationError
-# DEPENDS: PipelineCoreError
+# CLASSES: LLMError, OutputDegenerationError, PipelineCoreError
+# DEPENDS: Exception
 # VERSION: 0.15.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import LLMError, OutputDegenerationError
+from ai_pipeline_core import LLMError, OutputDegenerationError, PipelineCoreError
 ```
 
 ## Public API
@@ -18,6 +18,9 @@ class LLMError(PipelineCoreError):
 
 class OutputDegenerationError(LLMError):
     """LLM output contains degeneration patterns (e.g., token repetition loops). Triggers retry with cache disabled."""
+
+class PipelineCoreError(Exception):
+    """Base exception for all AI Pipeline Core errors."""
 
 ```
 

@@ -6,72 +6,82 @@ EXTRA_ARGS = $(filter-out $(_MAKEFILE_TARGETS),$(MAKECMDGOALS))
 
 .PHONY: install
 install:
-	@uv sync --locked
+	@uv pip install --system -e .
 
 .PHONY: install-dev
 install-dev:
-	@uv sync --locked --extra dev
+	@uv pip install --system -e ".[dev]"
 	@pre-commit install
+
+# ---------------------------------------------------------------------------
+# Dev CLI wrappers — all test/lint/check commands delegate to `dev`
+# ---------------------------------------------------------------------------
 
 .PHONY: test
 test:
-	@uv run pytest $(EXTRA_ARGS)
+	@dev test $(EXTRA_ARGS)
 
 .PHONY: test-fast
 test-fast:
-	@uv run pytest -n auto --dist worksteal $(EXTRA_ARGS)
+	@dev test --full $(EXTRA_ARGS)
 
 .PHONY: test-integration
 test-integration:
-	@uv run pytest -m integration $(EXTRA_ARGS)
-
-.PHONY: test-clickhouse
-test-clickhouse:
-	@uv run pytest -m clickhouse $(EXTRA_ARGS)
-
-.PHONY: test-pubsub
-test-pubsub:
-	@uv run pytest -m pubsub $(EXTRA_ARGS)
+	@dev test --integration $(EXTRA_ARGS)
 
 .PHONY: test-all
 test-all:
-	@uv run pytest --override-ini="addopts=-q --tb=short --testmon" $(EXTRA_ARGS)
+	@dev test --all $(EXTRA_ARGS)
+
+.PHONY: test-lf
+test-lf:
+	@dev test --lf
+
+.PHONY: lint
+lint:
+	@dev lint
+
+.PHONY: format
+format:
+	@dev format
+
+.PHONY: typecheck
+typecheck:
+	@dev typecheck
+
+.PHONY: check
+check:
+	@dev check
+
+.PHONY: check-fast
+check-fast:
+	@dev check --fast
+
+# ---------------------------------------------------------------------------
+# Targets that remain Make-native (not test/lint commands)
+# ---------------------------------------------------------------------------
 
 .PHONY: test-cov
 test-cov:
-	@uv run pytest \
+	@pytest \
 		--cov=ai_pipeline_core \
 		--cov-report=html \
 		--cov-report=term \
 		--cov-fail-under=80 \
+		-m 'not integration and not clickhouse and not pubsub and not pubsub_live' \
 		$(EXTRA_ARGS)
 
 .PHONY: test-collect
 test-collect:
-	@uv run pytest --collect-only -q --no-header
-
-.PHONY: lint
-lint:
-	@uv run ruff check $(or $(EXTRA_ARGS),.)
-	@uv run ruff format --check $(or $(EXTRA_ARGS),.)
-
-.PHONY: format
-format:
-	@uv run ruff format $(or $(EXTRA_ARGS),.)
-	@uv run ruff check --fix $(or $(EXTRA_ARGS),.)
-
-.PHONY: typecheck
-typecheck:
-	@uv run basedpyright --level warning $(EXTRA_ARGS)
-	@uv run basedpyright --level error -p pyrightconfig.tests.json $(EXTRA_ARGS)
+	@pytest --collect-only -q --no-header
 
 .PHONY: docstrings-cover
 docstrings-cover:
-	@uv run interrogate -v --fail-under 100 ai_pipeline_core
+	@interrogate -v --fail-under 100 ai_pipeline_core
 
 .PHONY: docs-ai-build
 docs-ai-build:
-	@uv run python -m ai_pipeline_core.docs_generator generate
+	@python -m docs_generator generate
 
 .PHONY: docs-ai-check
 docs-ai-check: docs-ai-build
@@ -80,7 +90,7 @@ docs-ai-check: docs-ai-build
 
 .PHONY: deadcode
 deadcode:
-	@uv run vulture ai_pipeline_core/ .vulture_whitelist.py --min-confidence 80
+	@vulture ai_pipeline_core/ .vulture_whitelist.py --min-confidence 80
 
 .PHONY: semgrep
 semgrep:
@@ -111,8 +121,6 @@ duplicates:
 	@pylint --disable=all --enable=duplicate-code ai_pipeline_core/ || true
 
 # Export discipline: public modules with public symbols should define __all__
-# Skips: internal modules (_*.py), __init__.py, test files
-# NOTE: Advisory only - prints warnings but does not fail build
 .PHONY: exports
 exports:
 	@echo "Checking __all__ exports (advisory)..."
@@ -127,7 +135,6 @@ exports:
 hygiene: filesize duplicates exports
 	@echo "Code hygiene checks completed"
 
-
 .PHONY: clean
 clean:
 	@rm -rf build/ dist/ *.egg-info .pytest_cache/ .ruff_cache/ htmlcov/ .coverage
@@ -141,7 +148,3 @@ pre-commit:
 .PHONY: lint-pre-commit-config
 lint-pre-commit-config:
 	@pre-commit validate-config .pre-commit-config.yaml
-
-.PHONY: check
-check: lint typecheck deadcode semgrep docstrings-cover filesize check-claude-md test-collect test
-	@echo "All checks passed"
