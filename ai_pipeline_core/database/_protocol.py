@@ -183,3 +183,17 @@ class DatabaseReader(Protocol):
     ) -> list[LogRecord]:
         """Retrieve logs for multiple deployments in one operation."""
         ...
+
+    async def find_latest_documents_by_derived_from(
+        self,
+        values: list[str],
+        *,
+        document_type: str | None = None,
+        max_age: timedelta | None = None,
+    ) -> dict[str, DocumentRecord]:
+        """Find the newest DocumentRecord for each derived_from value.
+
+        Returns {value: newest_record} for documents whose derived_from
+        contains any of the given values.
+        """
+        ...

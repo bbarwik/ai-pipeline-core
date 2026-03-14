@@ -42,6 +42,7 @@ DOCUMENT_COLUMNS = (
     "attachments.content_sha256",
     "attachments.mime_type",
     "attachments.size_bytes",
+    "publicly_visible",
     "created_at",
 )
 
@@ -104,6 +105,7 @@ def document_to_row(record: DocumentRecord) -> list[Any]:
         list(record.attachment_content_sha256s),
         list(record.attachment_mime_types),
         list(record.attachment_size_bytes),
+        record.publicly_visible,
         record.created_at,
     ]
 
@@ -136,6 +138,7 @@ def row_to_document(row: tuple[Any, ...]) -> DocumentRecord:
     del fields["attachments.content_sha256"]
     del fields["attachments.mime_type"]
     del fields["attachments.size_bytes"]
+    fields["publicly_visible"] = bool(fields["publicly_visible"])
     fields["created_at"] = to_datetime(fields["created_at"])
     return DocumentRecord(**fields)
 

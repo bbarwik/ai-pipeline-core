@@ -167,6 +167,7 @@ class ClickHouseDatabase:
             "`attachments.name`, `attachments.description`, "
             "`attachments.content_sha256`, `attachments.mime_type`, "
             "`attachments.size_bytes`, "
+            "publicly_visible, "
             "now64(3) "
             f"FROM {DOCUMENTS_TABLE} FINAL WHERE document_sha256 = {{document_sha256:String}}",
             parameters={"summary": summary, "document_sha256": document_sha256},
@@ -456,6 +457,37 @@ class ClickHouseDatabase:
             parameters=parameters,
         )
         return [row_to_log(tuple(row)) for row in result.result_rows]
+
+    async def find_latest_documents_by_derived_from(
+        self,
+        values: list[str],
+        *,
+        document_type: str | None = None,
+        max_age: timedelta | None = None,
+    ) -> dict[str, DocumentRecord]:
+        if not values:
+            return {}
+        filters = ["hasAny(derived_from, {values:Array(String)})"]
+        parameters: dict[str, Any] = {"values": values}
+        if document_type is not None:
+            filters.append("document_type = {document_type:String}")
+            parameters["document_type"] = document_type
+        if max_age is not None:
+            filters.append("created_at >= {min_created_at:DateTime64(3)}")
+            parameters["min_created_at"] = datetime.now(UTC) - max_age
+        result = await self._query(
+            f"SELECT {', '.join(DOCUMENT_COLUMNS)} FROM {DOCUMENTS_TABLE} FINAL WHERE {' AND '.join(filters)} ORDER BY created_at DESC",
+            parameters=parameters,
+        )
+        lookup_set = set(values)
+        found: dict[str, DocumentRecord] = {}
+        for row in result.result_rows:
+            record = row_to_document(tuple(row))
+            matched_values = lookup_set & set(record.derived_from)
+            for value in matched_values:
+                if value not in found:
+                    found[value] = record
+        return found
 
     async def get_deployment_logs_batch(
         self,

@@ -1,7 +1,7 @@
 """Document reconstruction and serialization for span-era database records."""
 
 from ai_pipeline_core.database._hydrate import hydrate_document
-from ai_pipeline_core.database._protocol import DatabaseReader
+from ai_pipeline_core.database._protocol import DatabaseReader, DatabaseWriter
 from ai_pipeline_core.database._types import BlobRecord, DocumentRecord, HydratedDocument
 from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents._hashing import compute_content_sha256
@@ -12,6 +12,7 @@ __all__ = [
     "document_to_blobs",
     "document_to_record",
     "load_documents_from_database",
+    "store_document",
 ]
 
 logger = get_pipeline_logger(__name__)
@@ -35,6 +36,7 @@ def document_to_record(document: Document) -> DocumentRecord:
         attachment_content_sha256s=tuple(compute_content_sha256(att.content) for att in document.attachments),
         attachment_mime_types=tuple(att.mime_type for att in document.attachments),
         attachment_size_bytes=tuple(att.size for att in document.attachments),
+        publicly_visible=getattr(type(document), "publicly_visible", False),
     )
 
 
@@ -44,6 +46,17 @@ def document_to_blobs(document: Document) -> list[BlobRecord]:
     for att in document.attachments:
         blobs.append(BlobRecord(content_sha256=compute_content_sha256(att.content), content=att.content))
     return blobs
+
+
+async def store_document(database: DatabaseWriter, document: Document) -> None:
+    """Save a Document to the database, decomposing it into BlobRecords and a DocumentRecord.
+
+    Blobs are saved first to ensure referential integrity.
+    """
+    blobs = document_to_blobs(document)
+    record = document_to_record(document)
+    await database.save_blob_batch(blobs)
+    await database.save_document(record)
 
 
 def _find_document_class(class_name: str) -> type[Document] | None:

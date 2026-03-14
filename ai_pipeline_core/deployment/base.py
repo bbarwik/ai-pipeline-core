@@ -170,6 +170,7 @@ async def _record_nonexecuted_flow(
             cache_hit=status == SpanStatus.CACHED,
             cache_key=cache_key,
             cache_source_span_id=cache_source_span_id,
+            skip_reason=publish_reason,
         )
         await publisher.publish_flow_skipped(
             FlowSkippedEvent(
@@ -524,7 +525,11 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                 db=database,
                 input_preview={"deployment": self.name, "document_count": len(input_docs)},
             ) as deployment_span_ctx:
-                deployment_span_ctx.set_meta(input_fingerprint=input_fingerprint)
+                deployment_span_ctx.set_meta(
+                    input_fingerprint=input_fingerprint,
+                    flow_plan=flow_plan,
+                    deployment_class=type(self).__name__,
+                )
                 return await self._run_tracked_deployment(
                     run_id=run_id,
                     publisher=publisher,
@@ -874,6 +879,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             if not failed_published:
                 failed_published = True
                 try:
+                    error_code = _classify_error(exc)
+                    deployment_span_ctx.set_meta(error_code=str(error_code))
                     await publisher.publish_run_failed(
                         RunFailedEvent(
                             run_id=run_id,
@@ -881,7 +888,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                             root_deployment_id=root_id_str,
                             parent_deployment_task_id=parent_task_id_str,
                             status=str(SpanStatus.FAILED),
-                            error_code=_classify_error(exc),
+                            error_code=error_code,
                             error_message=str(exc),
                             deployment_name=self.name,
                             deployment_class=type(self).__name__,

@@ -2,7 +2,7 @@
 # CLASSES: LimitKind, PipelineLimit, FlowOptions, RunContext, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
 # DEPENDS: BaseModel, StrEnum
 # PURPOSE: Pipeline framework primitives.
-# VERSION: 0.15.0
+# VERSION: 0.15.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

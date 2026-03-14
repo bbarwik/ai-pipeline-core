@@ -145,6 +145,7 @@ def _deserialize_document(data: dict[str, Any], *, path: Path) -> DocumentRecord
             attachment_content_sha256s=tuple(data["attachment_content_sha256s"]),
             attachment_mime_types=tuple(data["attachment_mime_types"]),
             attachment_size_bytes=tuple(data["attachment_size_bytes"]),
+            publicly_visible=data.get("publicly_visible", False),
             created_at=_utc_datetime_from_iso(str(data["created_at"])),
         )
     except KeyError as exc:
@@ -830,3 +831,35 @@ class FilesystemDatabase:
         category: str | None = None,
     ) -> list[LogRecord]:
         return await self._run(self._get_deployment_logs_batch_sync, deployment_ids, level, category)
+
+    def _find_latest_documents_by_derived_from_sync(
+        self,
+        values: list[str],
+        document_type: str | None,
+        max_age: timedelta | None,
+    ) -> dict[str, DocumentRecord]:
+        if not values:
+            return {}
+        now = datetime.now(UTC)
+        lookup_set = set(values)
+        result: dict[str, DocumentRecord] = {}
+        for record in self._documents.values():
+            if document_type is not None and record.document_type != document_type:
+                continue
+            if max_age is not None and record.created_at < now - max_age:
+                continue
+            matched_values = lookup_set & set(record.derived_from)
+            for value in matched_values:
+                existing = result.get(value)
+                if existing is None or record.created_at > existing.created_at:
+                    result[value] = record
+        return result
+
+    async def find_latest_documents_by_derived_from(
+        self,
+        values: list[str],
+        *,
+        document_type: str | None = None,
+        max_age: timedelta | None = None,
+    ) -> dict[str, DocumentRecord]:
+        return await self._run(self._find_latest_documents_by_derived_from_sync, values, document_type, max_age)

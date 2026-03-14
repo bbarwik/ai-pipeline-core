@@ -175,6 +175,7 @@ class DocumentRecord:
     attachment_content_sha256s: tuple[str, ...] = ()
     attachment_mime_types: tuple[str, ...] = ()
     attachment_size_bytes: tuple[int, ...] = ()
+    publicly_visible: bool = False
     created_at: datetime = field(default_factory=_utcnow)
 
     def __post_init__(self) -> None:

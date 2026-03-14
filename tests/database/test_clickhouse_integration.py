@@ -1340,3 +1340,125 @@ async def test_update_document_summary_nonexistent_is_noop(database: ClickHouseD
     """Updating summary for a nonexistent document does not raise."""
     await database.update_document_summary("nonexistent-sha", "ignored")
     assert await database.get_document("nonexistent-sha") is None
+
+
+# ---------------------------------------------------------------------------
+# publicly_visible field
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_document_publicly_visible_roundtrip(database: ClickHouseDatabase) -> None:
+    """publicly_visible=True persists and round-trips through ClickHouse."""
+    doc = _make_document(
+        document_sha256=f"pub-vis-{uuid4().hex[:12]}",
+        publicly_visible=True,
+    )
+    await database.save_document(doc)
+    loaded = await database.get_document(doc.document_sha256)
+    assert loaded is not None
+    assert loaded.publicly_visible is True
+
+
+@pytest.mark.asyncio
+async def test_document_publicly_visible_default_false(database: ClickHouseDatabase) -> None:
+    """Default publicly_visible=False persists correctly."""
+    doc = _make_document(document_sha256=f"pub-def-{uuid4().hex[:12]}")
+    await database.save_document(doc)
+    loaded = await database.get_document(doc.document_sha256)
+    assert loaded is not None
+    assert loaded.publicly_visible is False
+
+
+@pytest.mark.asyncio
+async def test_document_publicly_visible_survives_summary_update(database: ClickHouseDatabase) -> None:
+    """update_document_summary preserves publicly_visible."""
+    doc = _make_document(
+        document_sha256=f"pub-upd-{uuid4().hex[:12]}",
+        publicly_visible=True,
+    )
+    await database.save_document(doc)
+    await database.update_document_summary(doc.document_sha256, "new summary")
+    loaded = await database.get_document(doc.document_sha256)
+    assert loaded is not None
+    assert loaded.publicly_visible is True
+    assert loaded.summary == "new summary"
+
+
+# ---------------------------------------------------------------------------
+# find_latest_documents_by_derived_from
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_derived_from_empty(database: ClickHouseDatabase) -> None:
+    """Empty values list returns empty dict."""
+    result = await database.find_latest_documents_by_derived_from([])
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_derived_from_single_match(database: ClickHouseDatabase) -> None:
+    url = f"https://test-{uuid4().hex[:8]}.com/page"
+    doc = _make_document(
+        document_sha256=f"find-df-{uuid4().hex[:12]}",
+        derived_from=(url,),
+    )
+    await database.save_document(doc)
+    result = await database.find_latest_documents_by_derived_from([url])
+    assert url in result
+    assert result[url].document_sha256 == doc.document_sha256
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_derived_from_newest_wins(database: ClickHouseDatabase) -> None:
+    url = f"https://newest-{uuid4().hex[:8]}.com"
+    old = _make_document(
+        document_sha256=f"find-old-{uuid4().hex[:12]}",
+        derived_from=(url,),
+        created_at=_BASE_TIME - timedelta(days=10),
+    )
+    new = _make_document(
+        document_sha256=f"find-new-{uuid4().hex[:12]}",
+        derived_from=(url,),
+        created_at=_BASE_TIME,
+    )
+    await database.save_document(old)
+    await database.save_document(new)
+
+    result = await database.find_latest_documents_by_derived_from([url])
+    assert result[url].document_sha256 == new.document_sha256
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_derived_from_type_filter(database: ClickHouseDatabase) -> None:
+    url = f"https://type-{uuid4().hex[:8]}.com"
+    doc_a = _make_document(
+        document_sha256=f"find-ta-{uuid4().hex[:12]}",
+        document_type="TypeA",
+        derived_from=(url,),
+    )
+    doc_b = _make_document(
+        document_sha256=f"find-tb-{uuid4().hex[:12]}",
+        document_type="TypeB",
+        derived_from=(url,),
+    )
+    await database.save_document(doc_a)
+    await database.save_document(doc_b)
+
+    result = await database.find_latest_documents_by_derived_from([url], document_type="TypeA")
+    assert result[url].document_type == "TypeA"
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_derived_from_max_age(database: ClickHouseDatabase) -> None:
+    url = f"https://age-{uuid4().hex[:8]}.com"
+    old = _make_document(
+        document_sha256=f"find-age-{uuid4().hex[:12]}",
+        derived_from=(url,),
+        created_at=_BASE_TIME - timedelta(days=365),
+    )
+    await database.save_document(old)
+
+    result = await database.find_latest_documents_by_derived_from([url], max_age=timedelta(days=30))
+    assert url not in result

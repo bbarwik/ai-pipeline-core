@@ -2,7 +2,7 @@
 # CLASSES: MemoryDatabase, DatabaseReader, SpanKind, SpanStatus, SpanRecord, DocumentRecord, BlobRecord, CostTotals, HydratedDocument
 # DEPENDS: Protocol, StrEnum
 # PURPOSE: Unified database module for the span-based schema.
-# VERSION: 0.15.0
+# VERSION: 0.15.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -31,6 +31,30 @@ class MemoryDatabase:
         self._documents: dict[str, DocumentRecord] = {}
         self._blobs: dict[str, BlobRecord] = {}
         self._logs: list[LogRecord] = []
+
+    async def find_latest_documents_by_derived_from(
+        self,
+        values: list[str],
+        *,
+        document_type: str | None = None,
+        max_age: timedelta | None = None,
+    ) -> dict[str, DocumentRecord]:
+        if not values:
+            return {}
+        now = datetime.now(UTC)
+        lookup_set = set(values)
+        result: dict[str, DocumentRecord] = {}
+        for record in self._documents.values():
+            if document_type is not None and record.document_type != document_type:
+                continue
+            if max_age is not None and record.created_at < now - max_age:
+                continue
+            matched_values = lookup_set & set(record.derived_from)
+            for value in matched_values:
+                existing = result.get(value)
+                if existing is None or record.created_at > existing.created_at:
+                    result[value] = record
+        return result
 
     async def flush(self) -> None:
         return None
@@ -259,6 +283,20 @@ class MemoryDatabase:
 @runtime_checkable
 class DatabaseReader(Protocol):
     """Read protocol for the span/document/blob/log schema."""
+    async def find_latest_documents_by_derived_from(
+        self,
+        values: list[str],
+        *,
+        document_type: str | None = None,
+        max_age: timedelta | None = None,
+    ) -> dict[str, DocumentRecord]:
+        """Find the newest DocumentRecord for each derived_from value.
+
+        Returns {value: newest_record} for documents whose derived_from
+        contains any of the given values.
+        """
+        ...
+
     async def get_all_document_shas_for_tree(self, root_deployment_id: UUID) -> set[str]:
         """Collect all document SHA256s referenced anywhere in a deployment tree."""
         ...
@@ -456,6 +494,7 @@ class DocumentRecord:
     attachment_content_sha256s: tuple[str, ...] = ()
     attachment_mime_types: tuple[str, ...] = ()
     attachment_size_bytes: tuple[int, ...] = ()
+    publicly_visible: bool = False
     created_at: datetime = field(default_factory=_utcnow)
 
     def __post_init__(self) -> None:
@@ -514,7 +553,7 @@ class HydratedDocument:
 
 ## Examples
 
-**Database reader is runtime checkable** (`tests/database/test_protocol.py:92`)
+**Database reader is runtime checkable** (`tests/database/test_protocol.py:93`)
 
 ```python
 def test_database_reader_is_runtime_checkable() -> None:
@@ -523,7 +562,7 @@ def test_database_reader_is_runtime_checkable() -> None:
     assert not isinstance(object(), DatabaseReader)
 ```
 
-**Database writer method signatures** (`tests/database/test_protocol.py:160`)
+**Database writer method signatures** (`tests/database/test_protocol.py:161`)
 
 ```python
 def test_database_writer_method_signatures() -> None:
@@ -531,6 +570,67 @@ def test_database_writer_method_signatures() -> None:
     _assert_signature(DatabaseWriter, "save_document", parameter_types={"record": DocumentRecord}, return_type=type(None))
     _assert_signature(DatabaseWriter, "save_blob", parameter_types={"blob": BlobRecord}, return_type=type(None))
     _assert_signature(DatabaseWriter, "save_logs_batch", parameter_types={"logs": list[LogRecord]}, return_type=type(None))
+```
+
+**Find empty values returns empty** (`tests/database/test_find_documents.py:37`)
+
+```python
+@pytest.mark.asyncio
+async def test_find_empty_values_returns_empty() -> None:
+    db = MemoryDatabase()
+    result = await db.find_latest_documents_by_derived_from([])
+    assert result == {}
+```
+
+**Find filters by max age** (`tests/database/test_find_documents.py:85`)
+
+```python
+@pytest.mark.asyncio
+async def test_find_filters_by_max_age() -> None:
+    db = MemoryDatabase()
+    old = _make_document(derived_from=("https://a.com",), created_at=datetime(2020, 1, 1, tzinfo=UTC))
+    await db.save_document(old)
+
+    result = await db.find_latest_documents_by_derived_from(["https://a.com"], max_age=timedelta(days=30))
+    assert result == {}
+```
+
+**Find no matches returns empty** (`tests/database/test_find_documents.py:44`)
+
+```python
+@pytest.mark.asyncio
+async def test_find_no_matches_returns_empty() -> None:
+    db = MemoryDatabase()
+    await db.save_document(_make_document(derived_from=("https://a.com",)))
+    result = await db.find_latest_documents_by_derived_from(["https://b.com"])
+    assert result == {}
+```
+
+**Find returns newest** (`tests/database/test_find_documents.py:62`)
+
+```python
+@pytest.mark.asyncio
+async def test_find_returns_newest() -> None:
+    db = MemoryDatabase()
+    old = _make_document(derived_from=("https://a.com",), created_at=datetime(2026, 1, 1, tzinfo=UTC))
+    new = _make_document(derived_from=("https://a.com",), created_at=datetime(2026, 3, 1, tzinfo=UTC))
+    await db.save_document(old)
+    await db.save_document(new)
+    result = await db.find_latest_documents_by_derived_from(["https://a.com"])
+    assert result["https://a.com"].document_sha256 == new.document_sha256
+```
+
+**Find single match** (`tests/database/test_find_documents.py:52`)
+
+```python
+@pytest.mark.asyncio
+async def test_find_single_match() -> None:
+    db = MemoryDatabase()
+    doc = _make_document(derived_from=("https://a.com",))
+    await db.save_document(doc)
+    result = await db.find_latest_documents_by_derived_from(["https://a.com"])
+    assert "https://a.com" in result
+    assert result["https://a.com"].document_sha256 == doc.document_sha256
 ```
 
 **Generate summary returns no data for empty tree** (`tests/database/test_span_summary.py:287`)
@@ -541,109 +641,6 @@ async def test_generate_summary_returns_no_data_for_empty_tree() -> None:
     summary = await generate_summary(MemoryDatabase(), uuid4())
 
     assert summary == "# No execution data found\n"
-```
-
-**Memory database conforms to protocols** (`tests/database/test_protocol.py:85`)
-
-```python
-def test_memory_database_conforms_to_protocols() -> None:
-    database = MemoryDatabase()
-    assert isinstance(database, DatabaseReader)
-    assert isinstance(database, DatabaseWriter)
-    assert database.supports_remote is False
-```
-
-**Span status members** (`tests/database/test_types.py:33`)
-
-```python
-def test_span_status_members() -> None:
-    assert tuple(status.value for status in SpanStatus) == (
-        "running",
-        "completed",
-        "failed",
-        "cached",
-        "skipped",
-    )
-```
-
-**Blobs and logs ddl match expected shape** (`tests/database/test_clickhouse.py:105`)
-
-```python
-def test_blobs_and_logs_ddl_match_expected_shape() -> None:
-    assert len(_extract_column_lines(BLOBS_DDL)) == 3
-    assert "ORDER BY (content_sha256)" in BLOBS_DDL
-    assert len(_extract_column_lines(LOGS_DDL)) == 11
-    assert "ORDER BY (deployment_id, span_id, timestamp, sequence_no)" in LOGS_DDL
-```
-
-**Clickhouse database can connect** (`tests/database/test_clickhouse.py:245`)
-
-```python
-@pytest.mark.clickhouse
-def test_clickhouse_database_can_connect(clickhouse_settings) -> None:
-    from ai_pipeline_core.database.clickhouse._backend import ClickHouseDatabase
-
-    database = ClickHouseDatabase(settings=clickhouse_settings)
-    assert database is not None
-```
-
-**Database reader method signatures** (`tests/database/test_protocol.py:104`)
-
-```python
-def test_database_reader_method_signatures() -> None:
-    _assert_signature(DatabaseReader, "get_span", parameter_types={"span_id": UUID}, return_type=SpanRecord | None)
-    _assert_signature(
-        DatabaseReader,
-        "get_document",
-        parameter_types={"document_sha256": str},
-        return_type=DocumentRecord | None,
-    )
-    _assert_signature(
-        DatabaseReader,
-        "get_document_with_content",
-        parameter_types={"document_sha256": str},
-        return_type=HydratedDocument | None,
-    )
-    _assert_signature(
-        DatabaseReader,
-        "get_blob",
-        parameter_types={"content_sha256": str},
-        return_type=BlobRecord | None,
-    )
-    _assert_signature(
-        DatabaseReader,
-        "get_deployment_cost_totals",
-        parameter_types={"root_deployment_id": UUID},
-        return_type=CostTotals,
-    )
-    _assert_signature(
-        DatabaseReader,
-        "get_cached_completion",
-        parameter_types={"cache_key": str, "max_age": timedelta | None},
-        return_type=SpanRecord | None,
-        keyword_only={"max_age"},
-    )
-    _assert_signature(
-        DatabaseReader,
-        "list_deployments",
-        parameter_types={"limit": int, "status": str | None},
-        return_type=list[SpanRecord],
-        keyword_only={"status"},
-    )
-    _assert_signature(
-        DatabaseReader,
-        "get_span_logs",
-        parameter_types={"span_id": UUID, "level": str | None, "category": str | None},
-        return_type=list[LogRecord],
-        keyword_only={"level", "category"},
-    )
-    _assert_signature(
-        DatabaseReader,
-        "get_deployment_logs_batch",
-        parameter_types={"deployment_ids": list[UUID], "level": str | None, "category": str | None},
-        return_type=list[LogRecord],
-        keyword_only={"level", "category"},
-    )
 ```
 
 

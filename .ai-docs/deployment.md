@@ -1,15 +1,15 @@
 # MODULE: deployment
-# CLASSES: DeploymentResult, FlowAction, FlowDirective, PipelineDeployment, RemoteDeployment, DocumentInput
+# CLASSES: DeploymentResult, FlowAction, FlowDirective, PipelineDeployment, RemoteDeployment, ReconstructedEvent, DocumentInput
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.15.0
+# VERSION: 0.15.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
 from ai_pipeline_core import DeploymentResult, PipelineDeployment, RemoteDeployment
-from ai_pipeline_core.deployment import DocumentInput, FlowAction, FlowDirective
+from ai_pipeline_core.deployment import DocumentInput, FlowAction, FlowDirective, ReconstructedEvent, reconstruct_lifecycle_events
 ```
 
 ## Public API
@@ -381,6 +381,15 @@ Set ``deployment_class`` to enable inline mode (test/local):
             return result
 
 
+@dataclass(frozen=True, slots=True)
+class ReconstructedEvent:
+    """A lifecycle event reconstructed from database spans."""
+    event_type: EventType
+    span_id: str
+    timestamp: datetime
+    data: dict[str, Any]
+
+
 class DocumentInput(_InputBase):
     """Document provided to a deployment — inline content or a URL reference."""
     name: str = Field(default='', description="Document filename (e.g. 'task.md'). Auto-derived from URL path if omitted.")  # Document filename (e.g. 'task.md'). Auto-derived from URL path if omitted.
@@ -392,6 +401,71 @@ class DocumentInput(_InputBase):
     attachments: tuple[AttachmentInput, ...] = Field(default=(), description='Secondary content attached to this document.')  # Secondary content attached to this document.
     STRIP_KEYS: ClassVar[frozenset[str]] = frozenset({'id', 'sha256', 'content_sha256', 'size', 'mime_type'})
 
+
+```
+
+## Functions
+
+```python
+async def reconstruct_lifecycle_events(
+    reader: DatabaseReader,
+    root_deployment_id: UUID,
+) -> list[ReconstructedEvent]:
+    """Reconstruct lifecycle events from a deployment's span tree.
+
+    Returns events in chronological order. Each event's data dict matches
+    the payload shape published by PubSubPublisher (via event_to_payload()).
+
+    Heartbeats are not reconstructed (ephemeral, not stored in spans).
+    """
+    all_spans = await reader.get_deployment_tree(root_deployment_id)
+
+    lifecycle_spans = [s for s in all_spans if s.kind in _LIFECYCLE_KINDS]
+    if not lifecycle_spans:
+        return []
+
+    all_doc_shas: set[str] = set()
+    for span in lifecycle_spans:
+        all_doc_shas.update(span.input_document_shas)
+        all_doc_shas.update(span.output_document_shas)
+
+    doc_map: dict[str, DocumentRecord] = {}
+    if all_doc_shas:
+        doc_map = await reader.get_documents_batch(sorted(all_doc_shas))
+
+    span_by_id: dict[UUID, SpanRecord] = {s.span_id: s for s in lifecycle_spans}
+    meta_by_id: dict[UUID, dict[str, Any]] = {s.span_id: _parse_meta(s) for s in lifecycle_spans}
+
+    deployment_span: SpanRecord | None = None
+    for span in lifecycle_spans:
+        if span.kind == SpanKind.DEPLOYMENT:
+            deployment_span = span
+            break
+
+    parent_task_id_str: str | None = None
+    deployment_span_id_str = ""
+    if deployment_span is not None:
+        parent_task_id_str = str(deployment_span.parent_span_id) if deployment_span.parent_span_id else None
+        deployment_span_id_str = str(deployment_span.span_id)
+
+    events: list[ReconstructedEvent] = []
+
+    for span in lifecycle_spans:
+        meta = meta_by_id[span.span_id]
+
+        if span.kind == SpanKind.DEPLOYMENT:
+            events.extend(_reconstruct_deployment_events(span, meta, parent_task_id_str))
+
+        elif span.kind == SpanKind.FLOW:
+            events.extend(_reconstruct_flow_events(span, meta, parent_task_id_str, deployment_span_id_str, doc_map))
+
+        elif span.kind == SpanKind.TASK:
+            flow_span = span_by_id.get(span.parent_span_id) if span.parent_span_id else None
+            flow_meta = meta_by_id.get(span.parent_span_id, {}) if span.parent_span_id else {}
+            events.extend(_reconstruct_task_events(span, meta, parent_task_id_str, flow_span=flow_span, flow_meta=flow_meta, doc_map=doc_map))
+
+    events.sort(key=_sort_key)
+    return events
 
 ```
 

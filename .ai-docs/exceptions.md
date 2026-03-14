@@ -1,7 +1,7 @@
 # MODULE: exceptions
 # CLASSES: LLMError, OutputDegenerationError
 # DEPENDS: PipelineCoreError
-# VERSION: 0.15.0
+# VERSION: 0.15.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

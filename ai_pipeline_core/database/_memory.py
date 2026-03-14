@@ -262,3 +262,27 @@ class MemoryDatabase:
             ),
             key=log_sort_key,
         )
+
+    async def find_latest_documents_by_derived_from(
+        self,
+        values: list[str],
+        *,
+        document_type: str | None = None,
+        max_age: timedelta | None = None,
+    ) -> dict[str, DocumentRecord]:
+        if not values:
+            return {}
+        now = datetime.now(UTC)
+        lookup_set = set(values)
+        result: dict[str, DocumentRecord] = {}
+        for record in self._documents.values():
+            if document_type is not None and record.document_type != document_type:
+                continue
+            if max_age is not None and record.created_at < now - max_age:
+                continue
+            matched_values = lookup_set & set(record.derived_from)
+            for value in matched_values:
+                existing = result.get(value)
+                if existing is None or record.created_at > existing.created_at:
+                    result[value] = record
+        return result

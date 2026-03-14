@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass, field
 
+from ai_pipeline_core.database._types import DocumentRecord
+
 __all__ = [
     "DocumentRef",
     "TaskCompletedEvent",
@@ -21,6 +23,18 @@ class DocumentRef:
     publicly_visible: bool = False
     derived_from: tuple[str, ...] = ()
     triggered_by: tuple[str, ...] = ()
+
+    @classmethod
+    def from_record(cls, record: DocumentRecord) -> DocumentRef:
+        return cls(
+            sha256=record.document_sha256,
+            class_name=record.document_type,
+            name=record.name,
+            summary=record.summary,
+            publicly_visible=record.publicly_visible,
+            derived_from=record.derived_from,
+            triggered_by=record.triggered_by,
+        )
 
 
 @dataclass(frozen=True, slots=True)
