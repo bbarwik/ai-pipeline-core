@@ -156,9 +156,9 @@ class TestIsDocumentSha256:
         assert is_document_sha256(doc.sha256)
 
         # Create another document with the first as source
-        doc2 = SampleDoc.create(
+        doc2 = SampleDoc(
             name="derived.txt",
-            content="derived from first",
+            content=b"derived from first",
             derived_from=(doc.sha256, "https://example.com/manual-reference"),
         )
 

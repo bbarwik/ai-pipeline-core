@@ -29,6 +29,116 @@ rules:
       exclude:
         - "**/tests/**"
 
+  - id: no-response-format-override-key-guard
+    pattern: |
+      if getattr($OVERRIDES, "response_format", None) is not None and "response_format" in $ARGS:
+          ...
+    message: >
+      Replay response_format overrides must not depend on the key already existing
+      in recorded arguments. Apply the override whenever overrides.response_format is set.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["**/ai_pipeline_core/replay/"]
+
+  - id: tool-input-no-dict-fields
+    patterns:
+      - pattern-inside: |
+          class $TOOL(Tool):
+              ...
+      - pattern-inside: |
+          class Input(BaseModel):
+              ...
+      - pattern-either:
+          - pattern: "$FIELD: dict[$K, $V] = ..."
+          - pattern: "$FIELD: dict[$K, $V]"
+    message: >
+      Tool.Input must not use dict[str, V] fields. OpenAI strict mode requires
+      explicit properties; dict produces dynamic-key objects that _make_strict_schema
+      corrupts. Replace with list[TypedModel] where TypedModel has explicit key/value fields.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+      exclude: ["**/tests/**"]
+
+  - id: tool-input-reserved-field-names
+    patterns:
+      - pattern-inside: |
+          class $TOOL(Tool):
+              ...
+      - pattern-inside: |
+          class Input(BaseModel):
+              ...
+      - pattern-either:
+          - pattern: "strict: $T = ..."
+          - pattern: "strict: $T"
+          - pattern: "additionalProperties: $T = ..."
+          - pattern: "additionalProperties: $T"
+    message: >
+      Tool.Input field name collides with JSON Schema keywords that LiteLLM
+      strips recursively for some providers (Gemini, xAI). This causes
+      required/properties mismatches at runtime. Rename the field.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+      exclude: ["**/tests/**"]
+
+  - id: no-tools-when-tool-choice-none
+    patterns:
+      - pattern: |
+          $F(..., tools=$TOOLS, tool_choice="none", ...)
+      - metavariable-pattern:
+          metavariable: $TOOLS
+          patterns:
+            - pattern-not: "[]"
+            - pattern-not: "None"
+    message: >
+      Passing tool schemas with tool_choice="none" confuses some providers
+      (Gemini returns empty content). When forcing text-only response,
+      pass tools=[] and tool_choice=None to fully exit tool-calling mode.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+
+  - id: empty-response-must-use-dedicated-exception
+    pattern: raise ValueError("Empty response content")
+    message: >
+      Use EmptyResponseError (a NonRetryableLLMError subclass) instead of
+      ValueError. Generic ValueError is caught by the retry loop and wastes
+      all retry attempts on a permanent failure.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+
+  - id: no-function-local-response-format
+    patterns:
+      - pattern-inside: |
+          def $F(...):
+              ...
+      - pattern-either:
+          - pattern: |
+              class $C(BaseModel):
+                  ...
+              ...
+              $CONV.send_structured(..., response_format=$C, ...)
+          - pattern: |
+              class $C(BaseModel):
+                  ...
+              ...
+              await $CONV.send_structured(..., response_format=$C, ...)
+    message: >
+      BaseModel '$C' defined inside function '$F' is passed as response_format to send_structured().
+      The codec encodes the class reference via __qualname__, which contains '<locals>' for function-local
+      classes. Move '$C' to module scope.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["**/tests/**"]
+
   # PromptManager was removed — use PromptSpec + send_spec() from prompt_compiler
   - id: no-prompt-manager-import
     pattern-either:

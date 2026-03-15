@@ -42,13 +42,13 @@ class PlanResult(DeploymentResult):
 class ToMiddleTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[PlanInputDoc, ...]) -> tuple[PlanMiddleDoc, ...]:
-        return tuple(PlanMiddleDoc.derive(from_documents=(d,), name=f"mid_{d.name}", content="mid") for d in documents)
+        return tuple(PlanMiddleDoc.derive(derived_from=(d,), name=f"mid_{d.name}", content="mid") for d in documents)
 
 
 class ToOutputTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[PlanMiddleDoc, ...]) -> tuple[PlanOutputDoc, ...]:
-        return tuple(PlanOutputDoc.derive(from_documents=(d,), name=f"out_{d.name}", content="out") for d in documents)
+        return tuple(PlanOutputDoc.derive(derived_from=(d,), name=f"out_{d.name}", content="out") for d in documents)
 
 
 class ProducerFlow(PipelineFlow):

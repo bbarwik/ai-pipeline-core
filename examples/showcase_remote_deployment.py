@@ -236,7 +236,7 @@ class ResearchTask(PipelineTask):
         )
         return (
             ResearchDocument.derive(
-                from_documents=(brief,),
+                derived_from=(brief,),
                 name=f"research_{brief.id}.md",
                 content=conv.content,
             ),
@@ -299,12 +299,12 @@ class AssessmentTask(PipelineTask):
 
         return (
             StrengthsDocument.derive(
-                from_documents=(brief, research),
+                derived_from=(brief, research),
                 name=f"strengths_{brief.id}.md",
                 content=strengths_conv.content,
             ),
             WeaknessesDocument.derive(
-                from_documents=(brief, research),
+                derived_from=(brief, research),
                 name=f"weaknesses_{brief.id}.md",
                 content=weaknesses_conv.content,
             ),
@@ -353,7 +353,7 @@ class ScoringTask(PipelineTask):
 
         return (
             ThreatScoreDocument.derive(
-                from_documents=(brief, strengths, weaknesses),
+                derived_from=(brief, strengths, weaknesses),
                 name=f"threat_score_{brief.id}.json",
                 content=parsed,
             ),
@@ -461,7 +461,7 @@ class TriageTask(PipelineTask):
                 raise RuntimeError(f"Triage structured output failed for {brief.name}")
             results.append(
                 TriagedCompetitorDocument.derive(
-                    from_documents=(brief,),
+                    derived_from=(brief,),
                     name=f"triage_{brief.id}.json",
                     content=parsed,
                 )
@@ -501,7 +501,7 @@ class AnalyzeCompetitorTask(PipelineTask):
 
         # Prepare child deployment inputs
         child_input = CompetitorInputDocument.derive(
-            from_documents=(triage,),
+            derived_from=(triage,),
             name=f"{parsed.competitor_name.lower().replace(' ', '_')}.md",
             content=(
                 f"Competitor: {parsed.competitor_name}\n"
@@ -512,7 +512,7 @@ class AnalyzeCompetitorTask(PipelineTask):
             ),
         )
         child_config = PipelineConfigDocument.derive(
-            from_documents=(config,),
+            derived_from=(config,),
             name="child_config.json",
             content=config.parsed,
         )
@@ -528,7 +528,7 @@ class AnalyzeCompetitorTask(PipelineTask):
 
         return (
             CompetitorAnalysisDocument.derive(
-                from_documents=(triage,),
+                derived_from=(triage,),
                 name=f"analysis_{parsed.competitor_name.lower().replace(' ', '_')}.md",
                 content=(
                     f"# {result.competitor_name} — Threat Level: {result.threat_level.upper()}\n\n"
@@ -592,7 +592,7 @@ class SynthesisTask(PipelineTask):
 
         return (
             LandscapeReportDocument.derive(
-                from_documents=tuple(analyses),
+                derived_from=tuple(analyses),
                 name="competitive_landscape.md",
                 content=conv.content,
             ),

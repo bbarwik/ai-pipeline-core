@@ -58,7 +58,6 @@ def _make_document(**kwargs: object) -> DocumentRecord:
         "attachment_content_sha256s": (),
         "attachment_mime_types": (),
         "attachment_size_bytes": (),
-        "created_at": datetime(2026, 3, 11, 12, 0, tzinfo=UTC),
     }
     defaults.update(kwargs)
     return DocumentRecord(**defaults)
@@ -68,7 +67,6 @@ def _make_blob(**kwargs: object) -> BlobRecord:
     defaults: dict[str, object] = {
         "content_sha256": f"blob-{uuid4().hex}",
         "content": b"blob-content",
-        "created_at": datetime(2026, 3, 11, 12, 0, tzinfo=UTC),
     }
     defaults.update(kwargs)
     return BlobRecord(**defaults)
@@ -169,11 +167,10 @@ async def _seed_database() -> tuple[MemoryDatabase, UUID, UUID]:
         attachment_content_sha256s=("blob-preview",),
         attachment_mime_types=("image/png",),
         attachment_size_bytes=(7,),
-        created_at=base,
     )
     await database.save_document(document)
-    await database.save_blob(_make_blob(content_sha256="blob-root", content=b"root", created_at=base))
-    await database.save_blob(_make_blob(content_sha256="blob-preview", content=b"pngdata", created_at=base))
+    await database.save_blob(_make_blob(content_sha256="blob-root", content=b"root"))
+    await database.save_blob(_make_blob(content_sha256="blob-preview", content=b"pngdata"))
     await database.save_logs_batch([
         _make_log(
             deployment_id=root_deployment_id,
@@ -225,21 +222,30 @@ async def test_get_all_document_shas_for_tree_collects_inputs_and_outputs() -> N
 
 
 @pytest.mark.asyncio
-async def test_update_document_summary_replaces_document_by_created_at() -> None:
+async def test_update_document_summary_changes_only_summary() -> None:
     database = MemoryDatabase()
-    older = _make_document(document_sha256="doc-1", summary="old", created_at=datetime(2026, 3, 11, 12, 0, tzinfo=UTC))
-    newer = _make_document(document_sha256="doc-1", summary="new", created_at=datetime(2026, 3, 11, 12, 1, tzinfo=UTC))
-
-    await database.save_document(newer)
-    await database.save_document(older)
-    assert (await database.get_document("doc-1")) == newer
+    original = _make_document(document_sha256="doc-1", summary="old")
+    await database.save_document(original)
 
     await database.update_document_summary("doc-1", "updated")
     updated = await database.get_document("doc-1")
 
     assert updated is not None
     assert updated.summary == "updated"
-    assert updated.created_at >= newer.created_at
+    assert updated.name == original.name
+
+
+@pytest.mark.asyncio
+async def test_save_document_insert_once() -> None:
+    database = MemoryDatabase()
+    first = _make_document(document_sha256="doc-1", summary="first")
+    second = _make_document(document_sha256="doc-1", summary="second")
+
+    await database.save_document(first)
+    await database.save_document(second)
+    stored = await database.get_document("doc-1")
+    assert stored is not None
+    assert stored.summary == "first"
 
 
 @pytest.mark.asyncio

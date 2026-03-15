@@ -70,39 +70,49 @@ def run_cli_for_deployment(
             {"__module__": __name__, "__annotations__": {}},
         )
 
-    class _CliOptions(
-        options_base,
-        BaseSettings,
-    ):
-        working_directory: CliPositionalArg[Path]
-        run_id: str | None = None
-        start: int = 1
-        end: int | None = None
+    cli_options_cls = type(
+        "_CliOptions",
+        (options_base, BaseSettings),
+        {
+            "__module__": __name__,
+            "__annotations__": {
+                "working_directory": CliPositionalArg[Path],
+                "run_id": str | None,
+                "start": int,
+                "end": int | None,
+            },
+            "run_id": None,
+            "start": 1,
+            "end": None,
+            "model_config": SettingsConfigDict(
+                frozen=True,
+                extra="ignore",
+                cli_parse_args=True,
+                cli_kebab_case=True,
+                cli_exit_on_error=True,
+                cli_prog_name=deployment.name,
+                cli_use_class_docs_for_groups=True,
+            ),
+        },
+    )
 
-        model_config = SettingsConfigDict(
-            frozen=True,
-            extra="ignore",
-            cli_parse_args=True,
-            cli_kebab_case=True,
-            cli_exit_on_error=True,
-            cli_prog_name=deployment.name,
-            cli_use_class_docs_for_groups=True,
-        )
+    cli_opts = cli_options_cls()
+    # Project into the deployment's stable options type so the codec never sees the dynamic CLI class
+    run_opts_payload = {name: getattr(cli_opts, name) for name in deployment.options_type.model_fields}
+    opts = cast(FlowOptions, deployment.options_type.model_validate(run_opts_payload))
 
-    opts = cast(FlowOptions, _CliOptions())
-
-    wd = cast(Path, opts.working_directory)  # pyright: ignore[reportAttributeAccessIssue]
+    wd = cast(Path, cli_opts.working_directory)
     wd.mkdir(parents=True, exist_ok=True)
 
-    start_step = getattr(opts, "start", 1)
-    end_step = getattr(opts, "end", None)
+    start_step = getattr(cli_opts, "start", 1)
+    end_step = getattr(cli_opts, "end", None)
 
     initial_documents: tuple[Document, ...] = ()
     if initializer:
         init_name, initial_documents = initializer(opts)
-        run_id = cast(str | None, opts.run_id) or init_name or wd.name  # pyright: ignore[reportAttributeAccessIssue]
+        run_id = cast(str | None, cli_opts.run_id) or init_name or wd.name
     else:
-        run_id = cast(str, opts.run_id or wd.name)  # pyright: ignore[reportAttributeAccessIssue]
+        run_id = cast(str, cli_opts.run_id or wd.name)
 
     validate_run_id(run_id)
 

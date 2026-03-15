@@ -385,7 +385,7 @@ def _build_check_steps(cfg_partial: _PartialConfig, root: Path, source_packages:
 
     steps.append(CheckStep("test-collect", "Verify test modules importable", ((*r, "pytest", "--collect-only", "-q", "--no-header"),)))
 
-    steps.append(CheckStep("test", "Unit tests", ((*r, "pytest", "-x", "-q", "--tb=short", "--no-header", "--testmon"),)))
+    steps.append(CheckStep("test", "Unit tests", ((*r, "pytest", "-q", "--tb=short", "--no-header", "--testmon"),)))
 
     return tuple(steps)
 

@@ -20,7 +20,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, ValidationError
 
 from ai_pipeline_core._token_estimates import estimate_image_tokens, estimate_message_text_tokens, estimate_pdf_tokens
-from ai_pipeline_core.exceptions import LLMError, OutputDegenerationError
+from ai_pipeline_core.exceptions import EmptyResponseError, LLMError, OutputDegenerationError
 from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.settings import settings
 
@@ -349,7 +349,13 @@ def _build_model_response(
     cost = _extract_cost(response, header_cost=metadata.get("header_cost"))
 
     if not content and not raw_tool_calls:
-        raise ValueError("Empty response content")
+        if provider_specific_fields:
+            logger.info(
+                "Empty response content but provider_specific_fields present (keys: %s). Provider may use non-standard response fields. Model: %s",
+                list(provider_specific_fields.keys()),
+                model,
+            )
+        raise EmptyResponseError(f"Empty response content from model={model} — no text and no tool calls.")
 
     parsed: Any = content
     # Skip structured parsing when tool calls are present (intermediate tool round)
@@ -472,6 +478,9 @@ async def _generate_impl(
             if isinstance(e, ValidationError):
                 logger.warning("Structured output validation failed (attempt %d/%d): %s", attempt + 1, total_attempts, e)
                 final_error_msg = f"Structured output validation failed after {total_attempts} attempts"
+            elif isinstance(e, EmptyResponseError):
+                logger.warning("Empty LLM response (attempt %d/%d, retrying with cache disabled): %s", attempt + 1, total_attempts, e)
+                final_error_msg = f"Empty response content after {total_attempts} attempts."
             else:
                 logger.warning("LLM generation failed (attempt %d/%d): %s", attempt + 1, total_attempts, e)
                 final_error_msg = "Exhausted all retry attempts for LLM generation."

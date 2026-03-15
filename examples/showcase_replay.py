@@ -30,7 +30,7 @@ class ReplayUppercaseTask(PipelineTask):
         source = documents[0]
         return (
             ReplayOutputDocument.derive(
-                from_documents=(source,),
+                derived_from=(source,),
                 name="replayed_notes.txt",
                 content=source.text.upper(),
             ),

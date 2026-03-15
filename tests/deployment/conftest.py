@@ -35,13 +35,13 @@ class _TestOptions(FlowOptions):
 class ToMiddleTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[MiddleDoc, ...]:
-        return (MiddleDoc.derive(from_documents=(documents[0],), name="middle.txt", content="m"),)
+        return (MiddleDoc.derive(derived_from=(documents[0],), name="middle.txt", content="m"),)
 
 
 class ToOutputTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[MiddleDoc, ...]) -> tuple[OutputDoc, ...]:
-        return (OutputDoc.derive(from_documents=(documents[0],), name="output.txt", content="o"),)
+        return (OutputDoc.derive(derived_from=(documents[0],), name="output.txt", content="o"),)
 
 
 class StageOne(PipelineFlow):
@@ -106,7 +106,7 @@ class InputToMiddleTask(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[PubsubInputDoc, ...]) -> tuple[PubsubMiddleDoc, ...]:
-        return (PubsubMiddleDoc.derive(from_documents=(documents[0],), name="middle.json", content={"a": 1}),)
+        return (PubsubMiddleDoc.derive(derived_from=(documents[0],), name="middle.json", content={"a": 1}),)
 
 
 class MiddleToOutputTask(PipelineTask):
@@ -114,7 +114,7 @@ class MiddleToOutputTask(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[PubsubMiddleDoc, ...]) -> tuple[PubsubOutputDoc, ...]:
-        return (PubsubOutputDoc.derive(from_documents=(documents[0],), name="output.json", content={"b": 2}),)
+        return (PubsubOutputDoc.derive(derived_from=(documents[0],), name="output.json", content={"b": 2}),)
 
 
 class ChainOutputToFinalTask(PipelineTask):
@@ -122,7 +122,7 @@ class ChainOutputToFinalTask(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[PubsubOutputDoc, ...]) -> tuple[PubsubFinalDoc, ...]:
-        return (PubsubFinalDoc.derive(from_documents=(documents[0],), name="c_out.json", content={"c": 3}),)
+        return (PubsubFinalDoc.derive(derived_from=(documents[0],), name="c_out.json", content={"c": 3}),)
 
 
 class DirectInputToOutputTask(PipelineTask):
@@ -130,7 +130,7 @@ class DirectInputToOutputTask(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[PubsubInputDoc, ...]) -> tuple[PubsubOutputDoc, ...]:
-        return (PubsubOutputDoc.derive(from_documents=(documents[0],), name="output.json", content={"done": True}),)
+        return (PubsubOutputDoc.derive(derived_from=(documents[0],), name="output.json", content={"done": True}),)
 
 
 class InputToMiddleFlow(PipelineFlow):

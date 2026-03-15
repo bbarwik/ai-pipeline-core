@@ -59,17 +59,17 @@ class TestSettings:
 
     def test_env_file_loading(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test loading from .env file."""
-        # Create a temporary .env file
         env_file = tmp_path / ".env"
         env_file.write_text("""
 OPENAI_API_KEY=from-env-file
 PREFECT_API_URL=http://localhost:4200
 """)
 
-        # Change to temp directory
+        # Clear env vars that would override the .env file values
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("PREFECT_API_URL", raising=False)
         monkeypatch.chdir(tmp_path)
 
-        # Create new Settings instance (will look for .env in current dir)
         s = Settings()
 
         assert s.openai_api_key == "from-env-file"

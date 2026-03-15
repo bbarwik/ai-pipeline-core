@@ -176,7 +176,6 @@ class DocumentRecord:
     attachment_mime_types: tuple[str, ...] = ()
     attachment_size_bytes: tuple[int, ...] = ()
     publicly_visible: bool = False
-    created_at: datetime = field(default_factory=_utcnow)
 
     def __post_init__(self) -> None:
         _validate_string_tuple("derived_from", self.derived_from)
@@ -207,7 +206,6 @@ class BlobRecord:
 
     content_sha256: str
     content: bytes
-    created_at: datetime = field(default_factory=_utcnow)
 
 
 @dataclass(frozen=True, slots=True)

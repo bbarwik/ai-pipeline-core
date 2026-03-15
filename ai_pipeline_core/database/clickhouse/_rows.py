@@ -10,7 +10,6 @@ from typing import Any
 from ai_pipeline_core.database._serialization import (
     decode_text,
     string_tuple,
-    to_datetime,
 )
 from ai_pipeline_core.database._types import BlobRecord, DocumentRecord, SpanRecord
 from ai_pipeline_core.logger._types import LogRecord
@@ -43,13 +42,11 @@ DOCUMENT_COLUMNS = (
     "attachments.mime_type",
     "attachments.size_bytes",
     "publicly_visible",
-    "created_at",
 )
 
 BLOB_COLUMNS = (
     "content_sha256",
     "content",
-    "created_at",
 )
 
 
@@ -106,7 +103,6 @@ def document_to_row(record: DocumentRecord) -> list[Any]:
         list(record.attachment_mime_types),
         list(record.attachment_size_bytes),
         record.publicly_visible,
-        record.created_at,
     ]
 
 
@@ -139,12 +135,11 @@ def row_to_document(row: tuple[Any, ...]) -> DocumentRecord:
     del fields["attachments.mime_type"]
     del fields["attachments.size_bytes"]
     fields["publicly_visible"] = bool(fields["publicly_visible"])
-    fields["created_at"] = to_datetime(fields["created_at"])
     return DocumentRecord(**fields)
 
 
 def blob_to_row(blob: BlobRecord) -> list[Any]:
-    return [blob.content_sha256, blob.content, blob.created_at]
+    return [blob.content_sha256, blob.content]
 
 
 def row_to_blob(row: tuple[Any, ...]) -> BlobRecord:
@@ -157,7 +152,6 @@ def row_to_blob(row: tuple[Any, ...]) -> BlobRecord:
     else:
         fields["content"] = bytes(content)
     fields["content_sha256"] = decode_text(fields["content_sha256"])
-    fields["created_at"] = to_datetime(fields["created_at"])
     return BlobRecord(**fields)
 
 

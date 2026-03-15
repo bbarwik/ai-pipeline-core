@@ -34,7 +34,7 @@ class CleanDataTask(PipelineTask):
     async def run(cls, documents: tuple[RawDataDocument, ...]) -> tuple[CleanedDataDocument, ...]:
         return tuple(
             CleanedDataDocument.derive(
-                from_documents=(raw,),
+                derived_from=(raw,),
                 name=f"cleaned_{raw.name}",
                 content=" ".join(raw.text.split()).upper(),
             )
@@ -54,7 +54,7 @@ class BuildSummaryTask(PipelineTask):
             lines.append(f"- Doc {index} ({document.name}): {document.text[:60]}")
         return (
             SummaryReportDocument.derive(
-                from_documents=tuple(documents),
+                derived_from=tuple(documents),
                 name="summary.md",
                 content="\n".join(lines),
             ),

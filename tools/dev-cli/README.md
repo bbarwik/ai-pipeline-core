@@ -26,10 +26,16 @@ Analysis of 8,694 bash commands across 137 Claude Code sessions confirmed these 
 4. **Auto-scopes tests** — detects which test directories are affected by git changes.
 5. **Orders checks correctly** — fast checks (lint, typecheck) run before slow checks (tests).
 6. **Suggests next steps** — on failure, prints exactly what command to run next (e.g., `dev test --lf`).
+7. **Reports step durations** — `dev check` shows per-step and total wall-clock time.
+8. **Warns about slow tests** — tests exceeding 30s are flagged after the summary (sorted slowest-first, capped at 5).
+9. **Auto-cleans old runs** — files in `.tmp/dev-runs/` older than 24h are deleted automatically on the next run. Stale `.state.json` entries are pruned too.
 
 ## Usage
 
 ```bash
+# Show detailed usage guide, auto-detected config, infrastructure status
+dev
+
 # Run tests (auto-detect scope from git changes, uses testmon)
 dev test
 
@@ -83,6 +89,9 @@ dev ci
 # Show changed files, last run results, suggested next command
 dev status
 
+# Detailed usage guide (same as bare 'dev')
+dev info
+
 # List tests by scope/group
 dev list-tests pipeline
 dev list-tests --integration
@@ -94,7 +103,17 @@ dev list-tests --all
 Concise summaries designed for AI consumption — no decorative boxes, no wasted tokens:
 
 ```
-PASS  test — 271 passed in 1.9s
+PASS  test — 27 passed, 244 unchanged (testmon) in 1.9s
+```
+
+Testmon tracks dependencies — only tests affected by code changes run. The "unchanged" count shows tests that passed previously and whose dependencies haven't changed. All tests in the scope are verified — do NOT use `--force` just because the passed count looks low.
+
+```
+PASS  test — 271 passed in 45.3s
+
+  Slow tests (>30s):
+    test_pipeline.py::test_large_batch (42.1s)
+    test_database.py::test_bulk_insert (31.7s)
 ```
 
 ```
@@ -112,10 +131,23 @@ FAIL  test — 2 failed, 269 passed in 2.1s
 
 ```
 SKIP  test pipeline — no changes since last run (PASS at 2026-03-14T13:09:18)
-  Override: dev test pipeline --force
+  All tests already verified. No action needed.
 ```
 
-Full output is always saved to `.tmp/dev-runs/` and can be read with Claude Code's `Read` tool when details are needed.
+`dev check` shows per-step durations and a total:
+
+```
+PASS  lint (1.2s)
+PASS  typecheck (3.4s)
+PASS  deadcode (0.8s)
+PASS  semgrep (2.1s)
+PASS  docstrings (0.5s)
+PASS  test (45.3s)
+
+PASS  check — all checks passed (53.3s)
+```
+
+Full output is always saved to `.tmp/dev-runs/` and can be read with Claude Code's `Read` tool when details are needed. Files older than 24 hours are automatically cleaned up.
 
 ## Auto-Detection (Generic Design)
 
@@ -181,6 +213,7 @@ A Claude Code `PreToolUse` hook (`.claude/hooks/enforce_dev_cli.py`) blocks raw 
 | `uv run ...` | Unnecessary — tools on PATH | Run commands directly |
 | `uv venv`/`python -m venv`/`virtualenv` | No venvs in devcontainer | N/A |
 | `pytest ... \| grep/head/tail` | Buffering hangs | Use pytest native flags |
+| `dev ... \| grep/head/tail` | Output already captured to .tmp/dev-runs/ | Run dev directly |
 
 **Allowed commands:** `dev *`, `make *`, `uv pip install`, `uvx *`, `pytest --version`, `pytest --help`, `ruff --version`, `interrogate`, `vulture`, `semgrep`.
 

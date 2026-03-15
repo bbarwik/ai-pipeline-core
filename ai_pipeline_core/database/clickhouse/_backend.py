@@ -167,8 +167,7 @@ class ClickHouseDatabase:
             "`attachments.name`, `attachments.description`, "
             "`attachments.content_sha256`, `attachments.mime_type`, "
             "`attachments.size_bytes`, "
-            "publicly_visible, "
-            "now64(3) "
+            "publicly_visible "
             f"FROM {DOCUMENTS_TABLE} FINAL WHERE document_sha256 = {{document_sha256:String}}",
             parameters={"summary": summary, "document_sha256": document_sha256},
         )
@@ -399,7 +398,7 @@ class ClickHouseDatabase:
 
     async def get_blob(self, content_sha256: str) -> BlobRecord | None:
         result = await self._query(
-            f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} WHERE content_sha256 = {{content_sha256:String}} LIMIT 1",
+            f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} FINAL WHERE content_sha256 = {{content_sha256:String}} LIMIT 1",
             parameters={"content_sha256": content_sha256},
         )
         if not result.result_rows:
@@ -411,7 +410,7 @@ class ClickHouseDatabase:
         if not unique_shas:
             return {}
         result = await self._query(
-            f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} WHERE content_sha256 IN {{content_sha256s:Array(String)}}",
+            f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} FINAL WHERE content_sha256 IN {{content_sha256s:Array(String)}}",
             parameters={"content_sha256s": unique_shas},
         )
         return {blob.content_sha256: blob for blob in (row_to_blob(tuple(row)) for row in result.result_rows)}
@@ -457,37 +456,6 @@ class ClickHouseDatabase:
             parameters=parameters,
         )
         return [row_to_log(tuple(row)) for row in result.result_rows]
-
-    async def find_latest_documents_by_derived_from(
-        self,
-        values: list[str],
-        *,
-        document_type: str | None = None,
-        max_age: timedelta | None = None,
-    ) -> dict[str, DocumentRecord]:
-        if not values:
-            return {}
-        filters = ["hasAny(derived_from, {values:Array(String)})"]
-        parameters: dict[str, Any] = {"values": values}
-        if document_type is not None:
-            filters.append("document_type = {document_type:String}")
-            parameters["document_type"] = document_type
-        if max_age is not None:
-            filters.append("created_at >= {min_created_at:DateTime64(3)}")
-            parameters["min_created_at"] = datetime.now(UTC) - max_age
-        result = await self._query(
-            f"SELECT {', '.join(DOCUMENT_COLUMNS)} FROM {DOCUMENTS_TABLE} FINAL WHERE {' AND '.join(filters)} ORDER BY created_at DESC",
-            parameters=parameters,
-        )
-        lookup_set = set(values)
-        found: dict[str, DocumentRecord] = {}
-        for row in result.result_rows:
-            record = row_to_document(tuple(row))
-            matched_values = lookup_set & set(record.derived_from)
-            for value in matched_values:
-                if value not in found:
-                    found[value] = record
-        return found
 
     async def get_deployment_logs_batch(
         self,

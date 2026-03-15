@@ -48,7 +48,6 @@ def _make_document(**kwargs: object) -> DocumentRecord:
         "size_bytes": 10,
         "derived_from": (),
         "triggered_by": (),
-        "created_at": datetime(2026, 3, 14, 12, 0, tzinfo=UTC),
     }
     defaults.update(kwargs)
     return DocumentRecord(**defaults)

@@ -57,7 +57,7 @@ class LifecycleTask(PipelineTask):
             )
         return (
             LifecycleOutputDocument.derive(
-                from_documents=(documents[0],),
+                derived_from=(documents[0],),
                 name="answer.txt",
                 content=conv.content,
                 description="Lifecycle integration output",
@@ -294,7 +294,7 @@ async def test_flow_cache_keys_hit_across_runs_with_new_root_deployments(monkeyp
     completed_flow = _sorted_spans(database, SpanKind.FLOW, status=SpanStatus.COMPLETED)[0]
     cached_flow = _sorted_spans(database, SpanKind.FLOW, status=SpanStatus.CACHED)[0]
     fingerprint = _compute_input_fingerprint([input_doc], FlowOptions())
-    expected_key = _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=LifecycleFlow, step=1)
+    expected_key = _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=LifecycleFlow, step=1, flow_params={})
 
     assert len(deployment_spans) == 2
     assert deployment_spans[0].root_deployment_id != deployment_spans[1].root_deployment_id

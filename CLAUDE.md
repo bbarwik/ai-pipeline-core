@@ -48,6 +48,7 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - Strict type checking throughout
 - Pydantic models use `frozen=True` where possible
 - Dataclasses use `frozen=True` and `slots=True`
+- **Module-scoped replayable classes** — `BaseModel`, `BaseSettings`, `Document`, `Tool`, `PipelineTask`, `PipelineFlow`, `PipelineDeployment`, `FlowOptions`, `DeploymentResult`, and `response_format` models must be defined at module scope. Function-local classes get `<locals>` in their `__qualname__`, breaking codec/replay. Enforced via semgrep
 
 ### 1.3 Module System
 
@@ -138,7 +139,8 @@ Structured LLM output rules:
 **Quality limits**:
 - Structured outputs degrade beyond ~2-3K tokens
 - Nesting beyond 2 levels causes quality degradation
-- `dict` types are not supported in structured output — use lists of typed models
+- `dict` types are not supported in structured output or `Tool.Input` schemas — use lists of typed models. Enforced at import time for tools (OpenAI strict mode incompatible)
+- Field names `strict` and `additionalProperties` are reserved in `Tool.Input` (collide with LiteLLM key stripping)
 - Complex structures should be split across multiple calls
 
 **Decomposition Fields Before Decision Fields:**
@@ -346,7 +348,17 @@ Document size assumptions when using higher-complexity algorithms.
 
 Functions or match/case blocks with >80% structural similarity must be consolidated. Use parameterization, helper functions, or lookup tables.
 
-### 4.10 Actionable Error and Warning Messages
+### 4.10 Document Construction Paths
+
+Four factory methods, each with strict provenance semantics:
+- `create_root(reason=...)` — pipeline inputs with no provenance
+- `derive(derived_from=...)` — content transformations (summaries, analyses)
+- `create(triggered_by=...)` — causally triggered documents
+- `create_external(from_sources=...)` — URI-based provenance (URLs, MCP)
+
+All constructors accepting document provenance take `Sequence[Document]` objects (not SHA256 strings). Direct `Document(...)` construction is forbidden outside framework internals and tests (enforced via semgrep).
+
+### 4.11 Actionable Error and Warning Messages
 
 Warning and error messages must include not only what went wrong, but also how to fix it and how to do it correctly. The reader (often an AI coding agent) should be able to resolve the issue from the message alone without consulting documentation.
 
@@ -431,7 +443,7 @@ dev test --full         # Full suite in parallel (before commit)
 dev test --available    # Include infrastructure tests (auto-detects Docker/API keys)
 dev test --coverage    # Full suite with code coverage (80% threshold from pyproject.toml)
 dev test --coverage pipeline  # Coverage for pipeline tests (threshold not enforced)
-dev test --force        # Force rerun even if no files changed
+dev test --force        # Force rerun even if no files changed (rarely needed)
 
 # Code quality
 dev format              # Auto-fix lint + formatting (ruff format + ruff check --fix)
@@ -456,6 +468,12 @@ dev info                # Usage guide + auto-detected config + infrastructure st
 5. If tests fail: fix code, then `dev test --lf`
 6. `dev check` — full validation before commit
 
+### Testmon and `--force`
+
+`dev test` uses testmon by default — only tests whose dependencies changed actually run. The summary shows e.g. `27 passed, 244 unchanged (testmon)`. The unchanged tests passed previously and their code hasn't changed — they are verified. Do NOT use `--force` because the passed count looks low. `--force` is only needed for flaky test investigation or after non-code changes (config, env vars).
+
+`dev test` accepts scope names (`database`, `pipeline`, `llm`), not file paths. Use `dev info` to see available scopes.
+
 ### What is blocked (and why)
 
 | Blocked command | Use instead | Reason |
@@ -464,6 +482,7 @@ dev info                # Usage guide + auto-detected config + infrastructure st
 | `ruff check/format` | `dev lint` / `dev format` | No output management |
 | `basedpyright`/`pyright`/`mypy` | `dev typecheck` | No output management |
 | `pytest ... \| grep/head/tail` | `dev test` | Buffering hangs, loses exit codes |
+| `dev ... \| grep/head/tail` | Run `dev` directly | Output already captured to .tmp/dev-runs/ |
 | `uv sync` | `uv pip install --system` | Creates .venv in devcontainer |
 | `uv run ...` | Run commands directly | All tools are on PATH |
 

@@ -45,7 +45,7 @@ class _SlowTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[LowInputDoc, ...], delay: float) -> tuple[LowOutputDoc, ...]:
         await asyncio.sleep(delay)
-        return (LowOutputDoc.derive(from_documents=(documents[0],), name="slow.txt", content="done"),)
+        return (LowOutputDoc.derive(derived_from=(documents[0],), name="slow.txt", content="done"),)
 
 
 @pytest.mark.asyncio
@@ -95,7 +95,7 @@ class _TimedTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[LowInputDoc, ...], delay: float, label: str) -> tuple[LowOutputDoc, ...]:
         await asyncio.sleep(delay)
-        return (LowOutputDoc.derive(from_documents=(documents[0],), name=f"{label}.txt", content=label),)
+        return (LowOutputDoc.derive(derived_from=(documents[0],), name=f"{label}.txt", content=label),)
 
 
 @pytest.mark.asyncio

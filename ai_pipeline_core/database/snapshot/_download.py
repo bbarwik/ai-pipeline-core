@@ -94,12 +94,22 @@ async def _get_tree_logs(
 
 
 def _build_llm_call_lines(tree: list[SpanRecord]) -> list[str]:
+    spans_by_id: dict[UUID, SpanRecord] = {span.span_id: span for span in tree}
     lines: list[str] = []
     for span in sorted(tree, key=span_sort_key):
         if span.kind != SpanKind.LLM_ROUND:
             continue
         meta = parse_json_object(span.meta_json, context=f"Span {span.span_id}", field_name="meta_json")
         metrics = parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json")
+        purpose = ""
+        if span.parent_span_id is not None:
+            parent = spans_by_id.get(span.parent_span_id)
+            if parent is not None:
+                parent_meta = parse_json_object(parent.meta_json, context=f"Span {parent.span_id}", field_name="meta_json")
+                purpose = parent_meta.get("purpose", "")
+        time_taken_ms: float | None = None
+        if span.started_at is not None and span.ended_at is not None:
+            time_taken_ms = (span.ended_at - span.started_at).total_seconds() * 1000
         raw_request_messages = meta.get("request_messages", [])
         request_messages = raw_request_messages if isinstance(raw_request_messages, list) else []
         raw_response_tool_calls = meta.get("response_tool_calls", [])
@@ -128,6 +138,9 @@ def _build_llm_call_lines(tree: list[SpanRecord]) -> list[str]:
                     "request_messages": request_messages,
                     "tool_schemas": meta.get("tool_schemas", []),
                     "response_format_path": meta.get("response_format_path"),
+                    "purpose": purpose,
+                    "time_taken_ms": time_taken_ms,
+                    "first_token_ms": metrics.get("first_token_ms"),
                 },
                 sort_keys=True,
             )
@@ -153,8 +166,10 @@ def _build_document_lines(tree: list[SpanRecord], documents: dict[str, DocumentR
         return []
     producer_map: dict[str, list[SpanRecord]] = {}
     for span in tree:
+        input_shas = set(span.input_document_shas)
         for document_sha in span.output_document_shas:
-            producer_map.setdefault(document_sha, []).append(span)
+            if document_sha not in input_shas:
+                producer_map.setdefault(document_sha, []).append(span)
     document_lines = ["# Documents", ""]
     for document in sorted(documents.values(), key=lambda item: item.name):
         producers = sorted(producer_map.get(document.document_sha256, []), key=span_sort_key)
@@ -163,7 +178,6 @@ def _build_document_lines(tree: list[SpanRecord], documents: dict[str, DocumentR
         document_lines.append(
             f"  sha={document.document_sha256}"
             f" content_sha={document.content_sha256}"
-            f" created_at={document.created_at.isoformat()}"
             f" mime={document.mime_type}"
             f" size={document.size_bytes}"
             f" producer={producer_label}"
@@ -260,6 +274,12 @@ async def download_deployment(
             staged_path,
             tree=tree,
             documents=documents,
+        )
+        schema_meta = {"schema_version": 3, "source": "download_deployment"}
+        await asyncio.to_thread(
+            (staged_path / "schema_meta.json").write_text,
+            json.dumps(schema_meta, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
         )
         await target.shutdown()
         validation = await asyncio.to_thread(validate_bundle, staged_path)

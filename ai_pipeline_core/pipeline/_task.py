@@ -102,7 +102,7 @@ class PipelineTask:
             async def run(cls, documents: tuple[ArticleDocument, ...]) -> tuple[SummaryDocument, ...]:
                 conv = Conversation(model="gemini-3-flash").with_context(documents[0])
                 conv = await conv.send("Summarize this article.")
-                return (SummaryDocument.derive(from_documents=(documents[0],), name="summary.md", content=conv.content),)
+                return (SummaryDocument.derive(derived_from=(documents[0],), name="summary.md", content=conv.content),)
 
     Calling ``await SummarizeTask.run((doc,))`` dispatches the full lifecycle. Calling without
     ``await`` returns a ``TaskHandle`` for parallel execution via ``collect_tasks``.

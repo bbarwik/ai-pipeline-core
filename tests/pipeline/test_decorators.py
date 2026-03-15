@@ -34,7 +34,7 @@ class EchoTask(PipelineTask):
         _ = cls
         return tuple(
             OutputDoc.derive(
-                from_documents=(doc,),
+                derived_from=(doc,),
                 name=f"out_{doc.name}",
                 content=doc.content,
             )
@@ -159,59 +159,68 @@ class TestFlowAnnotationExtraction:
 # --------------------------------------------------------------------------- #
 
 
+class _SaveTask(PipelineTask):
+    @classmethod
+    async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
+        return (OutputDoc.derive(derived_from=(source,), name="out.txt", content="output"),)
+
+
+class _NoStoreTask(PipelineTask):
+    @classmethod
+    async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
+        return (OutputDoc.derive(derived_from=(source,), name="out.txt", content="output"),)
+
+
+class _SingleTask(PipelineTask):
+    @classmethod
+    async def run(cls, source: InputDoc) -> OutputDoc:
+        return OutputDoc.derive(derived_from=(source,), name="single.txt", content="data")
+
+
+class _NoneTask(PipelineTask):
+    @classmethod
+    async def run(cls, source: InputDoc) -> None:
+        pass
+
+
+class _NoPersistTask(PipelineTask):
+    @classmethod
+    async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
+        return (OutputDoc.derive(derived_from=(source,), name="out.txt", content="output"),)
+
+
 class TestDocumentAutoSave:
     """Test document persistence via PipelineTask."""
 
     @pytest.mark.asyncio
     async def test_documents_returned_from_task(self):
-        class SaveTask(PipelineTask):
-            @classmethod
-            async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
-                return (OutputDoc.derive(from_documents=(source,), name="out.txt", content="output"),)
-
         source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
         with pipeline_test_context():
-            result = await SaveTask.run(source)
+            result = await _SaveTask.run(source)
             assert len(result) == 1
             assert result[0].name == "out.txt"
 
     @pytest.mark.asyncio
     async def test_no_store_works(self):
         """Task works when no store is configured."""
-
-        class NoStoreTask(PipelineTask):
-            @classmethod
-            async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
-                return (OutputDoc.derive(from_documents=(source,), name="out.txt", content="output"),)
-
         source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
         with pipeline_test_context():
-            result = await NoStoreTask.run(source)
+            result = await _NoStoreTask.run(source)
             assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_single_document_return_saved(self):
-        class SingleTask(PipelineTask):
-            @classmethod
-            async def run(cls, source: InputDoc) -> OutputDoc:
-                return OutputDoc.derive(from_documents=(source,), name="single.txt", content="data")
-
         source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
         with pipeline_test_context():
-            result = await SingleTask.run(source)
+            result = await _SingleTask.run(source)
             assert isinstance(result, tuple)
             assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_none_return_saves_nothing(self):
-        class NoneTask(PipelineTask):
-            @classmethod
-            async def run(cls, source: InputDoc) -> None:
-                pass
-
         source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
         with pipeline_test_context():
-            result = await NoneTask.run(source)
+            result = await _NoneTask.run(source)
             assert result == ()
 
 
@@ -226,15 +235,9 @@ class TestPersistenceGracefulDegradation:
     @pytest.mark.asyncio
     async def test_task_works_without_persistence(self):
         """Task succeeds when no persistence backend is configured."""
-
-        class NoPersistTask(PipelineTask):
-            @classmethod
-            async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
-                return (OutputDoc.derive(from_documents=(source,), name="out.txt", content="output"),)
-
         source = InputDoc.create_root(name="in.txt", content="input", reason="test input")
         with pipeline_test_context():
-            result = await NoPersistTask.run(source)
+            result = await _NoPersistTask.run(source)
             assert len(result) == 1
 
 

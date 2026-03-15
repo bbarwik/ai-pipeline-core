@@ -90,4 +90,54 @@ rules:
   # Note: Silent exception handling is enforced by ruff BLE001/S110/E722
   # Semgrep pattern for except blocks doesn't parse correctly, so we rely on ruff
 
+  - id: codec-unguarded-model-validate
+    patterns:
+      - pattern-either:
+          - pattern: $CLS.model_validate($DATA)
+          - pattern: $CLS.model_validate_json($DATA)
+      - pattern-not-inside: |
+          try:
+              ...
+          except ...:
+              ...
+    message: >
+      model_validate() in codec decode path must be wrapped in try/except and
+      re-raised as CodecError to maintain a consistent error boundary.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["**/ai_pipeline_core/_codec.py"]
+
+  - id: no-silent-walrus-data-skip
+    pattern: |
+      {
+          $KEY: $BLOB.content
+          for $SHA in $ITER
+          if ($BLOB := $DICT.get($SHA)) is not None
+      }
+    message: >
+      Dict comprehension silently omits missing entries via walrus operator. Collect
+      missing keys and raise or log an actionable error instead of returning partial data.
+    severity: WARNING
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+
+  - id: no-full-log-rewrite-after-extend
+    patterns:
+      - pattern-inside: |
+          def $F(self, logs: list[LogRecord], ...):
+              ...
+              self._logs.extend(logs)
+              ...
+      - pattern: |
+          content = "\n".join(json.dumps(_serialize_record($LOG), sort_keys=True, default=_json_default) for $LOG in self._logs)
+    message: >
+      Append-only log persistence must serialize only the new batch. Rewriting
+      self._logs makes persistence O(n^2).
+    severity: WARNING
+    languages: [python]
+    paths:
+      include: ["**/ai_pipeline_core/database/filesystem/"]
+
   # Rule: No Example: blocks in docstrings — canonical rule is in docstring_rules.yml

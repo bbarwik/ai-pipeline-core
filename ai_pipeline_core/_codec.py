@@ -320,8 +320,18 @@ class UniversalCodec:
                 raise CodecError(
                     f"Codec stateful model {class_path!r} requires 'data' to decode into a JSON object. Return dict[str, Any] from __codec_state__()."
                 )
-            return cast(BaseModel, codec_load(data))
-        return cast(BaseModel, model_cls.model_validate(data))
+            try:
+                return cast(BaseModel, codec_load(data))
+            except CodecError:
+                raise
+            except Exception as exc:
+                raise CodecError(f"__codec_load__ failed for {class_path!r}: {exc}") from exc
+        try:
+            return cast(BaseModel, model_cls.model_validate(data))
+        except CodecError:
+            raise
+        except Exception as exc:
+            raise CodecError(f"Pydantic validation failed for {class_path!r}: {exc}") from exc
 
     async def _decode_enum(self, payload: dict[str, Any], *, db: DatabaseReader | None, memo: _DecodeMemo) -> Enum:
         class_path = _require_string(payload, "class_path", type_name=ENUM_TYPE)
@@ -383,7 +393,13 @@ def _cycle_guard(value: Any, ctx: _EncodeContext) -> _CycleGuard:
 
 def _class_path(value_type: type[Any]) -> str:
     codec_type = _codec_origin_type(value_type)
-    return f"{codec_type.__module__}:{codec_type.__qualname__}"
+    qualname = codec_type.__qualname__
+    if "<locals>" in qualname:
+        raise CodecError(
+            f"Codec cannot encode class {codec_type.__module__}:{qualname} because it is defined inside a function. "
+            "Move the class to module scope so it can be imported during replay."
+        )
+    return f"{codec_type.__module__}:{qualname}"
 
 
 def _codec_origin_type(value_type: type[Any]) -> type[Any]:

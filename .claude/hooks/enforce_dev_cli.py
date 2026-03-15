@@ -24,6 +24,13 @@ _PYTEST_BLOCKED = (
 )
 
 RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # dev CLI piping — output is already captured to .tmp/dev-runs/
+    (
+        re.compile(r"\bdev\s+\S+.*\|\s*(?:grep|head|tail|less|more)\b"),
+        "BLOCKED: Do not pipe dev output — it's already captured to .tmp/dev-runs/.\n"
+        "  Run 'dev' commands directly and read the log file if you need details.\n"
+        "  Example: dev info    (then read the output directly)",
+    ),
     # pytest piping — must be checked before the general pytest rule
     (
         re.compile(r"(?:python3?\s+-m\s+)?pytest\s[^|]*\|\s*(?:grep|head|tail|less|more)\b"),

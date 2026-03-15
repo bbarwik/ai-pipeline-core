@@ -24,9 +24,12 @@ def _make_doc(
     derived_from: tuple[str, ...] | None = None,
     triggered_by: tuple[str, ...] | None = None,
 ) -> SampleDoc:
-    if derived_from or triggered_by:
-        return SampleDoc.create(name=name, content=content, derived_from=derived_from, triggered_by=triggered_by)
-    return SampleDoc.create_root(name=name, content=content, reason="test fixture")
+    return SampleDoc(
+        name=name,
+        content=content.encode("utf-8"),
+        derived_from=derived_from,
+        triggered_by=triggered_by,
+    )
 
 
 # ===== RunContext tests =====

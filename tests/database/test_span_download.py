@@ -56,7 +56,6 @@ def _make_document(**kwargs: object) -> DocumentRecord:
         "attachment_content_sha256s": (),
         "attachment_mime_types": (),
         "attachment_size_bytes": (),
-        "created_at": datetime(2026, 3, 11, 12, 0, tzinfo=UTC),
     }
     defaults.update(kwargs)
     return DocumentRecord(**defaults)
@@ -66,7 +65,6 @@ def _make_blob(**kwargs: object) -> BlobRecord:
     defaults: dict[str, object] = {
         "content_sha256": f"blob-{uuid4().hex}",
         "content": b"blob-content",
-        "created_at": datetime(2026, 3, 11, 12, 0, tzinfo=UTC),
     }
     defaults.update(kwargs)
     return BlobRecord(**defaults)
@@ -160,7 +158,6 @@ async def _seed_source_database() -> tuple[MemoryDatabase, UUID]:
             attachment_content_sha256s=("blob-shared-attachment",),
             attachment_mime_types=("image/png",),
             attachment_size_bytes=(5,),
-            created_at=base,
         )
     )
     await source.save_blob(_make_blob(content_sha256="blob-root", content=b"shared"))

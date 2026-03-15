@@ -140,7 +140,7 @@ class _SingleSendTask(PipelineTask):
     async def run(cls, documents: tuple[_RecorderInputDoc, ...]) -> tuple[_RecorderOutputDoc, ...]:
         conv = Conversation(model="test-model", enable_substitutor=False)
         conv = await conv.send("hello", purpose="single-send")
-        return (_RecorderOutputDoc.derive(from_documents=(documents[0],), name="single.txt", content=conv.content),)
+        return (_RecorderOutputDoc.derive(derived_from=(documents[0],), name="single.txt", content=conv.content),)
 
 
 class _ThreeTurnTask(PipelineTask):
@@ -150,7 +150,7 @@ class _ThreeTurnTask(PipelineTask):
         conv = await conv.send("first", purpose="first-turn")
         conv = await conv.send("second", purpose="second-turn")
         conv = await conv.send("third", purpose="third-turn")
-        return (_RecorderOutputDoc.derive(from_documents=(documents[0],), name="multi.txt", content=conv.content),)
+        return (_RecorderOutputDoc.derive(derived_from=(documents[0],), name="multi.txt", content=conv.content),)
 
 
 class _WarmupForkTask(PipelineTask):
@@ -162,7 +162,7 @@ class _WarmupForkTask(PipelineTask):
             warmup.send("branch-a", purpose="branch-a"),
             warmup.send("branch-b", purpose="branch-b"),
         )
-        return (_RecorderOutputDoc.derive(from_documents=(documents[0],), name="fork.txt", content=f"{branch_a.content}|{branch_b.content}"),)
+        return (_RecorderOutputDoc.derive(derived_from=(documents[0],), name="fork.txt", content=f"{branch_a.content}|{branch_b.content}"),)
 
 
 class _ToolTask(PipelineTask):
@@ -170,7 +170,7 @@ class _ToolTask(PipelineTask):
     async def run(cls, documents: tuple[_RecorderInputDoc, ...]) -> tuple[_RecorderOutputDoc, ...]:
         conv = Conversation(model="test-model", enable_substitutor=False)
         conv = await conv.send("search", purpose="tool-task", tools=[SearchTool()])
-        return (_RecorderOutputDoc.derive(from_documents=(documents[0],), name="tool.txt", content=conv.content),)
+        return (_RecorderOutputDoc.derive(derived_from=(documents[0],), name="tool.txt", content=conv.content),)
 
 
 class _RecorderFailureTask(PipelineTask):
@@ -181,7 +181,7 @@ class _RecorderFailureTask(PipelineTask):
         conv = Conversation(model="test-model", enable_substitutor=False)
         conv = await conv.send("hello", purpose="recorder-failure")
         cls.last_conversation_id = conv._conversation_id
-        return (_RecorderOutputDoc.derive(from_documents=(documents[0],), name="failure.txt", content=conv.content),)
+        return (_RecorderOutputDoc.derive(derived_from=(documents[0],), name="failure.txt", content=conv.content),)
 
 
 class _FailedSendTask(PipelineTask):
@@ -195,6 +195,51 @@ class _FailedSendTask(PipelineTask):
 
 def _make_input() -> _RecorderInputDoc:
     return _RecorderInputDoc.create_root(name="input.txt", content="input", reason="recorder-test")
+
+
+class _OptionsTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: tuple[_RecorderInputDoc, ...]) -> tuple[_RecorderOutputDoc, ...]:
+        conv = Conversation(
+            model="test-model",
+            enable_substitutor=False,
+            include_date=False,
+            model_options=ModelOptions(reasoning_effort="medium"),
+        )
+        conv = await conv.send("hello", purpose="options-test")
+        return (_RecorderOutputDoc.derive(derived_from=documents, name="options.txt", content=conv.content),)
+
+
+class _DatePromptTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: tuple[_RecorderInputDoc, ...]) -> tuple[_RecorderOutputDoc, ...]:
+        conv = Conversation(
+            model="test-model",
+            enable_substitutor=False,
+            current_date="2026-03-12",
+            model_options=ModelOptions(system_prompt="Be precise."),
+        )
+        conv = await conv.send("hello", purpose="date-test")
+        return (_RecorderOutputDoc.derive(derived_from=documents, name="date.txt", content=conv.content),)
+
+
+class _StartedSpanTask(PipelineTask):
+    @classmethod
+    async def run(cls, documents: tuple[_RecorderInputDoc, ...]) -> tuple[_RecorderOutputDoc, ...]:
+        conv = Conversation(
+            model="test-model",
+            enable_substitutor=False,
+            current_date="2026-03-12",
+            model_options=ModelOptions(reasoning_effort="medium", system_prompt="Base prompt."),
+        )
+        conv = await conv.send(
+            "hello",
+            purpose="started-span",
+            tools=[SearchTool()],
+            tool_choice="auto",
+            max_tool_rounds=4,
+        )
+        return (_RecorderOutputDoc.derive(derived_from=documents, name="started.txt", content=conv.content),)
 
 
 def _spans(database: MemoryDatabase, kind: str) -> list[object]:
@@ -422,18 +467,6 @@ async def test_conversation_detail_records_base_and_effective_model_options(monk
     database = _RecordingSpanDatabase()
     context = _make_context_with_db(database)
 
-    class _OptionsTask(PipelineTask):
-        @classmethod
-        async def run(cls, documents: tuple[_RecorderInputDoc, ...]) -> tuple[_RecorderOutputDoc, ...]:
-            conv = Conversation(
-                model="test-model",
-                enable_substitutor=False,
-                include_date=False,
-                model_options=ModelOptions(reasoning_effort="medium"),
-            )
-            conv = await conv.send("hello", purpose="options-test")
-            return (_RecorderOutputDoc.derive(from_documents=documents, name="options.txt", content=conv.content),)
-
     with set_execution_context(context):
         await _OptionsTask.run((_make_input(),))
 
@@ -466,18 +499,6 @@ async def test_conversation_detail_records_effective_system_prompt(monkeypatch: 
     )
     database = _RecordingSpanDatabase()
 
-    class _DatePromptTask(PipelineTask):
-        @classmethod
-        async def run(cls, documents: tuple[_RecorderInputDoc, ...]) -> tuple[_RecorderOutputDoc, ...]:
-            conv = Conversation(
-                model="test-model",
-                enable_substitutor=False,
-                current_date="2026-03-12",
-                model_options=ModelOptions(system_prompt="Be precise."),
-            )
-            conv = await conv.send("hello", purpose="date-test")
-            return (_RecorderOutputDoc.derive(from_documents=documents, name="date.txt", content=conv.content),)
-
     with set_execution_context(_make_context_with_db(database)):
         await _DatePromptTask.run((_make_input(),))
 
@@ -495,24 +516,6 @@ async def test_started_conversation_span_includes_crash_diagnostic_fields(monkey
         _make_fake_generate([_make_response(content="tool result", prompt_tokens=11, completion_tokens=7)]),
     )
     database = _RecordingSpanDatabase()
-
-    class _StartedSpanTask(PipelineTask):
-        @classmethod
-        async def run(cls, documents: tuple[_RecorderInputDoc, ...]) -> tuple[_RecorderOutputDoc, ...]:
-            conv = Conversation(
-                model="test-model",
-                enable_substitutor=False,
-                current_date="2026-03-12",
-                model_options=ModelOptions(reasoning_effort="medium", system_prompt="Base prompt."),
-            )
-            conv = await conv.send(
-                "hello",
-                purpose="started-span",
-                tools=[SearchTool()],
-                tool_choice="auto",
-                max_tool_rounds=4,
-            )
-            return (_RecorderOutputDoc.derive(from_documents=documents, name="started.txt", content=conv.content),)
 
     with set_execution_context(_make_context_with_db(database)):
         await _StartedSpanTask.run((_make_input(),))

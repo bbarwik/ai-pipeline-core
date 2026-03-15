@@ -54,6 +54,16 @@ _SPAN_KIND_PRIORITY: dict[str, int] = {
 
 
 @dataclass(frozen=True, slots=True)
+class _TokenTotals:
+    """Aggregated token counts for descendant LLM rounds."""
+
+    tokens_input: int = 0
+    tokens_output: int = 0
+    tokens_cache_read: int = 0
+    tokens_reasoning: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class SpanTreeView:
     """Precomputed indexes and totals for one span deployment tree."""
 
@@ -65,6 +75,7 @@ class SpanTreeView:
     counts_by_kind: Counter[str]
     document_shas: set[str]
     descendant_llm_costs: dict[UUID, float]
+    descendant_tokens: dict[UUID, _TokenTotals]
     totals: CostTotals
 
 
@@ -131,30 +142,45 @@ def _compute_descendant_llm_costs(
     *,
     spans_by_id: dict[UUID, SpanRecord],
     children_map: dict[UUID | None, list[UUID]],
-) -> dict[UUID, float]:
+    metrics_by_id: dict[UUID, dict[str, Any]],
+) -> tuple[dict[UUID, float], dict[UUID, _TokenTotals]]:
     descendant_costs: dict[UUID, float] = {}
+    descendant_tokens: dict[UUID, _TokenTotals] = {}
     visiting: set[UUID] = set()
 
-    def _visit(span_id: UUID) -> float:
+    def _visit(span_id: UUID) -> tuple[float, _TokenTotals]:
         if span_id in descendant_costs:
-            return descendant_costs[span_id]
+            return descendant_costs[span_id], descendant_tokens[span_id]
         if span_id in visiting:
-            return 0.0
+            return 0.0, _TokenTotals()
 
         visiting.add(span_id)
-        total = 0.0
+        total_cost = 0.0
+        ti, to, tc, tr = 0, 0, 0, 0
         for child_id in children_map.get(span_id, []):
             child = spans_by_id[child_id]
             if child.kind == SpanKind.LLM_ROUND:
-                total += child.cost_usd
-            total += _visit(child_id)
-        descendant_costs[span_id] = total
+                total_cost += child.cost_usd
+                metrics = metrics_by_id[child_id]
+                context = f"Span {child_id}"
+                ti += _detail_int(metrics, TOKENS_INPUT_KEY, context=context, field_name="metrics_json")
+                to += _detail_int(metrics, TOKENS_OUTPUT_KEY, context=context, field_name="metrics_json")
+                tc += _detail_int(metrics, TOKENS_CACHE_READ_KEY, context=context, field_name="metrics_json")
+                tr += _detail_int(metrics, TOKENS_REASONING_KEY, context=context, field_name="metrics_json")
+            child_cost, child_tokens = _visit(child_id)
+            total_cost += child_cost
+            ti += child_tokens.tokens_input
+            to += child_tokens.tokens_output
+            tc += child_tokens.tokens_cache_read
+            tr += child_tokens.tokens_reasoning
+        descendant_costs[span_id] = total_cost
+        descendant_tokens[span_id] = _TokenTotals(tokens_input=ti, tokens_output=to, tokens_cache_read=tc, tokens_reasoning=tr)
         visiting.remove(span_id)
-        return total
+        return total_cost, descendant_tokens[span_id]
 
     for span_id in spans_by_id:
         _visit(span_id)
-    return descendant_costs
+    return descendant_costs, descendant_tokens
 
 
 def _sum_llm_round_totals(tree: list[SpanRecord], metrics_by_id: dict[UUID, dict[str, Any]]) -> CostTotals:
@@ -195,6 +221,11 @@ def build_span_tree_view(tree: list[SpanRecord], root_deployment_id: UUID) -> Sp
     meta_by_id = {span.span_id: parse_json_object(span.meta_json, context=f"Span {span.span_id}", field_name="meta_json") for span in tree}
     metrics_by_id = {span.span_id: parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json") for span in tree}
     children_map = _build_children_map(tree)
+    descendant_costs, descendant_tokens = _compute_descendant_llm_costs(
+        spans_by_id=spans_by_id,
+        children_map=children_map,
+        metrics_by_id=metrics_by_id,
+    )
     return SpanTreeView(
         root_span=root_span,
         spans_by_id=spans_by_id,
@@ -203,7 +234,8 @@ def build_span_tree_view(tree: list[SpanRecord], root_deployment_id: UUID) -> Sp
         metrics_by_id=metrics_by_id,
         counts_by_kind=Counter(span.kind for span in tree),
         document_shas=_collect_document_shas(tree),
-        descendant_llm_costs=_compute_descendant_llm_costs(spans_by_id=spans_by_id, children_map=children_map),
+        descendant_llm_costs=descendant_costs,
+        descendant_tokens=descendant_tokens,
         totals=_sum_llm_round_totals(tree, metrics_by_id),
     )
 
@@ -231,14 +263,19 @@ def _format_token_count(count: int) -> str:
     return str(count)
 
 
-def _format_token_parts(span: SpanRecord, metrics: dict[str, Any]) -> str:
+def _format_token_parts(span: SpanRecord, metrics: dict[str, Any], view: SpanTreeView) -> str:
     if span.kind not in {SpanKind.CONVERSATION, SpanKind.LLM_ROUND}:
         return ""
-    context = f"Span {span.span_id}"
-    tokens_input = _detail_int(metrics, TOKENS_INPUT_KEY, context=context, field_name="metrics_json")
-    tokens_output = _detail_int(metrics, TOKENS_OUTPUT_KEY, context=context, field_name="metrics_json")
-    tokens_cache_read = _detail_int(metrics, TOKENS_CACHE_READ_KEY, context=context, field_name="metrics_json")
-    tokens_reasoning = _detail_int(metrics, TOKENS_REASONING_KEY, context=context, field_name="metrics_json")
+    if span.kind == SpanKind.CONVERSATION:
+        dt = view.descendant_tokens.get(span.span_id, _TokenTotals())
+        tokens_input, tokens_output = dt.tokens_input, dt.tokens_output
+        tokens_cache_read, tokens_reasoning = dt.tokens_cache_read, dt.tokens_reasoning
+    else:
+        context = f"Span {span.span_id}"
+        tokens_input = _detail_int(metrics, TOKENS_INPUT_KEY, context=context, field_name="metrics_json")
+        tokens_output = _detail_int(metrics, TOKENS_OUTPUT_KEY, context=context, field_name="metrics_json")
+        tokens_cache_read = _detail_int(metrics, TOKENS_CACHE_READ_KEY, context=context, field_name="metrics_json")
+        tokens_reasoning = _detail_int(metrics, TOKENS_REASONING_KEY, context=context, field_name="metrics_json")
     parts = [f"{_format_token_count(tokens_input)} in"]
     if tokens_cache_read > 0:
         parts.append(f"{_format_token_count(tokens_cache_read)} cache")
@@ -312,9 +349,10 @@ def _format_tree_line(span: SpanRecord, view: SpanTreeView, *, depth: int, inclu
 
     if span.kind == SpanKind.CONVERSATION:
         model = _detail_str(meta, MODEL_KEY) or UNKNOWN_MODEL_LABEL
-        tokens = _format_token_parts(span, metrics)
+        tokens = _format_token_parts(span, metrics, view)
         cost = view.descendant_llm_costs.get(span.span_id, 0.0)
-        line = f"{indent}conversation: {_conversation_label(span, meta)} {duration} {model}"
+        chain_suffix = f" (continues {str(span.previous_conversation_id)[:8]}…)" if span.previous_conversation_id else ""
+        line = f"{indent}conversation: {_conversation_label(span, meta)} {duration} {model}{chain_suffix}"
         if tokens:
             line += f" {tokens}"
         if cost > 0:
@@ -325,7 +363,7 @@ def _format_tree_line(span: SpanRecord, view: SpanTreeView, *, depth: int, inclu
 
     if span.kind == SpanKind.LLM_ROUND:
         model = _detail_str(meta, MODEL_KEY) or UNKNOWN_MODEL_LABEL
-        tokens = _format_token_parts(span, metrics)
+        tokens = _format_token_parts(span, metrics, view)
         line = f"{indent}llm_round{_round_label(span, meta)}: {model} {duration}"
         if tokens:
             line += f" {tokens}"
@@ -460,6 +498,32 @@ def _build_flow_plan_lines(view: SpanTreeView) -> list[str]:
     return lines
 
 
+def _build_conversation_chain_lines(view: SpanTreeView) -> list[str]:
+    """Render conversation chains showing warmup → fork topology."""
+    conversation_spans = [span for span in view.spans_by_id.values() if span.kind == SpanKind.CONVERSATION and span.previous_conversation_id is not None]
+    if not conversation_spans:
+        return []
+    children_of: dict[UUID, list[SpanRecord]] = {}
+    for span in conversation_spans:
+        assert span.previous_conversation_id is not None
+        children_of.setdefault(span.previous_conversation_id, []).append(span)
+    roots: set[UUID] = set()
+    for parent_id in children_of:
+        parent = view.spans_by_id.get(parent_id)
+        if parent is not None and parent.previous_conversation_id is None:
+            roots.add(parent_id)
+    if not roots:
+        return []
+    lines = ["## Conversation Chains", ""]
+    for root_id in sorted(roots, key=lambda rid: view.spans_by_id[rid].started_at):
+        root = view.spans_by_id[root_id]
+        forks = sorted(children_of.get(root_id, []), key=lambda s: s.started_at)
+        fork_names = ", ".join(s.name for s in forks)
+        lines.append(f"- {root.name} → [{fork_names}]")
+    lines.append("")
+    return lines
+
+
 def generate_summary_from_tree(tree: list[SpanRecord], root_deployment_id: UUID) -> str:
     """Render summary.md content for a span-era deployment tree."""
     view = build_span_tree_view(tree, root_deployment_id)
@@ -467,8 +531,11 @@ def generate_summary_from_tree(tree: list[SpanRecord], root_deployment_id: UUID)
         return "# No execution data found\n"
 
     total_tokens = view.totals.tokens_input + view.totals.tokens_output + view.totals.tokens_cache_read + view.totals.tokens_reasoning
-    lines = [
-        f"# {view.root_span.deployment_name or view.root_span.name} / {view.root_span.run_id}",
+    header = f"# {view.root_span.deployment_name or view.root_span.name} / {view.root_span.run_id}"
+    lines = [header]
+    if view.root_span.description:
+        lines.append(f"\n> {view.root_span.description}")
+    lines.extend([
         "",
         (
             f"**Status**: {view.root_span.status} | **Duration**: {_format_duration(view.root_span)} | "
@@ -505,8 +572,9 @@ def generate_summary_from_tree(tree: list[SpanRecord], root_deployment_id: UUID)
         "ai-replay run --from-db <span-id> --db-path <download-dir>",
         "```",
         "",
-    ]
+    ])
     lines.extend(_build_flow_plan_lines(view))
+    lines.extend(_build_conversation_chain_lines(view))
     lines.extend(_build_failures_lines(view))
     lines.extend(["## Execution Tree", ""])
     lines.extend(format_span_tree_lines(view, include_filenames=True))

@@ -12,6 +12,12 @@ from ai_pipeline_core.settings import settings
 
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
 
+
+class CityInfo(BaseModel):
+    city: str = Field(description="Capital city name")
+    country: str = Field(description="Country name")
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not HAS_API_KEYS, reason="OpenAI API keys not configured"),
@@ -175,10 +181,6 @@ async def test_max_tool_rounds_forced_final(model_opts: tuple[str, ModelOptions]
 
 async def test_structured_output_with_tools(model_opts: tuple[str, ModelOptions]) -> None:
     """Tools work with structured output (tool loop → final structured call)."""
-
-    class CityInfo(BaseModel):
-        city: str = Field(description="Capital city name")
-        country: str = Field(description="Country name")
 
     model, opts = model_opts
     conv = await Conversation(model=model, model_options=opts).send_structured(

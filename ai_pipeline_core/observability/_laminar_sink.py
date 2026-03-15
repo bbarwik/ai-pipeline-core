@@ -130,6 +130,7 @@ class LaminarSpanSink:
             attributes.update(_llm_gen_ai_attrs(meta, metrics, input_preview, output_preview))
         if error is not None:
             attributes["ai_pipeline.error_type"] = type(error).__name__
+            attributes["ai_pipeline.error_message"] = str(error)
 
         if attributes:
             try:

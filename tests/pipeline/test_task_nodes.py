@@ -45,7 +45,7 @@ class _SimpleTask(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
-        return (_NodeOutDoc.derive(from_documents=tuple(documents), name="out.txt", content="output"),)
+        return (_NodeOutDoc.derive(derived_from=tuple(documents), name="out.txt", content="output"),)
 
 
 class _FailingTask(PipelineTask):
@@ -57,7 +57,7 @@ class _FailingTask(PipelineTask):
 class _NestedChildTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
-        return (_NodeOutDoc.derive(from_documents=tuple(documents), name="child.txt", content="child"),)
+        return (_NodeOutDoc.derive(derived_from=tuple(documents), name="child.txt", content="child"),)
 
 
 class _NestedParentTask(PipelineTask):
@@ -70,10 +70,10 @@ class _SummaryTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
         return (
-            _NodeOutDoc.create(
+            _NodeOutDoc.derive(
                 name="summary.txt",
                 content="output",
-                derived_from=(documents[0].sha256,),
+                derived_from=(documents[0],),
                 summary="Persist this summary",
             ),
         )
@@ -252,17 +252,18 @@ async def test_started_and_completed_rows_are_valid_span_records() -> None:
     assert completed_span.meta_json != ""
 
 
+class _ConfiguredTask(PipelineTask):
+    retries = 3
+    timeout_seconds = 60
+    retry_delay_seconds = 5
+
+    @classmethod
+    async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
+        return (_NodeOutDoc.derive(derived_from=documents, name="configured.txt", content="ok"),)
+
+
 @pytest.mark.asyncio
 async def test_task_detail_includes_retry_configuration() -> None:
-    class _ConfiguredTask(PipelineTask):
-        retries = 3
-        timeout_seconds = 60
-        retry_delay_seconds = 5
-
-        @classmethod
-        async def run(cls, documents: tuple[_NodeInDoc, ...]) -> tuple[_NodeOutDoc, ...]:
-            return (_NodeOutDoc.derive(from_documents=documents, name="configured.txt", content="ok"),)
-
     database = _RecordingSpanDatabase()
     with set_execution_context(_make_context_with_db(database)):
         await _ConfiguredTask.run((_make_input(),))

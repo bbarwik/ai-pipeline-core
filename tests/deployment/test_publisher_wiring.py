@@ -45,7 +45,7 @@ class _WiringFlow(PipelineFlow):
     """Flow for wiring tests."""
 
     async def run(self, documents: tuple[_WiringInputDoc, ...], options: FlowOptions) -> tuple[_WiringOutputDoc, ...]:
-        return (_WiringOutputDoc.derive(from_documents=documents, name="out.txt", content="done"),)
+        return (_WiringOutputDoc.derive(derived_from=documents, name="out.txt", content="done"),)
 
 
 class _WiringDeployment(PipelineDeployment[FlowOptions, _WiringResult]):

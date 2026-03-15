@@ -6,11 +6,17 @@ Conversation should inject a default system prompt instructing the LLM to preser
 
 import pytest
 
+from pydantic import BaseModel
+
 from ai_pipeline_core._llm_core import ModelOptions
 from ai_pipeline_core.llm.conversation import Conversation, _SUBSTITUTOR_INSTRUCTION
 from tests.support.helpers import create_test_model_response
 
 LONG_URL = "https://example.com/docs/api/v2/reference/contracts/very/long/path/to/resource/page"
+
+
+class _StructuredResult(BaseModel):
+    answer: str
 
 
 class TestPromptInjection:
@@ -155,23 +161,18 @@ class TestPromptIntegration:
     @pytest.mark.asyncio
     async def test_default_prompt_works_with_send_structured(self, monkeypatch):
         """Default prompt should also be injected for send_structured()."""
-        from pydantic import BaseModel as PydanticBaseModel
-
         from tests.support.helpers import create_test_structured_model_response
 
         captured_options: list[ModelOptions | None] = []
 
-        class Result(PydanticBaseModel):
-            answer: str
-
         async def fake_generate_structured(messages, response_format, **kwargs):
             captured_options.append(kwargs.get("model_options"))
-            return create_test_structured_model_response(parsed=Result(answer="OK"))
+            return create_test_structured_model_response(parsed=_StructuredResult(answer="OK"))
 
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate_structured", fake_generate_structured)
 
         conv = Conversation(model="test-model", include_date=False)
-        await conv.send_structured(f"Check {LONG_URL}", Result)
+        await conv.send_structured(f"Check {LONG_URL}", _StructuredResult)
 
         opts = captured_options[0]
         assert opts is not None

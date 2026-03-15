@@ -11,6 +11,7 @@ __all__ = [
     "DocumentNameError",
     "DocumentSizeError",
     "DocumentValidationError",
+    "EmptyResponseError",
     "LLMError",
     "OutputDegenerationError",
     "PipelineCoreError",
@@ -23,3 +24,7 @@ class LLMError(PipelineCoreError):
 
 class OutputDegenerationError(LLMError):
     """LLM output contains degeneration patterns (e.g., token repetition loops). Triggers retry with cache disabled."""
+
+
+class EmptyResponseError(LLMError):
+    """Model returned empty content (no text and no tool calls). Retried with LiteLLM cache disabled."""

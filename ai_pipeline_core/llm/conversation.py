@@ -373,7 +373,11 @@ class Conversation(BaseModel, Generic[T]):
             return response
         update: dict[str, Any] = {"content": restored}
         if response_format is not None and not isinstance(response.parsed, str):
-            update["parsed"] = response_format.model_validate_json(restored)
+            try:
+                update["parsed"] = response_format.model_validate_json(restored)
+            except Exception:
+                logger.warning("URL-restored content failed structured re-parse for %s; falling back to plain text.", response_format.__name__)
+                update["parsed"] = restored
         else:
             update["parsed"] = restored
         return response.model_copy(update=update)  # nosemgrep: no-document-model-copy
@@ -448,6 +452,10 @@ class Conversation(BaseModel, Generic[T]):
         response_format_path = _response_format_path(response_format) or None
         span_input_preview = _core_messages_to_span_input(core_messages)
         span_input_db = _core_messages_to_db_span_input(core_messages)
+        if effective_options and effective_options.system_prompt:
+            system_entry: dict[str, Any] = {"role": "system", "content": effective_options.system_prompt}
+            span_input_preview = [system_entry] + span_input_preview
+            span_input_db = [system_entry] + span_input_db
         execution_ctx = get_execution_context()
         llm_target = _LLM_ROUND_REPLAY_TARGET
         llm_input = {
@@ -495,7 +503,7 @@ class Conversation(BaseModel, Generic[T]):
                         tools=tools,
                         tool_choice=tool_choice,
                     )
-            except Exception, asyncio.CancelledError:
+            except (Exception, asyncio.CancelledError) as exc:
                 span_ctx.set_meta(
                     model=self.model,
                     finish_reason="error",
@@ -508,6 +516,8 @@ class Conversation(BaseModel, Generic[T]):
                     response_format_path=response_format_path,
                     tool_call_count=0,
                     tool_choice=tool_choice,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
                 )
                 raise
             span_ctx.set_meta(
@@ -649,7 +659,7 @@ class Conversation(BaseModel, Generic[T]):
                         round_index=1,
                         tool_schemas=tool_schemas,
                     )
-            except Exception, asyncio.CancelledError:
+            except (Exception, asyncio.CancelledError) as exc:
                 span_ctx.set_meta(
                     purpose=recorder_name,
                     citations=[],
@@ -667,6 +677,8 @@ class Conversation(BaseModel, Generic[T]):
                     tools=serialized_tools,
                     tool_choice=tool_choice,
                     max_tool_rounds=max_tool_rounds,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
                 )
                 raise
             if substitutor:

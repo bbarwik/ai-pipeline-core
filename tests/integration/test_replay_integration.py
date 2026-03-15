@@ -63,7 +63,7 @@ class SnapshotTask(PipelineTask):
         conv = await conv.send("Summarize the context document.", purpose="snapshot-task")
         return (
             SnapshotOutputDocument.derive(
-                from_documents=(documents[0],),
+                derived_from=(documents[0],),
                 name="snapshot-output.txt",
                 content=conv.content,
                 description="snapshot replay output",
@@ -108,7 +108,7 @@ class HistoryTask(PipelineTask):
         conv = await conv.send("Give the concise answer.", purpose="history-followup")
         return (
             HistoryOutputDocument.derive(
-                from_documents=(documents[0],),
+                derived_from=(documents[0],),
                 name="history-output.txt",
                 content=conv.content,
                 description="history replay output",

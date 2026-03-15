@@ -65,7 +65,7 @@ class _ToMiddleTask(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[_EventInput, ...]) -> tuple[_EventMiddle, ...]:
-        return (_EventMiddle.derive(from_documents=documents, name="middle.md", content="middle"),)
+        return (_EventMiddle.derive(derived_from=documents, name="middle.md", content="middle"),)
 
 
 class _ToOutputTask(PipelineTask):
@@ -73,7 +73,7 @@ class _ToOutputTask(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[_EventMiddle, ...]) -> tuple[_EventOutput, ...]:
-        return (_EventOutput.derive(from_documents=documents, name="out.md", content="done"),)
+        return (_EventOutput.derive(derived_from=documents, name="out.md", content="done"),)
 
 
 class _FailingTask(PipelineTask):
@@ -121,7 +121,7 @@ class _NoTaskFlow(PipelineFlow):
     """Flow that returns documents without calling PipelineTasks."""
 
     async def run(self, documents: tuple[_EventInput, ...], options: FlowOptions) -> tuple[_EventOutput, ...]:
-        return (_EventOutput.derive(from_documents=documents, name="notask.md", content="done"),)
+        return (_EventOutput.derive(derived_from=documents, name="notask.md", content="done"),)
 
 
 class _SlowFlow(PipelineFlow):
@@ -129,7 +129,7 @@ class _SlowFlow(PipelineFlow):
 
     async def run(self, documents: tuple[_EventInput, ...], options: FlowOptions) -> tuple[_EventOutput, ...]:
         await asyncio.sleep(0.05)
-        return (_EventOutput.derive(from_documents=documents, name="slow.md", content="done"),)
+        return (_EventOutput.derive(derived_from=documents, name="slow.md", content="done"),)
 
 
 # ---------------------------------------------------------------------------

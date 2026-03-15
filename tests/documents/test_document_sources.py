@@ -25,7 +25,7 @@ class TestDocumentDerivedFrom:
             "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",  # Valid SHA256
         ]
 
-        doc = SampleFlowDoc.create(name="test.txt", content="test content", derived_from=derived_from)
+        doc = SampleFlowDoc(name="test.txt", content=b"test content", derived_from=derived_from)
 
         assert len(doc.derived_from) == 2
         assert doc.derived_from[0] == "https://example.com"
@@ -41,23 +41,23 @@ class TestDocumentDerivedFrom:
         doc1 = SampleFlowDoc.create_root(name="source.txt", content="source data", reason="test input")
 
         # Create doc2 with doc1 as derived_from
-        doc2 = SampleFlowDoc.create(name="derived.txt", content="derived data", derived_from=(doc1.sha256,))
+        doc2 = SampleFlowDoc(name="derived.txt", content=b"derived data", derived_from=(doc1.sha256,))
 
         assert len(doc2.derived_from) == 1
         assert doc2.derived_from[0] == doc1.sha256
 
     def test_create_with_string_derived_from(self):
         """Test creating document with a string reference as derived_from."""
-        doc = SampleFlowDoc.create(name="test.txt", content="test", derived_from=("https://data.source.com/file.csv",))
+        doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=("https://data.source.com/file.csv",))
 
         assert len(doc.derived_from) == 1
         assert doc.derived_from[0] == "https://data.source.com/file.csv"
 
     def test_create_with_mixed_derived_from(self):
         """Test creating document with mixed derived_from types."""
-        doc = SampleFlowDoc.create(
+        doc = SampleFlowDoc(
             name="test.txt",
-            content="test",
+            content=b"test",
             derived_from=(
                 "https://example.com/manual-input",
                 "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
@@ -70,7 +70,7 @@ class TestDocumentDerivedFrom:
 
     def test_create_with_duplicate_derived_from(self):
         """Test creating document with duplicate derived_from entries."""
-        doc = SampleFlowDoc.create(name="test.txt", content="test", derived_from=("https://example.com/ref1", "https://example.com/ref1"))
+        doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=("https://example.com/ref1", "https://example.com/ref1"))
 
         # Both entries are kept (no deduplication at creation)
         assert len(doc.derived_from) == 2
@@ -83,7 +83,7 @@ class TestDocumentDerivedFrom:
             "DSITTXMIGUJ5CHKJEVTW3IOQFYJ3LHOXZFWZBN7FH7AR3DGWTAXA",
         ]
 
-        doc = SampleFlowDoc.create(name="test.txt", content="test", derived_from=derived_from)
+        doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=derived_from)
 
         hashes = doc.content_documents
         assert len(hashes) == 2
@@ -98,7 +98,7 @@ class TestDocumentDerivedFrom:
             "https://example.com/ref2",
         ]
 
-        doc = SampleFlowDoc.create(name="test.txt", content="test", derived_from=derived_from)
+        doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=derived_from)
 
         refs = doc.content_references
         assert len(refs) == 2
@@ -110,9 +110,9 @@ class TestDocumentDerivedFrom:
         doc1 = SampleFlowDoc.create_root(name="source.txt", content="source", reason="test input")
         doc2 = SampleFlowDoc.create_root(name="other.txt", content="other", reason="test input")
 
-        doc = SampleFlowDoc.create(
+        doc = SampleFlowDoc(
             name="test.txt",
-            content="test",
+            content=b"test",
             derived_from=(
                 doc1.sha256,
                 "https://example.com/ref1",
@@ -138,7 +138,7 @@ class TestDocumentDerivedFrom:
             "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
         ]
 
-        doc = SampleFlowDoc.create(name="test.txt", content="test", derived_from=derived_from)
+        doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=derived_from)
 
         data = doc.serialize_model()
         assert "derived_from" in data
@@ -166,7 +166,7 @@ class TestDocumentDerivedFrom:
         """Test that derived_from tuple itself is immutable."""
         from pydantic import ValidationError
 
-        doc = SampleFlowDoc.create(name="test.txt", content="test", derived_from=("https://example.com/ref1",))
+        doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=("https://example.com/ref1",))
 
         # Document is frozen, so we can't modify derived_from directly
         with pytest.raises(ValidationError, match="frozen"):
@@ -175,7 +175,7 @@ class TestDocumentDerivedFrom:
     def test_concrete_document_with_derived_from(self):
         """Test that concrete Document subclass supports derived_from."""
         derived_from = ["https://example.com/temp-source"]
-        doc = SampleFlowDoc.create(name="temp.txt", content="temporary", derived_from=derived_from)
+        doc = SampleFlowDoc(name="temp.txt", content=b"temporary", derived_from=derived_from)
 
         assert len(doc.derived_from) == 1
         assert doc.derived_from[0] == "https://example.com/temp-source"
@@ -188,7 +188,7 @@ class TestDocumentDerivedFrom:
             "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",  # Real hash
         ]
 
-        doc = SampleFlowDoc.create(name="test.txt", content="test", derived_from=derived_from)
+        doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=derived_from)
 
         # content_documents should only return the real hash
         hashes = doc.content_documents
@@ -203,7 +203,7 @@ class TestDocumentDerivedFrom:
 
     def test_has_derived_from_invalid_type(self):
         """Test that has_derived_from raises TypeError for invalid types."""
-        doc = SampleFlowDoc.create(name="test.txt", content="test", derived_from=("https://example.com/ref1",))
+        doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=("https://example.com/ref1",))
 
         # Invalid type should raise TypeError
         from typing import Any, cast
@@ -245,7 +245,7 @@ class TestDocumentDerivedFrom:
         doc1 = SampleFlowDoc.create_root(name="source.txt", content="source", reason="test input")
 
         # Create doc with duplicate hash in derived_from
-        doc2 = SampleFlowDoc.create(name="derived.txt", content="derived", derived_from=(doc1.sha256, doc1.sha256, "https://example.com/other"))
+        doc2 = SampleFlowDoc(name="derived.txt", content=b"derived", derived_from=(doc1.sha256, doc1.sha256, "https://example.com/other"))
 
         # All duplicates are kept
         assert len(doc2.derived_from) == 3
@@ -262,14 +262,14 @@ class TestDocumentDerivedFrom:
         doc = SampleFlowDoc.create_root(name="test.txt", content="test", reason="test input")
 
         # Create another doc that references itself (edge case)
-        doc2 = SampleFlowDoc.create(
+        doc2 = SampleFlowDoc(
             name="self.txt",
-            content="self-ref",
+            content=b"self-ref",
             derived_from=(doc.sha256,),  # Reference to first doc
         )
 
         # Add its own hash (would be unusual but should work)
-        doc3 = SampleFlowDoc.create(name="self2.txt", content="self-ref2", derived_from=(doc2.sha256, "https://example.com/self-reference-note"))
+        doc3 = SampleFlowDoc(name="self2.txt", content=b"self-ref2", derived_from=(doc2.sha256, "https://example.com/self-reference-note"))
 
         assert doc3.has_derived_from(doc2)
         assert len(doc3.content_documents) == 1
@@ -282,7 +282,7 @@ class TestDocumentDerivedFrom:
             "https://example.com/local-file.csv",
         ]
 
-        original = SampleFlowDoc.create(name="test.json", content={"key": "value"}, description="Test doc", derived_from=derived_from)
+        original = SampleFlowDoc(name="test.json", content=b'{"key": "value"}', description="Test doc", derived_from=derived_from)
 
         # Serialize and deserialize
         serialized = original.serialize_model()
@@ -306,7 +306,7 @@ class TestDocumentDerivedFrom:
             "https://example.com/newline\nincluded",
         )
 
-        doc = SampleFlowDoc.create(name="test.txt", content="test", derived_from=derived_from)
+        doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=derived_from)
 
         # All entries should be preserved exactly
         assert doc.derived_from == derived_from

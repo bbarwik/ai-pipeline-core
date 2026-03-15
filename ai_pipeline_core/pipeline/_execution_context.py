@@ -172,6 +172,8 @@ def _create_noop_publisher() -> Any:
 class _RecordingState:
     degraded: bool = False
     replay_root_span_id: UUID | None = None
+    persisted_document_shas: set[str] = field(default_factory=set)
+    persisted_blob_shas: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,6 +16,12 @@ def validate_bundle(bundle_path: Path) -> dict[str, Any]:
     _require_path(bundle_path / DOCUMENTS_DIRNAME, is_dir=True, label="documents directory")
     _require_path(bundle_path / BLOBS_DIRNAME, is_dir=True, label="blobs directory")
     _require_path(bundle_path / LOGS_FILENAME, is_dir=False, label="logs file")
+    schema_meta_path = bundle_path / "schema_meta.json"
+    if not schema_meta_path.is_file():
+        raise FileNotFoundError(
+            f"Snapshot validation failed because the required schema_meta.json is missing at {schema_meta_path}. "
+            "Include schema_meta.json in the snapshot bundle for provenance tracking."
+        )
 
     snapshot = FilesystemDatabase(bundle_path, read_only=True)
     referenced_document_shas: set[str] = set()
@@ -35,11 +41,10 @@ def validate_bundle(bundle_path: Path) -> dict[str, Any]:
     if missing_documents:
         raise ValueError("Snapshot validation failed because some referenced documents are missing from documents/: " + ", ".join(missing_documents))
 
-    stored_blob_shas = {path.name for path in (bundle_path / BLOBS_DIRNAME).iterdir() if path.is_file() and path.suffix != ".json"}
+    stored_blob_shas = {path.name for path in (bundle_path / BLOBS_DIRNAME).iterdir() if path.is_file()}
     missing_content_blobs = sorted(referenced_blob_shas - stored_blob_shas)
     if missing_content_blobs:
         raise ValueError("Snapshot validation failed because some referenced blobs are missing from blobs/: " + ", ".join(missing_content_blobs))
-    _validate_blob_records(snapshot, referenced_blob_shas)
 
     return {
         "valid": True,
@@ -63,23 +68,6 @@ def _require_path(path: Path, *, is_dir: bool, label: str) -> None:
         )
     if not is_dir and not path.is_file():
         raise ValueError(f"Snapshot validation expected {label} at {path} to be a file. Recreate the bundle so logs.jsonl is written before publication.")
-
-
-def _validate_blob_records(snapshot: FilesystemDatabase, referenced_blob_shas: set[str]) -> None:
-    for blob_sha in sorted(referenced_blob_shas):
-        try:
-            blob = snapshot._get_blob_sync(blob_sha)
-        except ValueError as exc:
-            raise ValueError(
-                f"Snapshot validation failed because blob {blob_sha} is structurally incomplete. "
-                "Every blob content file in blobs/ must have a matching JSON metadata sidecar with created_at. "
-                f"Recreate the bundle so blob metadata is exported alongside the content file: {exc}"
-            ) from exc
-        if blob is None:
-            raise ValueError(
-                f"Snapshot validation failed because referenced blob {blob_sha} could not be loaded from the snapshot. "
-                "Recreate the bundle so every referenced blob is exported completely."
-            )
 
 
 def _count_log_lines(logs_path: Path) -> int:

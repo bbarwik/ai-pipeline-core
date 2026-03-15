@@ -1,6 +1,9 @@
 """Test scope detection from git changes and source-to-test mapping."""
 
-from dev_cli._project import load_config
+import sys
+from pathlib import PurePosixPath
+
+from dev_cli._project import ProjectConfig, load_config
 from dev_cli._state import git_changed_files
 
 
@@ -51,7 +54,20 @@ def resolve_scope(scope: str | None) -> list[str]:
     if scope in cfg.scope_aliases:
         return [cfg.scope_aliases[scope]]
 
-    # Direct path
+    # Reject file paths — suggest the correct scope name
+    if scope.endswith(".py"):
+        suggestion = _suggest_scope_for_path(scope, cfg)
+        hint = f"  Did you mean: dev test {suggestion}\n" if suggestion else ""
+        print(
+            f"ERROR: 'dev test' takes a scope name, not a file path.\n"
+            f"{hint}"
+            f"  Available scopes: {', '.join(sorted(cfg.scope_aliases))}\n"
+            f"  Usage: dev test <scope>   e.g. dev test database",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Direct path (test directory)
     if (cfg.repo_root / scope).exists():
         return [scope]
 
@@ -61,7 +77,12 @@ def resolve_scope(scope: str | None) -> list[str]:
         if (cfg.repo_root / test_path).exists():
             return [test_path]
 
-    return [scope]  # let pytest handle the error
+    # Unknown scope — show available options
+    print(
+        f"ERROR: Unknown test scope '{scope}'.\n  Available scopes: {', '.join(sorted(cfg.scope_aliases))}\n  Usage: dev test <scope>   e.g. dev test database",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def get_source_dirs_for_test_dirs(test_dirs: list[str]) -> list[str]:
@@ -73,3 +94,15 @@ def get_source_dirs_for_test_dirs(test_dirs: list[str]) -> list[str]:
         if scope_set.intersection(tests):
             source_dirs.add(src)
     return sorted(source_dirs)
+
+
+def _suggest_scope_for_path(file_path: str, cfg: ProjectConfig) -> str | None:
+    """Extract a scope name from a file path like 'tests/database/test_foo.py'."""
+    parts = PurePosixPath(file_path).parts
+    for test_root in cfg.test_roots:
+        root_parts = PurePosixPath(test_root).parts
+        if parts[: len(root_parts)] == root_parts and len(parts) > len(root_parts):
+            candidate = parts[len(root_parts)]
+            if candidate in cfg.scope_aliases:
+                return candidate
+    return None

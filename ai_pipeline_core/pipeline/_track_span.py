@@ -21,6 +21,7 @@ from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._execution_context import (
+    ExecutionContext,
     get_execution_context,
     set_execution_context,
 )
@@ -280,16 +281,37 @@ def _walk_artifacts(
         seen_ids.discard(object_id)
 
 
-async def _persist_artifacts(database: DatabaseWriter | None, artifacts: _CollectedArtifacts) -> None:
+def _filter_new_artifacts(
+    artifacts: _CollectedArtifacts,
+    execution_ctx: ExecutionContext | None,
+) -> tuple[dict[str, BlobRecord], list[Any]]:
+    """Filter artifacts against already-persisted SHAs, return (blob_records, document_records)."""
+    persisted_doc_shas = execution_ctx._recording_state.persisted_document_shas if execution_ctx is not None else None
+    persisted_blob_shas = execution_ctx._recording_state.persisted_blob_shas if execution_ctx is not None else None
+
+    blob_records: dict[str, BlobRecord] = {}
+    for sha256, content in artifacts.blobs.items():
+        if persisted_blob_shas is not None and sha256 in persisted_blob_shas:
+            continue
+        blob_records[sha256] = BlobRecord(content_sha256=sha256, content=content)
+
+    document_records = []
+    for document in artifacts.documents.values():
+        if persisted_doc_shas is not None and document.sha256 in persisted_doc_shas:
+            continue
+        for blob in document_to_blobs(document):
+            if persisted_blob_shas is None or blob.content_sha256 not in persisted_blob_shas:
+                blob_records.setdefault(blob.content_sha256, blob)
+        document_records.append(document_to_record(document))
+
+    return blob_records, document_records
+
+
+async def _persist_artifacts(database: DatabaseWriter | None, artifacts: _CollectedArtifacts, execution_ctx: ExecutionContext | None = None) -> None:
     if database is None:
         return
 
-    blob_records: dict[str, BlobRecord] = {sha256: BlobRecord(content_sha256=sha256, content=content) for sha256, content in artifacts.blobs.items()}
-    document_records = []
-    for document in artifacts.documents.values():
-        for blob in document_to_blobs(document):
-            blob_records.setdefault(blob.content_sha256, blob)
-        document_records.append(document_to_record(document))
+    blob_records, document_records = _filter_new_artifacts(artifacts, execution_ctx)
 
     try:
         if blob_records:
@@ -298,6 +320,11 @@ async def _persist_artifacts(database: DatabaseWriter | None, artifacts: _Collec
             await database.save_document_batch(document_records)
     except Exception as exc:
         raise SpanArtifactPersistenceError(str(exc)) from exc
+
+    if execution_ctx is not None:
+        execution_ctx._recording_state.persisted_blob_shas.update(blob_records)
+        for doc in artifacts.documents.values():
+            execution_ctx._recording_state.persisted_document_shas.add(doc.sha256)
 
 
 def _receiver_value(receiver_payload: dict[str, Any] | None) -> Any:
@@ -396,7 +423,7 @@ async def _persist_for_span_boundary(
     stage: str,
 ) -> tuple[SpanSink, ...]:
     try:
-        await _persist_artifacts(db, artifacts)
+        await _persist_artifacts(db, artifacts, execution_ctx)
     except SpanArtifactPersistenceError as exc:
         if execution_ctx is not None:
             execution_ctx.recording_degraded = True

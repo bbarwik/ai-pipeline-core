@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import hashlib
+import json
 import logging
 import re
 from collections.abc import Sequence
@@ -156,9 +157,15 @@ def _build_flow_cache_key(
     input_fingerprint: str,
     flow_class: type[Any],
     step: int,
+    flow_params: dict[str, Any],
 ) -> str:
     """Build the deterministic cross-deployment flow cache key."""
-    return f"flow:{input_fingerprint}:{flow_class.__module__}:{flow_class.__qualname__}:{step}"
+    base = f"flow:{input_fingerprint}:{flow_class.__module__}:{flow_class.__qualname__}:{step}"
+    if flow_params:
+        params_json = json.dumps(flow_params, sort_keys=True, default=repr)
+        params_hash = hashlib.sha256(params_json.encode()).hexdigest()[:12]
+        return f"{base}:{params_hash}"
+    return base
 
 
 def _create_span_database_from_settings(

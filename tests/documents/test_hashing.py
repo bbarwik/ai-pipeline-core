@@ -61,30 +61,30 @@ class TestComputeDocumentSha256:
 
     def test_derived_from_affects_hash(self):
         """derived_from is included in document_sha256."""
-        doc1 = HashDoc.create(name="a.txt", content="hello", derived_from=("https://example.com/src1",))
-        doc2 = HashDoc.create(name="a.txt", content="hello", derived_from=("https://example.com/src2",))
+        doc1 = HashDoc(name="a.txt", content=b"hello", derived_from=("https://example.com/src1",))
+        doc2 = HashDoc(name="a.txt", content=b"hello", derived_from=("https://example.com/src2",))
         assert compute_document_sha256(doc1) != compute_document_sha256(doc2)
 
     def test_triggered_by_affects_hash(self):
         """triggered_by is included in document_sha256."""
         origin_a = compute_document_sha256(HashDoc.create_root(name="origin_a.txt", content="origin a", reason="test input"))
         origin_b = compute_document_sha256(HashDoc.create_root(name="origin_b.txt", content="origin b", reason="test input"))
-        doc1 = HashDoc.create(name="a.txt", content="hello", triggered_by=(origin_a,))
-        doc2 = HashDoc.create(name="a.txt", content="hello", triggered_by=(origin_b,))
+        doc1 = HashDoc(name="a.txt", content=b"hello", triggered_by=(origin_a,))
+        doc2 = HashDoc(name="a.txt", content=b"hello", triggered_by=(origin_b,))
         assert compute_document_sha256(doc1) != compute_document_sha256(doc2)
 
     def test_derived_from_order_does_not_matter(self):
         """derived_from entries are sorted before hashing for order-independence."""
-        doc1 = HashDoc.create(name="a.txt", content="hello", derived_from=("https://a.com", "https://b.com"))
-        doc2 = HashDoc.create(name="a.txt", content="hello", derived_from=("https://b.com", "https://a.com"))
+        doc1 = HashDoc(name="a.txt", content=b"hello", derived_from=("https://a.com", "https://b.com"))
+        doc2 = HashDoc(name="a.txt", content=b"hello", derived_from=("https://b.com", "https://a.com"))
         assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
 
     def test_triggered_by_order_does_not_matter(self):
         """triggered_by entries are sorted before hashing for order-independence."""
         origin_a = compute_document_sha256(HashDoc.create_root(name="origin_a.txt", content="origin a", reason="test input"))
         origin_b = compute_document_sha256(HashDoc.create_root(name="origin_b.txt", content="origin b", reason="test input"))
-        doc1 = HashDoc.create(name="a.txt", content="hello", triggered_by=(origin_a, origin_b))
-        doc2 = HashDoc.create(name="a.txt", content="hello", triggered_by=(origin_b, origin_a))
+        doc1 = HashDoc(name="a.txt", content=b"hello", triggered_by=(origin_a, origin_b))
+        doc2 = HashDoc(name="a.txt", content=b"hello", triggered_by=(origin_b, origin_a))
         assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
 
     def test_no_provenance_still_deterministic(self):
@@ -101,10 +101,10 @@ class TestComputeDocumentSha256:
         """
         url_a = "https://example.com/a"
         url_b = "https://example.com/b"
-        doc1 = HashDoc.create(name="a.txt", content="hello", derived_from=(url_a,), triggered_by=())
+        doc1 = HashDoc(name="a.txt", content=b"hello", derived_from=(url_a,), triggered_by=())
         doc2 = HashDoc.create_root(name="a.txt", content="hello", reason="no provenance")
-        doc3 = HashDoc.create(name="a.txt", content="hello", derived_from=(url_a, url_b))
-        doc4 = HashDoc.create(name="a.txt", content="hello", derived_from=(url_a,))
+        doc3 = HashDoc(name="a.txt", content=b"hello", derived_from=(url_a, url_b))
+        doc4 = HashDoc(name="a.txt", content=b"hello", derived_from=(url_a,))
         assert compute_document_sha256(doc1) != compute_document_sha256(doc2)
         assert compute_document_sha256(doc3) != compute_document_sha256(doc4)
 

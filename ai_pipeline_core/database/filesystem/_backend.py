@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 from collections.abc import Callable
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
@@ -43,8 +44,11 @@ from ai_pipeline_core.database._types import (
     get_token_count,
 )
 from ai_pipeline_core.database.filesystem._paths import run_directory_name, span_filename
+from ai_pipeline_core.logger import get_pipeline_logger
 
 __all__ = ["FilesystemDatabase"]
+
+logger = get_pipeline_logger(__name__)
 
 _T = TypeVar("_T")
 
@@ -53,13 +57,6 @@ RUNS_DIRNAME = "runs"
 DOCUMENTS_DIRNAME = "documents"
 BLOBS_DIRNAME = "blobs"
 LOGS_FILENAME = "logs.jsonl"
-
-
-def _utc_datetime_from_iso(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed
 
 
 def _json_default(value: Any) -> Any:
@@ -146,7 +143,6 @@ def _deserialize_document(data: dict[str, Any], *, path: Path) -> DocumentRecord
             attachment_mime_types=tuple(data["attachment_mime_types"]),
             attachment_size_bytes=tuple(data["attachment_size_bytes"]),
             publicly_visible=data.get("publicly_visible", False),
-            created_at=_utc_datetime_from_iso(str(data["created_at"])),
         )
     except KeyError as exc:
         missing_field = exc.args[0]
@@ -200,8 +196,8 @@ class FilesystemDatabase:
         self._span_paths: dict[UUID, Path] = {}
         self._documents: dict[str, DocumentRecord] = {}
         self._document_paths: dict[str, Path] = {}
-        self._blob_created_at: dict[str, datetime] = {}
         self._logs: list[LogRecord] = []
+        self._write_lock = threading.Lock()
         self._load_from_disk()
 
     @property
@@ -244,6 +240,13 @@ class FilesystemDatabase:
 
     async def _run(self, fn: Callable[..., _T], *args: Any) -> _T:
         return await asyncio.to_thread(fn, *args)
+
+    async def _run_write(self, fn: Callable[..., _T], *args: Any) -> _T:
+        def _locked() -> _T:
+            with self._write_lock:
+                return fn(*args)
+
+        return await asyncio.to_thread(_locked)
 
     def _store_span_from_disk(self, span: SpanRecord, *, path: Path) -> None:
         existing = self._spans.get(span.span_id)
@@ -293,23 +296,10 @@ class FilesystemDatabase:
 
         for document_path in sorted(self._documents_dir.rglob("*.json")):
             document = _deserialize_document(_read_json_dict(document_path, context="Document snapshot"), path=document_path)
-            existing = self._documents.get(document.document_sha256)
-            if existing is not None and existing.created_at > document.created_at:
+            if document.document_sha256 in self._documents:
                 continue
             self._documents[document.document_sha256] = document
             self._document_paths[document.document_sha256] = document_path
-
-        for metadata_path in sorted(self._blobs_dir.glob("*.json")):
-            metadata = _read_json_dict(metadata_path, context="Blob metadata")
-            content_sha256 = metadata.get("content_sha256")
-            created_at = metadata.get("created_at")
-            if not isinstance(content_sha256, str) or not isinstance(created_at, str):
-                msg = (
-                    f"Blob metadata file {metadata_path} must contain string fields 'content_sha256' and 'created_at'. "
-                    "Rewrite the snapshot so blob sidecar metadata matches the BlobRecord shape."
-                )
-                raise TypeError(msg)
-            self._blob_created_at[content_sha256] = _utc_datetime_from_iso(created_at)
 
         if not self._logs_path.exists():
             return
@@ -340,9 +330,6 @@ class FilesystemDatabase:
     def _blob_content_path(self, content_sha256: str) -> Path:
         return self._blobs_dir / content_sha256
 
-    def _blob_metadata_path(self, content_sha256: str) -> Path:
-        return self._blobs_dir / f"{content_sha256}.json"
-
     def _save_span_sync(self, span: SpanRecord) -> None:
         self._ensure_writable("insert spans")
         existing = self._spans.get(span.span_id)
@@ -358,8 +345,7 @@ class FilesystemDatabase:
 
     def _save_document_sync(self, record: DocumentRecord) -> None:
         self._ensure_writable("save documents")
-        existing = self._documents.get(record.document_sha256)
-        if existing is not None and existing.created_at > record.created_at:
+        if record.document_sha256 in self._documents:
             return
         path = self._document_path(record.document_sha256, record.document_type)
         _atomic_write(
@@ -371,20 +357,10 @@ class FilesystemDatabase:
 
     def _save_blob_sync(self, blob: BlobRecord) -> None:
         self._ensure_writable("save blobs")
-        _atomic_write(self._blob_content_path(blob.content_sha256), blob.content)
-        _atomic_write(
-            self._blob_metadata_path(blob.content_sha256),
-            json.dumps(
-                {
-                    "content_sha256": blob.content_sha256,
-                    "created_at": blob.created_at,
-                },
-                indent=2,
-                sort_keys=True,
-                default=_json_default,
-            ),
-        )
-        self._blob_created_at[blob.content_sha256] = blob.created_at
+        content_path = self._blob_content_path(blob.content_sha256)
+        if content_path.exists():
+            return
+        _atomic_write(content_path, blob.content)
 
     def _save_document_batch_sync(self, records: list[DocumentRecord]) -> None:
         for record in records:
@@ -400,23 +376,25 @@ class FilesystemDatabase:
             return
         self._logs_path.parent.mkdir(parents=True, exist_ok=True)
         self._logs.extend(logs)
-        content = "\n".join(json.dumps(_serialize_record(log), sort_keys=True, default=_json_default) for log in self._logs)
+        content = "\n".join(json.dumps(_serialize_record(log), sort_keys=True, default=_json_default) for log in logs)
         if content:
             content += "\n"
-        _atomic_write(self._logs_path, content)
+        with self._logs_path.open("a", encoding="utf-8") as handle:
+            handle.write(content)
 
     def _update_document_summary_sync(self, document_sha256: str, summary: str) -> None:
         self._ensure_writable("update document summaries")
         existing = self._documents.get(document_sha256)
         if existing is None:
             return
-        self._save_document_sync(
-            replace(
-                existing,
-                summary=summary,
-                created_at=datetime.now(UTC),
-            )
+        updated = replace(existing, summary=summary)
+        path = self._document_path(updated.document_sha256, updated.document_type)
+        _atomic_write(
+            path,
+            json.dumps(_serialize_record(updated), indent=2, sort_keys=True, default=_json_default),
         )
+        self._documents[updated.document_sha256] = updated
+        self._document_paths[updated.document_sha256] = path
 
     def _root_deployment_spans(self) -> list[SpanRecord]:
         matches = [span for span in self._spans.values() if span.kind == SpanKind.DEPLOYMENT and span.deployment_id == span.root_deployment_id]
@@ -443,14 +421,28 @@ class FilesystemDatabase:
             if child.kind == SpanKind.TOOL_CALL:
                 meta = parse_json_object(child.meta_json, context=f"Span {child.span_id}", field_name="meta_json")
                 round_index = meta.get("round_index", 0)
-                if isinstance(round_index, int):
-                    tool_calls_by_round.setdefault(round_index, []).append(child)
+                if not isinstance(round_index, int):
+                    logger.warning(
+                        "TOOL_CALL span %s has non-integer round_index=%r in meta_json. "
+                        "Set round_index to an integer in the span's meta_json. Defaulting to 0.",
+                        child.span_id,
+                        round_index,
+                    )
+                    round_index = 0
+                tool_calls_by_round.setdefault(round_index, []).append(child)
         for child in children_map.get(span.span_id, []):
             if child.kind != SpanKind.LLM_ROUND:
                 continue
             round_payload = self._span_payload(child)
             round_meta = parse_json_object(child.meta_json, context=f"Span {child.span_id}", field_name="meta_json")
             round_index = round_meta.get("round_index", 0)
+            if not isinstance(round_index, int):
+                logger.warning(
+                    "LLM_ROUND span %s has non-integer round_index=%r in meta_json. Set round_index to an integer in the span's meta_json. Defaulting to 0.",
+                    child.span_id,
+                    round_index,
+                )
+                round_index = 0
             tool_call_payloads = [self._span_payload(tool_call) for tool_call in tool_calls_by_round.get(round_index, [])]
             round_payload["tool_calls"] = tool_call_payloads
             rounds.append(round_payload)
@@ -635,18 +627,9 @@ class FilesystemDatabase:
         path = self._blob_content_path(content_sha256)
         if not path.exists():
             return None
-        created_at = self._blob_created_at.get(content_sha256)
-        if created_at is None:
-            metadata_path = self._blob_metadata_path(content_sha256)
-            msg = (
-                f"Blob {content_sha256} exists at {path} but its metadata sidecar is missing or was not loaded from {metadata_path}. "
-                "Recreate the snapshot so every blob content file has a matching JSON metadata file with created_at."
-            )
-            raise ValueError(msg)
         return BlobRecord(
             content_sha256=content_sha256,
             content=path.read_bytes(),
-            created_at=created_at,
         )
 
     def _get_blobs_batch_sync(self, content_sha256s: list[str]) -> dict[str, BlobRecord]:
@@ -711,31 +694,31 @@ class FilesystemDatabase:
         )
 
     async def insert_span(self, span: SpanRecord) -> None:
-        await self._run(self._save_span_sync, span)
+        await self._run_write(self._save_span_sync, span)
 
     async def save_document(self, record: DocumentRecord) -> None:
-        await self._run(self._save_document_sync, record)
+        await self._run_write(self._save_document_sync, record)
 
     async def save_document_batch(self, records: list[DocumentRecord]) -> None:
-        await self._run(self._save_document_batch_sync, records)
+        await self._run_write(self._save_document_batch_sync, records)
 
     async def save_blob(self, blob: BlobRecord) -> None:
-        await self._run(self._save_blob_sync, blob)
+        await self._run_write(self._save_blob_sync, blob)
 
     async def save_blob_batch(self, blobs: list[BlobRecord]) -> None:
-        await self._run(self._save_blob_batch_sync, blobs)
+        await self._run_write(self._save_blob_batch_sync, blobs)
 
     async def save_logs_batch(self, logs: list[LogRecord]) -> None:
-        await self._run(self._save_logs_batch_sync, logs)
+        await self._run_write(self._save_logs_batch_sync, logs)
 
     async def update_document_summary(self, document_sha256: str, summary: str) -> None:
-        await self._run(self._update_document_summary_sync, document_sha256, summary)
+        await self._run_write(self._update_document_summary_sync, document_sha256, summary)
 
     async def flush(self) -> None:
-        await self._run(self._flush_sync)
+        await self._run_write(self._flush_sync)
 
     async def shutdown(self) -> None:
-        await self._run(self._shutdown_sync)
+        await self._run_write(self._shutdown_sync)
 
     async def get_span(self, span_id: UUID) -> SpanRecord | None:
         return await self._run(self._get_span_sync, span_id)
@@ -831,35 +814,3 @@ class FilesystemDatabase:
         category: str | None = None,
     ) -> list[LogRecord]:
         return await self._run(self._get_deployment_logs_batch_sync, deployment_ids, level, category)
-
-    def _find_latest_documents_by_derived_from_sync(
-        self,
-        values: list[str],
-        document_type: str | None,
-        max_age: timedelta | None,
-    ) -> dict[str, DocumentRecord]:
-        if not values:
-            return {}
-        now = datetime.now(UTC)
-        lookup_set = set(values)
-        result: dict[str, DocumentRecord] = {}
-        for record in self._documents.values():
-            if document_type is not None and record.document_type != document_type:
-                continue
-            if max_age is not None and record.created_at < now - max_age:
-                continue
-            matched_values = lookup_set & set(record.derived_from)
-            for value in matched_values:
-                existing = result.get(value)
-                if existing is None or record.created_at > existing.created_at:
-                    result[value] = record
-        return result
-
-    async def find_latest_documents_by_derived_from(
-        self,
-        values: list[str],
-        *,
-        document_type: str | None = None,
-        max_age: timedelta | None = None,
-    ) -> dict[str, DocumentRecord]:
-        return await self._run(self._find_latest_documents_by_derived_from_sync, values, document_type, max_age)

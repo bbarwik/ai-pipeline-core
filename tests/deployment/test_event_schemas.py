@@ -37,7 +37,7 @@ class _GapFlow(PipelineFlow):
 
     async def run(self, documents: tuple[_GapInputDoc, ...], options: FlowOptions) -> tuple[_GapOutputDoc, ...]:
         _ = options
-        return (_GapOutputDoc.derive(from_documents=documents, name="gap-out.txt", content="ok"),)
+        return (_GapOutputDoc.derive(derived_from=documents, name="gap-out.txt", content="ok"),)
 
 
 class _FailingGapFlow(PipelineFlow):
@@ -53,7 +53,7 @@ class _WrongShapeGapFlow(PipelineFlow):
 
     async def run(self, documents: tuple[_GapInputDoc, ...], options: FlowOptions) -> tuple[_GapOutputDoc, ...]:
         _ = options
-        return cast(Any, [_GapOutputDoc.derive(from_documents=documents, name="gap-out.txt", content="ok")])
+        return cast(Any, [_GapOutputDoc.derive(derived_from=documents, name="gap-out.txt", content="ok")])
 
 
 class _WrongItemGapFlow(PipelineFlow):

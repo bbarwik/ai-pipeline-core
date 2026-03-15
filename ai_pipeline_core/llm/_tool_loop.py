@@ -13,7 +13,7 @@ from pydantic import BaseModel, ValidationError
 
 from ai_pipeline_core._codec import UniversalCodec
 from ai_pipeline_core._llm_core.model_response import ModelResponse
-from ai_pipeline_core._llm_core.types import CoreMessage, ModelOptions, RawToolCall, Role
+from ai_pipeline_core._llm_core.types import CoreMessage, ModelOptions, RawToolCall, Role, TokenUsage
 from ai_pipeline_core.database import SpanKind
 from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._execution_context import get_execution_context, get_sinks
@@ -201,20 +201,33 @@ async def execute_tool_loop(
             accumulated_messages.append(build_tool_result_message(tc.id, tc.function_name, output.content))
             core_messages.append(CoreMessage(role=Role.TOOL, content=result_content, tool_call_id=tc.id, name=tc.function_name))
 
-    # max_tool_rounds exhausted — force a final text response
-    logger.warning("Tool loop reached max_tool_rounds=%d. Forcing final response with tool_choice='none'.", max_tool_rounds)
-    response = await invoke_llm(
-        core_messages=core_messages,
-        effective_options=effective_options,
-        context_count=context_count,
-        tools=tool_schemas,
-        tool_choice="none",
-        response_format=response_format,
-        purpose=f"{purpose}:forced_final" if purpose else "forced_final",
-        expected_cost=expected_cost,
-        round_index=max_tool_rounds + 1,
-        tool_schemas=tool_schemas,
-    )
+    # max_tool_rounds exhausted — force a final text response without tools
+    logger.warning("Tool loop reached max_tool_rounds=%d. Forcing final response without tools.", max_tool_rounds)
+    try:
+        response = await invoke_llm(
+            core_messages=core_messages,
+            effective_options=effective_options,
+            context_count=context_count,
+            tools=[],
+            tool_choice=None,
+            response_format=response_format,
+            purpose=f"{purpose}:forced_final" if purpose else "forced_final",
+            expected_cost=expected_cost,
+            round_index=max_tool_rounds + 1,
+            tool_schemas=[],
+        )
+    except Exception:
+        logger.warning(
+            "Forced final response failed after max_tool_rounds=%d. Returning accumulated tool results (%d records) without final synthesis.",
+            max_tool_rounds,
+            len(all_records),
+        )
+        response = ModelResponse[Any](
+            content="[Final synthesis failed after max tool rounds. Tool results are preserved in tool_call_records.]",
+            parsed="[Final synthesis failed after max tool rounds.]",
+            usage=TokenUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            model="",
+        )
     accumulated_messages.append(response)
     return accumulated_messages, response, tuple(all_records)
 

@@ -122,11 +122,9 @@ def test_document_record_rejects_mismatched_attachment_lengths() -> None:
 
 
 def test_blob_record_defaults_and_immutability() -> None:
-    before = datetime.now(UTC)
     blob = BlobRecord(content_sha256="blob-sha", content=b"hello")
-    after = datetime.now(UTC)
-
-    assert before <= blob.created_at <= after
+    assert blob.content_sha256 == "blob-sha"
+    assert blob.content == b"hello"
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         blob.content = b"changed"  # type: ignore[misc]

@@ -27,10 +27,10 @@ def test_create_root_requires_nonempty_reason() -> None:
         _EnforcementDoc.create_root(name="root.txt", content=b"data", reason="")
 
 
-def test_create_requires_provenance() -> None:
+def test_create_requires_triggered_by() -> None:
     ctx = TaskContext(task_class_name="SomeTask")
     with set_task_context(ctx):
-        with pytest.raises(ValueError, match="requires derived_from or triggered_by"):
+        with pytest.raises(TypeError, match="triggered_by"):
             _EnforcementDoc.create(name="test.txt", content="data")
 
 
@@ -38,10 +38,10 @@ def test_document_creation_inside_task_context_succeeds() -> None:
     source = _EnforcementDoc.create_root(name="source.txt", content=b"source", reason="test provenance")
     ctx = TaskContext(task_class_name="SomeTask")
     with set_task_context(ctx):
-        doc = _EnforcementDoc.create(
+        doc = _EnforcementDoc.derive(
             name="task_output.txt",
             content="output data",
-            derived_from=(source.sha256,),
+            derived_from=(source,),
         )
         assert doc.name == "task_output.txt"
 

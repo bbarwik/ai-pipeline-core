@@ -106,10 +106,10 @@ class AnalyzeDocument(PipelineTask):
     async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[AnalysisDocument, ...]:
         _ = cls
         doc = documents[0]
-        return (AnalysisDocument.create(
+        return (AnalysisDocument.derive(
             name=f"analysis_{doc.sha256[:12]}.json",
             content=AnalysisSummary(word_count=42, top_keywords=["ai", "pipeline"]),
-            derived_from=(doc.sha256,),
+            derived_from=(doc,),
         ),)
 
 
@@ -128,10 +128,10 @@ class ReportFlow(PipelineFlow):
     """Generate final report from analyses."""
 
     async def run(self, documents: tuple[AnalysisDocument, ...], options: FlowOptions) -> tuple[ReportDocument, ...]:
-        report = ReportDocument.create(
+        report = ReportDocument.derive(
             name="report.md",
             content="# Report\n\nAnalysis complete.",
-            derived_from=tuple(doc.sha256 for doc in documents),
+            derived_from=documents,
         )
         return (report,)
 
@@ -241,6 +241,8 @@ for record in conv.tool_call_records:
 - Must define an `Input` inner class (BaseModel with `Field(description=...)` on every field)
 - Must define an `async def execute(self, input) -> ToolOutput` method
 - Optional: define an `Output` inner class extending `ToolOutput` for typed metadata
+- `dict[str, V]` field types are forbidden in `Input` (OpenAI strict mode incompatible)
+- Field names `strict` and `additionalProperties` are reserved and cannot be used (collide with LiteLLM's recursive key stripping)
 
 **Tool naming:** Class names are auto-converted to snake_case for the LLM (`GetWeather` → `get_weather`). Duplicate names after conversion raise `ValueError`.
 
@@ -283,11 +285,11 @@ from ai_pipeline_core import Document
 class MyDocument(Document):
     """Custom document type -- must subclass Document."""
 
-# Create documents with automatic conversion
-doc = MyDocument.create(
+# Create documents from external sources (URI provenance)
+doc = MyDocument.create_external(
     name="data.json",
     content={"key": "value"},  # Automatically converted to JSON bytes
-    derived_from=("https://api.example.com/data",),
+    from_sources=["https://api.example.com/data"],
 )
 
 # Parse back to original type
@@ -295,12 +297,12 @@ data = doc.parse(dict)  # Returns {"key": "value"}
 
 # Document provenance tracking
 source_doc = MyDocument.create_root(name="source.txt", content="original data", reason="user upload")
-plan_doc = MyDocument.create(name="plan.txt", content="research plan", derived_from=(source_doc.sha256,))
-derived = MyDocument.create(
+plan_doc = MyDocument.derive(name="plan.txt", content="research plan", derived_from=(source_doc,))
+derived = MyDocument.create_external(
     name="derived.json",
     content={"result": "processed"},
-    derived_from=("https://api.example.com/data",),  # Content came from this URL
-    triggered_by=(plan_doc.sha256,),  # Created because of this plan (causal, not content)
+    from_sources=["https://api.example.com/data"],  # Content came from this URL
+    triggered_by=(plan_doc,),  # Created because of this plan (causal, not content)
 )
 
 # Check provenance
@@ -326,10 +328,10 @@ class ResearchPlanDocument(Document[ResearchDefinition]):
     """Plan document with typed content schema."""
 
 # Content is validated against the schema at creation time
-plan = ResearchPlanDocument.create(
+plan = ResearchPlanDocument.derive(
     name="plan.json",
     content=ResearchDefinition(topic="AI safety"),
-    derived_from=(input_doc.sha256,),
+    derived_from=(input_doc,),
 )
 
 # Zero-boilerplate typed access (cached, returns ResearchDefinition)
@@ -341,10 +343,10 @@ print(definition.max_sources)  # 10
 class WrongModel(BaseModel, frozen=True):
     x: int
 
-plan = ResearchPlanDocument.create(
+plan = ResearchPlanDocument.derive(
     name="plan.json",
     content=WrongModel(x=1),   # TypeError: Expected content of type ResearchDefinition
-    derived_from=(input_doc.sha256,),
+    derived_from=(input_doc,),
 )
 
 # Introspection
@@ -361,11 +363,11 @@ Documents are immutable Pydantic models that wrap binary content with metadata. 
 class MyDocument(Document):
     """All documents subclass Document directly."""
 
-# Use create() for automatic conversion
-doc = MyDocument.create(
+# Use derive() for content transformations
+doc = MyDocument.derive(
     name="data.json",
     content={"key": "value"},  # Auto-converts to JSON
-    derived_from=(source.sha256,),
+    derived_from=(source,),
 )
 
 # Access content
@@ -387,7 +389,7 @@ print(doc.id)      # Short 6-char identifier
 class PlanDocument(Document[PlanModel]):
     """Content is validated against PlanModel at creation time."""
 
-plan = PlanDocument.create(name="plan.json", content=PlanModel(...), derived_from=(...,))
+plan = PlanDocument.derive(name="plan.json", content=PlanModel(...), derived_from=(source_doc,))
 plan.parsed  # → PlanModel (cached, typed)
 PlanDocument.get_content_type()  # → PlanModel
 ```
@@ -396,8 +398,8 @@ PlanDocument.get_content_type()  # → PlanModel
 - `name`: Filename (validated for security -- no path traversal)
 - `description`: Optional human-readable description
 - `content`: Raw bytes (auto-converted from str, dict, list, BaseModel via `create()`)
-- `derived_from`: Content provenance — SHA256 hashes of source documents or URI-style references (must contain `://`). A SHA256 must not appear in both derived_from and triggered_by.
-- `triggered_by`: Causal provenance — SHA256 hashes of documents that caused this document to be created without contributing to its content.
+- `derived_from`: Content provenance — SHA256 hashes of source documents (stored internally). Constructors (`derive()`, `create()`) accept `Sequence[Document]` and extract hashes automatically. URI-style references use `create_external(from_sources=...)` instead.
+- `triggered_by`: Causal provenance — SHA256 hashes of documents that caused this document to be created without contributing to its content. Constructors accept `Sequence[Document]` and extract hashes automatically.
 - `attachments`: Tuple of `Attachment` objects for multi-part content
 
 Documents support:
@@ -407,7 +409,7 @@ Documents support:
 - SHA256-based identity and deduplication
 - Provenance tracking (`derived_from` for content sources, `triggered_by` for causal lineage)
 - `FILES` enum for filename restrictions (definition-time validation)
-- `derive(from_documents=..., name=..., content=...)` convenience method for creating documents from other documents (extracts SHA256 hashes automatically)
+- Four construction paths: `create_root()` (pipeline inputs), `derive(derived_from=...)` (content transformations), `create(triggered_by=...)` (causal provenance), `create_external(from_sources=...)` (URI provenance). All accept `Sequence[Document]` and extract SHA256 hashes automatically
 - Token count estimation via `approximate_tokens_count`
 
 ### Database-backed Persistence
@@ -550,11 +552,12 @@ The `Conversation` class automatically splits oversized images when documents ar
 The framework re-exports key exceptions at the top level for convenient catching:
 
 ```python
-from ai_pipeline_core import PipelineCoreError, LLMError, DocumentValidationError, DocumentSizeError, DocumentNameError
+from ai_pipeline_core import PipelineCoreError, LLMError, EmptyResponseError, DocumentValidationError, DocumentSizeError, DocumentNameError
 ```
 
 - `PipelineCoreError` — Base for all framework exceptions
 - `LLMError` — LLM generation failures (retries exhausted, timeouts, degeneration)
+- `EmptyResponseError` — Blank/empty LLM response (subclass of `LLMError`, triggers retry with cache disabled)
 - `DocumentValidationError` — Document validation failures
 - `DocumentSizeError` — Document exceeds size limits
 - `DocumentNameError` — Invalid document name (path traversal, etc.)
@@ -579,10 +582,10 @@ class ProcessChunk(PipelineTask):
     async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[OutputDocument, ...]:
         _ = cls
         doc = documents[0]
-        return (OutputDocument.create(
+        return (OutputDocument.derive(
             name="result.json",
             content={"processed": True},
-            derived_from=(doc.sha256,),
+            derived_from=(doc,),
         ),)
 
 
@@ -1050,6 +1053,7 @@ downloaded_bundle/
   logs.jsonl
   llm_calls.jsonl
   validation.json
+  schema_meta.json
   errors.md
   documents.md
   runs/
@@ -1146,7 +1150,7 @@ print(settings.app_name)
 3. **Logging**: Use `get_pipeline_logger(__name__)` -- never `print()` or `logging` module directly
 4. **LLM calls**: Use `Conversation` for all LLM interactions (multi-turn and single-shot). Use `tools=` for function calling
 5. **Options**: Omit `ModelOptions` unless specifically needed (defaults are production-optimized)
-6. **Documents**: Use `create_root()` for pipeline inputs (no provenance), `create()` or `derive()` for derived documents. Always subclass `Document`
+6. **Documents**: Use `create_root()` for pipeline inputs, `derive()` for content transformations, `create()` for causally triggered documents, `create_external()` for URI provenance. Always subclass `Document`
 7. **Type annotations**: Input/output types are in the `run()` method signature -- `tuple[InputDoc, ...]` and `-> tuple[OutputDoc, ...]`
 8. **Initialization**: Logger at module scope, not in functions
 9. **Document collections**: Use plain `tuple[Document, ...]` inside tasks and flows; deployment entrypoints still accept generic sequences
@@ -1168,7 +1172,7 @@ from ai_pipeline_core.llm import ModelOptions
 
 ### Dev CLI
 
-All test, lint, and type-check workflows go through the `dev` CLI. It captures full output to `.tmp/dev-runs/`, prints concise summaries, auto-detects affected tests from git changes, and skips reruns when code hasn't changed.
+All test, lint, and type-check workflows go through the `dev` CLI. It captures full output to `.tmp/dev-runs/` (auto-cleaned after 24h), prints concise summaries with per-step wall-clock durations, auto-detects affected tests from git changes via testmon, warns about slow tests (>30s), and skips reruns when code hasn't changed. Running bare `dev` (no subcommand) shows the info guide.
 
 ```bash
 # Testing

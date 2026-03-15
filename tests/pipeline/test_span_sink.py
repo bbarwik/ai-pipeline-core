@@ -145,7 +145,7 @@ async def test_database_span_sink_writes_running_then_terminal_rows() -> None:
             db=database,
             input_preview={"task_class": "Task", "input_documents": [input_doc.name]},
         ) as span_ctx:
-            span_ctx._set_output_value((_SpanOutputDoc.derive(from_documents=(input_doc,), name="out.txt", content="output"),))
+            span_ctx._set_output_value((_SpanOutputDoc.derive(derived_from=(input_doc,), name="out.txt", content="output"),))
 
     assert len(database.inserted_spans) == 2
     started_span, finished_span = database.inserted_spans
@@ -197,7 +197,7 @@ async def test_track_span_encodes_inputs_and_outputs_with_universal_codec() -> N
             db=database,
             input_preview=None,
         ) as span_ctx:
-            output_doc = _SpanOutputDoc.derive(from_documents=(input_doc,), name="out.txt", content="output")
+            output_doc = _SpanOutputDoc.derive(derived_from=(input_doc,), name="out.txt", content="output")
             span_ctx._set_output_value((output_doc, payload_bytes))
 
     span = next(iter(database._spans.values()))

@@ -310,8 +310,10 @@ class TestBuildModelResponse:
         assert mr.model == "test-model"
 
     def test_empty_content_raises(self):
+        from ai_pipeline_core.exceptions import EmptyResponseError
+
         resp = _make_response(content="")
-        with pytest.raises(ValueError, match="Empty response content"):
+        with pytest.raises(EmptyResponseError, match="Empty response content"):
             _build_model_response(resp, {}, None, "m", None)
 
     def test_thinking_stripped(self):

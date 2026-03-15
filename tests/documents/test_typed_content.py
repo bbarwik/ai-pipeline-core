@@ -94,7 +94,7 @@ class TestCreationValidation:
     def test_create_with_provenance(self):
         root = UntypedDoc.create_root(name="input.txt", content="hello", reason="test")
         model = SampleModel(goal="derived", score=1)
-        doc = SampleTypedDoc.create(name="out.json", content=model, derived_from=(root.sha256,))
+        doc = SampleTypedDoc.derive(name="out.json", content=model, derived_from=(root,))
         assert doc.parsed.goal == "derived"
 
     def test_create_rejects_wrong_model_type(self):
@@ -119,13 +119,13 @@ class TestCreationValidation:
     def test_derive_validates_content(self):
         root = UntypedDoc.create_root(name="input.txt", content="hello", reason="test")
         model = SampleModel(goal="derived", score=1)
-        doc = SampleTypedDoc.derive(from_documents=(root,), name="out.json", content=model)
+        doc = SampleTypedDoc.derive(derived_from=(root,), name="out.json", content=model)
         assert doc.parsed.goal == "derived"
 
     def test_derive_rejects_wrong_model(self):
         root = UntypedDoc.create_root(name="input.txt", content="hello", reason="test")
         with pytest.raises(TypeError, match="Expected content of type SampleModel"):
-            SampleTypedDoc.derive(from_documents=(root,), name="out.json", content=OtherModel(foo="bad"))
+            SampleTypedDoc.derive(derived_from=(root,), name="out.json", content=OtherModel(foo="bad"))
 
 
 # ---------------------------------------------------------------------------

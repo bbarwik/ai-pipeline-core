@@ -780,18 +780,18 @@ class TestTriggeredByValidator:
     def test_valid_triggered_by_accepted(self):
         """Valid document SHA256 hashes are accepted as triggered_by."""
         source = ConcreteTestDocument.create_root(name="source.txt", content="data", reason="test input")
-        doc = ConcreteTestDocument.create(name="derived.txt", content="result", triggered_by=(source.sha256,))
+        doc = ConcreteTestDocument(name="derived.txt", content=b"result", triggered_by=(source.sha256,))
         assert doc.triggered_by == (source.sha256,)
 
     def test_invalid_triggered_by_rejected(self):
         """Non-SHA256 strings are rejected as triggered_by."""
         with pytest.raises(ValueError, match="triggered_by entry must be a document SHA256 hash"):
-            ConcreteTestDocument.create(name="doc.txt", content="data", triggered_by=("not-a-hash",))
+            ConcreteTestDocument(name="doc.txt", content=b"data", triggered_by=("not-a-hash",))
 
     def test_url_triggered_by_rejected(self):
         """URLs are rejected as triggered_by (triggered_by must be document hashes)."""
         with pytest.raises(ValueError, match="triggered_by entry must be a document SHA256 hash"):
-            ConcreteTestDocument.create(name="doc.txt", content="data", triggered_by=("https://example.com",))
+            ConcreteTestDocument(name="doc.txt", content=b"data", triggered_by=("https://example.com",))
 
     def test_empty_triggered_by_accepted(self):
         """Empty triggered_by tuple is accepted."""
@@ -806,9 +806,9 @@ class TestProvenanceOverlapValidator:
         """Same SHA256 in both derived_from and triggered_by raises ValueError."""
         source = ConcreteTestDocument.create_root(name="source.txt", content="data", reason="test input")
         with pytest.raises(ValueError, match="appears in both derived_from and triggered_by"):
-            ConcreteTestDocument.create(
+            ConcreteTestDocument(
                 name="doc.txt",
-                content="result",
+                content=b"result",
                 derived_from=(source.sha256,),
                 triggered_by=(source.sha256,),
             )
@@ -817,9 +817,9 @@ class TestProvenanceOverlapValidator:
         """Different SHA256s in derived_from and triggered_by are accepted."""
         src = ConcreteTestDocument.create_root(name="src.txt", content="source", reason="test input")
         origin = ConcreteTestDocument.create_root(name="origin.txt", content="origin", reason="test input")
-        doc = ConcreteTestDocument.create(
+        doc = ConcreteTestDocument(
             name="doc.txt",
-            content="result",
+            content=b"result",
             derived_from=(src.sha256,),
             triggered_by=(origin.sha256,),
         )
@@ -829,9 +829,9 @@ class TestProvenanceOverlapValidator:
     def test_url_source_with_sha256_origin_accepted(self):
         """URL in derived_from + SHA256 in triggered_by is fine (no overlap possible)."""
         origin = ConcreteTestDocument.create_root(name="plan.txt", content="plan", reason="test input")
-        doc = ConcreteTestDocument.create(
+        doc = ConcreteTestDocument(
             name="doc.txt",
-            content="result",
+            content=b"result",
             derived_from=("https://example.com",),
             triggered_by=(origin.sha256,),
         )
@@ -850,16 +850,16 @@ class TestDerivedFromTuple:
 
     def test_derived_from_is_tuple(self):
         """derived_from is stored as tuple."""
-        doc = ConcreteTestDocument.create(name="doc.txt", content="data", derived_from=("https://example.com/ref1", "https://example.com/ref2"))
+        doc = ConcreteTestDocument(name="doc.txt", content=b"data", derived_from=("https://example.com/ref1", "https://example.com/ref2"))
         assert isinstance(doc.derived_from, tuple)
         assert doc.derived_from == ("https://example.com/ref1", "https://example.com/ref2")
 
     def test_content_documents_returns_tuple(self):
         """content_documents property returns tuple, not list."""
         source = ConcreteTestDocument.create_root(name="src.txt", content="x", reason="test input")
-        doc = ConcreteTestDocument.create(
+        doc = ConcreteTestDocument(
             name="doc.txt",
-            content="y",
+            content=b"y",
             derived_from=(source.sha256, "https://example.com"),
         )
         assert isinstance(doc.content_documents, tuple)
@@ -868,9 +868,9 @@ class TestDerivedFromTuple:
     def test_content_references_returns_tuple(self):
         """content_references property returns tuple, not list."""
         source = ConcreteTestDocument.create_root(name="src.txt", content="x", reason="test input")
-        doc = ConcreteTestDocument.create(
+        doc = ConcreteTestDocument(
             name="doc.txt",
-            content="y",
+            content=b"y",
             derived_from=(source.sha256, "https://example.com"),
         )
         assert isinstance(doc.content_references, tuple)
@@ -891,7 +891,7 @@ class TestFromDictRoundtrip:
 
     def test_derived_from_roundtrip(self):
         """Non-empty derived_from survives serialize → deserialize roundtrip."""
-        doc = ConcreteTestDocument.create(name="doc.txt", content="data", derived_from=("https://example.com/ref1", "https://example.com/ref2"))
+        doc = ConcreteTestDocument(name="doc.txt", content=b"data", derived_from=("https://example.com/ref1", "https://example.com/ref2"))
         serialized = doc.serialize_model()
         restored = ConcreteTestDocument.from_dict(serialized)
         assert restored.derived_from == ("https://example.com/ref1", "https://example.com/ref2")

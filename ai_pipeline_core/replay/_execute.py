@@ -55,13 +55,20 @@ def _override_tools_in_recorded_order(value: Any, override_tools: dict[str, Tool
     if not isinstance(value, (list, tuple)):
         return list(override_tools.values())
     ordered: list[Tool] = []
+    matched_names: set[str] = set()
     for item in value:
         if not isinstance(item, dict):
             continue
         name = item.get("name")
         if isinstance(name, str) and name in override_tools:
             ordered.append(override_tools[name])
-    return ordered or list(override_tools.values())
+            matched_names.add(name)
+    if not ordered:
+        return list(override_tools.values())
+    for name, tool in override_tools.items():
+        if name not in matched_names:
+            ordered.append(tool)
+    return ordered
 
 
 def _materialize_recorded_tool(item: Any) -> Tool:
@@ -89,46 +96,58 @@ def _materialize_tools(value: Any, override_tools: dict[str, Tool] | None) -> li
     return [_materialize_recorded_tool(item) for item in value]
 
 
+def _override_receiver(receiver: Any, overrides: Any) -> Any:
+    if not isinstance(receiver, dict):
+        return receiver
+    mode = receiver.get("mode")
+    value = receiver.get("value")
+    if mode == "decoded_state" and isinstance(value, Conversation):
+        updated = value
+        if getattr(overrides, "model", None):
+            updated = updated.model_copy(update={"model": overrides.model})
+        merged = _merge_model_options(updated.model_options, getattr(overrides, "model_options", None))
+        if merged != updated.model_options:
+            updated = updated.model_copy(update={"model_options": merged})
+        return {"mode": "decoded_state", "value": updated}
+    if mode == "constructor_args" and isinstance(value, dict):
+        updated_value = dict(value)
+        if getattr(overrides, "model", None) is not None and "model" in updated_value:
+            updated_value["model"] = overrides.model
+        if "model_options" in updated_value:
+            updated_value["model_options"] = _merge_model_options(updated_value.get("model_options"), getattr(overrides, "model_options", None))
+        return {"mode": "constructor_args", "value": updated_value}
+    return receiver
+
+
+def _override_arguments(arguments: Any, overrides: Any) -> Any:
+    if not isinstance(arguments, dict):
+        return arguments
+    result = dict(arguments)
+    if "tools" in result:
+        override_tools = getattr(overrides, "tools", None)
+        result["tools"] = _materialize_tools(result["tools"], dict(override_tools) if override_tools is not None else None)
+    if getattr(overrides, "response_format", None) is not None:
+        result["response_format"] = overrides.response_format
+    if getattr(overrides, "model", None) is not None:
+        result["model"] = overrides.model
+    if "model_options" in result:
+        result["model_options"] = _merge_model_options(result.get("model_options"), getattr(overrides, "model_options", None))
+    return result
+
+
 def _apply_overrides(
     *,
     receiver: Any,
     arguments: Any,
     overrides: Any | None,
 ) -> tuple[Any, Any]:
-    if overrides is None:
-        normalized_arguments = arguments
-    else:
-        normalized_arguments = arguments
-        if isinstance(receiver, dict) and receiver.get("mode") == "decoded_state" and isinstance(receiver.get("value"), Conversation):
-            conversation = receiver["value"]
-            updated_receiver = conversation
-            if getattr(overrides, "model", None):
-                updated_receiver = updated_receiver.model_copy(update={"model": overrides.model})
-            updated_model_options = _merge_model_options(updated_receiver.model_options, getattr(overrides, "model_options", None))
-            if updated_model_options != updated_receiver.model_options:
-                updated_receiver = updated_receiver.model_copy(update={"model_options": updated_model_options})
-            receiver = {"mode": "decoded_state", "value": updated_receiver}
-        if isinstance(normalized_arguments, dict):
-            normalized_arguments = dict(normalized_arguments)
-            if "tools" in normalized_arguments:
-                override_tools = getattr(overrides, "tools", None)
-                normalized_arguments["tools"] = _materialize_tools(
-                    normalized_arguments["tools"],
-                    dict(override_tools) if override_tools is not None else None,
-                )
-            if getattr(overrides, "response_format", None) is not None and "response_format" in normalized_arguments:
-                normalized_arguments["response_format"] = overrides.response_format
-            if getattr(overrides, "model", None) is not None and "model" in normalized_arguments:
-                normalized_arguments["model"] = overrides.model
-            if "model_options" in normalized_arguments:
-                normalized_arguments["model_options"] = _merge_model_options(
-                    normalized_arguments.get("model_options"),
-                    getattr(overrides, "model_options", None),
-                )
-    if overrides is None and isinstance(arguments, dict) and "tools" in arguments:
-        normalized_arguments = dict(arguments)
-        normalized_arguments["tools"] = _materialize_tools(arguments["tools"], None)
-    return receiver, normalized_arguments
+    if overrides is not None:
+        receiver = _override_receiver(receiver, overrides)
+        arguments = _override_arguments(arguments, overrides)
+    elif isinstance(arguments, dict) and "tools" in arguments:
+        arguments = dict(arguments)
+        arguments["tools"] = _materialize_tools(arguments["tools"], None)
+    return receiver, arguments
 
 
 async def _copy_blob(blob_sha: str, *, source_db: DatabaseReader, sink_db: DatabaseWriter) -> None:

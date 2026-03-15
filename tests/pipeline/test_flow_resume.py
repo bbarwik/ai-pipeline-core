@@ -19,7 +19,7 @@ class EchoTask(PipelineTask):
     async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
         _ = cls
         source = documents[0]
-        return (OutputDoc.derive(from_documents=(source,), name=f"out_{source.name}", content=source.content),)
+        return (OutputDoc.derive(derived_from=(source,), name=f"out_{source.name}", content=source.content),)
 
 
 @pytest.mark.asyncio

@@ -156,7 +156,7 @@ class AnalyzeDocumentTask(PipelineTask):
         )
         return (
             AnalysisDocument.derive(
-                from_documents=(source,),
+                derived_from=(source,),
                 name=f"analysis_{source.id}.md",
                 content=conv.content,
             ),
@@ -183,7 +183,7 @@ class ExtractInsightsTask(PipelineTask):
             raise RuntimeError(f"Structured output parsing failed for '{analysis.name}'")
         return (
             InsightDocument.derive(
-                from_documents=(analysis,),
+                derived_from=(analysis,),
                 name=f"insight_{analysis.id}.json",
                 content=parsed,
             ),
@@ -215,7 +215,7 @@ class ResearchTask(PipelineTask):
         )
         return (
             ResearchDocument.derive(
-                from_documents=(analysis,),
+                derived_from=(analysis,),
                 name=f"research_{analysis.id}.md",
                 content=conv.content,
             ),
@@ -242,7 +242,7 @@ class CompileReportTask(PipelineTask):
             lines.append("")
         return (
             ReportDocument.derive(
-                from_documents=tuple(documents),
+                derived_from=tuple(documents),
                 name="report.md",
                 content="\n".join(lines),
             ),

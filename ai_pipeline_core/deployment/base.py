@@ -701,6 +701,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     input_fingerprint=input_fingerprint,
                     flow_class=flow_class,
                     step=step,
+                    flow_params=flow_params,
                 )
                 cached_result = await _reuse_cached_flow_output(
                     database=database,

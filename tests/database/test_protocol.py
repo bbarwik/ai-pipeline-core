@@ -24,7 +24,6 @@ async def _async_method(*args: object, **kwargs: object) -> object:
 
 def _make_reader_stub() -> object:
     method_names = {
-        "find_latest_documents_by_derived_from",
         "get_all_document_shas_for_tree",
         "get_blob",
         "get_blobs_batch",

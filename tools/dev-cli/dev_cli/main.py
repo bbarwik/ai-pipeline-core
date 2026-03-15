@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import sys
+import time
 
 from dev_cli._project import load_config
 from dev_cli._runner import format_coverage_summary, print_skip, run_command
@@ -63,7 +64,7 @@ def cmd_test(args: argparse.Namespace) -> int:
     elif args.full:
         cmd.extend(["-n", "auto", "--dist", "worksteal", "--no-testmon"])
     else:
-        cmd.extend(["-x", "--testmon"])
+        cmd.append("--testmon")
 
     # Coverage instrumentation
     if args.coverage:
@@ -230,15 +231,21 @@ def cmd_check(args: argparse.Namespace) -> int:
         fast_names = {"lint", "typecheck"}
         steps = tuple(s for s in steps if s.name in fast_names)
 
+    check_start = time.monotonic()
+
     for step in steps:
+        step_start = time.monotonic()
         for cmd_tuple in step.commands:
             exit_code, summary, _ = run_command(list(cmd_tuple), step.name, log_suffix=f"check-{step.name}")
             if exit_code != 0:
                 print(summary)
                 return exit_code
-        print(f"PASS  {step.name}")
+        elapsed = time.monotonic() - step_start
+        print(f"PASS  {step.name} ({elapsed:.1f}s)")
 
-    print(f"\nPASS  check — all {'fast ' if args.fast else ''}checks passed")
+    total = time.monotonic() - check_start
+    label = "fast " if args.fast else ""
+    print(f"\nPASS  check — all {label}checks passed ({total:.1f}s)")
     return 0
 
 
@@ -359,6 +366,15 @@ Workflow:
 
 Output is saved to .tmp/dev-runs/ — use Read tool for full details.
 Rerunning without code changes is automatically skipped (use --force to override).
+
+Testmon (default mode):
+  Tests are tracked by dependency — only tests affected by code changes actually run.
+  Other tests are deselected (shown as "N unchanged (testmon)" in the summary).
+  All tests in the scope are still verified — deselected tests passed on a previous run
+  and their dependencies haven't changed. Do NOT use --force just because the passed
+  count looks low — the deselected tests are already verified.
+  --force is only needed for: flaky test investigation or after non-code changes (config,
+  env vars) that testmon can't detect.
 """
 
 
@@ -399,7 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="dev",
         description="Development CLI — enforces correct test/lint/check workflows.",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     p_test = sub.add_parser("test", help="Run tests with smart scoping")
     p_test.add_argument("scope", nargs="?", help=f"Test scope: {scope_names} or a path")
@@ -410,7 +426,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_test.add_argument("--available", action="store_true", help="Run tests for all available infrastructure")
     p_test.add_argument("--coverage", action="store_true", help="Run with code coverage (disables testmon, no scope implies --full)")
     p_test.add_argument("--threshold", type=int, default=None, help="Override coverage fail-under threshold")
-    p_test.add_argument("--force", action="store_true", help="Force rerun even if no changes")
+    p_test.add_argument(
+        "--force", action="store_true", help="Force rerun even if no changes (rarely needed — testmon and idempotency handle this automatically)"
+    )
     p_test.set_defaults(func=cmd_test)
 
     p_lint = sub.add_parser("lint", help="Check lint (ruff check + format check)")
@@ -448,7 +466,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    exit_code = args.func(args)
+    if args.command is None:
+        args = argparse.Namespace()
+        exit_code = cmd_info(args)
+    else:
+        exit_code = args.func(args)
     sys.exit(exit_code)
 
 

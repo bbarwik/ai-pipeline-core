@@ -6,6 +6,7 @@ SHA256 hashing, and serialization. All documents must be concrete subclasses of 
 
 import base64
 import json
+from collections.abc import Sequence
 from enum import StrEnum
 from functools import cached_property
 from io import BytesIO
@@ -303,23 +304,27 @@ class Document[TContent: BaseModel = Any](BaseModel):
         *,
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
+        triggered_by: Sequence[Document],
+        derived_from: Sequence[Document] | None = None,
         description: str | None = None,
         summary: str = "",
-        derived_from: tuple[str, ...] | None = None,
-        triggered_by: tuple[DocumentSha256, ...] | None = None,
         attachments: tuple[Attachment, ...] | None = None,
     ) -> Self:
-        """Create a document with automatic content-to-bytes conversion.
+        """Create a document triggered by other documents (causal provenance).
 
-        Must be called within a PipelineTask or PipelineFlow context.
-        Must provide derived_from or triggered_by for provenance tracking.
-        For root inputs (no provenance), use create_root(reason='...') instead.
-        All created documents must be returned from the task — unreturned documents are flagged as orphans.
-        Serialization is extension-driven: .json → JSON, .yaml → YAML, others → UTF-8.
-        Reversible via parse(). Cannot be called on Document directly — must use a subclass.
+        Use when something triggered the creation of new content — e.g. a research plan
+        triggers webpage captures. ``triggered_by`` is required. Optionally provide
+        ``derived_from`` for content provenance.
+
+        For content transformations (summaries, analyses), use ``derive()`` instead.
+        For external URI sources (URLs, MCP), use ``create_external()``.
+        For pipeline root inputs with no provenance, use ``create_root(reason='...')``.
         """
-        if not derived_from and not triggered_by:
-            raise ValueError(f"Document.create() requires derived_from or triggered_by. For root inputs use {cls.__name__}.create_root(reason='...').")
+        if not triggered_by:
+            raise ValueError(
+                f"{cls.__name__}.create() requires at least one triggered_by document. "
+                f"For content transformations use derive(). For root inputs use create_root(reason='...')."
+            )
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
             _validate_content_schema(cls._content_type, content, content_bytes, name)
@@ -328,8 +333,8 @@ class Document[TContent: BaseModel = Any](BaseModel):
             content=content_bytes,
             description=description,
             summary=summary,
-            derived_from=derived_from,
-            triggered_by=triggered_by,
+            derived_from=tuple(d.sha256 for d in derived_from) if derived_from else None,
+            triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by),
             attachments=attachments,
         )
 
@@ -337,28 +342,74 @@ class Document[TContent: BaseModel = Any](BaseModel):
     def derive(
         cls,
         *,
-        from_documents: tuple[Document, ...],
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
-        triggered_by: tuple[Document, ...] = (),
+        derived_from: Sequence[Document],
+        triggered_by: Sequence[Document] | None = None,
         description: str | None = None,
         summary: str = "",
         attachments: tuple[Attachment, ...] | None = None,
     ) -> Self:
-        """Create a document derived from other documents. The 95% API path.
+        """Create a document derived from other documents (content provenance).
 
-        Must be called within a PipelineTask or PipelineFlow context.
-        All created documents must be returned from the task — unreturned documents are flagged as orphans.
-        Accepts Document objects directly (extracts SHA256 hashes automatically).
-        Use this for content transformations (summaries, analyses, reviews).
+        The primary API path for content transformations: summaries, analyses, reviews.
+        ``derived_from`` is required — the documents whose content was used.
+        Optionally provide ``triggered_by`` for causal provenance.
         """
-        return cls.create(
+        if not derived_from:
+            raise ValueError(
+                f"{cls.__name__}.derive() requires at least one derived_from document. "
+                f"For triggered creation use create(). For root inputs use create_root(reason='...')."
+            )
+        content_bytes = _convert_content(name, content)
+        if cls._content_type is not None:
+            _validate_content_schema(cls._content_type, content, content_bytes, name)
+        return cls(
             name=name,
-            content=content,
-            summary=summary,
-            derived_from=tuple(d.sha256 for d in from_documents),
-            triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by) if triggered_by else None,
+            content=content_bytes,
             description=description,
+            summary=summary,
+            derived_from=tuple(d.sha256 for d in derived_from),
+            triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by) if triggered_by else None,
+            attachments=attachments,
+        )
+
+    @classmethod
+    def create_external(
+        cls,
+        *,
+        name: str,
+        content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
+        from_sources: Sequence[str],
+        triggered_by: Sequence[Document] | None = None,
+        description: str | None = None,
+        summary: str = "",
+        attachments: tuple[Attachment, ...] | None = None,
+    ) -> Self:
+        """Create a document from external URI sources (websites, APIs, MCP responses).
+
+        ``from_sources`` accepts URI strings (https://, search://, email://, mcp://, etc.)
+        validated by the presence of ``://``. This is the only constructor that accepts
+        URI strings as provenance.
+        """
+        if not from_sources:
+            raise ValueError(f"{cls.__name__}.create_external() requires at least one URI in from_sources.")
+        for src in from_sources:
+            if "://" not in src:
+                raise ValueError(
+                    f"{cls.__name__}.create_external() from_sources entries must be URIs containing '://'. "
+                    f"Got: {src!r}. For document-to-document provenance use derive() or create()."
+                )
+        content_bytes = _convert_content(name, content)
+        if cls._content_type is not None:
+            _validate_content_schema(cls._content_type, content, content_bytes, name)
+        return cls(
+            name=name,
+            content=content_bytes,
+            description=description,
+            summary=summary,
+            derived_from=tuple(from_sources),
+            triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by) if triggered_by else None,
             attachments=attachments,
         )
 

@@ -237,7 +237,7 @@ async def test_generate_summary_renders_all_span_kinds_and_cache_hits() -> None:
     assert "flow[1/1]: GatherFlow completed 50s cache-hit" in summary
     assert "task: GatherTask completed 40s" in summary
     assert "operation: collect_sources completed 30s" in summary
-    assert "conversation: analyze_document 4.0s gpt-5.1 5K in / 2K cache / 250 out / 50 reasoning $0.5000 cache-hit" in summary
+    assert "conversation: analyze_document 4.0s gpt-5.1 7K in / 4K cache / 350 out / 60 reasoning $0.5000 cache-hit" in summary
     assert "llm_round[1]: gpt-5.1 1.5s 3K in / 1K cache / 150 out / 20 reasoning $0.2000" in summary
     assert "tool_call[1]: web_search completed 600ms" in summary
     assert "llm_round[2]: gemini-3-flash 1.2s 4K in / 2K cache / 200 out / 40 reasoning $0.3000" in summary

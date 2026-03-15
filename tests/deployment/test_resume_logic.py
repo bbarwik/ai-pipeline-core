@@ -72,8 +72,8 @@ class SucceedTask(PipelineTask):
     @classmethod
     async def run(cls, inputs: tuple[ResumeInputDoc, ...]) -> tuple[ResumeOutputDoc, ...]:
         return (
-            ResumeOutputDoc.derive(from_documents=(inputs[0],), name="out1.txt", content="output 1"),
-            ResumeOutputDoc.derive(from_documents=(inputs[0],), name="out2.txt", content="output 2"),
+            ResumeOutputDoc.derive(derived_from=(inputs[0],), name="out1.txt", content="output 1"),
+            ResumeOutputDoc.derive(derived_from=(inputs[0],), name="out2.txt", content="output 2"),
         )
 
 
@@ -85,8 +85,8 @@ class CrashTask(PipelineTask):
         if _should_crash:
             raise RuntimeError("Simulated crash in task 2")
         return (
-            ResumeOutputDoc.derive(from_documents=(docs[0],), name="out3.txt", content="output 3"),
-            ResumeOutputDoc.derive(from_documents=(docs[0],), name="out4.txt", content="output 4"),
+            ResumeOutputDoc.derive(derived_from=(docs[0],), name="out3.txt", content="output 3"),
+            ResumeOutputDoc.derive(derived_from=(docs[0],), name="out4.txt", content="output 4"),
         )
 
 
@@ -95,7 +95,7 @@ class ProduceAllTask(PipelineTask):
 
     @classmethod
     async def run(cls, inputs: tuple[ResumeInputDoc, ...]) -> tuple[ResumeOutputDoc, ...]:
-        return tuple(ResumeOutputDoc.derive(from_documents=(inputs[0],), name=f"out{i}.txt", content=f"output {i}") for i in range(1, 5))
+        return tuple(ResumeOutputDoc.derive(derived_from=(inputs[0],), name=f"out{i}.txt", content=f"output {i}") for i in range(1, 5))
 
 
 class CrashingFlow(PipelineFlow):
@@ -210,6 +210,23 @@ class TestResumeAfterSuccess:
         assert _flow_call_count == 1, f"Flow executed {_flow_call_count} times — expected 1. Completed flow should be skipped on resume."
 
 
+class _OptionedOptions(FlowOptions):
+    flavor: str = "vanilla"
+
+
+class _OptionedResult(DeploymentResult):
+    pass
+
+
+class _OptionedDeployment(PipelineDeployment[_OptionedOptions, _OptionedResult]):
+    def build_flows(self, options):
+        return [NormalFlow()]
+
+    @staticmethod
+    def build_result(run_id, documents, options):
+        return _OptionedResult(success=True)
+
+
 class TestResumeWithDifferentOptions:
     """Different options should produce a different input fingerprint, bypassing cache."""
 
@@ -218,32 +235,18 @@ class TestResumeWithDifferentOptions:
         """Changing options produces a different input fingerprint, so flow re-executes."""
         input_doc = ResumeInputDoc.create_root(name="input.txt", content="test input", reason="test")
 
-        class OptionedOptions(FlowOptions):
-            flavor: str = "vanilla"
-
-        class OptionedResult(DeploymentResult):
-            pass
-
-        class OptionedDeployment(PipelineDeployment[OptionedOptions, OptionedResult]):
-            def build_flows(self, options):
-                return [NormalFlow()]
-
-            @staticmethod
-            def build_result(run_id, documents, options):
-                return OptionedResult(success=True)
-
-        deployment = OptionedDeployment()
+        deployment = _OptionedDeployment()
         db = MemoryDatabase()
 
-        await deployment.run("test-project", [input_doc], OptionedOptions(flavor="vanilla"), database=db)
+        await deployment.run("test-project", [input_doc], _OptionedOptions(flavor="vanilla"), database=db)
         assert _flow_call_count == 1
 
         # Same options → skipped
-        await deployment.run("test-project", [input_doc], OptionedOptions(flavor="vanilla"), database=db)
+        await deployment.run("test-project", [input_doc], _OptionedOptions(flavor="vanilla"), database=db)
         assert _flow_call_count == 1
 
         # Different options → new fingerprint → re-executes
-        await deployment.run("test-project", [input_doc], OptionedOptions(flavor="chocolate"), database=db)
+        await deployment.run("test-project", [input_doc], _OptionedOptions(flavor="chocolate"), database=db)
         assert _flow_call_count == 2
 
 

@@ -1,11 +1,67 @@
 """Subprocess execution with output capture and summary formatting."""
 
 import json
+import re
+import shutil
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 MAX_INLINE_FAILURES = 5
+SLOW_TEST_THRESHOLD_SECONDS = 30
+MAX_RUN_FILE_AGE_SECONDS = 86400  # 24 hours
+
+
+_cleanup_done = False
+
+
+def _cleanup_old_runs() -> None:
+    """Remove run artifacts older than 24 hours. Best-effort, silent."""
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    _cleanup_done = True
+
+    from dev_cli._project import load_config
+
+    cfg = load_config()
+    if not cfg.runs_dir.is_dir():
+        return
+
+    cutoff = time.time() - MAX_RUN_FILE_AGE_SECONDS
+    deleted_any = False
+
+    for entry in cfg.runs_dir.iterdir():
+        if entry.name == ".state.json":
+            continue
+        try:
+            if entry.stat().st_mtime < cutoff:
+                if entry.is_dir():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+                deleted_any = True
+        except OSError:
+            continue
+
+    if deleted_any:
+        _prune_stale_state_entries(cfg)
+
+
+def _prune_stale_state_entries(cfg) -> None:
+    """Remove state entries whose log files no longer exist on disk."""
+    if not cfg.state_file.exists():
+        return
+    try:
+        data = json.loads(cfg.state_file.read_text())
+        runs = data.get("runs", {})
+        pruned = {k: v for k, v in runs.items() if (cfg.repo_root / v.get("log_file", "")).exists()}
+        if len(pruned) < len(runs):
+            data["runs"] = pruned
+            cfg.state_file.write_text(json.dumps(data, indent=2))
+    except json.JSONDecodeError, OSError:
+        pass
 
 
 def run_command(
@@ -19,6 +75,8 @@ def run_command(
 
     Returns (exit_code, summary_line, log_file_relative_path).
     """
+    _cleanup_old_runs()
+
     from dev_cli._project import load_config
 
     cfg = load_config()
@@ -56,14 +114,23 @@ def run_command(
     rel_log = str(log_path.relative_to(cfg.repo_root))
 
     if use_reportlog and report_path and report_path.exists():
-        summary = _summarize_pytest_report(report_path, result.returncode, rel_log)
+        summary = _summarize_pytest_report(report_path, result.returncode, rel_log, result.stdout)
     else:
         summary = _summarize_generic(result, label, rel_log)
 
     return result.returncode, summary, rel_log
 
 
-def _summarize_pytest_report(report_path: Path, exit_code: int, log_file: str) -> str:
+_DESELECTED_RE = re.compile(r"(\d+) deselected")
+
+
+def _parse_deselected_count(stdout: str) -> int:
+    """Extract deselected count from pytest stdout (e.g., '54 deselected')."""
+    match = _DESELECTED_RE.search(stdout)
+    return int(match.group(1)) if match else 0
+
+
+def _summarize_pytest_report(report_path: Path, exit_code: int, log_file: str, stdout: str = "") -> str:
     """Summarize pytest results from reportlog JSONL."""
     passed = 0
     failed = 0
@@ -71,6 +138,7 @@ def _summarize_pytest_report(report_path: Path, exit_code: int, log_file: str) -
     skipped = 0
     failures: list[dict] = []
     collect_errors: list[str] = []
+    slow_tests: list[tuple[str, float]] = []
     total_duration = 0.0
     first_start: float | None = None
     last_stop: float | None = None
@@ -85,7 +153,8 @@ def _summarize_pytest_report(report_path: Path, exit_code: int, log_file: str) -
 
         if report_type == "TestReport" and entry.get("when") == "call":
             outcome = entry.get("outcome", "")
-            total_duration += entry.get("duration", 0.0)
+            duration = entry.get("duration", 0.0)
+            total_duration += duration
 
             start = entry.get("start")
             stop = entry.get("stop")
@@ -105,6 +174,9 @@ def _summarize_pytest_report(report_path: Path, exit_code: int, log_file: str) -
             elif outcome == "skipped":
                 skipped += 1
 
+            if duration >= SLOW_TEST_THRESHOLD_SECONDS:
+                slow_tests.append((entry.get("nodeid", "?"), duration))
+
         elif report_type == "TestReport" and entry.get("when") == "setup" and entry.get("outcome") == "failed":
             errors += 1
             failures.append({
@@ -118,6 +190,7 @@ def _summarize_pytest_report(report_path: Path, exit_code: int, log_file: str) -
             collect_errors.append(f"{nodeid}: {msg}" if msg else nodeid)
 
     total = passed + failed + errors + skipped
+    deselected = _parse_deselected_count(stdout)
     wall_time = (last_stop - first_start) if first_start is not None and last_stop is not None else total_duration
     duration_str = f"{wall_time:.1f}s"
 
@@ -147,7 +220,18 @@ def _summarize_pytest_report(report_path: Path, exit_code: int, log_file: str) -
     lines: list[str] = []
 
     if exit_code == 0:
-        lines.append(f"PASS  test — {counts} in {duration_str}")
+        if deselected:
+            lines.append(f"PASS  test — {counts}, {deselected} unchanged (testmon) in {duration_str}")
+        else:
+            lines.append(f"PASS  test — {counts} in {duration_str}")
+        if slow_tests:
+            slow_tests.sort(key=lambda x: -x[1])
+            lines.append("")
+            lines.append(f"  Slow tests (>{SLOW_TEST_THRESHOLD_SECONDS}s):")
+            for nodeid, dur in slow_tests[:MAX_INLINE_FAILURES]:
+                lines.append(f"    {nodeid} ({dur:.1f}s)")
+            if len(slow_tests) > MAX_INLINE_FAILURES:
+                lines.append(f"    ... and {len(slow_tests) - MAX_INLINE_FAILURES} more")
     else:
         lines.append(f"FAIL  test — {counts} in {duration_str}")
         lines.append("")
@@ -237,8 +321,9 @@ def print_skip(label: str, previous_timestamp: str, previous_exit_code: int, log
     """Print skip message when no code changed since last run. Returns previous exit code."""
     status = "PASS" if previous_exit_code == 0 else "FAIL"
     print(f"SKIP  {label} — no changes since last run ({status} at {previous_timestamp})")
-    print(f"  Override: dev {label} --force")
     if previous_exit_code != 0:
         print(f"  Previous log: {log_file}")
         print("  Rerun failures: dev test --lf")
+    else:
+        print("  All tests already verified. No action needed.")
     return previous_exit_code

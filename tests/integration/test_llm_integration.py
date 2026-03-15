@@ -18,6 +18,15 @@ pytestmark = pytest.mark.integration
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
 
 
+class ItemList(BaseModel):
+    items: list[str]
+
+
+class SimpleResponse(BaseModel):
+    greeting: str
+    number: int
+
+
 @pytest.mark.skipif(not HAS_API_KEYS, reason="OpenAI API keys not configured in settings or .env file")
 class TestLLMIntegration:
     """Integration tests that make real LLM calls using Conversation."""
@@ -39,11 +48,6 @@ class TestLLMIntegration:
     @pytest.mark.asyncio
     async def test_structured_generation(self):
         """Test structured output generation."""
-
-        class SimpleResponse(BaseModel):
-            greeting: str
-            number: int
-
         conv = Conversation(
             model="gemini-3-flash",
             model_options=ModelOptions(max_completion_tokens=1000),
@@ -293,10 +297,6 @@ class TestLLMIntegration:
     @pytest.mark.asyncio
     async def test_substitutor_structured_output_roundtrip(self):
         """Substitutor should work correctly with structured output (send_structured)."""
-
-        class ItemList(BaseModel):
-            items: list[str]
-
         urls = [
             "https://etherscan.io/tx/0x8ccd766e39a2fba8c43eb4329bac734165a4237df34884059739ed8a874111e1",
             "https://github.com/aptos-labs/aptos-core/blob/main/documentation/specifications/network/messaging-v1.md",

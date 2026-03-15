@@ -78,6 +78,49 @@ rules:
     paths:
       include: ["ai_pipeline_core/"]
 
+  - id: no-function-local-replayable-models
+    patterns:
+      - pattern-inside: |
+          def $F(...):
+              ...
+      - pattern-either:
+          - pattern: |
+              class $C(BaseSettings):
+                  ...
+          - pattern: |
+              class $C($X, BaseSettings):
+                  ...
+          - pattern: |
+              class $C(BaseModel):
+                  ...
+          - pattern: |
+              class $C($X, BaseModel):
+                  ...
+    message: >
+      Class '$C' defined inside function '$F' has __qualname__ containing '<locals>',
+      making it unresolvable by the codec during replay. Move the class to module scope.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["ai_pipeline_core/"]
+
+  - id: no-document-created-at-mutation
+    patterns:
+      - pattern-either:
+          - pattern: replace($EXISTING, ..., created_at=$TS, ...)
+          - pattern: DocumentRecord(..., created_at=$TS, ...)
+      - metavariable-regex:
+          metavariable: $TS
+          regex: "datetime\\.now\\(|_utcnow\\("
+    message: >
+      DocumentRecord.created_at is immutable after initial creation. Preserve the
+      original created_at and use a separate updated_at field for version tracking.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["**/ai_pipeline_core/database/**"]
+      exclude: ["**/tests/**"]
+
   - id: suspicious-flow-options-inheritance
     pattern-regex: 'class\s+\w*(?:Task|Writer|Processor|Handler|Worker|Config)\w*\(FlowOptions\)'
     message: >

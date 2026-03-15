@@ -47,21 +47,21 @@ class ValidFlow(PipelineFlow):
     """Single-step flow for testing."""
 
     async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
-        return (OutputDoc.derive(from_documents=(documents[0],), name="output.txt", content="result"),)
+        return (OutputDoc.derive(derived_from=(documents[0],), name="output.txt", content="result"),)
 
 
 class FlowA(PipelineFlow):
     """First flow in multi-step pipeline."""
 
     async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[MiddleDoc, ...]:
-        return (MiddleDoc.derive(from_documents=(documents[0],), name="middle.txt", content="middle"),)
+        return (MiddleDoc.derive(derived_from=(documents[0],), name="middle.txt", content="middle"),)
 
 
 class FlowB(PipelineFlow):
     """Second flow in multi-step pipeline."""
 
     async def run(self, documents: tuple[MiddleDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
-        return (OutputDoc.derive(from_documents=(documents[0],), name="output.txt", content="final"),)
+        return (OutputDoc.derive(derived_from=(documents[0],), name="output.txt", content="final"),)
 
 
 # --- DeploymentResult tests ---
@@ -391,7 +391,7 @@ class _SchemaTestFlow(PipelineFlow):
     """Flow for schema testing."""
 
     async def run(self, documents: tuple[InputDoc, ...], options: _Schema_TestOptions) -> tuple[OutputDoc, ...]:
-        return (OutputDoc.derive(from_documents=(documents[0],), name="out.txt", content="ok"),)
+        return (OutputDoc.derive(derived_from=(documents[0],), name="out.txt", content="ok"),)
 
 
 class _SchemaTestDeployment(PipelineDeployment[_Schema_TestOptions, _Schema_TestResult]):
@@ -505,7 +505,7 @@ class TestRunPassesOptionsObject:
         class CapturingFlow(PipelineFlow):
             async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
                 received_options.append(options)
-                return (OutputDoc.derive(from_documents=(documents[0],), name="out.txt", content="ok"),)
+                return (OutputDoc.derive(derived_from=(documents[0],), name="out.txt", content="ok"),)
 
         class CapturingDeployment(PipelineDeployment[FlowOptions, ValidResult]):
             def build_flows(self, options):
@@ -538,7 +538,7 @@ class TestRunContextIncludesExecutionId:
         class CtxFlow(PipelineFlow):
             async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
                 captured_ctx.append(get_execution_context())
-                return (OutputDoc.derive(from_documents=(documents[0],), name="out.txt", content="ok"),)
+                return (OutputDoc.derive(derived_from=(documents[0],), name="out.txt", content="ok"),)
 
         class CtxDeployment(PipelineDeployment[FlowOptions, ValidResult]):
             def build_flows(self, options):

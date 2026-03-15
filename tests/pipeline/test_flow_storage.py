@@ -30,7 +30,7 @@ class PersistTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
         source = documents[0]
-        return (OutputDoc.derive(from_documents=(source,), name="out.txt", content="ok"),)
+        return (OutputDoc.derive(derived_from=(source,), name="out.txt", content="ok"),)
 
 
 def _make_context(database: MemoryDatabase) -> ExecutionContext:

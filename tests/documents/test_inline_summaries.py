@@ -19,10 +19,10 @@ def test_create_root_without_summary_defaults_empty() -> None:
 
 def test_create_with_summary() -> None:
     source = _SummaryDoc.create_root(name="source.txt", content=b"source", reason="test input")
-    doc = _SummaryDoc.create(
+    doc = _SummaryDoc.derive(
         name="test.txt",
         content="hello",
-        derived_from=(source.sha256,),
+        derived_from=(source,),
         summary="Auto-generated summary",
     )
     assert doc.summary == "Auto-generated summary"
@@ -30,10 +30,10 @@ def test_create_with_summary() -> None:
 
 def test_create_without_summary_defaults_empty() -> None:
     source = _SummaryDoc.create_root(name="source.txt", content=b"source", reason="test input")
-    doc = _SummaryDoc.create(
+    doc = _SummaryDoc.derive(
         name="test.txt",
         content="hello",
-        derived_from=(source.sha256,),
+        derived_from=(source,),
     )
     assert doc.summary == ""
 

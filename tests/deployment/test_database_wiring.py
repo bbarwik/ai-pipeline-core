@@ -34,13 +34,13 @@ class WireOutputDoc(Document):
 class WireToMiddleTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[WireInputDoc, ...]) -> tuple[WireMiddleDoc, ...]:
-        return (WireMiddleDoc.derive(from_documents=(documents[0],), name="middle.txt", content="m"),)
+        return (WireMiddleDoc.derive(derived_from=(documents[0],), name="middle.txt", content="m"),)
 
 
 class WireToOutputTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[WireMiddleDoc, ...]) -> tuple[WireOutputDoc, ...]:
-        return (WireOutputDoc.derive(from_documents=(documents[0],), name="output.txt", content="o"),)
+        return (WireOutputDoc.derive(derived_from=(documents[0],), name="output.txt", content="o"),)
 
 
 class WireFailingTask(PipelineTask):
@@ -54,7 +54,7 @@ class WireConversationTask(PipelineTask):
     async def run(cls, documents: tuple[WireInputDoc, ...]) -> tuple[WireOutputDoc, ...]:
         conv = Conversation(model="test-model", enable_substitutor=False)
         conv = await conv.send("hello", purpose="wire-llm")
-        return (WireOutputDoc.derive(from_documents=(documents[0],), name="output.txt", content=conv.content),)
+        return (WireOutputDoc.derive(derived_from=(documents[0],), name="output.txt", content=conv.content),)
 
 
 class WireFlowOne(PipelineFlow):
@@ -186,6 +186,7 @@ class TestDeploymentSpans:
             input_fingerprint="a1b2c3d4e5f6g7h8",
             flow_class=WireFlowOne,
             step=2,
+            flow_params={},
         )
 
         assert key == f"flow:a1b2c3d4e5f6g7h8:{WireFlowOne.__module__}:{WireFlowOne.__qualname__}:2"
@@ -232,8 +233,8 @@ class TestDeploymentSpans:
         flow_spans = _spans(db, SpanKind.FLOW)
 
         assert [span.cache_key for span in flow_spans] == [
-            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowOne, step=1),
-            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowTwo, step=2),
+            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowOne, step=1, flow_params={}),
+            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowTwo, step=2, flow_params={}),
         ]
 
     def test_cached_flow_spans_keep_cache_key(self, db: MemoryDatabase) -> None:
@@ -249,8 +250,8 @@ class TestDeploymentSpans:
         )
 
         assert [span.cache_key for span in cached_flow_spans] == [
-            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowOne, step=1),
-            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowTwo, step=2),
+            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowOne, step=1, flow_params={}),
+            _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowTwo, step=2, flow_params={}),
         ]
 
     def test_flow_spans_keep_zero_cost_rollup(self, db: MemoryDatabase, monkeypatch: pytest.MonkeyPatch) -> None:

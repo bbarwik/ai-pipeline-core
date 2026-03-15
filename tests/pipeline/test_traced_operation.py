@@ -108,7 +108,7 @@ class _TaskWithTracedOperation(PipelineTask):
         async with traced_operation("inner-span", description="inner description"):
             conv = Conversation(model="test-model", enable_substitutor=False)
             await conv.send("hello", purpose="say-hello")
-        return (_TracedOutputDoc.derive(from_documents=(documents[0],), name="out.txt", content="ok"),)
+        return (_TracedOutputDoc.derive(derived_from=(documents[0],), name="out.txt", content="ok"),)
 
 
 def _make_input() -> _TracedInputDoc:

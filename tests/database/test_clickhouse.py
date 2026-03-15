@@ -95,7 +95,7 @@ def test_documents_ddl_matches_expected_shape() -> None:
     assert "description String DEFAULT ''" in DOCUMENTS_DDL
     assert "mime_type LowCardinality(String) DEFAULT ''" in DOCUMENTS_DDL
     assert "attachments Nested(" in DOCUMENTS_DDL
-    assert "ENGINE = ReplacingMergeTree(created_at)" in DOCUMENTS_DDL
+    assert "ENGINE = ReplacingMergeTree()" in DOCUMENTS_DDL
     assert "detail_json" not in DOCUMENTS_DDL
     assert "version" not in DOCUMENTS_DDL
     assert "CODEC(ZSTD(3))" not in DOCUMENTS_DDL.split("summary String DEFAULT ''", 1)[1].split("\n", 1)[0]
@@ -103,7 +103,7 @@ def test_documents_ddl_matches_expected_shape() -> None:
 
 
 def test_blobs_and_logs_ddl_match_expected_shape() -> None:
-    assert len(_extract_column_lines(BLOBS_DDL)) == 3
+    assert len(_extract_column_lines(BLOBS_DDL)) == 2
     assert "ORDER BY (content_sha256)" in BLOBS_DDL
     assert len(_extract_column_lines(LOGS_DDL)) == 11
     assert "ORDER BY (deployment_id, span_id, timestamp, sequence_no)" in LOGS_DDL

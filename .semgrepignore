@@ -1,0 +1,12 @@
+# Override semgrep defaults — scan tests/ (needed for codec-related rules)
+# Only exclude non-code directories
+.tmp/
+.venv/
+__pycache__/
+build/
+dist/
+*.egg-info/
+.eggs/
+.ai-docs/
+ai_pipeline_core/.ai-docs/
+tools/

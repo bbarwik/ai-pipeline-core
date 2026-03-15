@@ -95,22 +95,22 @@ def test_document_wrapped_in_xml_tags():
     assert "</document>" in content
 
 
+class GetWeather(Tool):
+    """Get current weather for a city."""
+
+    class Input(BaseModel):
+        city: str = Field(description="City name")
+
+    async def execute(self, input: Input) -> ToolOutput:
+        return ToolOutput(content=f"Sunny, 22°C in {input.city}")
+
+
 @pytest.mark.ai_docs
 @pytest.mark.asyncio
 async def test_send_with_tools_auto_loop(monkeypatch):
     """Tools enable the LLM to call functions. Conversation.send() auto-loops: call LLM → execute tools → re-send results until LLM produces a final answer."""
 
-    # 1. Define a tool — docstring becomes the LLM tool description
-    class GetWeather(Tool):
-        """Get current weather for a city."""
-
-        class Input(BaseModel):
-            city: str = Field(description="City name")
-
-        async def execute(self, input: Input) -> ToolOutput:
-            return ToolOutput(content=f"Sunny, 22°C in {input.city}")
-
-    # 2. Mock LLM: first call requests tool use, second returns final answer
+    # Mock LLM: first call requests tool use, second returns final answer
     call_count = 0
 
     async def fake_generate(messages: list[CoreMessage], **kwargs: Any) -> Any:

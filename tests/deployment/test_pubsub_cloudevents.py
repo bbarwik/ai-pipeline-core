@@ -159,7 +159,7 @@ class _SerializationFlow(PipelineFlow):
         documents: tuple[PubsubInputDoc, ...],
         options: FlowOptions,
     ) -> tuple[PubsubOutputDoc, ...]:
-        return (PubsubOutputDoc.derive(from_documents=(documents[0],), name="ser_out.json", content={"serialized": True}),)
+        return (PubsubOutputDoc.derive(derived_from=(documents[0],), name="ser_out.json", content={"serialized": True}),)
 
 
 class _SerializationDeployment(PipelineDeployment[FlowOptions, _SerializationResult]):

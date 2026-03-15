@@ -19,6 +19,8 @@ __all__ = ["Tool", "ToolCallRecord", "ToolOutput", "generate_tool_schema", "to_s
 
 _SNAKE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
+_RESERVED_FIELD_NAMES = frozenset({"strict", "additionalProperties"})
+
 
 def to_snake_case(name: str) -> str:
     """Convert PascalCase to snake_case, handling consecutive capitals.
@@ -75,12 +77,22 @@ class Tool:
         if not isinstance(input_cls, type) or not issubclass(input_cls, BaseModel):
             raise TypeError(f"Tool '{name}'.Input must be a BaseModel subclass")
 
-        # Validate all Input fields have descriptions
+        # Validate all Input fields have descriptions and no reserved names
         for field_name, field_info in input_cls.model_fields.items():
             if field_info.description is None:
                 raise TypeError(
                     f"Tool '{name}'.Input field '{field_name}' must use Field(description='...'). All Input fields require descriptions for the LLM."
                 )
+            if field_name in _RESERVED_FIELD_NAMES:
+                raise TypeError(
+                    f"Tool '{name}'.Input field '{field_name}' uses a reserved name that collides "
+                    f"with JSON Schema or LiteLLM keywords. LiteLLM strips '{field_name}' from "
+                    f"schemas for some providers (Gemini, xAI), causing required/properties mismatches. "
+                    f"Rename the field (e.g., '{field_name}_value', '{field_name}_mode')."
+                )
+
+        # Validate Input schema is compatible with OpenAI strict mode
+        _validate_strict_mode_compatibility(input_cls.model_json_schema(), name)
 
         # Validate Output if defined
         if "Output" in cls.__dict__:
@@ -110,6 +122,36 @@ class ToolCallRecord:
     input: BaseModel
     output: ToolOutput
     round: int
+
+
+def _validate_strict_mode_compatibility(schema: dict[str, Any], tool_name: str) -> None:
+    """Validate schema has no dict[str, V] types incompatible with OpenAI strict mode."""
+    _check_strict_node(schema, tool_name, "Input")
+
+
+def _check_strict_node(node: dict[str, Any], tool_name: str, path: str) -> None:
+    """Recursively check schema node for dict types incompatible with strict mode."""
+    empty: dict[str, Any] = {}
+    if node.get("type") == "object" and isinstance(node.get("additionalProperties"), dict) and not node.get("properties"):
+        raise TypeError(
+            f"Tool '{tool_name}'.Input has a dict type at '{path}' which is incompatible "
+            f"with OpenAI strict mode. dict[str, V] produces dynamic-key objects that "
+            f"cannot be represented in strict-mode JSON schemas. "
+            f"Replace with list[SomeModel] where SomeModel has explicit fields."
+        )
+    for prop_name, prop_schema in node.get("properties", empty).items():
+        if isinstance(prop_schema, dict):
+            _check_strict_node(prop_schema, tool_name, f"{path}.{prop_name}")
+    for def_name, def_schema in node.get("$defs", empty).items():
+        if isinstance(def_schema, dict):
+            _check_strict_node(def_schema, tool_name, f"$defs.{def_name}")
+    for key in ("allOf", "anyOf", "oneOf"):
+        for i, item in enumerate(node.get(key, [])):
+            if isinstance(item, dict):
+                _check_strict_node(item, tool_name, f"{path}.{key}[{i}]")
+    items = node.get("items")
+    if isinstance(items, dict):
+        _check_strict_node(items, tool_name, f"{path}.items")
 
 
 def _make_strict_schema(schema: dict[str, Any]) -> None:

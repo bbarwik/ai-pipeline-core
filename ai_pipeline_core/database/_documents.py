@@ -119,11 +119,21 @@ def _attachment_contents_for_record(
     record: DocumentRecord,
     blobs: dict[str, BlobRecord],
 ) -> dict[str, bytes]:
-    return {
-        attachment_sha: attachment_blob.content
-        for attachment_sha in record.attachment_content_sha256s
-        if (attachment_blob := blobs.get(attachment_sha)) is not None
-    }
+    contents: dict[str, bytes] = {}
+    missing: list[str] = []
+    for attachment_sha in record.attachment_content_sha256s:
+        attachment_blob = blobs.get(attachment_sha)
+        if attachment_blob is None:
+            missing.append(attachment_sha)
+        else:
+            contents[attachment_sha] = attachment_blob.content
+    if missing:
+        missing_list = ", ".join(sorted(missing))
+        raise ValueError(
+            f"Document '{record.name}' ({record.document_sha256}) has missing attachment blob(s): {missing_list}. "
+            "Persist every attachment blob before reading the document."
+        )
+    return contents
 
 
 def _reconstruct_documents(

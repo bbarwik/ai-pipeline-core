@@ -37,6 +37,7 @@ rules:
         - "**/prompt_compiler/api.py"
         - "**/replay/_execute.py"
         - "**/replay/cli.py"
+        - "**/tests/**"
 
   - id: no-model-convert-legacy
     pattern: $DOC.model_convert(...)
@@ -73,6 +74,74 @@ rules:
     message: "JSON->YAML fallback is a bug — YAML is a JSON superset. Use extension-based dispatch."
     severity: ERROR
     languages: [python]
+
+  - id: no-direct-document-init
+    patterns:
+      - pattern: $CLASS(name=..., content=..., derived_from=..., ...)
+      - pattern-not-inside: |
+          @classmethod
+          def $METHOD(cls, ...):
+              ...
+    message: >
+      Do not instantiate Document subclasses directly. Use derive(), create(),
+      create_external(), create_root(), or from_dict().
+    severity: ERROR
+    languages: [python]
+    paths:
+      include:
+        - "ai_pipeline_core/"
+        - "apps/"
+      exclude:
+        - "**/tests/**"
+        - "**/test_*"
+        - "**/ai_pipeline_core/documents/document.py"
+        - "**/ai_pipeline_core/database/_hydrate.py"
+
+  - id: no-function-local-codec-class
+    patterns:
+      - pattern-either:
+          - pattern: |
+              def $FUNC(...):
+                  ...
+                  class $CLS(PipelineTask):
+                      ...
+          - pattern: |
+              def $FUNC(...):
+                  ...
+                  class $CLS(PipelineFlow):
+                      ...
+          - pattern: |
+              def $FUNC(...):
+                  ...
+                  class $CLS(Tool):
+                      ...
+          - pattern: |
+              def $FUNC(...):
+                  ...
+                  class $CLS(Document):
+                      ...
+          - pattern: |
+              def $FUNC(...):
+                  ...
+                  class $CLS(PipelineDeployment):
+                      ...
+          - pattern: |
+              def $FUNC(...):
+                  ...
+                  class $CLS(DeploymentResult):
+                      ...
+          - pattern: |
+              def $FUNC(...):
+                  ...
+                  class $CLS(FlowOptions):
+                      ...
+    message: >
+      Class '$CLS' defined inside a function gets '<locals>' in __qualname__,
+      making it unreplayable by the codec. Move it to module scope.
+    severity: ERROR
+    languages: [python]
+    paths:
+      exclude: ["**/tests/**"]
 
   - id: document-content-model-dump-without-generic
     pattern-either:

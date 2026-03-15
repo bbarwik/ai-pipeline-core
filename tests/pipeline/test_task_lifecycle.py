@@ -47,7 +47,7 @@ class _CacheableTask(PipelineTask):
     @classmethod
     async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
         cls.run_calls += 1
-        return (_OutDoc.derive(from_documents=(documents[0],), name="cached.txt", content=f"call-{cls.run_calls}"),)
+        return (_OutDoc.derive(derived_from=(documents[0],), name="cached.txt", content=f"call-{cls.run_calls}"),)
 
 
 class _RecordingSpanDatabase(MemoryDatabase):

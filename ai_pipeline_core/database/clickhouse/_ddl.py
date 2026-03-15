@@ -15,7 +15,7 @@ __all__ = [
     "SPANS_TABLE",
 ]
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SPANS_TABLE = "spans"
 DOCUMENTS_TABLE = "documents"
@@ -91,23 +91,21 @@ CREATE TABLE IF NOT EXISTS {DOCUMENTS_TABLE} (
         size_bytes UInt64
     ),
     publicly_visible Bool DEFAULT 0,
-    created_at DateTime64(3, 'UTC'),
     INDEX idx_document_type document_type TYPE set(128) GRANULARITY 1,
     INDEX idx_name name TYPE ngrambf_v1(3, 256, 2, 0) GRANULARITY 1,
     INDEX idx_derived_from derived_from TYPE bloom_filter GRANULARITY 1,
     INDEX idx_triggered_by triggered_by TYPE bloom_filter GRANULARITY 1
 )
-ENGINE = ReplacingMergeTree(created_at)
+ENGINE = ReplacingMergeTree()
 ORDER BY (document_sha256)
 """.strip()
 
 BLOBS_DDL = f"""
 CREATE TABLE IF NOT EXISTS {BLOBS_TABLE} (
     content_sha256 String,
-    content String CODEC(ZSTD(3)),
-    created_at DateTime64(3, 'UTC')
+    content String CODEC(ZSTD(3))
 )
-ENGINE = MergeTree()
+ENGINE = ReplacingMergeTree()
 ORDER BY (content_sha256)
 """.strip()
 
