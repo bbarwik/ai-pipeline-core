@@ -74,7 +74,7 @@ class SpanTreeView:
     metrics_by_id: dict[UUID, dict[str, Any]]
     counts_by_kind: Counter[str]
     document_shas: set[str]
-    descendant_llm_costs: dict[UUID, float]
+    descendant_costs: dict[UUID, float]
     descendant_tokens: dict[UUID, _TokenTotals]
     totals: CostTotals
 
@@ -138,7 +138,7 @@ def _select_root_span(tree: list[SpanRecord], root_deployment_id: UUID) -> SpanR
     return None
 
 
-def _compute_descendant_llm_costs(
+def _compute_descendant_costs(
     *,
     spans_by_id: dict[UUID, SpanRecord],
     children_map: dict[UUID | None, list[UUID]],
@@ -159,8 +159,8 @@ def _compute_descendant_llm_costs(
         ti, to, tc, tr = 0, 0, 0, 0
         for child_id in children_map.get(span_id, []):
             child = spans_by_id[child_id]
+            total_cost += child.cost_usd
             if child.kind == SpanKind.LLM_ROUND:
-                total_cost += child.cost_usd
                 metrics = metrics_by_id[child_id]
                 context = f"Span {child_id}"
                 ti += _detail_int(metrics, TOKENS_INPUT_KEY, context=context, field_name="metrics_json")
@@ -183,21 +183,19 @@ def _compute_descendant_llm_costs(
     return descendant_costs, descendant_tokens
 
 
-def _sum_llm_round_totals(tree: list[SpanRecord], metrics_by_id: dict[UUID, dict[str, Any]]) -> CostTotals:
-    totals = CostTotals()
+def _sum_span_totals(tree: list[SpanRecord], metrics_by_id: dict[UUID, dict[str, Any]]) -> CostTotals:
+    cost_usd = 0.0
+    ti, to, tc, tr = 0, 0, 0, 0
     for span in tree:
-        if span.kind != SpanKind.LLM_ROUND:
-            continue
-        metrics = metrics_by_id[span.span_id]
-        context = f"Span {span.span_id}"
-        totals = CostTotals(
-            cost_usd=totals.cost_usd + span.cost_usd,
-            tokens_input=totals.tokens_input + _detail_int(metrics, TOKENS_INPUT_KEY, context=context, field_name="metrics_json"),
-            tokens_output=totals.tokens_output + _detail_int(metrics, TOKENS_OUTPUT_KEY, context=context, field_name="metrics_json"),
-            tokens_cache_read=totals.tokens_cache_read + _detail_int(metrics, TOKENS_CACHE_READ_KEY, context=context, field_name="metrics_json"),
-            tokens_reasoning=totals.tokens_reasoning + _detail_int(metrics, TOKENS_REASONING_KEY, context=context, field_name="metrics_json"),
-        )
-    return totals
+        cost_usd += span.cost_usd
+        if span.kind == SpanKind.LLM_ROUND:
+            metrics = metrics_by_id[span.span_id]
+            context = f"Span {span.span_id}"
+            ti += _detail_int(metrics, TOKENS_INPUT_KEY, context=context, field_name="metrics_json")
+            to += _detail_int(metrics, TOKENS_OUTPUT_KEY, context=context, field_name="metrics_json")
+            tc += _detail_int(metrics, TOKENS_CACHE_READ_KEY, context=context, field_name="metrics_json")
+            tr += _detail_int(metrics, TOKENS_REASONING_KEY, context=context, field_name="metrics_json")
+    return CostTotals(cost_usd=cost_usd, tokens_input=ti, tokens_output=to, tokens_cache_read=tc, tokens_reasoning=tr)
 
 
 def _collect_document_shas(tree: list[SpanRecord]) -> set[str]:
@@ -221,7 +219,7 @@ def build_span_tree_view(tree: list[SpanRecord], root_deployment_id: UUID) -> Sp
     meta_by_id = {span.span_id: parse_json_object(span.meta_json, context=f"Span {span.span_id}", field_name="meta_json") for span in tree}
     metrics_by_id = {span.span_id: parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json") for span in tree}
     children_map = _build_children_map(tree)
-    descendant_costs, descendant_tokens = _compute_descendant_llm_costs(
+    descendant_costs, descendant_tokens = _compute_descendant_costs(
         spans_by_id=spans_by_id,
         children_map=children_map,
         metrics_by_id=metrics_by_id,
@@ -234,9 +232,9 @@ def build_span_tree_view(tree: list[SpanRecord], root_deployment_id: UUID) -> Sp
         metrics_by_id=metrics_by_id,
         counts_by_kind=Counter(span.kind for span in tree),
         document_shas=_collect_document_shas(tree),
-        descendant_llm_costs=descendant_costs,
+        descendant_costs=descendant_costs,
         descendant_tokens=descendant_tokens,
-        totals=_sum_llm_round_totals(tree, metrics_by_id),
+        totals=_sum_span_totals(tree, metrics_by_id),
     )
 
 
@@ -350,7 +348,7 @@ def _format_tree_line(span: SpanRecord, view: SpanTreeView, *, depth: int, inclu
     if span.kind == SpanKind.CONVERSATION:
         model = _detail_str(meta, MODEL_KEY) or UNKNOWN_MODEL_LABEL
         tokens = _format_token_parts(span, metrics, view)
-        cost = view.descendant_llm_costs.get(span.span_id, 0.0)
+        cost = span.cost_usd + view.descendant_costs.get(span.span_id, 0.0)
         chain_suffix = f" (continues {str(span.previous_conversation_id)[:8]}…)" if span.previous_conversation_id else ""
         line = f"{indent}conversation: {_conversation_label(span, meta)} {duration} {model}{chain_suffix}"
         if tokens:
@@ -484,7 +482,7 @@ def _build_flow_plan_lines(view: SpanTreeView) -> list[str]:
             lines.append(f"| {index} | {name} | skipped | - | $0.0000 |")
             continue
         planned_flow_span_ids.add(flow.span_id)
-        cost = view.descendant_llm_costs.get(flow.span_id, 0.0)
+        cost = flow.cost_usd + view.descendant_costs.get(flow.span_id, 0.0)
         lines.append(f"| {index} | {name} | {flow.status} | {_format_duration(flow)} | ${cost:.4f} |")
 
     unmatched_flows = sorted(
@@ -492,7 +490,7 @@ def _build_flow_plan_lines(view: SpanTreeView) -> list[str]:
         key=lambda span: (span.sequence_no, span.started_at, str(span.span_id)),
     )
     for flow in unmatched_flows:
-        cost = view.descendant_llm_costs.get(flow.span_id, 0.0)
+        cost = flow.cost_usd + view.descendant_costs.get(flow.span_id, 0.0)
         lines.append(f"| {flow.sequence_no or '-'} | {flow.name} | {flow.status} | {_format_duration(flow)} | ${cost:.4f} |")
     lines.append("")
     return lines
@@ -607,22 +605,21 @@ def generate_costs_from_tree(tree: list[SpanRecord], root_deployment_id: UUID) -
         )
         rounds_per_model[model] += 1
 
-    if not per_model:
-        return "# Cost by Model\n\nNo `llm_round` spans found.\n"
-
-    ordered_models = sorted(
-        per_model.items(),
-        key=lambda item: (-item[1].cost_usd, item[0]),
-    )
-    lines = ["# Cost by Model", "", "| Model | Rounds | Input | Cache Read | Output | Reasoning | Cost |", "|---|---:|---:|---:|---:|---:|---:|"]
-    for model, totals in ordered_models:
-        lines.append(
-            f"| {model} | {rounds_per_model[model]} | {totals.tokens_input:,} | {totals.tokens_cache_read:,} | "
-            f"{totals.tokens_output:,} | {totals.tokens_reasoning:,} | ${totals.cost_usd:.4f} |"
+    lines = ["# Cost by Model", ""]
+    if per_model:
+        ordered_models = sorted(
+            per_model.items(),
+            key=lambda item: (-item[1].cost_usd, item[0]),
         )
+        lines.extend(["| Model | Rounds | Input | Cache Read | Output | Reasoning | Cost |", "|---|---:|---:|---:|---:|---:|---:|"])
+        for model, totals in ordered_models:
+            lines.append(
+                f"| {model} | {rounds_per_model[model]} | {totals.tokens_input:,} | {totals.tokens_cache_read:,} | "
+                f"{totals.tokens_output:,} | {totals.tokens_reasoning:,} | ${totals.cost_usd:.4f} |"
+            )
+        lines.append("")
     lines.extend([
-        "",
-        (f"**Total**: ${view.totals.cost_usd:.4f} across {view.counts_by_kind.get(SpanKind.LLM_ROUND, 0)} llm_round spans"),
+        f"**Total**: ${view.totals.cost_usd:.4f}",
         "",
     ])
     return "\n".join(lines)

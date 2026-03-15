@@ -22,7 +22,6 @@ from ai_pipeline_core.database._types import (
     TOKENS_INPUT_KEY,
     TOKENS_OUTPUT_KEY,
     TOKENS_REASONING_KEY,
-    BlobRecord,
     CostTotals,
     DocumentRecord,
     HydratedDocument,
@@ -30,6 +29,7 @@ from ai_pipeline_core.database._types import (
     SpanKind,
     SpanRecord,
     SpanStatus,
+    _BlobRecord,
     get_token_count,
 )
 from ai_pipeline_core.database.clickhouse._connection import get_async_clickhouse_client
@@ -141,10 +141,10 @@ class ClickHouseDatabase:
             column_names=DOCUMENT_COLUMNS,
         )
 
-    async def save_blob(self, blob: BlobRecord) -> None:
+    async def save_blob(self, blob: _BlobRecord) -> None:
         await self._insert(BLOBS_TABLE, [blob_to_row(blob)], column_names=BLOB_COLUMNS)
 
-    async def save_blob_batch(self, blobs: list[BlobRecord]) -> None:
+    async def save_blob_batch(self, blobs: list[_BlobRecord]) -> None:
         await self._insert(
             BLOBS_TABLE,
             [blob_to_row(blob) for blob in blobs],
@@ -267,24 +267,24 @@ class ClickHouseDatabase:
 
     async def get_deployment_cost_totals(self, root_deployment_id: UUID) -> CostTotals:
         result = await self._query(
-            f"SELECT cost_usd, metrics_json FROM {SPANS_TABLE} FINAL WHERE root_deployment_id = {{root_deployment_id:UUID}} AND kind = {{kind:String}}",
-            parameters={"root_deployment_id": root_deployment_id, "kind": SpanKind.LLM_ROUND},
+            f"SELECT kind, cost_usd, metrics_json FROM {SPANS_TABLE} FINAL WHERE root_deployment_id = {{root_deployment_id:UUID}}",
+            parameters={"root_deployment_id": root_deployment_id},
         )
-        totals = CostTotals()
-        for cost_usd, metrics_json in result.result_rows:
-            metrics = parse_json_object(
-                decode_text(metrics_json),
-                context=f"Span tree {root_deployment_id}",
-                field_name="metrics_json",
-            )
-            totals = CostTotals(
-                cost_usd=totals.cost_usd + float(cost_usd),
-                tokens_input=totals.tokens_input + get_token_count(metrics, TOKENS_INPUT_KEY),
-                tokens_output=totals.tokens_output + get_token_count(metrics, TOKENS_OUTPUT_KEY),
-                tokens_cache_read=totals.tokens_cache_read + get_token_count(metrics, TOKENS_CACHE_READ_KEY),
-                tokens_reasoning=totals.tokens_reasoning + get_token_count(metrics, TOKENS_REASONING_KEY),
-            )
-        return totals
+        cost_usd = 0.0
+        ti, to, tc, tr = 0, 0, 0, 0
+        for kind, span_cost_usd, metrics_json in result.result_rows:
+            cost_usd += float(span_cost_usd)
+            if decode_text(kind) == SpanKind.LLM_ROUND:
+                metrics = parse_json_object(
+                    decode_text(metrics_json),
+                    context=f"Span tree {root_deployment_id}",
+                    field_name="metrics_json",
+                )
+                ti += get_token_count(metrics, TOKENS_INPUT_KEY)
+                to += get_token_count(metrics, TOKENS_OUTPUT_KEY)
+                tc += get_token_count(metrics, TOKENS_CACHE_READ_KEY)
+                tr += get_token_count(metrics, TOKENS_REASONING_KEY)
+        return CostTotals(cost_usd=cost_usd, tokens_input=ti, tokens_output=to, tokens_cache_read=tc, tokens_reasoning=tr)
 
     async def get_deployment_span_count(
         self,
@@ -396,7 +396,7 @@ class ClickHouseDatabase:
             shas.update(string_tuple(output_shas))
         return shas
 
-    async def get_blob(self, content_sha256: str) -> BlobRecord | None:
+    async def get_blob(self, content_sha256: str) -> _BlobRecord | None:
         result = await self._query(
             f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} FINAL WHERE content_sha256 = {{content_sha256:String}} LIMIT 1",
             parameters={"content_sha256": content_sha256},
@@ -405,7 +405,7 @@ class ClickHouseDatabase:
             return None
         return row_to_blob(tuple(result.result_rows[0]))
 
-    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, BlobRecord]:
+    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, _BlobRecord]:
         unique_shas = list(dict.fromkeys(content_sha256s))
         if not unique_shas:
             return {}
@@ -479,3 +479,29 @@ class ClickHouseDatabase:
             parameters=parameters,
         )
         return [row_to_log(tuple(row)) for row in result.result_rows]
+
+    async def find_documents_by_name(
+        self,
+        names: list[str],
+        *,
+        document_type: str | None = None,
+    ) -> dict[str, DocumentRecord]:
+        if not names:
+            return {}
+        unique_names = list(dict.fromkeys(names))
+        filters = ["name IN {names:Array(String)}"]
+        parameters: dict[str, Any] = {"names": unique_names}
+        if document_type is not None:
+            filters.append("document_type = {document_type:String}")
+            parameters["document_type"] = document_type
+        result = await self._query(
+            f"SELECT {', '.join(DOCUMENT_COLUMNS)} FROM {DOCUMENTS_TABLE} FINAL WHERE {' AND '.join(filters)}",
+            parameters=parameters,
+        )
+        found: dict[str, DocumentRecord] = {}
+        for row in result.result_rows:
+            record = row_to_document(tuple(row))
+            existing = found.get(record.name)
+            if existing is None or record.document_sha256 > existing.document_sha256:
+                found[record.name] = record
+        return found

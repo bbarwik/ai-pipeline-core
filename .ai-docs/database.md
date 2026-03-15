@@ -1,299 +1,52 @@
 # MODULE: database
-# CLASSES: MemoryDatabase, DatabaseReader, SpanKind, SpanStatus, SpanRecord, DocumentRecord, BlobRecord, CostTotals, HydratedDocument
+# CLASSES: DatabaseReader, SpanKind, SpanStatus, SpanRecord, DocumentRecord, CostTotals, HydratedDocument
 # DEPENDS: Protocol, StrEnum
 # PURPOSE: Unified database module for the span-based schema.
-# VERSION: 0.15.1
+# VERSION: 0.16.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
 from ai_pipeline_core import DatabaseReader
-from ai_pipeline_core.database import BlobRecord, CostTotals, Database, DocumentRecord, HydratedDocument, MemoryDatabase, SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database import CostTotals, Database, DocumentRecord, HydratedDocument, SpanKind, SpanRecord, SpanStatus
 ```
 
 ## Types & Constants
 
 ```python
-Database = MemoryDatabase | FilesystemDatabase | ClickHouseDatabase
+Database = _MemoryDatabase | FilesystemDatabase | ClickHouseDatabase
+```
 
+## Internal Types
+
+```python
+@dataclass(frozen=True, slots=True)
+class _BlobRecord:
+    """Row from the immutable blobs table."""
+
+    content_sha256: str
+    content: bytes
 ```
 
 ## Public API
 
 ```python
-class MemoryDatabase:
-    """Dict-based backend for tests covering the span schema."""
-    supports_remote = False
-
-    def __init__(self) -> None:
-        self._spans: dict[UUID, SpanRecord] = {}
-        self._documents: dict[str, DocumentRecord] = {}
-        self._blobs: dict[str, BlobRecord] = {}
-        self._logs: list[LogRecord] = []
-
-    async def find_latest_documents_by_derived_from(
-        self,
-        values: list[str],
-        *,
-        document_type: str | None = None,
-        max_age: timedelta | None = None,
-    ) -> dict[str, DocumentRecord]:
-        if not values:
-            return {}
-        now = datetime.now(UTC)
-        lookup_set = set(values)
-        result: dict[str, DocumentRecord] = {}
-        for record in self._documents.values():
-            if document_type is not None and record.document_type != document_type:
-                continue
-            if max_age is not None and record.created_at < now - max_age:
-                continue
-            matched_values = lookup_set & set(record.derived_from)
-            for value in matched_values:
-                existing = result.get(value)
-                if existing is None or record.created_at > existing.created_at:
-                    result[value] = record
-        return result
-
-    async def flush(self) -> None:
-        return None
-
-    async def get_all_document_shas_for_tree(self, root_deployment_id: UUID) -> set[str]:
-        shas: set[str] = set()
-        for span in self._spans.values():
-            if span.root_deployment_id != root_deployment_id:
-                continue
-            shas.update(span.input_document_shas)
-            shas.update(span.output_document_shas)
-        return shas
-
-    async def get_blob(self, content_sha256: str) -> BlobRecord | None:
-        return self._blobs.get(content_sha256)
-
-    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, BlobRecord]:
-        return {sha256: self._blobs[sha256] for sha256 in content_sha256s if sha256 in self._blobs}
-
-    async def get_cached_completion(
-        self,
-        cache_key: str,
-        *,
-        max_age: timedelta | None = None,
-    ) -> SpanRecord | None:
-        now = datetime.now(UTC)
-        matches: list[SpanRecord] = []
-        for span in self._spans.values():
-            if span.cache_key != cache_key or span.status != SpanStatus.COMPLETED:
-                continue
-            if max_age is not None and (span.ended_at is None or now - span.ended_at > max_age):
-                continue
-            matches.append(span)
-        if not matches:
-            return None
-        return max(matches, key=lambda span: (span.ended_at or span.started_at, span.version, str(span.span_id)))
-
-    async def get_child_spans(self, parent_span_id: UUID) -> list[SpanRecord]:
-        matches = [span for span in self._spans.values() if span.parent_span_id == parent_span_id]
-        return sorted(matches, key=child_span_sort_key)
-
-    async def get_deployment_by_run_id(self, run_id: str) -> SpanRecord | None:
-        matches = [span for span in self._spans.values() if span.kind == SpanKind.DEPLOYMENT and span.run_id == run_id]
-        if not matches:
-            return None
-        return max(matches, key=deployment_sort_key)
-
-    async def get_deployment_cost_totals(self, root_deployment_id: UUID) -> CostTotals:
-        totals = CostTotals()
-        for span in self._spans.values():
-            if span.root_deployment_id != root_deployment_id or span.kind != SpanKind.LLM_ROUND:
-                continue
-            metrics = parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json")
-            totals = CostTotals(
-                cost_usd=totals.cost_usd + span.cost_usd,
-                tokens_input=totals.tokens_input + get_token_count(metrics, TOKENS_INPUT_KEY),
-                tokens_output=totals.tokens_output + get_token_count(metrics, TOKENS_OUTPUT_KEY),
-                tokens_cache_read=totals.tokens_cache_read + get_token_count(metrics, TOKENS_CACHE_READ_KEY),
-                tokens_reasoning=totals.tokens_reasoning + get_token_count(metrics, TOKENS_REASONING_KEY),
-            )
-        return totals
-
-    async def get_deployment_logs(
-        self,
-        deployment_id: UUID,
-        *,
-        level: str | None = None,
-        category: str | None = None,
-    ) -> list[LogRecord]:
-        return sorted(
-            (
-                log
-                for log in self._logs
-                if log.deployment_id == deployment_id and (level is None or log.level == level) and (category is None or log.category == category)
-            ),
-            key=log_sort_key,
-        )
-
-    async def get_deployment_logs_batch(
-        self,
-        deployment_ids: list[UUID],
-        *,
-        level: str | None = None,
-        category: str | None = None,
-    ) -> list[LogRecord]:
-        allowed_ids = set(deployment_ids)
-        return sorted(
-            (
-                log
-                for log in self._logs
-                if log.deployment_id in allowed_ids and (level is None or log.level == level) and (category is None or log.category == category)
-            ),
-            key=log_sort_key,
-        )
-
-    async def get_deployment_span_count(
-        self,
-        root_deployment_id: UUID,
-        *,
-        kinds: list[str] | None = None,
-    ) -> int:
-        allowed_kinds = set(kinds) if kinds is not None else None
-        return sum(
-            1 for span in self._spans.values() if span.root_deployment_id == root_deployment_id and (allowed_kinds is None or span.kind in allowed_kinds)
-        )
-
-    async def get_deployment_tree(self, root_deployment_id: UUID) -> list[SpanRecord]:
-        matches = [span for span in self._spans.values() if span.root_deployment_id == root_deployment_id]
-        return sorted(matches, key=span_sort_key)
-
-    async def get_document(self, document_sha256: str) -> DocumentRecord | None:
-        return self._documents.get(document_sha256)
-
-    async def get_document_with_content(self, document_sha256: str) -> HydratedDocument | None:
-        record = self._documents.get(document_sha256)
-        if record is None:
-            return None
-        blob = self._blobs.get(record.content_sha256)
-        if blob is None:
-            return None
-
-        attachment_contents: dict[str, bytes] = {}
-        missing_attachment_shas: list[str] = []
-        for attachment_sha in record.attachment_content_sha256s:
-            attachment_blob = self._blobs.get(attachment_sha)
-            if attachment_blob is None:
-                missing_attachment_shas.append(attachment_sha)
-                continue
-            attachment_contents[attachment_sha] = attachment_blob.content
-
-        if missing_attachment_shas:
-            missing_list = ", ".join(sorted(missing_attachment_shas))
-            raise ValueError(
-                f"Document {record.document_sha256} references attachment blobs that are missing from storage: {missing_list}. "
-                "Persist every attachment blob before reading the document."
-            )
-
-        return HydratedDocument(record=record, content=blob.content, attachment_contents=attachment_contents)
-
-    async def get_documents_batch(self, sha256s: list[str]) -> dict[str, DocumentRecord]:
-        return {sha256: self._documents[sha256] for sha256 in sha256s if sha256 in self._documents}
-
-    async def get_span(self, span_id: UUID) -> SpanRecord | None:
-        return self._spans.get(span_id)
-
-    async def get_span_logs(
-        self,
-        span_id: UUID,
-        *,
-        level: str | None = None,
-        category: str | None = None,
-    ) -> list[LogRecord]:
-        return sorted(
-            (log for log in self._logs if log.span_id == span_id and (level is None or log.level == level) and (category is None or log.category == category)),
-            key=lambda log: (log.sequence_no, log.timestamp, str(log.span_id)),
-        )
-
-    async def get_spans_referencing_document(
-        self,
-        document_sha256: str,
-        *,
-        kinds: list[str] | None = None,
-    ) -> list[SpanRecord]:
-        allowed_kinds = set(kinds) if kinds is not None else None
-        matches: list[SpanRecord] = []
-        for span in self._spans.values():
-            if allowed_kinds is not None and span.kind not in allowed_kinds:
-                continue
-            if document_sha256 in span.input_document_shas or document_sha256 in span.output_document_shas:
-                matches.append(span)
-                continue
-            if document_sha256 in span.input_blob_shas or document_sha256 in span.output_blob_shas:
-                matches.append(span)
-        return sorted(matches, key=span_sort_key)
-
-    async def insert_span(self, span: SpanRecord) -> None:
-        existing = self._spans.get(span.span_id)
-        if existing is None or span.version > existing.version:
-            self._spans[span.span_id] = span
-
-    async def list_deployments(
-        self,
-        limit: int,
-        *,
-        status: str | None = None,
-    ) -> list[SpanRecord]:
-        matches = [span for span in self._spans.values() if span.kind == SpanKind.DEPLOYMENT]
-        if status is not None:
-            matches = [span for span in matches if span.status == status]
-        return sorted(matches, key=deployment_sort_key, reverse=True)[:limit]
-
-    async def save_blob(self, blob: BlobRecord) -> None:
-        self._blobs[blob.content_sha256] = blob
-
-    async def save_blob_batch(self, blobs: list[BlobRecord]) -> None:
-        for blob in blobs:
-            self._blobs[blob.content_sha256] = blob
-
-    async def save_document(self, record: DocumentRecord) -> None:
-        existing = self._documents.get(record.document_sha256)
-        if existing is None or record.created_at >= existing.created_at:
-            self._documents[record.document_sha256] = record
-
-    async def save_document_batch(self, records: list[DocumentRecord]) -> None:
-        for record in records:
-            await self.save_document(record)
-
-    async def save_logs_batch(self, logs: list[LogRecord]) -> None:
-        self._logs.extend(logs)
-
-    async def shutdown(self) -> None:
-        return None
-
-    async def update_document_summary(self, document_sha256: str, summary: str) -> None:
-        existing = self._documents.get(document_sha256)
-        if existing is None:
-            return
-        self._documents[document_sha256] = replace(
-            existing,
-            summary=summary,
-            created_at=datetime.now(UTC),
-        )
-
-
 # Protocol — implement in concrete class
 @runtime_checkable
 class DatabaseReader(Protocol):
     """Read protocol for the span/document/blob/log schema."""
-    async def find_latest_documents_by_derived_from(
+
+    async def find_documents_by_name(
         self,
-        values: list[str],
+        names: list[str],
         *,
         document_type: str | None = None,
-        max_age: timedelta | None = None,
     ) -> dict[str, DocumentRecord]:
-        """Find the newest DocumentRecord for each derived_from value.
+        """Find document records by exact name match.
 
-        Returns {value: newest_record} for documents whose derived_from
-        contains any of the given values.
+        Returns {name: record}. When multiple documents share a name,
+        the record with the highest document_sha256 wins (deterministic tiebreak).
         """
         ...
 
@@ -301,11 +54,11 @@ class DatabaseReader(Protocol):
         """Collect all document SHA256s referenced anywhere in a deployment tree."""
         ...
 
-    async def get_blob(self, content_sha256: str) -> BlobRecord | None:
+    async def get_blob(self, content_sha256: str) -> _BlobRecord | None:
         """Retrieve a blob by content SHA256."""
         ...
 
-    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, BlobRecord]:
+    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, _BlobRecord]:
         """Retrieve blobs keyed by content SHA256."""
         ...
 
@@ -327,7 +80,7 @@ class DatabaseReader(Protocol):
         ...
 
     async def get_deployment_cost_totals(self, root_deployment_id: UUID) -> CostTotals:
-        """Aggregate llm_round cost and token totals for a deployment tree."""
+        """Aggregate cost (all spans) and token totals (llm_round only) for a deployment tree."""
         ...
 
     async def get_deployment_logs(
@@ -414,28 +167,31 @@ class DatabaseReader(Protocol):
 # Enum
 class SpanKind(StrEnum):
     """Discriminator for span-based execution records."""
-    DEPLOYMENT = 'deployment'
-    FLOW = 'flow'
-    TASK = 'task'
-    OPERATION = 'operation'
-    CONVERSATION = 'conversation'
-    LLM_ROUND = 'llm_round'
-    TOOL_CALL = 'tool_call'
+
+    DEPLOYMENT = "deployment"
+    FLOW = "flow"
+    TASK = "task"
+    OPERATION = "operation"
+    CONVERSATION = "conversation"
+    LLM_ROUND = "llm_round"
+    TOOL_CALL = "tool_call"
 
 
 # Enum
 class SpanStatus(StrEnum):
     """Lifecycle status for span-based execution records."""
-    RUNNING = 'running'
-    COMPLETED = 'completed'
-    FAILED = 'failed'
-    CACHED = 'cached'
-    SKIPPED = 'skipped'
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CACHED = "cached"
+    SKIPPED = "skipped"
 
 
 @dataclass(frozen=True, slots=True)
 class SpanRecord:
     """Row from the span-oriented execution table."""
+
     span_id: UUID
     parent_span_id: UUID | None
     deployment_id: UUID
@@ -444,26 +200,26 @@ class SpanRecord:
     kind: str
     name: str
     sequence_no: int
-    deployment_name: str = ''
-    description: str = ''
+    deployment_name: str = ""
+    description: str = ""
     status: str = SpanStatus.RUNNING
     started_at: datetime = field(default_factory=_utcnow)
     ended_at: datetime | None = None
     version: int = 1
-    cache_key: str = ''
+    cache_key: str = ""
     previous_conversation_id: UUID | None = None
     cost_usd: float = 0.0
-    error_type: str = ''
-    error_message: str = ''
+    error_type: str = ""
+    error_message: str = ""
     input_document_shas: tuple[str, ...] = ()
     output_document_shas: tuple[str, ...] = ()
-    target: str = ''
-    receiver_json: str = ''
-    input_json: str = ''
-    output_json: str = ''
-    error_json: str = ''
-    meta_json: str = ''
-    metrics_json: str = ''
+    target: str = ""
+    receiver_json: str = ""
+    input_json: str = ""
+    output_json: str = ""
+    error_json: str = ""
+    meta_json: str = ""
+    metrics_json: str = ""
     input_blob_shas: tuple[str, ...] = ()
     output_blob_shas: tuple[str, ...] = ()
 
@@ -479,14 +235,15 @@ class SpanRecord:
 @dataclass(frozen=True, slots=True)
 class DocumentRecord:
     """Row from the content-addressed documents table."""
+
     document_sha256: DocumentSha256
     content_sha256: str
     document_type: str
     name: str
-    description: str = ''
-    mime_type: str = ''
+    description: str = ""
+    mime_type: str = ""
     size_bytes: int = 0
-    summary: str = ''
+    summary: str = ""
     derived_from: tuple[str, ...] = ()
     triggered_by: tuple[str, ...] = ()
     attachment_names: tuple[str, ...] = ()
@@ -495,7 +252,6 @@ class DocumentRecord:
     attachment_mime_types: tuple[str, ...] = ()
     attachment_size_bytes: tuple[int, ...] = ()
     publicly_visible: bool = False
-    created_at: datetime = field(default_factory=_utcnow)
 
     def __post_init__(self) -> None:
         _validate_string_tuple("derived_from", self.derived_from)
@@ -521,16 +277,9 @@ class DocumentRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class BlobRecord:
-    """Row from the immutable blobs table."""
-    content_sha256: str
-    content: bytes
-    created_at: datetime = field(default_factory=_utcnow)
-
-
-@dataclass(frozen=True, slots=True)
 class CostTotals:
-    """Aggregated cost and token totals for llm_round spans."""
+    """Aggregated cost and token totals for a deployment. Cost includes all span kinds, token counts include llm_round spans only."""
+
     cost_usd: float = 0.0
     tokens_input: int = 0
     tokens_output: int = 0
@@ -541,14 +290,13 @@ class CostTotals:
 @dataclass(frozen=True, slots=True)
 class HydratedDocument:
     """Document metadata with loaded primary and attachment blob content."""
+
     record: DocumentRecord
     content: bytes
     attachment_contents: dict[str, bytes] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _validate_bytes_mapping("attachment_contents", self.attachment_contents)
-
-
 ```
 
 ## Examples
@@ -562,99 +310,119 @@ def test_database_reader_is_runtime_checkable() -> None:
     assert not isinstance(object(), DatabaseReader)
 ```
 
-**Database writer method signatures** (`tests/database/test_protocol.py:161`)
+**Database writer method signatures** (`tests/database/test_protocol.py:168`)
 
 ```python
 def test_database_writer_method_signatures() -> None:
     _assert_signature(DatabaseWriter, "insert_span", parameter_types={"span": SpanRecord}, return_type=type(None))
     _assert_signature(DatabaseWriter, "save_document", parameter_types={"record": DocumentRecord}, return_type=type(None))
-    _assert_signature(DatabaseWriter, "save_blob", parameter_types={"blob": BlobRecord}, return_type=type(None))
+    _assert_signature(DatabaseWriter, "save_blob", parameter_types={"blob": _BlobRecord}, return_type=type(None))
     _assert_signature(DatabaseWriter, "save_logs_batch", parameter_types={"logs": list[LogRecord]}, return_type=type(None))
 ```
 
-**Find empty values returns empty** (`tests/database/test_find_documents.py:37`)
+**Memory database conforms to protocols** (`tests/database/test_protocol.py:86`)
 
 ```python
-@pytest.mark.asyncio
-async def test_find_empty_values_returns_empty() -> None:
-    db = MemoryDatabase()
-    result = await db.find_latest_documents_by_derived_from([])
-    assert result == {}
+def test_memory_database_conforms_to_protocols() -> None:
+    database = _MemoryDatabase()
+    assert isinstance(database, DatabaseReader)
+    assert isinstance(database, DatabaseWriter)
+    assert database.supports_remote is False
 ```
 
-**Find filters by max age** (`tests/database/test_find_documents.py:85`)
+**Span status members** (`tests/database/test_types.py:33`)
 
 ```python
-@pytest.mark.asyncio
-async def test_find_filters_by_max_age() -> None:
-    db = MemoryDatabase()
-    old = _make_document(derived_from=("https://a.com",), created_at=datetime(2020, 1, 1, tzinfo=UTC))
-    await db.save_document(old)
-
-    result = await db.find_latest_documents_by_derived_from(["https://a.com"], max_age=timedelta(days=30))
-    assert result == {}
+def test_span_status_members() -> None:
+    assert tuple(status.value for status in SpanStatus) == (
+        "running",
+        "completed",
+        "failed",
+        "cached",
+        "skipped",
+    )
 ```
 
-**Find no matches returns empty** (`tests/database/test_find_documents.py:44`)
+**Attachment contents returns all when present** (`tests/database/test_bugs_documents.py:91`)
 
 ```python
-@pytest.mark.asyncio
-async def test_find_no_matches_returns_empty() -> None:
-    db = MemoryDatabase()
-    await db.save_document(_make_document(derived_from=("https://a.com",)))
-    result = await db.find_latest_documents_by_derived_from(["https://b.com"])
-    assert result == {}
+def test_attachment_contents_returns_all_when_present() -> None:
+    """All blobs present — returns complete dict."""
+    record = DocumentRecord(
+        document_sha256="doc_sha",
+        content_sha256="content_sha",
+        document_type="SampleDoc",
+        name="test",
+        attachment_names=("att1.txt",),
+        attachment_descriptions=("",),
+        attachment_content_sha256s=("att_sha1",),
+        attachment_mime_types=("text/plain",),
+        attachment_size_bytes=(10,),
+    )
+    blobs = {"att_sha1": _BlobRecord(content_sha256="att_sha1", content=b"data1")}
+    result = _attachment_contents_for_record(record, blobs)
+    assert result == {"att_sha1": b"data1"}
 ```
 
-**Find returns newest** (`tests/database/test_find_documents.py:62`)
+**Blobs and logs ddl match expected shape** (`tests/database/test_clickhouse.py:105`)
 
 ```python
-@pytest.mark.asyncio
-async def test_find_returns_newest() -> None:
-    db = MemoryDatabase()
-    old = _make_document(derived_from=("https://a.com",), created_at=datetime(2026, 1, 1, tzinfo=UTC))
-    new = _make_document(derived_from=("https://a.com",), created_at=datetime(2026, 3, 1, tzinfo=UTC))
-    await db.save_document(old)
-    await db.save_document(new)
-    result = await db.find_latest_documents_by_derived_from(["https://a.com"])
-    assert result["https://a.com"].document_sha256 == new.document_sha256
+def test_blobs_and_logs_ddl_match_expected_shape() -> None:
+    assert len(_extract_column_lines(BLOBS_DDL)) == 2
+    assert "ORDER BY (content_sha256)" in BLOBS_DDL
+    assert len(_extract_column_lines(LOGS_DDL)) == 11
+    assert "ORDER BY (deployment_id, span_id, timestamp, sequence_no)" in LOGS_DDL
 ```
 
-**Find single match** (`tests/database/test_find_documents.py:52`)
+**Blobs ddl has no created at** (`tests/database/test_bugs_clickhouse_ddl.py:24`)
 
 ```python
-@pytest.mark.asyncio
-async def test_find_single_match() -> None:
-    db = MemoryDatabase()
-    doc = _make_document(derived_from=("https://a.com",))
-    await db.save_document(doc)
-    result = await db.find_latest_documents_by_derived_from(["https://a.com"])
-    assert "https://a.com" in result
-    assert result["https://a.com"].document_sha256 == doc.document_sha256
+def test_blobs_ddl_has_no_created_at() -> None:
+    """Blobs are content-addressed — no timestamp needed."""
+    assert "created_at" not in BLOBS_DDL
 ```
 
-**Generate summary returns no data for empty tree** (`tests/database/test_span_summary.py:287`)
+**Blobs ddl uses replacing merge tree** (`tests/database/test_bugs_clickhouse_ddl.py:9`)
 
 ```python
-@pytest.mark.asyncio
-async def test_generate_summary_returns_no_data_for_empty_tree() -> None:
-    summary = await generate_summary(MemoryDatabase(), uuid4())
-
-    assert summary == "# No execution data found\n"
+def test_blobs_ddl_uses_replacing_merge_tree() -> None:
+    """Blobs table uses ReplacingMergeTree for content-addressed deduplication."""
+    assert "ReplacingMergeTree()" in BLOBS_DDL
 ```
 
 
 ## Error Examples
 
+**Attachment contents raises on missing blobs** (`tests/database/test_bugs_documents.py:71`)
+
+```python
+def test_attachment_contents_raises_on_missing_blobs() -> None:
+    """_attachment_contents_for_record raises ValueError when blobs are missing."""
+    record = DocumentRecord(
+        document_sha256="doc_sha",
+        content_sha256="content_sha",
+        document_type="SampleDoc",
+        name="test",
+        attachment_names=("att1.txt", "att2.txt"),
+        attachment_descriptions=("", ""),
+        attachment_content_sha256s=("att_sha1", "att_sha2"),
+        attachment_mime_types=("text/plain", "text/plain"),
+        attachment_size_bytes=(10, 20),
+    )
+    blobs = {"att_sha1": _BlobRecord(content_sha256="att_sha1", content=b"data1")}
+    blobs = {"att_sha1": _BlobRecord(content_sha256="att_sha1", content=b"data1")}
+
+    with pytest.raises(ValueError, match=r"missing attachment blob"):
+        _attachment_contents_for_record(record, blobs)
+```
+
 **Blob record defaults and immutability** (`tests/database/test_types.py:124`)
 
 ```python
 def test_blob_record_defaults_and_immutability() -> None:
-    before = datetime.now(UTC)
-    blob = BlobRecord(content_sha256="blob-sha", content=b"hello")
-    after = datetime.now(UTC)
-
-    assert before <= blob.created_at <= after
+    blob = _BlobRecord(content_sha256="blob-sha", content=b"hello")
+    assert blob.content_sha256 == "blob-sha"
+    assert blob.content == b"hello"
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         blob.content = b"changed"  # type: ignore[misc]
@@ -723,29 +491,6 @@ async def test_filesystem_read_only_rejects_writes(tmp_path: Path) -> None:
 
     with pytest.raises(PermissionError, match="read-only"):
         await read_only.save_document(_make_document())
-```
-
-**Get document with content raises for missing attachment blob** (`tests/database/test_span_memory.py:246`)
-
-```python
-@pytest.mark.asyncio
-async def test_get_document_with_content_raises_for_missing_attachment_blob() -> None:
-    database = MemoryDatabase()
-    await database.save_document(
-        _make_document(
-            document_sha256="doc-1",
-            content_sha256="blob-1",
-            attachment_names=("preview.png",),
-            attachment_descriptions=("Preview",),
-            attachment_content_sha256s=("blob-missing",),
-            attachment_mime_types=("image/png",),
-            attachment_size_bytes=(10,),
-        )
-    )
-    await database.save_blob(_make_blob(content_sha256="blob-1", content=b"root"))
-
-    with pytest.raises(ValueError, match="missing from storage"):
-        await database.get_document_with_content("doc-1")
 ```
 
 **Document record defaults and attachment fields** (`tests/database/test_types.py:85`)

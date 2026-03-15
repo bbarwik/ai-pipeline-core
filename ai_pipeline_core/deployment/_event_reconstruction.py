@@ -25,8 +25,8 @@ from ._types import (
 )
 
 __all__ = [
-    "ReconstructedEvent",
-    "reconstruct_lifecycle_events",
+    "_ReconstructedEvent",
+    "_reconstruct_lifecycle_events",
 ]
 
 _LIFECYCLE_KINDS = {SpanKind.DEPLOYMENT, SpanKind.FLOW, SpanKind.TASK}
@@ -38,7 +38,7 @@ _PHASE_PRIORITY_TERMINAL = 2
 
 
 @dataclass(frozen=True, slots=True)
-class ReconstructedEvent:
+class _ReconstructedEvent:
     """A lifecycle event reconstructed from database spans."""
 
     event_type: EventType
@@ -93,7 +93,7 @@ def _build_doc_refs(shas: tuple[str, ...], doc_map: dict[str, DocumentRecord]) -
     return tuple(refs)
 
 
-def _sort_key(event: ReconstructedEvent) -> tuple[datetime, int, int, str]:
+def _sort_key(event: _ReconstructedEvent) -> tuple[datetime, int, int, str]:
     kind_priority = 1
     phase_priority = _PHASE_PRIORITY_STARTED
     event_type = event.event_type
@@ -124,8 +124,8 @@ def _reconstruct_deployment_events(
     span: SpanRecord,
     meta: dict[str, Any],
     parent_task_id_str: str | None,
-) -> list[ReconstructedEvent]:
-    events: list[ReconstructedEvent] = []
+) -> list[_ReconstructedEvent]:
+    events: list[_ReconstructedEvent] = []
     span_id_str = str(span.span_id)
     root_id_str = str(span.root_deployment_id)
 
@@ -143,7 +143,7 @@ def _reconstruct_deployment_events(
         input_document_sha256s=span.input_document_shas,
     )
     events.append(
-        ReconstructedEvent(
+        _ReconstructedEvent(
             event_type=EventType.RUN_STARTED,
             span_id=span_id_str,
             timestamp=span.started_at,
@@ -154,7 +154,7 @@ def _reconstruct_deployment_events(
     if span.status == SpanStatus.COMPLETED:
         output = _parse_output(span)
         events.append(
-            ReconstructedEvent(
+            _ReconstructedEvent(
                 event_type=EventType.RUN_COMPLETED,
                 span_id=span_id_str,
                 timestamp=span.ended_at or span.started_at,
@@ -182,7 +182,7 @@ def _reconstruct_deployment_events(
         except ValueError:
             error_code = ErrorCode.UNKNOWN
         events.append(
-            ReconstructedEvent(
+            _ReconstructedEvent(
                 event_type=EventType.RUN_FAILED,
                 span_id=span_id_str,
                 timestamp=span.ended_at or span.started_at,
@@ -213,8 +213,8 @@ def _reconstruct_flow_events(
     parent_task_id_str: str | None,
     deployment_span_id: str,
     doc_map: dict[str, DocumentRecord],
-) -> list[ReconstructedEvent]:
-    events: list[ReconstructedEvent] = []
+) -> list[_ReconstructedEvent]:
+    events: list[_ReconstructedEvent] = []
     span_id_str = str(span.span_id)
     root_id_str = str(span.root_deployment_id)
     flow_class = meta.get("flow_class") or _class_name_from_target(span.target)
@@ -223,7 +223,7 @@ def _reconstruct_flow_events(
 
     if span.status in {SpanStatus.SKIPPED, SpanStatus.CACHED}:
         events.append(
-            ReconstructedEvent(
+            _ReconstructedEvent(
                 event_type=EventType.FLOW_SKIPPED,
                 span_id=span_id_str,
                 timestamp=span.started_at,
@@ -264,7 +264,7 @@ def _reconstruct_flow_events(
         input_document_sha256s=span.input_document_shas,
     )
     events.append(
-        ReconstructedEvent(
+        _ReconstructedEvent(
             event_type=EventType.FLOW_STARTED,
             span_id=span_id_str,
             timestamp=span.started_at,
@@ -274,7 +274,7 @@ def _reconstruct_flow_events(
 
     if span.status == SpanStatus.COMPLETED:
         events.append(
-            ReconstructedEvent(
+            _ReconstructedEvent(
                 event_type=EventType.FLOW_COMPLETED,
                 span_id=span_id_str,
                 timestamp=span.ended_at or span.started_at,
@@ -299,7 +299,7 @@ def _reconstruct_flow_events(
         )
     elif span.status == SpanStatus.FAILED:
         events.append(
-            ReconstructedEvent(
+            _ReconstructedEvent(
                 event_type=EventType.FLOW_FAILED,
                 span_id=span_id_str,
                 timestamp=span.ended_at or span.started_at,
@@ -333,8 +333,8 @@ def _reconstruct_task_events(
     flow_span: SpanRecord | None,
     flow_meta: dict[str, Any],
     doc_map: dict[str, DocumentRecord],
-) -> list[ReconstructedEvent]:
-    events: list[ReconstructedEvent] = []
+) -> list[_ReconstructedEvent]:
+    events: list[_ReconstructedEvent] = []
     span_id_str = str(span.span_id)
     root_id_str = str(span.root_deployment_id)
     task_class = meta.get("task_class") or _class_name_from_target(span.target)
@@ -347,7 +347,7 @@ def _reconstruct_task_events(
 
     if not is_cached:
         events.append(
-            ReconstructedEvent(
+            _ReconstructedEvent(
                 event_type=EventType.TASK_STARTED,
                 span_id=span_id_str,
                 timestamp=span.started_at,
@@ -372,7 +372,7 @@ def _reconstruct_task_events(
 
     if span.status in {SpanStatus.COMPLETED, SpanStatus.CACHED}:
         events.append(
-            ReconstructedEvent(
+            _ReconstructedEvent(
                 event_type=EventType.TASK_COMPLETED,
                 span_id=span_id_str,
                 timestamp=span.ended_at or span.started_at,
@@ -398,7 +398,7 @@ def _reconstruct_task_events(
         )
     elif span.status == SpanStatus.FAILED:
         events.append(
-            ReconstructedEvent(
+            _ReconstructedEvent(
                 event_type=EventType.TASK_FAILED,
                 span_id=span_id_str,
                 timestamp=span.ended_at or span.started_at,
@@ -425,10 +425,10 @@ def _reconstruct_task_events(
     return events
 
 
-async def reconstruct_lifecycle_events(
+async def _reconstruct_lifecycle_events(
     reader: DatabaseReader,
     root_deployment_id: UUID,
-) -> list[ReconstructedEvent]:
+) -> list[_ReconstructedEvent]:
     """Reconstruct lifecycle events from a deployment's span tree.
 
     Returns events in chronological order. Each event's data dict matches
@@ -466,7 +466,7 @@ async def reconstruct_lifecycle_events(
         parent_task_id_str = str(deployment_span.parent_span_id) if deployment_span.parent_span_id else None
         deployment_span_id_str = str(deployment_span.span_id)
 
-    events: list[ReconstructedEvent] = []
+    events: list[_ReconstructedEvent] = []
 
     for span in lifecycle_spans:
         meta = meta_by_id[span.span_id]

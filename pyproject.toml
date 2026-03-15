@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.15.2"
+version = "0.16.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -31,7 +31,7 @@ dependencies = [
     "ruamel.yaml>=0.19.1",
     "tiktoken>=0.12.0",
     "lmnr>=0.7.0",
-    "clickhouse-connect>=0.10.0",
+    "clickhouse-connect>=0.14.1",
     "prefect-gcp>=0.6.15",
     "google-cloud-pubsub>=2.0",
 ]
@@ -60,7 +60,7 @@ dev = [
     "pytest-testmon>=2.2.0",
     "pytest-xdist>=3.8.0",
     "pytest>=8.4.1",
-    "ruff==0.15.2",
+    "ruff==0.15.6",
     "testcontainers[clickhouse,google]>=4.0.0",
     "vulture==2.14",
     "pylint>=3.0.0",
@@ -164,7 +164,7 @@ max-public-methods = 30
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "RUF069", "TID251", "A002"]
-"examples/**/*.py" = ["D", "DOC", "PLC0415", "S", "ARG", "T20", "RUF029", "C901", "PLR0914", "PLR0915", "PLR6301", "A002"]
+"examples/**/*.py" = ["D", "DOC", "PLC0415", "PLC2701", "S", "ARG", "T20", "RUF029", "C901", "PLR0914", "PLR0915", "PLR6301", "A002"]
 "dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
 ".vulture_whitelist.py" = ["B018", "E402", "F401", "F821", "D", "PLC2701"]
 "ai_pipeline_core/__init__.py" = ["RUF067", "TID251"]
@@ -183,7 +183,7 @@ max-public-methods = 30
 "ai_pipeline_core/database/_factory.py" = ["F821", "PLC0415"]
 "ai_pipeline_core/_codec.py" = ["PLR0911"]
 "ai_pipeline_core/database/clickhouse/_backend.py" = ["S608", "BLE001", "PLR0904", "PLR0911", "PLR0912", "C901", "PLR6301", "PERF401"]
-"ai_pipeline_core/database/clickhouse/_connection.py" = ["S608"]
+"ai_pipeline_core/database/clickhouse/_connection.py" = ["S608", "TID251"]
 "ai_pipeline_core/database/filesystem/_backend.py" = ["PLR0904", "PLR6301", "PERF401"]
 "ai_pipeline_core/database/_memory.py" = ["PLR0904", "PLR6301", "RUF029", "PERF401"]
 "ai_pipeline_core/database/snapshot/_summary.py" = ["PLR6301", "PLR0912", "PLR0914", "PLR0917", "PERF401"]

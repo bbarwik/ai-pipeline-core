@@ -1,13 +1,12 @@
 # MODULE: observability
 # PURPOSE: Observability system for AI pipelines.
-# VERSION: 0.15.1
+# VERSION: 0.16.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Types & Constants
 
 ```python
 TraceDatabase = Database | FilesystemDatabase | ClickHouseDatabase
-
 ```
 
 ## Functions
@@ -16,6 +15,7 @@ TraceDatabase = Database | FilesystemDatabase | ClickHouseDatabase
 async def show_deployment(reader: DatabaseReader, deployment_id: UUID) -> str:
     """Render a deployment summary for ai-trace show."""
     return await generate_summary(reader, deployment_id)
+
 
 def main(argv: list[str] | None = None) -> int:
     """Run the ai-trace CLI."""
@@ -56,7 +56,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     return 1
-
 ```
 
 ## Examples

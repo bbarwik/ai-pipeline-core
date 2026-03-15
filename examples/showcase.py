@@ -28,7 +28,6 @@ from ai_pipeline_core import (
     PipelineFlow,
     PipelineTask,
     Tool,
-    ToolOutput,
     find_document,
     get_run_id,
 )
@@ -89,11 +88,13 @@ class LookupRelatedTopics(Tool):
     class Input(BaseModel):
         subject: str = Field(description="The subject to find related topics for")
 
-    async def execute(self, input: Input) -> ToolOutput:
+    class Output(BaseModel):
+        topics: list[str]
+        subject: str
+
+    async def run(self, input: Input) -> Output:
         matches = [f"- **{topic}**: {summary}" for topic, summary in TOPIC_DATABASE.items() if any(word in topic for word in input.subject.lower().split())]
-        if not matches:
-            return ToolOutput(content=f"No related topics found for '{input.subject}'.")
-        return ToolOutput(content=f"Related topics for '{input.subject}':\n" + "\n".join(matches))
+        return self.Output(topics=matches, subject=input.subject)
 
 
 CLAIM_VERDICTS = {
@@ -110,11 +111,15 @@ class VerifyClaim(Tool):
     class Input(BaseModel):
         claim: str = Field(description="A short factual claim to verify")
 
-    async def execute(self, input: Input) -> ToolOutput:
+    class Output(BaseModel):
+        verdict: str
+        verified: bool
+
+    async def run(self, input: Input) -> Output:
         for keyword, verdict in CLAIM_VERDICTS.items():
             if keyword in input.claim.lower():
-                return ToolOutput(content=verdict)
-        return ToolOutput(content=f"Unverified: no matching evidence found for '{input.claim}'.")
+                return self.Output(verdict=verdict, verified=True)
+        return self.Output(verdict=f"Unverified: no matching evidence found for '{input.claim}'.", verified=False)
 
 
 class ExplainConcept(Tool):
@@ -123,16 +128,19 @@ class ExplainConcept(Tool):
     class Input(BaseModel):
         concept: str = Field(description="The technical concept to explain in depth")
 
-    def __init__(self, model: str) -> None:
-        self.model = model
+    class Output(BaseModel):
+        explanation: str
 
-    async def execute(self, input: Input) -> ToolOutput:
-        conv = Conversation(model=self.model)
+    def __init__(self, model: str) -> None:
+        self._model = model
+
+    async def run(self, input: Input) -> Output:
+        conv = Conversation(model=self._model)
         conv = await conv.send(
             f"Explain '{input.concept}' in 2-3 sentences for a senior engineer. Be specific and technical.",
             purpose=f"explain {input.concept}",
         )
-        return ToolOutput(content=conv.content)
+        return self.Output(explanation=conv.content)
 
 
 class ShowcaseFlowOptions(FlowOptions):

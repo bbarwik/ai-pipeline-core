@@ -1,7 +1,7 @@
 # MODULE: replay
 # CLASSES: ExperimentResult, ExperimentOverrides
 # PURPOSE: Generic replay and experimentation entry points.
-# VERSION: 0.15.1
+# VERSION: 0.16.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -34,8 +34,6 @@ class ExperimentOverrides:
     model_options: dict[str, Any] | None = None
     tools: Mapping[str, Tool] | None = None
     response_format: type[BaseModel] | None = None
-
-
 ```
 
 ## Functions
@@ -49,6 +47,7 @@ def infer_db_path(replay_file: Path) -> Path:
             return current
         current = current.parent
     raise FileNotFoundError(f"Could not find a snapshot root above {replay_file}. Use --db-path to point at the FilesystemDatabase root.")
+
 
 def main(argv: list[str] | None = None) -> int:
     """Run the replay CLI."""
@@ -100,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.print_help()
     return 1
 
+
 async def execute_span(
     span_id: UUID,
     *,
@@ -113,6 +113,7 @@ async def execute_span(
         sink_db=sink_db,
     )
     return outcome.result
+
 
 async def experiment_span(
     span_id: UUID,
@@ -153,6 +154,7 @@ async def experiment_span(
         recording_degraded=outcome.context.recording_degraded,
     )
 
+
 async def experiment_batch(
     span_ids: Sequence[UUID],
     source_db: DatabaseReader,
@@ -182,6 +184,7 @@ async def experiment_batch(
     )
     return [result for result in results if result is not None]
 
+
 async def find_experiment_span_ids(
     database: DatabaseReader,
     deployment_id: UUID,
@@ -204,7 +207,6 @@ async def find_experiment_span_ids(
                 continue
         matched.append(span.span_id)
     return matched
-
 ```
 
 ## Examples
@@ -391,46 +393,30 @@ async def test_execute_span_installs_replay_execution_context(memory_database) -
     assert _SEEN_CONTEXT["disable_cache"] is True
 ```
 
-**Execute span copies input artifacts when source and sink differ** (`tests/replay/test_replay_portability.py:17`)
-
-```python
-@pytest.mark.asyncio
-async def test_execute_span_copies_input_artifacts_when_source_and_sink_differ(
-    memory_database,
-    sample_text_doc: ReplayTextDocument,
-) -> None:
-    sink_database = type(memory_database)()
-    await store_document_in_database(memory_database, sample_text_doc)
-    payload = b"binary-payload"
-    payload_sha = compute_content_sha256(payload)
-    await memory_database.save_blob(BlobRecord(content_sha256=payload_sha, content=payload))
-
-    span = make_span(
-        kind="task",
-        name="portable",
-        target=f"function:{__name__}:portability_function",
-        input_value={"document": sample_text_doc, "payload": payload},
-    )
-    await memory_database.insert_span(span)
-
-    result = await execute_span(
-        span.span_id,
-        source_db=memory_database,
-        sink_db=sink_database,
-    )
-
-    assert result == f"{sample_text_doc.name}:{len(payload)}"
-    assert await sink_database.get_document(sample_text_doc.sha256) is not None
-    assert await sink_database.get_blob(payload_sha) is not None
-```
-
 
 ## Error Examples
 
-**Resolve callable rejects unknown target kind** (`tests/replay/test_adapters.py:100`)
+**Replay tool conversation without override tools raises** (`tests/replay/test_bugs_replay.py:167`)
 
 ```python
-def test_resolve_callable_rejects_unknown_target_kind() -> None:
-    with pytest.raises(ValueError, match="is not supported"):
-        resolve_callable(f"unknown:{__name__}:adapter_function", receiver=None)
+def test_replay_tool_conversation_without_override_tools_raises() -> None:
+    """Replaying recorded conversation that used tools without override_tools raises TypeError."""
+    recorded_tools = [{"name": "search_tool", "class_path": "tests.replay.test_bugs_replay:SearchTool"}]
+    arguments: dict[str, Any] = {"tools": recorded_tools, "content": "test"}
+
+    with pytest.raises(TypeError, match="override_tools"):
+        _apply_overrides(receiver=None, arguments=arguments, overrides=None)
+```
+
+**Replay tool conversation without override tools with overrides raises** (`tests/replay/test_bugs_replay.py:176`)
+
+```python
+def test_replay_tool_conversation_without_override_tools_with_overrides_raises() -> None:
+    """Even with model overrides, missing override_tools raises TypeError."""
+    recorded_tools = [{"name": "search_tool", "class_path": "tests.replay.test_bugs_replay:SearchTool"}]
+    arguments: dict[str, Any] = {"tools": recorded_tools, "content": "test"}
+    overrides = FakeOverrides(model="new-model")
+
+    with pytest.raises(TypeError, match="override_tools"):
+        _apply_overrides(receiver=None, arguments=arguments, overrides=overrides)
 ```

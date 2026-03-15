@@ -16,7 +16,7 @@ import pytest
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, PipelineTask
 from ai_pipeline_core._lifecycle_events import TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
 from ai_pipeline_core.deployment._types import (
     FlowCompletedEvent,
@@ -430,7 +430,7 @@ class TestBug7FlowStartedSpanTiming:
                     spans = await db.get_deployment_tree(UUID(event.root_deployment_id))
                     span_ids_at_publish[event.span_id] = any(str(s.span_id) == event.span_id for s in spans)
 
-        db = MemoryDatabase()
+        db = _MemoryDatabase()
         pub = _InstrumentedPublisher()
         deployment = _OneFlowDeployment()
         await deployment.run("bug7", [_make_input_doc()], FlowOptions(), publisher=pub, database=db)
@@ -598,7 +598,7 @@ class TestMinor1CachedFlowReason:
     async def test_cached_flow_reason_not_completed(self):
         from datetime import timedelta
 
-        db = MemoryDatabase()
+        db = _MemoryDatabase()
 
         class _CachingDeployment(PipelineDeployment[FlowOptions, _EventResult]):
             cache_ttl = timedelta(hours=1)

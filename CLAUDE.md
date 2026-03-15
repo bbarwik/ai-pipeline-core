@@ -152,18 +152,20 @@ class VerificationResult(BaseModel):
     is_valid: bool
     summary: str
 
+
 # WRONG — generic scratchpad
 class VerificationResult(BaseModel):
     reasoning: str  # Just "think step by step" in a field
     is_valid: bool
 
+
 # CORRECT — domain-specific decomposition leads to decision
 class VerificationResult(BaseModel):
-    source_content_summary: str   # What the source says
-    report_claims: str            # What the report claims
-    discrepancies: str            # Differences found
-    assessment: str               # Reasoned conclusion
-    is_valid: bool                # Decision follows from decomposition
+    source_content_summary: str  # What the source says
+    report_claims: str  # What the report claims
+    discrepancies: str  # Differences found
+    assessment: str  # Reasoned conclusion
+    is_valid: bool  # Decision follows from decomposition
 ```
 
 ### 2.9 Document XML Wrapping
@@ -233,11 +235,21 @@ When linters, type checkers, semgrep, tests, or CI/CD checks report an issue, in
 
 ### 3.3 AI-Focused Documentation
 
-The framework auto-generates documentation for AI coding agents via `tools/docs-generator/` (separate workspace package):
+The framework auto-generates documentation for AI coding agents via `tools/docs-generator/` (separate workspace package).
+Use the `ai-docs` CLI command:
+
+```bash
+ai-docs generate   # Regenerate .ai-docs/ from source code
+ai-docs check      # Validate completeness, size limits, and private reexports
+```
+
+`make docs-ai-build` / `make docs-ai-check` delegate to `ai-docs`. The pre-commit hook and CI run `ai-docs generate` and fail if `.ai-docs/` becomes stale.
+
+Guide properties:
 - Public/private determined by `_` prefix convention
 - Full source code with comments included
-- Examples extracted from test suite
-- 40KB warning threshold per guide
+- Examples extracted and scored from test suite
+- 40KB warning threshold per guide, 45KB hard limit for README.md
 - CI-enforced freshness
 
 **Visibility by Naming Convention:**
@@ -371,7 +383,10 @@ logger.warning(
     "PromptSpec '%s' field '%s' has a long or multiline value (%d chars). "
     "Field parameters are for short, single-line values (up to %d chars). "
     "Pass longer content as a Document via input_documents and send_spec(documents=[...]).",
-    spec_name, field_name, len(value), MAX_LENGTH,
+    spec_name,
+    field_name,
+    len(value),
+    MAX_LENGTH,
 )
 ```
 

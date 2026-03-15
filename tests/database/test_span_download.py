@@ -7,11 +7,12 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from ai_pipeline_core.database import BlobRecord, DocumentRecord, LogRecord, SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database import DocumentRecord, LogRecord, SpanKind, SpanRecord, SpanStatus
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.database.filesystem._validation import validate_bundle
 from ai_pipeline_core.database.snapshot._download import download_deployment
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
+from ai_pipeline_core.database._types import _BlobRecord
 
 
 def _make_span(**kwargs: object) -> SpanRecord:
@@ -61,13 +62,13 @@ def _make_document(**kwargs: object) -> DocumentRecord:
     return DocumentRecord(**defaults)
 
 
-def _make_blob(**kwargs: object) -> BlobRecord:
+def _make_blob(**kwargs: object) -> _BlobRecord:
     defaults: dict[str, object] = {
         "content_sha256": f"blob-{uuid4().hex}",
         "content": b"blob-content",
     }
     defaults.update(kwargs)
-    return BlobRecord(**defaults)
+    return _BlobRecord(**defaults)
 
 
 def _make_log(**kwargs: object) -> LogRecord:
@@ -88,8 +89,8 @@ def _make_log(**kwargs: object) -> LogRecord:
     return LogRecord(**defaults)
 
 
-async def _seed_source_database() -> tuple[MemoryDatabase, UUID]:
-    source = MemoryDatabase()
+async def _seed_source_database() -> tuple[_MemoryDatabase, UUID]:
+    source = _MemoryDatabase()
     deployment_id = uuid4()
     base = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
 

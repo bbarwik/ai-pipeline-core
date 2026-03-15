@@ -16,7 +16,8 @@ from ai_pipeline_core._codec import CodecImportError
 from ai_pipeline_core._codec import CodecCycleError, CodecError, EncodeResult, EnumDecodeError, SerializedError, UniversalCodec
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import TokenUsage
-from ai_pipeline_core.database import BlobRecord, HydratedDocument
+from ai_pipeline_core.database import HydratedDocument
+from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.llm.conversation import AssistantMessage, Conversation, UserMessage
@@ -56,8 +57,11 @@ class WeatherTool(Tool):
     class Input(BaseModel):
         city: str = Field(description="City name")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content=f"Weather for {input.city}")
+    class Output(BaseModel):
+        weather: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(weather=f"Weather for {input.city}")
 
 
 class NestedPayloadModel(BaseModel):
@@ -75,10 +79,10 @@ class NestedPayloadModel(BaseModel):
 class FakeDatabase:
     """Minimal async database surface used by codec decode tests."""
 
-    blobs: dict[str, BlobRecord] = field(default_factory=dict)
+    blobs: dict[str, _BlobRecord] = field(default_factory=dict)
     documents: dict[str, HydratedDocument] = field(default_factory=dict)
 
-    async def get_blob(self, content_sha256: str) -> BlobRecord | None:
+    async def get_blob(self, content_sha256: str) -> _BlobRecord | None:
         return self.blobs.get(content_sha256)
 
     async def get_document_with_content(self, document_sha256: str) -> HydratedDocument | None:
@@ -250,7 +254,7 @@ def test_pydantic_round_trip_recursively_encodes_nested_special_values() -> None
     database = FakeDatabase()
     _store_document(database, document)
     payload_sha = compute_content_sha256(b"payload")
-    database.blobs[payload_sha] = BlobRecord(content_sha256=payload_sha, content=b"payload")
+    database.blobs[payload_sha] = _BlobRecord(content_sha256=payload_sha, content=b"payload")
     value = NestedPayloadModel(
         document=document,
         blob=b"payload",
@@ -287,7 +291,7 @@ def test_bytes_encode_to_blob_ref_and_decode_with_memoized_sha() -> None:
     value = [b"abc", b"abc"]
     database = FakeDatabase()
     blob_sha = compute_content_sha256(b"abc")
-    database.blobs[blob_sha] = BlobRecord(content_sha256=blob_sha, content=b"abc")
+    database.blobs[blob_sha] = _BlobRecord(content_sha256=blob_sha, content=b"abc")
 
     decoded, encoded = _assert_round_trip(value, db=database)
 
@@ -375,7 +379,7 @@ def test_conversation_round_trip_preserves_private_fields() -> None:
                 "output": {
                     "$type": "pydantic",
                     "class_path": "ai_pipeline_core.llm.tools:ToolOutput",
-                    "data": {"content": "Sunny"},
+                    "data": {"content": "Sunny", "data": None},
                 },
                 "round": 2,
             }
@@ -531,7 +535,7 @@ async def test_decode_async_resolves_database_refs_without_blocking() -> None:
     _store_document(database, document)
     payload = UniversalCodec().encode([document, b"payload"])
     blob_sha = compute_content_sha256(b"payload")
-    database.blobs[blob_sha] = BlobRecord(content_sha256=blob_sha, content=b"payload")
+    database.blobs[blob_sha] = _BlobRecord(content_sha256=blob_sha, content=b"payload")
 
     decoded = await UniversalCodec().decode_async(payload.value, db=database)
 
@@ -549,3 +553,37 @@ def test_sha_sets_include_documents_and_blobs() -> None:
 
     assert encoded.document_shas == frozenset({document.sha256})
     assert encoded.blob_shas == frozenset({compute_content_sha256(b"payload")})
+
+
+# ── Phase 7f: ToolOutput.data codec round-trip ───────────────────────────────
+
+
+def test_tool_output_round_trip_with_data_field() -> None:
+    """ToolOutput with data=SomeBaseModel round-trips through codec correctly."""
+    weather = WeatherTool.Output(weather="Sunny")
+    output = ToolOutput(content='{"weather": "Sunny"}', data=weather)
+    decoded, encoded = _assert_round_trip(output)
+    assert decoded.content == '{"weather": "Sunny"}'
+    assert decoded.data is not None
+
+
+def test_tool_output_round_trip_data_none() -> None:
+    """ToolOutput with data=None round-trips correctly."""
+    output = ToolOutput(content="error message")
+    decoded, encoded = _assert_round_trip(output)
+    assert decoded.content == "error message"
+    assert decoded.data is None
+
+
+def test_old_tool_output_without_data_field_decodes() -> None:
+    """Encoded ToolOutput from before redesign (no data key) decodes with data=None."""
+    codec = UniversalCodec()
+    old_encoded = {
+        "$type": "pydantic",
+        "class_path": "ai_pipeline_core.llm.tools:ToolOutput",
+        "data": {"content": "old format"},
+    }
+    decoded = codec.decode(old_encoded)
+    assert isinstance(decoded, ToolOutput)
+    assert decoded.content == "old format"
+    assert decoded.data is None

@@ -13,7 +13,7 @@ from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
 from ._helpers import _create_publisher, _create_span_database_from_settings
-from ._resolve import DocumentInput, resolve_document_inputs
+from ._resolve import _DocumentInput, resolve_document_inputs
 
 __all__ = [
     "build_integration_meta",
@@ -64,7 +64,7 @@ def build_prefect_flow(deployment: Any) -> Any:
 
     async def _deployment_flow(
         run_id: str,
-        document_inputs: list[DocumentInput],
+        document_inputs: list[_DocumentInput],
         options: FlowOptions,
         parent_execution_id: str | None = None,
         parent_deployment_task_id: str | None = None,

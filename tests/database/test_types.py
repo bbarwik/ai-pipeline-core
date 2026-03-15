@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from ai_pipeline_core.database._types import (
-    BlobRecord,
+    _BlobRecord,
     CostTotals,
     DocumentRecord,
     HydratedDocument,
@@ -122,7 +122,7 @@ def test_document_record_rejects_mismatched_attachment_lengths() -> None:
 
 
 def test_blob_record_defaults_and_immutability() -> None:
-    blob = BlobRecord(content_sha256="blob-sha", content=b"hello")
+    blob = _BlobRecord(content_sha256="blob-sha", content=b"hello")
     assert blob.content_sha256 == "blob-sha"
     assert blob.content == b"hello"
 

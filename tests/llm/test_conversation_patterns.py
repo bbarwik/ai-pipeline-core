@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import CoreMessage, RawToolCall, Role, TokenUsage
 from ai_pipeline_core.llm.conversation import Conversation
-from ai_pipeline_core.llm.tools import Tool, ToolOutput
+from ai_pipeline_core.llm.tools import Tool
 from tests.support.helpers import ConcreteDocument, create_test_model_response
 
 
@@ -101,8 +101,11 @@ class GetWeather(Tool):
     class Input(BaseModel):
         city: str = Field(description="City name")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content=f"Sunny, 22°C in {input.city}")
+    class Output(BaseModel):
+        weather: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(weather=f"Sunny, 22°C in {input.city}")
 
 
 @pytest.mark.ai_docs
@@ -142,4 +145,5 @@ async def test_send_with_tools_auto_loop(monkeypatch):
     record = result.tool_call_records[0]
     assert record.tool is GetWeather
     assert record.round == 1
-    assert "Sunny, 22°C in Paris" in record.output.content
+    assert record.output.data is not None
+    assert record.output.data.weather == "Sunny, 22°C in Paris"

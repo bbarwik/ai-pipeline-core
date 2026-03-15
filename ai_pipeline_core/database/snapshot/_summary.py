@@ -18,6 +18,6 @@ async def generate_summary(reader: DatabaseReader, deployment_id: UUID) -> str:
 
 
 async def generate_costs(reader: DatabaseReader, deployment_id: UUID) -> str:
-    """Generate costs.md content from llm_round spans."""
+    """Generate costs.md content from deployment spans."""
     tree = await reader.get_deployment_tree(deployment_id)
     return generate_costs_from_tree(tree, deployment_id)

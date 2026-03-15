@@ -13,7 +13,7 @@ from ai_pipeline_core.pipeline._execution_context import FlowFrame, set_executio
 from ai_pipeline_core.pipeline._runtime_sinks import build_runtime_sinks
 from ai_pipeline_core.pipeline.limits import _SharedStatus
 from ai_pipeline_core.database import SpanKind, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.pipeline._execution_context import ExecutionContext
 from ai_pipeline_core.settings import settings
 
@@ -50,7 +50,7 @@ class _CacheableTask(PipelineTask):
         return (_OutDoc.derive(derived_from=(documents[0],), name="cached.txt", content=f"call-{cls.run_calls}"),)
 
 
-class _RecordingSpanDatabase(MemoryDatabase):
+class _RecordingSpanDatabase(_MemoryDatabase):
     def __init__(self) -> None:
         super().__init__()
         self.inserted_spans: list[object] = []
@@ -76,7 +76,7 @@ def _make_input() -> _InDoc:
     return _InDoc(name="input.txt", content=b"test-input")
 
 
-def _make_span_context(database: MemoryDatabase) -> ExecutionContext:
+def _make_span_context(database: _MemoryDatabase) -> ExecutionContext:
     deployment_id = uuid7()
     flow_span_id = uuid7()
     return ExecutionContext(

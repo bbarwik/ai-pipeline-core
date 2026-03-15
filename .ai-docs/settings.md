@@ -1,7 +1,7 @@
 # MODULE: settings
 # CLASSES: Settings
 # DEPENDS: BaseSettings
-# VERSION: 0.15.1
+# VERSION: 0.16.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -16,40 +16,39 @@ from ai_pipeline_core import Settings
 class Settings(BaseSettings):
     """Base configuration for AI Pipeline applications.
 
-Fields map to environment variables via Pydantic BaseSettings
-(e.g. ``clickhouse_host`` → ``CLICKHOUSE_HOST``). Uses ``.env`` file when present.
+    Fields map to environment variables via Pydantic BaseSettings
+    (e.g. ``clickhouse_host`` → ``CLICKHOUSE_HOST``). Uses ``.env`` file when present.
 
-Inherit to add application-specific fields::
+    Inherit to add application-specific fields::
 
-    class ProjectSettings(Settings):
-        app_name: str = "my-app"
+        class ProjectSettings(Settings):
+            app_name: str = "my-app"
 
-    settings = ProjectSettings()"""
-    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore', frozen=True)  # Settings are immutable after initialization
-    openai_base_url: str = ''
-    openai_api_key: str = ''
-    prefect_api_url: str = ''
-    prefect_api_key: str = ''
-    prefect_api_auth_string: str = ''
-    prefect_work_pool_name: str = 'default'
-    prefect_work_queue_name: str = 'default'
-    prefect_gcs_bucket: str = ''
-    gcs_service_account_file: str = ''  # Path to GCS service account JSON file
-    clickhouse_host: str = ''
+        settings = ProjectSettings()"""
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", frozen=True)  # Settings are immutable after initialization
+    openai_base_url: str = ""
+    openai_api_key: str = ""
+    prefect_api_url: str = ""
+    prefect_api_key: str = ""
+    prefect_api_auth_string: str = ""
+    prefect_work_pool_name: str = "default"
+    prefect_work_queue_name: str = "default"
+    prefect_gcs_bucket: str = ""
+    gcs_service_account_file: str = ""  # Path to GCS service account JSON file
+    clickhouse_host: str = ""
     clickhouse_port: int = 8443
-    clickhouse_database: str = 'default'
-    clickhouse_user: str = 'default'
-    clickhouse_password: str = ''
+    clickhouse_database: str = "default"
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
     clickhouse_secure: bool = True
     clickhouse_connect_timeout: int = 10
     clickhouse_send_receive_timeout: int = 30
     doc_summary_enabled: bool = True
-    doc_summary_model: str = 'gemini-3.1-flash-lite'
-    pubsub_project_id: str = ''
-    pubsub_topic_id: str = ''
-    lmnr_project_api_key: str = ''
-
-
+    doc_summary_model: str = "gemini-3.1-flash-lite"
+    pubsub_project_id: str = ""
+    pubsub_topic_id: str = ""
+    lmnr_project_api_key: str = ""
 ```
 
 ## Examples

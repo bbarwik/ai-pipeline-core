@@ -1,15 +1,15 @@
 # MODULE: deployment
-# CLASSES: DeploymentResult, FlowAction, FlowDirective, PipelineDeployment, RemoteDeployment, ReconstructedEvent, DocumentInput
+# CLASSES: DeploymentResult, FlowAction, FlowDirective, PipelineDeployment, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.15.1
+# VERSION: 0.16.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
 from ai_pipeline_core import DeploymentResult, PipelineDeployment, RemoteDeployment
-from ai_pipeline_core.deployment import DocumentInput, FlowAction, FlowDirective, ReconstructedEvent, reconstruct_lifecycle_events
+from ai_pipeline_core.deployment import FlowAction, FlowDirective
 ```
 
 ## Public API
@@ -176,7 +176,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             output_dir.mkdir(parents=True, exist_ok=True)
 
         with prefect_test_harness(), disable_run_logger():
-            result = asyncio.run(self.run(run_id, documents, options, publisher=publisher, database=MemoryDatabase()))
+            result = asyncio.run(self.run(run_id, documents, options, publisher=publisher, database=_MemoryDatabase()))
 
         if output_dir:
             (output_dir / "result.json").write_text(result.model_dump_json(indent=2))
@@ -381,92 +381,6 @@ Set ``deployment_class`` to enable inline mode (test/local):
             return result
 
 
-@dataclass(frozen=True, slots=True)
-class ReconstructedEvent:
-    """A lifecycle event reconstructed from database spans."""
-    event_type: EventType
-    span_id: str
-    timestamp: datetime
-    data: dict[str, Any]
-
-
-class DocumentInput(_InputBase):
-    """Document provided to a deployment — inline content or a URL reference."""
-    name: str = Field(default='', description="Document filename (e.g. 'task.md'). Auto-derived from URL path if omitted.")  # Document filename (e.g. 'task.md'). Auto-derived from URL path if omitted.
-    description: str = Field(default='', description='Human-readable description of this document.')  # Human-readable description of this document.
-    summary: str = Field(default='', description='Inline summary of the document content.')  # Inline summary of the document content.
-    class_name: str = Field(default='', description='Document type class name. Required when the pipeline accepts multiple input types.')  # Document type class name. Required when the pipeline accepts multiple input types.
-    derived_from: tuple[str, ...] = Field(default=(), description='Content provenance: SHA256 hashes of source documents or URIs.')  # Content provenance: SHA256 hashes of source documents or URIs.
-    triggered_by: tuple[str, ...] = Field(default=(), description='Causal provenance: SHA256 hashes of triggering documents.')  # Causal provenance: SHA256 hashes of triggering documents.
-    attachments: tuple[AttachmentInput, ...] = Field(default=(), description='Secondary content attached to this document.')  # Secondary content attached to this document.
-    STRIP_KEYS: ClassVar[frozenset[str]] = frozenset({'id', 'sha256', 'content_sha256', 'size', 'mime_type'})
-
-
-```
-
-## Functions
-
-```python
-async def reconstruct_lifecycle_events(
-    reader: DatabaseReader,
-    root_deployment_id: UUID,
-) -> list[ReconstructedEvent]:
-    """Reconstruct lifecycle events from a deployment's span tree.
-
-    Returns events in chronological order. Each event's data dict matches
-    the payload shape published by PubSubPublisher (via event_to_payload()).
-
-    Heartbeats are not reconstructed (ephemeral, not stored in spans).
-    """
-    all_spans = await reader.get_deployment_tree(root_deployment_id)
-
-    lifecycle_spans = [s for s in all_spans if s.kind in _LIFECYCLE_KINDS]
-    if not lifecycle_spans:
-        return []
-
-    all_doc_shas: set[str] = set()
-    for span in lifecycle_spans:
-        all_doc_shas.update(span.input_document_shas)
-        all_doc_shas.update(span.output_document_shas)
-
-    doc_map: dict[str, DocumentRecord] = {}
-    if all_doc_shas:
-        doc_map = await reader.get_documents_batch(sorted(all_doc_shas))
-
-    span_by_id: dict[UUID, SpanRecord] = {s.span_id: s for s in lifecycle_spans}
-    meta_by_id: dict[UUID, dict[str, Any]] = {s.span_id: _parse_meta(s) for s in lifecycle_spans}
-
-    deployment_span: SpanRecord | None = None
-    for span in lifecycle_spans:
-        if span.kind == SpanKind.DEPLOYMENT:
-            deployment_span = span
-            break
-
-    parent_task_id_str: str | None = None
-    deployment_span_id_str = ""
-    if deployment_span is not None:
-        parent_task_id_str = str(deployment_span.parent_span_id) if deployment_span.parent_span_id else None
-        deployment_span_id_str = str(deployment_span.span_id)
-
-    events: list[ReconstructedEvent] = []
-
-    for span in lifecycle_spans:
-        meta = meta_by_id[span.span_id]
-
-        if span.kind == SpanKind.DEPLOYMENT:
-            events.extend(_reconstruct_deployment_events(span, meta, parent_task_id_str))
-
-        elif span.kind == SpanKind.FLOW:
-            events.extend(_reconstruct_flow_events(span, meta, parent_task_id_str, deployment_span_id_str, doc_map))
-
-        elif span.kind == SpanKind.TASK:
-            flow_span = span_by_id.get(span.parent_span_id) if span.parent_span_id else None
-            flow_meta = meta_by_id.get(span.parent_span_id, {}) if span.parent_span_id else {}
-            events.extend(_reconstruct_task_events(span, meta, parent_task_id_str, flow_span=flow_span, flow_meta=flow_meta, doc_map=doc_map))
-
-    events.sort(key=_sort_key)
-    return events
-
 ```
 
 ## Examples
@@ -490,19 +404,6 @@ def test_deployment_result_data(self):
     assert data.success is True
     dumped = data.model_dump()
     assert "success" in dumped
-```
-
-**Document input fields have descriptions** (`tests/deployment/test_deploy.py:311`)
-
-```python
-def test_document_input_fields_have_descriptions(self):
-    """All DocumentInput fields must have a description in JSON schema output."""
-    from ai_pipeline_core.deployment._resolve import DocumentInput
-
-    schema = DocumentInput.model_json_schema()
-    props = schema["properties"]
-    for field_name in ("content", "url", "name", "description", "class_name", "derived_from", "triggered_by", "attachments"):
-        assert "description" in props[field_name], f"DocumentInput.{field_name} missing description"
 ```
 
 **Extracts remote deployment params** (`tests/deployment/test_helpers.py:57`)
@@ -578,67 +479,6 @@ def test_auto_derived(self):
 
 ## Error Examples
 
-**Aggregates errors** (`tests/deployment/test_resolve.py:179`)
-
-```python
-async def test_aggregates_errors(self):
-    inputs = [
-        DocumentInput(content="ok", name="ok.txt", class_name="NonExistent"),
-        DocumentInput(content="ok", name="ok2.txt", class_name="AlsoNonExistent"),
-    ]
-    with pytest.raises(ValueError, match="Failed to resolve 2/2"):
-        await resolve_document_inputs(inputs, [ResolveDoc])
-```
-
-**Resolve rejects derived from on input** (`tests/deployment/test_flow_planning.py:166`)
-
-```python
-@pytest.mark.asyncio
-async def test_resolve_rejects_derived_from_on_input() -> None:
-    """DocumentInput with derived_from raises ValueError."""
-    inputs = [DocumentInput(content="hello", name="x.txt", class_name="ResolveInputDoc", derived_from=("SOMESHA256",))]
-    with pytest.raises(ValueError, match="cannot set derived_from"):
-        await resolve_document_inputs(inputs, [ResolveInputDoc])
-```
-
-**Resolve rejects triggered by on input** (`tests/deployment/test_flow_planning.py:174`)
-
-```python
-@pytest.mark.asyncio
-async def test_resolve_rejects_triggered_by_on_input() -> None:
-    """DocumentInput with triggered_by raises ValueError."""
-    inputs = [DocumentInput(content="hello", name="x.txt", class_name="ResolveInputDoc", triggered_by=("SOMESHA256",))]
-    with pytest.raises(ValueError, match="cannot set derived_from"):
-        await resolve_document_inputs(inputs, [ResolveInputDoc])
-```
-
-**Ambiguous raises** (`tests/deployment/test_resolve.py:146`)
-
-```python
-async def test_ambiguous_raises(self):
-    inputs = [DocumentInput(content="data", name="doc.txt")]
-    with pytest.raises(ValueError, match="Multiple input types"):
-        await resolve_document_inputs(inputs, [ResolveDoc, OtherDoc], start_step_input_types=[ResolveDoc, OtherDoc])
-```
-
-**Attachment no name inline raises** (`tests/deployment/test_resolve.py:164`)
-
-```python
-async def test_attachment_no_name_inline_raises(self):
-    att = AttachmentInput(content="data", name="")
-    inputs = [DocumentInput(content="main", name="d.txt", class_name="ResolveDoc", attachments=(att,))]
-    with pytest.raises(ValueError, match="must have a name"):
-        await resolve_document_inputs(inputs, [ResolveDoc])
-```
-
-**Both raises** (`tests/deployment/test_resolve.py:47`)
-
-```python
-def test_both_raises(self):
-    with pytest.raises(ValueError, match="cannot have both"):
-        DocumentInput(url="https://example.com", content="hello", name="d")
-```
-
 **Deployment requires build flows override** (`tests/deployment/test_deployment_base.py:705`)
 
 ```python
@@ -650,4 +490,64 @@ def test_deployment_requires_build_flows_override():
             def build_result(run_id, documents, options):
                 _ = (run_id, documents, options)
                 return _TestResult(success=True)
+```
+
+**Rejects empty run id** (`tests/deployment/test_remote_deployment.py:480`)
+
+```python
+async def test_rejects_empty_run_id(self):
+    class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+        pass
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        with pipeline_test_context(run_id=""):
+            await Foo().run((), FlowOptions())
+```
+
+**Rejects invalid run id** (`tests/deployment/test_remote_deployment.py:472`)
+
+```python
+async def test_rejects_invalid_run_id(self):
+    class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+        pass
+
+    with pytest.raises(ValueError, match="contains invalid characters"):
+        with pipeline_test_context(run_id="invalid run id with spaces"):
+            await Foo().run((), FlowOptions())
+```
+
+**Rejects no generic params** (`tests/deployment/test_remote_deployment.py:172`)
+
+```python
+def test_rejects_no_generic_params(self):
+    with pytest.raises(TypeError, match="must specify 2 Generic parameters"):
+
+        class Bad(RemoteDeployment):  # type: ignore[type-arg]
+            pass
+```
+
+**Rejects non deployment result** (`tests/deployment/test_remote_deployment.py:155`)
+
+```python
+def test_rejects_non_deployment_result(self):
+    class NotAResult(BaseModel):
+        x: int = 1
+
+    with pytest.raises(TypeError, match="DeploymentResult subclass"):
+
+        class Bad(RemoteDeployment[FlowOptions, NotAResult]):  # type: ignore[type-var]
+            pass
+```
+
+**Rejects non flow options** (`tests/deployment/test_remote_deployment.py:135`)
+
+```python
+def test_rejects_non_flow_options(self):
+    class NotFlowOptions(BaseModel):
+        x: int = 1
+
+    with pytest.raises(TypeError, match="FlowOptions subclass"):
+
+        class Bad(RemoteDeployment[NotFlowOptions, SimpleResult]):  # type: ignore[type-var]
+            pass
 ```

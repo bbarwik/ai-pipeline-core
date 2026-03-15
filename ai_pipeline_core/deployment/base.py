@@ -25,14 +25,14 @@ from prefect.testing.utilities import prefect_test_harness
 from pydantic import BaseModel, ConfigDict
 
 from ai_pipeline_core.database import CostTotals, SpanKind, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.logger._buffer import ExecutionLogBuffer
 from ai_pipeline_core.pipeline._execution_context import (
     ExecutionContext,
     FlowFrame,
-    RunContext,
+    _RunContext,
     get_execution_context,
     get_sinks,
     record_lifecycle_event,
@@ -489,7 +489,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         limits_status = _SharedStatus()
         run_scope = contextlib.ExitStack()
         run_scope.enter_context(_set_limits_state(_LimitsState(limits=self.concurrency_limits, status=limits_status)))
-        run_scope.enter_context(set_run_context(RunContext(run_id=run_id, execution_id=run_execution_id)))
+        run_scope.enter_context(set_run_context(_RunContext(run_id=run_id, execution_id=run_execution_id)))
         run_scope.enter_context(
             set_execution_context(
                 ExecutionContext(
@@ -947,7 +947,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
             output_dir.mkdir(parents=True, exist_ok=True)
 
         with prefect_test_harness(), disable_run_logger():
-            result = asyncio.run(self.run(run_id, documents, options, publisher=publisher, database=MemoryDatabase()))
+            result = asyncio.run(self.run(run_id, documents, options, publisher=publisher, database=_MemoryDatabase()))
 
         if output_dir:
             (output_dir / "result.json").write_text(result.model_dump_json(indent=2))

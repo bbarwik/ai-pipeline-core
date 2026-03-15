@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/enforce_dev_cli.py",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/enforce_dev_cli.py",
             "timeout": 5
           }
         ]

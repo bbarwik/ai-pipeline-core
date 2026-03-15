@@ -52,7 +52,6 @@ from ai_pipeline_core import (
     PipelineTask,
     RemoteDeployment,
     Tool,
-    ToolOutput,
     find_document,
     get_run_id,
     safe_gather,
@@ -175,14 +174,21 @@ class LookupMarketData(Tool):
     class Input(BaseModel):
         company_name: str = Field(description="Company name to look up (case-insensitive)")
 
-    async def execute(self, input: Input) -> ToolOutput:
+    class Output(BaseModel):
+        company: str
+        data: dict[str, str] | None
+        available_companies: list[str] | None = None
+
+    async def run(self, input: Input) -> Output:
         key = input.company_name.lower().strip()
         for name, data in MARKET_DATA.items():
             if name in key or key in name:
-                lines = [f"Market data for {input.company_name}:"]
-                lines.extend(f"  - {field.replace('_', ' ').title()}: {value}" for field, value in data.items())
-                return ToolOutput(content="\n".join(lines))
-        return ToolOutput(content=f"No market data found for '{input.company_name}'. Available companies: {', '.join(MARKET_DATA.keys())}")
+                return self.Output(company=input.company_name, data=data)
+        return self.Output(
+            company=input.company_name,
+            data=None,
+            available_companies=list(MARKET_DATA.keys()),
+        )
 
 
 class LookupIndustryTrends(Tool):
@@ -191,12 +197,21 @@ class LookupIndustryTrends(Tool):
     class Input(BaseModel):
         segment: str = Field(description="Market segment or industry to research")
 
-    async def execute(self, input: Input) -> ToolOutput:
+    class Output(BaseModel):
+        segment: str
+        trends: str | None
+        available_segments: list[str] | None = None
+
+    async def run(self, input: Input) -> Output:
         key = input.segment.lower().strip()
         for segment, intel in INDUSTRY_TRENDS.items():
             if any(word in key for word in segment.split()):
-                return ToolOutput(content=f"Industry trends for '{segment}':\n{intel}")
-        return ToolOutput(content=f"No industry data for '{input.segment}'. Available segments: {', '.join(INDUSTRY_TRENDS.keys())}")
+                return self.Output(segment=segment, trends=intel)
+        return self.Output(
+            segment=input.segment,
+            trends=None,
+            available_segments=list(INDUSTRY_TRENDS.keys()),
+        )
 
 
 # =============================================================================
@@ -420,7 +435,7 @@ class CompetitorAnalyzer(RemoteDeployment[CompetitiveIntelOptions, CompetitorAna
     """Typed client for the competitor analysis child deployment.
 
     In production: runs via Prefect on a remote worker (ClickHouseDatabase).
-    In this example: falls back to inline mode (FilesystemDatabase/MemoryDatabase).
+    In this example: falls back to inline mode (FilesystemDatabase/_MemoryDatabase).
     """
 
     deployment_class = f"{__name__}:CompetitorAnalysisPipeline"

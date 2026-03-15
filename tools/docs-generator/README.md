@@ -192,21 +192,21 @@ The marker line itself is stripped from the rendered example.
 
 ```bash
 # Generate .ai-docs/ from source
+ai-docs generate
+# or via make:
 make docs-ai-build
-# or directly:
-python -m docs_generator generate
 
 # Validate completeness and size
+ai-docs check
+# or via make:
 make docs-ai-check
-# or directly:
-python -m docs_generator check
 ```
 
 ### CLI options
 
 ```bash
-python -m docs_generator --source-dir <path> --tests-dir <path> --output-dir <path> generate
-python -m docs_generator --source-dir <path> --output-dir <path> check
+ai-docs --source-dir <path> --tests-dir <path> --output-dir <path> generate
+ai-docs --source-dir <path> --output-dir <path> check
 ```
 
 All paths auto-detect from the repo root if omitted.

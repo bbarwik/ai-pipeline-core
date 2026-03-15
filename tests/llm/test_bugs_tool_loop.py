@@ -14,11 +14,11 @@ from pydantic import BaseModel, Field
 
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import CoreMessage, Role
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.exceptions import LLMError
 from ai_pipeline_core.llm._tool_loop import execute_tool_loop
-from ai_pipeline_core.llm.tools import Tool, ToolOutput
+from ai_pipeline_core.llm.tools import Tool
 from ai_pipeline_core.pipeline._execution_context import ExecutionContext, set_execution_context
 from ai_pipeline_core.pipeline._runtime_sinks import build_runtime_sinks
 from ai_pipeline_core.pipeline.limits import _SharedStatus
@@ -33,8 +33,11 @@ class SearchTool(Tool):
     class Input(BaseModel):
         query: str = Field(description="Search query")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content=f"Results for: {input.query}")
+    class Output(BaseModel):
+        results: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(results=f"Results for: {input.query}")
 
 
 @dataclass(frozen=True)
@@ -48,7 +51,7 @@ def _build_msg(tid: str, fn: str, content: str) -> _FakeToolResultMsg:
     return _FakeToolResultMsg(tool_call_id=tid, function_name=fn, content=content)
 
 
-def _make_context(database: MemoryDatabase) -> ExecutionContext:
+def _make_context(database: _MemoryDatabase) -> ExecutionContext:
     deployment_id = uuid7()
     span_id = uuid7()
     return ExecutionContext(
@@ -92,7 +95,7 @@ async def test_forced_final_omits_tools() -> None:
             )
         return make_response(content="Final synthesis")
 
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     with set_execution_context(_make_context(database)):
         await execute_tool_loop(
             invoke_llm=mock_invoke,
@@ -139,7 +142,7 @@ async def test_forced_final_failure_preserves_tool_records() -> None:
         # Forced final fails
         raise LLMError("Empty response content — model returned no text and no tool calls.")
 
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     with set_execution_context(_make_context(database)):
         msgs, response, records = await execute_tool_loop(
             invoke_llm=mock_invoke,
@@ -180,7 +183,7 @@ async def test_forced_final_failure_preserves_accumulated_messages() -> None:
             )
         raise LLMError("Forced final failed")
 
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     with set_execution_context(_make_context(database)):
         msgs, response, records = await execute_tool_loop(
             invoke_llm=mock_invoke,

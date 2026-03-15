@@ -9,8 +9,8 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
-from ai_pipeline_core.database import BlobRecord
 from ai_pipeline_core.database._documents import document_to_blobs, document_to_record
+from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.logger import get_pipeline_logger
@@ -66,7 +66,7 @@ async def _persist_documents_to_database(
 
     document_records = [document_to_record(doc) for doc in documents]
     seen_content_sha256s: set[str] = set()
-    blob_records: list[BlobRecord] = []
+    blob_records: list[_BlobRecord] = []
     for doc in documents:
         for blob in document_to_blobs(doc):
             if blob.content_sha256 not in seen_content_sha256s:

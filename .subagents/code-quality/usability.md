@@ -63,9 +63,10 @@ logger.warning("Field '%s' value is too long (%d chars).", field_name, len(value
 
 # Correct — states problem, correct usage, and fix
 logger.warning(
-    "Field '%s' has %d chars. Field parameters are for short values (up to %d chars). "
-    "For longer content, pass it as a Document via input_documents.",
-    field_name, len(value), MAX_LENGTH,
+    "Field '%s' has %d chars. Field parameters are for short values (up to %d chars). For longer content, pass it as a Document via input_documents.",
+    field_name,
+    len(value),
+    MAX_LENGTH,
 )
 ```
 

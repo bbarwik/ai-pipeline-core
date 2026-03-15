@@ -652,5 +652,10 @@ def _read_all_guides(ai_docs_dir: Path) -> str:
     return "\n".join([guide.read_text() for guide in sorted(ai_docs_dir.glob("*.md"))])
 
 
+def _cli_entry() -> None:
+    """Entry point for the ``ai-docs`` console script."""
+    raise SystemExit(main())
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

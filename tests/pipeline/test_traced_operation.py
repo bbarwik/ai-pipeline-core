@@ -12,7 +12,7 @@ from ai_pipeline_core import traced_operation
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import TokenUsage
 from ai_pipeline_core.database import SpanKind, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm.conversation import Conversation
@@ -37,7 +37,7 @@ class _TracedOutputDoc(Document):
     """Output document for traced_operation tests."""
 
 
-class _RecordingSpanDatabase(MemoryDatabase):
+class _RecordingSpanDatabase(_MemoryDatabase):
     def __init__(self) -> None:
         super().__init__()
         self.inserted_spans: list[object] = []
@@ -73,7 +73,7 @@ def _make_fake_generate(results: list[ModelResponse[str] | BaseException]):
     return _fake_generate
 
 
-def _make_context_with_db(database: MemoryDatabase) -> ExecutionContext:
+def _make_context_with_db(database: _MemoryDatabase) -> ExecutionContext:
     deployment_id = uuid7()
     flow_span_id = uuid7()
     return ExecutionContext(

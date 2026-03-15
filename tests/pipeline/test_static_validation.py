@@ -297,7 +297,7 @@ def test_pipeline_flow_rejects_bare_document_in_return() -> None:
 def test_pipeline_task_allows_conversation_input() -> None:
     class GoodTask(PipelineTask):
         @classmethod
-        async def run(cls, conv: Conversation[None], source: InputDoc) -> tuple[OutputDoc, ...]:
+        async def run(cls, conv: Conversation[str], source: InputDoc) -> tuple[OutputDoc, ...]:
             _ = (cls, conv, source)
             return ()
 

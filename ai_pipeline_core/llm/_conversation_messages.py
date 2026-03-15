@@ -7,7 +7,6 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ai_pipeline_core._codec import UniversalCodec
 from ai_pipeline_core._llm_core import CoreMessage
 from ai_pipeline_core._llm_core._validation import validate_text
 from ai_pipeline_core._llm_core.model_response import ModelResponse
@@ -17,7 +16,7 @@ from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.llm._images import validated_binary_parts
 from ai_pipeline_core.logger import get_pipeline_logger
 
-from .tools import Tool, to_snake_case
+from .tools import Tool
 
 __all__ = [
     "AnyMessage",
@@ -268,11 +267,9 @@ def _prompt_parts(content: ConversationContent) -> tuple[str, tuple[str, ...]]:
 def _serialize_tool_config(tool: Tool) -> dict[str, Any]:
     """Serialize tool metadata for conversation detail_json."""
     tool_cls = type(tool)
-    constructor_args = UniversalCodec().encode(tool.__dict__).value
     return {
-        "name": to_snake_case(tool_cls.__name__),
+        "name": tool_cls.name,
         "class_path": f"{tool_cls.__module__}:{tool_cls.__qualname__}",
-        "constructor_args": constructor_args,
     }
 
 

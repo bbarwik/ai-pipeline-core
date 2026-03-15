@@ -33,7 +33,6 @@ from ai_pipeline_core.database._types import (
     TOKENS_INPUT_KEY,
     TOKENS_OUTPUT_KEY,
     TOKENS_REASONING_KEY,
-    BlobRecord,
     CostTotals,
     DocumentRecord,
     HydratedDocument,
@@ -41,6 +40,7 @@ from ai_pipeline_core.database._types import (
     SpanKind,
     SpanRecord,
     SpanStatus,
+    _BlobRecord,
     get_token_count,
 )
 from ai_pipeline_core.database.filesystem._paths import run_directory_name, span_filename
@@ -355,7 +355,7 @@ class FilesystemDatabase:
         self._documents[record.document_sha256] = record
         self._document_paths[record.document_sha256] = path
 
-    def _save_blob_sync(self, blob: BlobRecord) -> None:
+    def _save_blob_sync(self, blob: _BlobRecord) -> None:
         self._ensure_writable("save blobs")
         content_path = self._blob_content_path(blob.content_sha256)
         if content_path.exists():
@@ -366,7 +366,7 @@ class FilesystemDatabase:
         for record in records:
             self._save_document_sync(record)
 
-    def _save_blob_batch_sync(self, blobs: list[BlobRecord]) -> None:
+    def _save_blob_batch_sync(self, blobs: list[_BlobRecord]) -> None:
         for blob in blobs:
             self._save_blob_sync(blob)
 
@@ -570,21 +570,19 @@ class FilesystemDatabase:
         return max(matches, key=lambda span: (span.ended_at or span.started_at, span.version, str(span.span_id)))
 
     def _get_deployment_cost_totals_sync(self, root_deployment_id: UUID) -> CostTotals:
-        totals = CostTotals()
+        cost_usd = 0.0
+        ti, to, tc, tr = 0, 0, 0, 0
         for span in self._spans.values():
             if span.root_deployment_id != root_deployment_id:
                 continue
-            if span.kind != SpanKind.LLM_ROUND:
-                continue
-            metrics = parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json")
-            totals = CostTotals(
-                cost_usd=totals.cost_usd + span.cost_usd,
-                tokens_input=totals.tokens_input + get_token_count(metrics, TOKENS_INPUT_KEY),
-                tokens_output=totals.tokens_output + get_token_count(metrics, TOKENS_OUTPUT_KEY),
-                tokens_cache_read=totals.tokens_cache_read + get_token_count(metrics, TOKENS_CACHE_READ_KEY),
-                tokens_reasoning=totals.tokens_reasoning + get_token_count(metrics, TOKENS_REASONING_KEY),
-            )
-        return totals
+            cost_usd += span.cost_usd
+            if span.kind == SpanKind.LLM_ROUND:
+                metrics = parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json")
+                ti += get_token_count(metrics, TOKENS_INPUT_KEY)
+                to += get_token_count(metrics, TOKENS_OUTPUT_KEY)
+                tc += get_token_count(metrics, TOKENS_CACHE_READ_KEY)
+                tr += get_token_count(metrics, TOKENS_REASONING_KEY)
+        return CostTotals(cost_usd=cost_usd, tokens_input=ti, tokens_output=to, tokens_cache_read=tc, tokens_reasoning=tr)
 
     def _get_deployment_span_count_sync(self, root_deployment_id: UUID, kinds: list[str] | None) -> int:
         if kinds == []:
@@ -623,16 +621,16 @@ class FilesystemDatabase:
     def _get_documents_batch_sync(self, sha256s: list[str]) -> dict[str, DocumentRecord]:
         return {sha: self._documents[sha] for sha in sha256s if sha in self._documents}
 
-    def _get_blob_sync(self, content_sha256: str) -> BlobRecord | None:
+    def _get_blob_sync(self, content_sha256: str) -> _BlobRecord | None:
         path = self._blob_content_path(content_sha256)
         if not path.exists():
             return None
-        return BlobRecord(
+        return _BlobRecord(
             content_sha256=content_sha256,
             content=path.read_bytes(),
         )
 
-    def _get_blobs_batch_sync(self, content_sha256s: list[str]) -> dict[str, BlobRecord]:
+    def _get_blobs_batch_sync(self, content_sha256s: list[str]) -> dict[str, _BlobRecord]:
         return {content_sha256: blob for content_sha256 in content_sha256s if (blob := self._get_blob_sync(content_sha256)) is not None}
 
     def _get_document_with_content_sync(self, document_sha256: str) -> HydratedDocument | None:
@@ -693,6 +691,21 @@ class FilesystemDatabase:
             key=log_sort_key,
         )
 
+    def _find_documents_by_name_sync(self, names: list[str], document_type: str | None) -> dict[str, DocumentRecord]:
+        if not names:
+            return {}
+        name_set = set(names)
+        found: dict[str, DocumentRecord] = {}
+        for record in self._documents.values():
+            if record.name not in name_set:
+                continue
+            if document_type is not None and record.document_type != document_type:
+                continue
+            existing = found.get(record.name)
+            if existing is None or record.document_sha256 > existing.document_sha256:
+                found[record.name] = record
+        return found
+
     async def insert_span(self, span: SpanRecord) -> None:
         await self._run_write(self._save_span_sync, span)
 
@@ -702,10 +715,10 @@ class FilesystemDatabase:
     async def save_document_batch(self, records: list[DocumentRecord]) -> None:
         await self._run_write(self._save_document_batch_sync, records)
 
-    async def save_blob(self, blob: BlobRecord) -> None:
+    async def save_blob(self, blob: _BlobRecord) -> None:
         await self._run_write(self._save_blob_sync, blob)
 
-    async def save_blob_batch(self, blobs: list[BlobRecord]) -> None:
+    async def save_blob_batch(self, blobs: list[_BlobRecord]) -> None:
         await self._run_write(self._save_blob_batch_sync, blobs)
 
     async def save_logs_batch(self, logs: list[LogRecord]) -> None:
@@ -782,10 +795,10 @@ class FilesystemDatabase:
     async def get_all_document_shas_for_tree(self, root_deployment_id: UUID) -> set[str]:
         return await self._run(self._get_all_document_shas_for_tree_sync, root_deployment_id)
 
-    async def get_blob(self, content_sha256: str) -> BlobRecord | None:
+    async def get_blob(self, content_sha256: str) -> _BlobRecord | None:
         return await self._run(self._get_blob_sync, content_sha256)
 
-    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, BlobRecord]:
+    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, _BlobRecord]:
         return await self._run(self._get_blobs_batch_sync, content_sha256s)
 
     async def get_span_logs(
@@ -814,3 +827,11 @@ class FilesystemDatabase:
         category: str | None = None,
     ) -> list[LogRecord]:
         return await self._run(self._get_deployment_logs_batch_sync, deployment_ids, level, category)
+
+    async def find_documents_by_name(
+        self,
+        names: list[str],
+        *,
+        document_type: str | None = None,
+    ) -> dict[str, DocumentRecord]:
+        return await self._run(self._find_documents_by_name_sync, names, document_type)

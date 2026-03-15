@@ -4,11 +4,11 @@ import pytest
 
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.pipeline._execution_context import (
-    RunContext,
     _TaskDocumentContext,
     _run_context,
     set_run_context,
 )
+from ai_pipeline_core.pipeline._execution_context import _RunContext
 
 
 # --- Concrete document subclass for testing ---
@@ -37,11 +37,11 @@ def _make_doc(
 
 class TestRunContext:
     def test_creation(self):
-        ctx = RunContext(run_id="project/flow/run123")
+        ctx = _RunContext(run_id="project/flow/run123")
         assert ctx.run_id == "project/flow/run123"
 
     def test_frozen(self):
-        ctx = RunContext(run_id="test")
+        ctx = _RunContext(run_id="test")
         with pytest.raises(AttributeError):
             ctx.run_id = "changed"  # type: ignore[misc]
 
@@ -49,13 +49,13 @@ class TestRunContext:
         assert _run_context.get() is None
 
     def test_set_and_get(self):
-        ctx = RunContext(run_id="my-run")
+        ctx = _RunContext(run_id="my-run")
         with set_run_context(ctx):
             assert _run_context.get() is ctx
 
     def test_token_restores_previous(self):
-        ctx1 = RunContext(run_id="first")
-        ctx2 = RunContext(run_id="second")
+        ctx1 = _RunContext(run_id="first")
+        ctx2 = _RunContext(run_id="second")
         with set_run_context(ctx1):
             with set_run_context(ctx2):
                 assert _run_context.get() is ctx2
@@ -63,14 +63,14 @@ class TestRunContext:
         assert _run_context.get() is None
 
     def test_execution_id_defaults_to_none(self):
-        ctx = RunContext(run_id="test")
+        ctx = _RunContext(run_id="test")
         assert ctx.execution_id is None
 
     def test_execution_id_stored(self):
         from uuid import uuid4
 
         uid = uuid4()
-        ctx = RunContext(run_id="test", execution_id=uid)
+        ctx = _RunContext(run_id="test", execution_id=uid)
         assert ctx.execution_id == uid
 
 

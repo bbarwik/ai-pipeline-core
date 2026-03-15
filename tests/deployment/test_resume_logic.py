@@ -6,7 +6,7 @@ Tests: cache TTL, option/input change invalidation, crash-retry resume, complete
 import pytest
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, PipelineFlow, PipelineTask
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment import FlowAction, FlowDirective
 
 from .conftest import OutputDoc, StageOne, StageTwo, _TestOptions, _TestResult
@@ -199,7 +199,7 @@ class TestResumeAfterSuccess:
         input_doc = ResumeInputDoc.create_root(name="input.txt", content="test input", reason="test")
         deployment = NormalDeployment()
         options = Resume_TestOptions()
-        db = MemoryDatabase()
+        db = _MemoryDatabase()
 
         # First run — flow executes fully
         await deployment.run("test-project", [input_doc], options, database=db)
@@ -236,7 +236,7 @@ class TestResumeWithDifferentOptions:
         input_doc = ResumeInputDoc.create_root(name="input.txt", content="test input", reason="test")
 
         deployment = _OptionedDeployment()
-        db = MemoryDatabase()
+        db = _MemoryDatabase()
 
         await deployment.run("test-project", [input_doc], _OptionedOptions(flavor="vanilla"), database=db)
         assert _flow_call_count == 1
@@ -261,7 +261,7 @@ class TestResumeWithDifferentInputs:
 
         deployment = NormalDeployment()
         options = Resume_TestOptions()
-        db = MemoryDatabase()
+        db = _MemoryDatabase()
 
         await deployment.run("test-project", [input_doc_a], options, database=db)
         assert _flow_call_count == 1

@@ -4,8 +4,9 @@ from typing import ClassVar
 
 import pytest
 
-from ai_pipeline_core.database import DocumentRecord, MemoryDatabase
+from ai_pipeline_core.database import DocumentRecord
 from ai_pipeline_core.database._documents import store_document
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.documents import Document
 
 
@@ -41,7 +42,7 @@ async def test_publicly_visible_field_on_document_record() -> None:
 
 @pytest.mark.asyncio
 async def test_store_document_roundtrip() -> None:
-    db = MemoryDatabase()
+    db = _MemoryDatabase()
     doc = StoreTestDoc.create_root(reason="test", name="test.md", content="hello")
     await store_document(db, doc)
 

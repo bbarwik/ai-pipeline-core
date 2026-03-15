@@ -7,11 +7,11 @@ import pytest
 
 from ai_pipeline_core.deployment._resolve import (
     AttachmentInput,
-    DocumentInput,
     _derive_name,
     _is_ip_private,
     resolve_document_inputs,
 )
+from ai_pipeline_core.deployment._resolve import _DocumentInput
 from ai_pipeline_core.documents import Document
 
 
@@ -35,22 +35,22 @@ def suppress_doc_registration():
 
 class TestDocumentInput:
     def test_url_mode(self):
-        di = DocumentInput(url="https://example.com/doc.txt", name="doc.txt")
+        di = _DocumentInput(url="https://example.com/doc.txt", name="doc.txt")
         assert di.url == "https://example.com/doc.txt"
         assert di.content is None
 
     def test_content_mode(self):
-        di = DocumentInput(content="hello world", name="doc.txt")
+        di = _DocumentInput(content="hello world", name="doc.txt")
         assert di.content == "hello world"
         assert di.url == ""
 
     def test_both_raises(self):
         with pytest.raises(ValueError, match="cannot have both"):
-            DocumentInput(url="https://example.com", content="hello", name="d")
+            _DocumentInput(url="https://example.com", content="hello", name="d")
 
     def test_neither_raises(self):
         with pytest.raises(ValueError, match="must have either"):
-            DocumentInput(name="d")
+            _DocumentInput(name="d")
 
 
 class TestAttachmentInput:
@@ -131,31 +131,31 @@ class TestResolveDocumentInputs:
         assert result == ()
 
     async def test_inline_content(self):
-        inputs = [DocumentInput(content="hello", name="doc.txt", class_name="ResolveDoc")]
+        inputs = [_DocumentInput(content="hello", name="doc.txt", class_name="ResolveDoc")]
         result = await resolve_document_inputs(inputs, [ResolveDoc])
         assert len(result) == 1
         assert isinstance(result[0], ResolveDoc)
         assert result[0].name == "doc.txt"
 
     async def test_infers_single_type(self):
-        inputs = [DocumentInput(content="data", name="doc.txt")]
+        inputs = [_DocumentInput(content="data", name="doc.txt")]
         result = await resolve_document_inputs(inputs, [ResolveDoc], start_step_input_types=[ResolveDoc])
         assert len(result) == 1
         assert isinstance(result[0], ResolveDoc)
 
     async def test_ambiguous_raises(self):
-        inputs = [DocumentInput(content="data", name="doc.txt")]
+        inputs = [_DocumentInput(content="data", name="doc.txt")]
         with pytest.raises(ValueError, match="Multiple input types"):
             await resolve_document_inputs(inputs, [ResolveDoc, OtherDoc], start_step_input_types=[ResolveDoc, OtherDoc])
 
     async def test_unknown_class_raises(self):
-        inputs = [DocumentInput(content="data", name="doc.txt", class_name="NonExistent")]
+        inputs = [_DocumentInput(content="data", name="doc.txt", class_name="NonExistent")]
         with pytest.raises(ValueError, match="Unknown class_name"):
             await resolve_document_inputs(inputs, [ResolveDoc])
 
     async def test_with_inline_attachments(self):
         att = AttachmentInput(content="attachment data", name="att.txt")
-        inputs = [DocumentInput(content="main content", name="doc.txt", class_name="ResolveDoc", attachments=(att,))]
+        inputs = [_DocumentInput(content="main content", name="doc.txt", class_name="ResolveDoc", attachments=(att,))]
         result = await resolve_document_inputs(inputs, [ResolveDoc])
         assert len(result) == 1
         assert len(result[0].attachments) == 1
@@ -163,14 +163,14 @@ class TestResolveDocumentInputs:
 
     async def test_attachment_no_name_inline_raises(self):
         att = AttachmentInput(content="data", name="")
-        inputs = [DocumentInput(content="main", name="d.txt", class_name="ResolveDoc", attachments=(att,))]
+        inputs = [_DocumentInput(content="main", name="d.txt", class_name="ResolveDoc", attachments=(att,))]
         with pytest.raises(ValueError, match="must have a name"):
             await resolve_document_inputs(inputs, [ResolveDoc])
 
     @patch("ai_pipeline_core.deployment._resolve._validate_url", new_callable=AsyncMock)
     @patch("ai_pipeline_core.deployment._resolve._fetch_url", new_callable=AsyncMock, return_value=(b"fetched", None))
     async def test_url_fetch(self, mock_fetch, mock_validate):
-        inputs = [DocumentInput(url="https://example.com/doc.txt", name="doc.txt", class_name="ResolveDoc")]
+        inputs = [_DocumentInput(url="https://example.com/doc.txt", name="doc.txt", class_name="ResolveDoc")]
         result = await resolve_document_inputs(inputs, [ResolveDoc])
         assert len(result) == 1
         assert result[0].content == b"fetched"
@@ -178,14 +178,14 @@ class TestResolveDocumentInputs:
 
     async def test_aggregates_errors(self):
         inputs = [
-            DocumentInput(content="ok", name="ok.txt", class_name="NonExistent"),
-            DocumentInput(content="ok", name="ok2.txt", class_name="AlsoNonExistent"),
+            _DocumentInput(content="ok", name="ok.txt", class_name="NonExistent"),
+            _DocumentInput(content="ok", name="ok2.txt", class_name="AlsoNonExistent"),
         ]
         with pytest.raises(ValueError, match="Failed to resolve 2/2"):
             await resolve_document_inputs(inputs, [ResolveDoc])
 
     async def test_no_inference_types_raises(self):
-        inputs = [DocumentInput(content="data", name="doc.txt")]
+        inputs = [_DocumentInput(content="data", name="doc.txt")]
         with pytest.raises(ValueError, match="No input document types"):
             await resolve_document_inputs(inputs, [ResolveDoc], start_step_input_types=[])
 
@@ -194,7 +194,7 @@ class TestResolveDocumentInputs:
         with pytest.raises(ValueError, match="root documents"):
             await resolve_document_inputs(
                 [
-                    DocumentInput(
+                    _DocumentInput(
                         class_name="ResolveDoc",
                         name="a.txt",
                         content="hello",
@@ -241,7 +241,7 @@ class TestResolveUrlDocumentNameDerivation:
     @patch("ai_pipeline_core.deployment._resolve._validate_url", new_callable=AsyncMock)
     @patch("ai_pipeline_core.deployment._resolve._fetch_url", new_callable=AsyncMock, return_value=(b"data", 'attachment; filename="derived.pdf"'))
     async def test_derives_name_from_disposition(self, mock_fetch, mock_validate):
-        inputs = [DocumentInput(url="https://example.com/path", class_name="ResolveDoc")]
+        inputs = [_DocumentInput(url="https://example.com/path", class_name="ResolveDoc")]
         result = await resolve_document_inputs(inputs, [ResolveDoc])
         assert len(result) == 1
         assert result[0].name == "derived.pdf"
@@ -249,6 +249,6 @@ class TestResolveUrlDocumentNameDerivation:
     @patch("ai_pipeline_core.deployment._resolve._validate_url", new_callable=AsyncMock)
     @patch("ai_pipeline_core.deployment._resolve._fetch_url", new_callable=AsyncMock, return_value=(b"data", None))
     async def test_url_no_name_raises(self, mock_fetch, mock_validate):
-        inputs = [DocumentInput(url="https://example.com/", class_name="ResolveDoc")]
+        inputs = [_DocumentInput(url="https://example.com/", class_name="ResolveDoc")]
         with pytest.raises(ValueError, match="Cannot derive document name"):
             await resolve_document_inputs(inputs, [ResolveDoc])

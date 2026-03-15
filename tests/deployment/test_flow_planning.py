@@ -8,7 +8,8 @@ import pytest
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment
 from ai_pipeline_core.deployment import FlowAction, FlowDirective
 from ai_pipeline_core.deployment._types import _MemoryPublisher
-from ai_pipeline_core.deployment._resolve import DocumentInput, resolve_document_inputs
+from ai_pipeline_core.deployment._resolve import _DocumentInput
+from ai_pipeline_core.deployment._resolve import resolve_document_inputs
 from ai_pipeline_core.deployment._types import FlowSkippedEvent
 from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask
 
@@ -165,7 +166,7 @@ class ResolveInputDoc(Document):
 @pytest.mark.asyncio
 async def test_resolve_rejects_derived_from_on_input() -> None:
     """DocumentInput with derived_from raises ValueError."""
-    inputs = [DocumentInput(content="hello", name="x.txt", class_name="ResolveInputDoc", derived_from=("SOMESHA256",))]
+    inputs = [_DocumentInput(content="hello", name="x.txt", class_name="ResolveInputDoc", derived_from=("SOMESHA256",))]
     with pytest.raises(ValueError, match="cannot set derived_from"):
         await resolve_document_inputs(inputs, [ResolveInputDoc])
 
@@ -173,6 +174,6 @@ async def test_resolve_rejects_derived_from_on_input() -> None:
 @pytest.mark.asyncio
 async def test_resolve_rejects_triggered_by_on_input() -> None:
     """DocumentInput with triggered_by raises ValueError."""
-    inputs = [DocumentInput(content="hello", name="x.txt", class_name="ResolveInputDoc", triggered_by=("SOMESHA256",))]
+    inputs = [_DocumentInput(content="hello", name="x.txt", class_name="ResolveInputDoc", triggered_by=("SOMESHA256",))]
     with pytest.raises(ValueError, match="cannot set derived_from"):
         await resolve_document_inputs(inputs, [ResolveInputDoc])

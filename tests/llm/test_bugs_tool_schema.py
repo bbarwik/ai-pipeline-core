@@ -8,7 +8,7 @@ Bugs A1 and A2 from NEW-BUGS-REPORT.md:
 import pytest
 from pydantic import BaseModel, Field
 
-from ai_pipeline_core.llm.tools import Tool, ToolOutput
+from ai_pipeline_core.llm.tools import Tool
 
 
 # ── A1: dict[str, V] in Tool.Input ──────────────────────────────────────────
@@ -27,8 +27,11 @@ def test_tool_definition_rejects_dict_field() -> None:
             class Input(BaseModel):
                 coins: dict[str, list[int]] = Field(description="coin -> timestamps mapping")
 
-            async def execute(self, input: Input) -> ToolOutput:
-                return ToolOutput(content="")
+            class Output(BaseModel):
+                result: str
+
+            async def run(self, input: Input) -> Output:
+                return self.Output(result="")
 
 
 def test_tool_definition_rejects_nested_dict_in_list() -> None:
@@ -41,8 +44,11 @@ def test_tool_definition_rejects_nested_dict_in_list() -> None:
             class Input(BaseModel):
                 items: list[dict[str, str]] = Field(description="list of dicts")
 
-            async def execute(self, input: Input) -> ToolOutput:
-                return ToolOutput(content="")
+            class Output(BaseModel):
+                result: str
+
+            async def run(self, input: Input) -> Output:
+                return self.Output(result="")
 
 
 def test_tool_definition_rejects_dict_in_referenced_model() -> None:
@@ -59,8 +65,11 @@ def test_tool_definition_rejects_dict_in_referenced_model() -> None:
             class Input(BaseModel):
                 item: ItemData = Field(description="item with dict")
 
-            async def execute(self, input: Input) -> ToolOutput:
-                return ToolOutput(content="")
+            class Output(BaseModel):
+                result: str
+
+            async def run(self, input: Input) -> Output:
+                return self.Output(result="")
 
 
 def test_tool_definition_rejects_optional_dict_field() -> None:
@@ -73,8 +82,11 @@ def test_tool_definition_rejects_optional_dict_field() -> None:
             class Input(BaseModel):
                 data: dict[str, int] | None = Field(description="optional dict", default=None)
 
-            async def execute(self, input: Input) -> ToolOutput:
-                return ToolOutput(content="")
+            class Output(BaseModel):
+                result: str
+
+            async def run(self, input: Input) -> Output:
+                return self.Output(result="")
 
 
 def test_tool_definition_allows_nested_basemodel() -> None:
@@ -90,8 +102,11 @@ def test_tool_definition_allows_nested_basemodel() -> None:
         class Input(BaseModel):
             entries: list[Entry] = Field(description="entries")
 
-        async def execute(self, input: Input) -> ToolOutput:
-            return ToolOutput(content="")
+        class Output(BaseModel):
+            result: str
+
+        async def run(self, input: Input) -> Output:
+            return self.Output(result="")
 
     assert issubclass(GoodTool.Input, BaseModel)
 
@@ -140,8 +155,11 @@ def test_tool_definition_rejects_reserved_field_strict() -> None:
             class Input(BaseModel):
                 strict: bool = Field(description="strict mode", default=True)
 
-            async def execute(self, input: Input) -> ToolOutput:
-                return ToolOutput(content="")
+            class Output(BaseModel):
+                result: str
+
+            async def run(self, input: Input) -> Output:
+                return self.Output(result="")
 
 
 def test_tool_definition_rejects_reserved_field_additional_properties() -> None:
@@ -154,8 +172,11 @@ def test_tool_definition_rejects_reserved_field_additional_properties() -> None:
             class Input(BaseModel):
                 additionalProperties: bool = Field(description="flag")
 
-            async def execute(self, input: Input) -> ToolOutput:
-                return ToolOutput(content="")
+            class Output(BaseModel):
+                result: str
+
+            async def run(self, input: Input) -> Output:
+                return self.Output(result="")
 
 
 def test_tool_definition_allows_renamed_reserved_field() -> None:
@@ -167,8 +188,11 @@ def test_tool_definition_allows_renamed_reserved_field() -> None:
         class Input(BaseModel):
             strict_mode: bool = Field(description="Enable strict mode", default=True)
 
-        async def execute(self, input: Input) -> ToolOutput:
-            return ToolOutput(content="")
+        class Output(BaseModel):
+            result: str
+
+        async def run(self, input: Input) -> Output:
+            return self.Output(result="")
 
     assert "strict_mode" in GoodTool.Input.model_fields
 

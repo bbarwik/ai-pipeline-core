@@ -133,6 +133,12 @@ def resolve_callable(target: str, receiver: Any) -> Callable[..., Any]:
             return _resolve_function_callable(target)
         case "classmethod":
             return _resolve_classmethod_callable(target)
+        case "tool_call":
+            raise ValueError(
+                f"Replay target {target!r} is a tool_call span. "
+                f"Tool-call spans are not individually replayable. "
+                f"Replay the parent conversation span instead, passing override_tools= if needed."
+            )
         case "instance_method":
             return _resolve_instance_method_callable(target, receiver)
         case "decoded_method":

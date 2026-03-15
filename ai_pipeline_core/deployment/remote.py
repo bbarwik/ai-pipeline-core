@@ -29,7 +29,7 @@ from ai_pipeline_core.pipeline._track_span import track_span
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
-from ._resolve import DocumentInput
+from ._resolve import _DocumentInput
 from .base import DeploymentResult
 
 logger = get_pipeline_logger(__name__)
@@ -60,8 +60,8 @@ def _derive_remote_run_id(run_id: str, documents: Sequence[Document], options: F
 
 
 def _serialize_document_inputs(documents: Sequence[Document]) -> list[dict[str, Any]]:
-    """Normalize documents to the DocumentInput schema used by the Prefect flow."""
-    return [DocumentInput.model_validate(doc.serialize_model()).model_dump(mode="json") for doc in documents]
+    """Normalize documents to the _DocumentInput schema used by the Prefect flow."""
+    return [_DocumentInput.model_validate(doc.serialize_model()).model_dump(mode="json") for doc in documents]
 
 
 class RemoteDeployment(Generic[TOptions, TResult]):

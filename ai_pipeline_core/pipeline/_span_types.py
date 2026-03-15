@@ -73,6 +73,7 @@ class SpanContext:
         self._output_preview: Any | None = None
         self._meta: dict[str, Any] = {}
         self._metrics_updates: dict[str, Any] = {}
+        self._added_cost_usd: float = 0.0
         self._output_value: Any = None
         self._has_output_value = False
         self._status: str | None = None
@@ -102,6 +103,9 @@ class SpanContext:
             raise ValueError(f"Unknown span metric field(s): {names}. Use only fields declared on SpanMetrics.")
         self._metrics_updates.update(values)
 
+    def _add_cost(self, amount: float) -> None:
+        self._added_cost_usd += amount
+
     def _set_output_value(self, value: Any) -> None:
         self._output_value = value
         self._has_output_value = True
@@ -114,6 +118,9 @@ class SpanContext:
         if "time_taken_ms" not in metrics_data:
             elapsed_ms = int((ended_at - started_at).total_seconds() * 1000)
             metrics_data["time_taken_ms"] = max(elapsed_ms, 0)
+        existing_cost = _optional_float(metrics_data.get("cost_usd"))
+        combined_cost = (existing_cost or 0.0) + self._added_cost_usd
+        cost_usd = combined_cost if existing_cost is not None or self._added_cost_usd > 0 else None
         return SpanMetrics(
             time_taken_ms=int(metrics_data["time_taken_ms"]),
             log_summary=log_summary,
@@ -121,7 +128,7 @@ class SpanContext:
             tokens_output=_optional_int(metrics_data.get("tokens_output")),
             tokens_cache_read=_optional_int(metrics_data.get("tokens_cache_read")),
             tokens_reasoning=_optional_int(metrics_data.get("tokens_reasoning")),
-            cost_usd=_optional_float(metrics_data.get("cost_usd")),
+            cost_usd=cost_usd,
             first_token_ms=_optional_int(metrics_data.get("first_token_ms")),
         )
 

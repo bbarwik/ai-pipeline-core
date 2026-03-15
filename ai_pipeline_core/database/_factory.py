@@ -2,13 +2,13 @@
 
 from pathlib import Path
 
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.database.clickhouse._backend import ClickHouseDatabase
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.settings import Settings
 
 # Type alias combining both protocols — all backends implement both
-Database = MemoryDatabase | FilesystemDatabase | ClickHouseDatabase
+Database = _MemoryDatabase | FilesystemDatabase | ClickHouseDatabase
 
 __all__ = [
     "Database",
@@ -34,7 +34,7 @@ def create_database(
         A database backend implementing both DatabaseWriter and DatabaseReader.
     """
     if backend == "memory":
-        return MemoryDatabase()
+        return _MemoryDatabase()
 
     if backend == "filesystem":
         if base_path is None:

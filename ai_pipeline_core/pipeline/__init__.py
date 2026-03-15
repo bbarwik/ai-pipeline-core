@@ -1,6 +1,6 @@
 """Pipeline framework primitives."""
 
-from ai_pipeline_core.pipeline._execution_context import RunContext, get_run_id, pipeline_test_context
+from ai_pipeline_core.pipeline._execution_context import add_cost, get_run_id, pipeline_test_context
 from ai_pipeline_core.pipeline._flow import PipelineFlow
 from ai_pipeline_core.pipeline._parallel import TaskBatch, TaskHandle, as_task_completed, collect_tasks, run_tasks_until
 from ai_pipeline_core.pipeline._task import PipelineTask
@@ -15,9 +15,9 @@ __all__ = [
     "PipelineFlow",
     "PipelineLimit",
     "PipelineTask",
-    "RunContext",
     "TaskBatch",
     "TaskHandle",
+    "add_cost",
     "as_task_completed",
     "collect_tasks",
     "get_run_id",

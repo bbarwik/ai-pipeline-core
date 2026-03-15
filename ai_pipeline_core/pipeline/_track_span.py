@@ -4,6 +4,7 @@ import asyncio
 import traceback
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -13,10 +14,11 @@ from uuid import UUID, uuid7
 from pydantic import BaseModel
 
 from ai_pipeline_core._codec import SerializedError, UniversalCodec
-from ai_pipeline_core.database import BlobRecord, SpanKind
+from ai_pipeline_core.database import SpanKind
 from ai_pipeline_core.database._documents import document_to_blobs, document_to_record
 from ai_pipeline_core.database._json_helpers import json_dumps
 from ai_pipeline_core.database._protocol import DatabaseWriter
+from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.logger import get_pipeline_logger
@@ -33,10 +35,16 @@ from ai_pipeline_core.pipeline._span_sink import (
     _must_reraise_sink_error,
 )
 
-__all__ = ["track_span"]
+__all__ = ["get_current_span_context", "track_span"]
 
 logger = get_pipeline_logger(__name__)
 _UNSET = object()
+_current_span_context: ContextVar[SpanContext | None] = ContextVar("_current_span_context", default=None)
+
+
+def get_current_span_context() -> SpanContext | None:
+    """Return the innermost active SpanContext, or None if not inside a tracked span."""
+    return _current_span_context.get()
 
 
 class SpanArtifactPersistenceError(RuntimeError):
@@ -83,10 +91,8 @@ async def track_span(
     execution_ctx = get_execution_context()
     span_id = span_id or uuid7()
     effective_parent_span_id = parent_span_id
-    if effective_parent_span_id is None and execution_ctx is not None:
-        candidate_parent_span_id = execution_ctx.current_span_id or execution_ctx.span_id
-        if candidate_parent_span_id != span_id:
-            effective_parent_span_id = candidate_parent_span_id
+    if effective_parent_span_id is None and execution_ctx is not None and (execution_ctx.current_span_id or execution_ctx.span_id) != span_id:
+        effective_parent_span_id = execution_ctx.current_span_id or execution_ctx.span_id
     started_at = datetime.now(UTC)
     context = SpanContext(
         span_id=span_id,
@@ -108,6 +114,7 @@ async def track_span(
     span_execution_ctx = execution_ctx.with_span(span_id, parent_span_id=effective_parent_span_id) if execution_ctx is not None else None
 
     error: BaseException | None = None
+    span_ctx_token = _current_span_context.set(context)
     with ExitStack() as stack:
         if span_execution_ctx is not None:
             stack.enter_context(set_execution_context(span_execution_ctx))
@@ -134,6 +141,7 @@ async def track_span(
             error = exc
             raise
         finally:
+            _current_span_context.reset(span_ctx_token)
             ended_at = datetime.now(UTC)
             log_summary = _consume_log_summary(span_execution_ctx or execution_ctx, span_id)
             metrics = context._build_metrics(ended_at=ended_at, started_at=started_at, log_summary=log_summary)
@@ -211,7 +219,7 @@ def _encode_receiver(
     mode = receiver_payload.get("mode")
     if not isinstance(mode, str):
         raise TypeError(
-            "encode_receiver must be {'mode': 'constructor_args'|'decoded_state', 'value': ...}. "
+            "encode_receiver must be {'mode': 'constructor_args'|'decoded_state'|'tool_ref', 'value': ...}. "
             "Set the receiver mode explicitly so replay can reconstruct the callable."
         )
     encoded_value = codec.encode(receiver_payload.get("value"))
@@ -284,16 +292,16 @@ def _walk_artifacts(
 def _filter_new_artifacts(
     artifacts: _CollectedArtifacts,
     execution_ctx: ExecutionContext | None,
-) -> tuple[dict[str, BlobRecord], list[Any]]:
+) -> tuple[dict[str, _BlobRecord], list[Any]]:
     """Filter artifacts against already-persisted SHAs, return (blob_records, document_records)."""
     persisted_doc_shas = execution_ctx._recording_state.persisted_document_shas if execution_ctx is not None else None
     persisted_blob_shas = execution_ctx._recording_state.persisted_blob_shas if execution_ctx is not None else None
 
-    blob_records: dict[str, BlobRecord] = {}
+    blob_records: dict[str, _BlobRecord] = {}
     for sha256, content in artifacts.blobs.items():
         if persisted_blob_shas is not None and sha256 in persisted_blob_shas:
             continue
-        blob_records[sha256] = BlobRecord(content_sha256=sha256, content=content)
+        blob_records[sha256] = _BlobRecord(content_sha256=sha256, content=content)
 
     document_records = []
     for document in artifacts.documents.values():

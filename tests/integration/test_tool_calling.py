@@ -7,7 +7,7 @@ Each test is parameterized by model AND streaming mode to verify both paths.
 import pytest
 from pydantic import BaseModel, Field
 
-from ai_pipeline_core import Conversation, ModelOptions, Tool, ToolOutput
+from ai_pipeline_core import Conversation, ModelOptions, Tool
 from ai_pipeline_core.settings import settings
 
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
@@ -44,12 +44,15 @@ class Calculator(Tool):
     class Input(BaseModel):
         expression: str = Field(description="Mathematical expression to evaluate, e.g. '2 + 3'")
 
-    async def execute(self, input: Input) -> ToolOutput:
+    class Output(BaseModel):
+        result: str
+
+    async def run(self, input: Input) -> Output:
         try:
             result = eval(input.expression, {"__builtins__": {}}, {})
-            return ToolOutput(content=str(result))
+            return self.Output(result=str(result))
         except (SyntaxError, TypeError, ValueError, ZeroDivisionError, NameError, ArithmeticError) as e:
-            return ToolOutput(content=f"Error: {e}")
+            return self.Output(result=f"Error: {e}")
 
 
 class GetCapital(Tool):
@@ -58,7 +61,10 @@ class GetCapital(Tool):
     class Input(BaseModel):
         country: str = Field(description="Country name")
 
-    async def execute(self, input: Input) -> ToolOutput:
+    class Output(BaseModel):
+        answer: str
+
+    async def run(self, input: Input) -> Output:
         capitals = {
             "france": "Paris",
             "japan": "Tokyo",
@@ -67,8 +73,8 @@ class GetCapital(Tool):
         }
         country = input.country.lower()
         if country in capitals:
-            return ToolOutput(content=f"The capital of {input.country} is {capitals[country]}")
-        return ToolOutput(content=f"Unknown country: {input.country}")
+            return self.Output(answer=f"The capital of {input.country} is {capitals[country]}")
+        return self.Output(answer=f"Unknown country: {input.country}")
 
 
 class FailingTool(Tool):
@@ -77,7 +83,10 @@ class FailingTool(Tool):
     class Input(BaseModel):
         reason: str = Field(description="Reason for failure")
 
-    async def execute(self, input: Input) -> ToolOutput:
+    class Output(BaseModel):
+        result: str
+
+    async def run(self, input: Input) -> Output:
         raise RuntimeError(f"Intentional failure: {input.reason}")
 
 
@@ -87,8 +96,11 @@ class WeatherLookup(Tool):
     class Input(BaseModel):
         city: str = Field(description="City to look up weather for")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content=f"The weather in {input.city} is sunny, 22°C")
+    class Output(BaseModel):
+        weather: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(weather=f"The weather in {input.city} is sunny, 22°C")
 
 
 # ── Integration Tests ────────────────────────────────────────────────────────

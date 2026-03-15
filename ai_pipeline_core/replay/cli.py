@@ -121,16 +121,23 @@ def _serialize_result(result: Any) -> dict[str, Any]:
 
 def _format_result(result: Any) -> str:
     if hasattr(result, "content") and hasattr(result, "usage"):
-        content = result.content or ""
+        content: str = result.content or ""
         preview = content[:_CONTENT_PREVIEW_LENGTH]
         if len(content) > _CONTENT_PREVIEW_LENGTH:
             preview += "..."
         return preview
     if isinstance(result, Document):
         return f"{type(result).__name__}: {result.name}"
-    if isinstance(result, tuple) and all(isinstance(item, Document) for item in result):
-        return "\n".join(f"{type(item).__name__}: {item.name}" for item in result)
-    return repr(result)
+    if isinstance(result, tuple):
+        doc_lines: list[str] = []
+        for item in result:
+            if not isinstance(item, Document):
+                doc_lines.clear()
+                break
+            doc_lines.append(f"{type(item).__name__}: {item.name}")
+        if doc_lines:
+            return "\n".join(doc_lines)
+    return str(result)
 
 
 def _write_output(output_dir: Path, result: Any) -> Path:
@@ -152,9 +159,9 @@ def _default_output_dir(replay_file: Path | None, from_db: str | None) -> Path:
 
 
 def _load_response_format(path: str) -> type[BaseModel]:
-    loaded = import_by_path(path)
+    loaded: Any = import_by_path(path)
     if not isinstance(loaded, type) or not issubclass(loaded, BaseModel):
-        raise TypeError(f"Replay override response_format={path!r} resolved to {type(loaded).__name__}, not a BaseModel subclass.")
+        raise TypeError(f"Replay override response_format={path!r} did not resolve to a BaseModel subclass.")
     return loaded
 
 
@@ -163,11 +170,12 @@ def _build_overrides(args: argparse.Namespace) -> ExperimentOverrides | None:
     override_values: dict[str, Any] = {}
     if args.model:
         override_values["model"] = args.model
-    for item in args.set or []:
+    set_items: list[str] = args.set or []
+    for item in set_items:
         if "=" not in item:
             raise ValueError(f"Invalid --set value {item!r}. Use KEY=VALUE.")
         key, raw_value = item.split("=", 1)
-        value = yaml.safe_load(raw_value)
+        value: Any = yaml.safe_load(raw_value)
         if key == "model":
             override_values["model"] = value
             continue
@@ -221,7 +229,7 @@ async def _run_experiment_span(
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    imported_modules = args.modules or []
+    imported_modules: list[str] = args.modules or []
     replay_file = Path(args.replay_file).resolve() if args.replay_file else None
     database: Database | None = None
     try:

@@ -1,7 +1,7 @@
 # MODULE: logger
 # CLASSES: LoggingConfig
 # PURPOSE: Logging infrastructure for AI Pipeline Core.
-# VERSION: 0.15.1
+# VERSION: 0.16.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -16,13 +16,14 @@ from ai_pipeline_core import LoggingConfig, get_pipeline_logger, setup_logging
 class LoggingConfig:
     """Manages logging configuration for the pipeline.
 
-Provides centralized logging configuration with stdlib logging.
+    Provides centralized logging configuration with stdlib logging.
 
-Configuration precedence:
-    1. Explicit config_path parameter
-    2. AI_PIPELINE_LOGGING_CONFIG environment variable
-    3. PREFECT_LOGGING_SETTINGS_PATH environment variable
-    4. Default configuration"""
+    Configuration precedence:
+        1. Explicit config_path parameter
+        2. AI_PIPELINE_LOGGING_CONFIG environment variable
+        3. PREFECT_LOGGING_SETTINGS_PATH environment variable
+        4. Default configuration"""
+
     def __init__(self, config_path: Path | None = None):
         """Initialize logging configuration.
 
@@ -57,8 +58,6 @@ Configuration precedence:
         # self._config cannot be None at this point
         assert self._config is not None
         return self._config
-
-
 ```
 
 ## Functions
@@ -92,6 +91,7 @@ def setup_logging(config_path: Path | None = None, level: str | None = None) -> 
             # Also set for Prefect
             os.environ["PREFECT_LOGGING_LEVEL"] = level
 
+
 def get_pipeline_logger(name: str) -> logging.Logger:
     """Get a logger for pipeline components.
 
@@ -106,7 +106,6 @@ def get_pipeline_logger(name: str) -> logging.Logger:
         setup_logging()
 
     return logging.getLogger(name)
-
 ```
 
 ## Examples

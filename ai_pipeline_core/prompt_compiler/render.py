@@ -1,13 +1,16 @@
 """Rendering logic for prompt specifications."""
 
+import json
 import re
 from collections.abc import Sequence
 from typing import Any
 
+from pydantic import BaseModel
+
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logger import get_pipeline_logger
 
-from .spec import PromptSpec, _is_multi_line_field
+from .spec import PromptSpec, _is_list_field, _is_multi_line_field, _is_previous_message_field, _is_structured_field
 
 logger = get_pipeline_logger(__name__)
 
@@ -92,20 +95,26 @@ def _render_field_value(label: str, value: str) -> str:
 def _render_context_fields(spec: PromptSpec) -> list[str]:
     """Render field values for the Context section.
 
-    Multi-line fields and auto-promoted regular fields produce a reference placeholder;
-    short single-line regular fields are inlined.
+    Multi-line/structured/list fields and auto-promoted regular fields produce a reference
+    placeholder; short single-line regular fields are inlined.
     """
     spec_cls = type(spec)
     parts: list[str] = []
     for field_name, field_info in spec_cls.model_fields.items():
         label = field_info.description or field_name
-        value = str(getattr(spec, field_name))
-        if _is_multi_line_field(field_info) or _is_long_or_multiline(value):
-            if not _is_multi_line_field(field_info):
-                _warn_auto_promoted(spec_cls, field_name, value)
+        if _is_list_field(field_info):
+            items = getattr(spec, field_name)
+            count = len(items) if isinstance(items, (list, tuple)) else 0
+            parts.append(f"**{label}:** ({count} items provided in <{field_name}> tags in previous message)")
+        elif _is_previous_message_field(field_info):
             parts.append(f"**{label}:** (provided in <{field_name}> tags in previous message)")
         else:
-            parts.append(_render_field_value(label, value))
+            value = str(getattr(spec, field_name))
+            if _is_long_or_multiline(value):
+                _warn_auto_promoted(spec_cls, field_name, value)
+                parts.append(f"**{label}:** (provided in <{field_name}> tags in previous message)")
+            else:
+                parts.append(_render_field_value(label, value))
     return parts
 
 
@@ -175,20 +184,47 @@ def render_text(
     return "\n\n".join(sections)
 
 
-def render_multi_line_messages(spec: PromptSpec[Any]) -> list[tuple[str, str]]:
-    """Return XML-tagged message blocks for multi-line fields.
+def _render_structured_value(value: Any) -> str:
+    """Render a BaseModel or plain value as JSON with indent=2."""
+    if isinstance(value, BaseModel):
+        return value.model_dump_json(indent=2)
+    return json.dumps(value, indent=2, default=str)
 
-    Each entry is ``(field_name, "<field_name>value</field_name>")``.
+
+def _render_list_xml(field_name: str, items: list[Any] | tuple[Any, ...]) -> str:
+    """Render a list field as XML with individually tagged items."""
+    parts: list[str] = [f"<{field_name}>"]
+    for i, item in enumerate(items, 1):
+        tag = f"item_{i}"
+        if isinstance(item, BaseModel):
+            content = item.model_dump_json(indent=2)
+        else:
+            content = str(item)
+        parts.append(f"<{tag}>\n{content}\n</{tag}>")
+    parts.append(f"</{field_name}>")
+    return "\n".join(parts)
+
+
+def render_multi_line_messages(spec: PromptSpec[Any]) -> list[tuple[str, str]]:
+    """Return XML-tagged message blocks for multi-line, structured, and list fields.
+
+    Each entry is ``(field_name, xml_block)``.
     Order matches field declaration order on the spec class.
 
-    Includes both declared MultiLineFields and regular fields whose values
-    exceed the inline limit (auto-promoted).
+    Includes declared MultiLineFields, StructuredFields, ListFields, and
+    regular fields whose values exceed the inline limit (auto-promoted).
     """
     spec_cls = type(spec)
     result: list[tuple[str, str]] = []
     for field_name, field_info in spec_cls.model_fields.items():
-        value = str(getattr(spec, field_name))
-        if _is_multi_line_field(field_info) or _is_long_or_multiline(value):
+        value = getattr(spec, field_name)
+        if _is_list_field(field_info):
+            items = value if isinstance(value, (list, tuple)) else [value]
+            result.append((field_name, _render_list_xml(field_name, items)))
+        elif _is_structured_field(field_info):
+            rendered = _render_structured_value(value)
+            result.append((field_name, f"<{field_name}>\n{rendered}\n</{field_name}>"))
+        elif _is_multi_line_field(field_info) or _is_long_or_multiline(str(value)):
             result.append((field_name, f"<{field_name}>{value}</{field_name}>"))
     return result
 
@@ -207,7 +243,7 @@ def render_preview(spec_class: type[PromptSpec[Any]], *, include_input_documents
     # Build multi-line field preview blocks
     ml_blocks: list[str] = []
     for field_name, field_info in spec_class.model_fields.items():
-        if _is_multi_line_field(field_info):
+        if _is_previous_message_field(field_info):
             ml_blocks.append(f"<{field_name}>{{{field_name}}}</{field_name}>")
 
     text = render_text(instance, include_input_documents=include_input_documents)

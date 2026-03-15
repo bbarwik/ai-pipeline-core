@@ -387,6 +387,19 @@ class PromptSpec[OutputT = str](BaseModel):
         a topic name, finding type, or formatting instruction. Longer or multiline content
         (e.g., review feedback, website content, another model's output) must be passed as
         a Document via ``input_documents`` and ``send_spec(documents=[...])``.
+
+    Four field types for PromptSpec dynamic inputs:
+        - ``Field(description='...')`` — short single-line values, inlined in Context section
+        - ``MultiLineField(description='...')`` — long/multiline strings, sent as XML-tagged
+          user message before prompt: ``<field_name>value</field_name>``
+        - ``StructuredField(description='...')`` — BaseModel values, rendered as JSON (indent=2)
+          inside XML tags, sent as user message before prompt
+        - ``ListField(description='...')`` — list values (``list[str]`` or ``list[BaseModel]``),
+          each item individually tagged as ``<item_1>...<item_N>`` inside a wrapper tag, sent
+          as user message before prompt. Context section shows item count.
+
+    All four types require ``description``. StructuredField, ListField, and MultiLineField
+    produce reference placeholders in the Context section instead of inlining their values.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -413,6 +426,8 @@ class PromptSpec[OutputT = str](BaseModel):
 
 
 _MULTI_LINE_KEY = "multi_line"
+_STRUCTURED_KEY = "structured_field"
+_LIST_KEY = "list_field"
 
 
 def MultiLineField(*, description: str, **kwargs: Any) -> Any:
@@ -429,10 +444,61 @@ def MultiLineField(*, description: str, **kwargs: Any) -> Any:
     return Field(description=description, json_schema_extra={_MULTI_LINE_KEY: True}, **kwargs)
 
 
+def StructuredField(*, description: str, **kwargs: Any) -> Any:
+    """Declare a BaseModel field on a PromptSpec.
+
+    Structured fields are rendered as JSON (indent=2) inside XML tags and sent
+    as a user message before the main prompt. The Context section shows a
+    reference placeholder instead of the value.
+
+    The field annotation must be a BaseModel subclass.
+
+    Must provide ``description``. Accepts all other ``Field()`` keyword arguments
+    (``default``, ``default_factory``, etc.).
+    """
+    return Field(description=description, json_schema_extra={_STRUCTURED_KEY: True}, **kwargs)
+
+
+def ListField(*, description: str, **kwargs: Any) -> Any:
+    """Declare a list field on a PromptSpec.
+
+    List fields are rendered as individually XML-tagged items inside a wrapper tag
+    and sent as a user message before the main prompt. Each item is wrapped as
+    ``<item_N>value</item_N>`` (1-indexed). BaseModel items are rendered as JSON
+    (indent=2), strings are rendered as plain text.
+
+    The field annotation must be ``list[X]`` where X is ``str`` or a BaseModel subclass.
+
+    Must provide ``description``. Accepts all other ``Field()`` keyword arguments
+    (``default``, ``default_factory``, etc.).
+    """
+    return Field(description=description, json_schema_extra={_LIST_KEY: True}, **kwargs)
+
+
 def _is_multi_line_field(field_info: FieldInfo) -> bool:  # pyright: ignore[reportUnusedFunction]  # used by render.py
     """Check whether a FieldInfo was created via MultiLineField."""
     extra = field_info.json_schema_extra
     return isinstance(extra, dict) and bool(extra.get(_MULTI_LINE_KEY))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
 
-__all__ = ["MultiLineField", "OutputT", "PromptSpec"]
+def _is_structured_field(field_info: FieldInfo) -> bool:  # pyright: ignore[reportUnusedFunction]  # used by render.py
+    """Check whether a FieldInfo was created via StructuredField."""
+    extra = field_info.json_schema_extra
+    return isinstance(extra, dict) and bool(extra.get(_STRUCTURED_KEY))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+
+
+def _is_list_field(field_info: FieldInfo) -> bool:  # pyright: ignore[reportUnusedFunction]  # used by render.py
+    """Check whether a FieldInfo was created via ListField."""
+    extra = field_info.json_schema_extra
+    return isinstance(extra, dict) and bool(extra.get(_LIST_KEY))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+
+
+def _is_previous_message_field(field_info: FieldInfo) -> bool:  # pyright: ignore[reportUnusedFunction]  # used by render.py
+    """Check whether a field should be rendered as a previous message (any of the three field types)."""
+    extra = field_info.json_schema_extra
+    if not isinstance(extra, dict):
+        return False
+    return bool(extra.get(_MULTI_LINE_KEY) or extra.get(_STRUCTURED_KEY) or extra.get(_LIST_KEY))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+
+
+__all__ = ["ListField", "MultiLineField", "OutputT", "PromptSpec", "StructuredField"]

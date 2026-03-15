@@ -114,7 +114,7 @@ async def test_send_spec_xml_auto_extracts_result() -> None:
     raw_content = "preamble <result>\n  extracted content \n</result> trailing"
     response = _make_model_response(raw_content)
 
-    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+    conv_after_send = Conversation[str](model="gpt-5", messages=(response,))
 
     async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
@@ -123,7 +123,7 @@ async def test_send_spec_xml_auto_extracts_result() -> None:
         patch.object(Conversation, "send", fake_send),
         patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
     ):
-        conv = Conversation[None](model="gpt-5")
+        conv = Conversation[str](model="gpt-5")
         result = await conv.send_spec(XmlSpec())
 
     assert result.content == "extracted content"
@@ -135,7 +135,7 @@ async def test_send_spec_plain_preserves_raw_response() -> None:
     raw_content = "plain response text"
     response = _make_model_response(raw_content)
 
-    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+    conv_after_send = Conversation[str](model="gpt-5", messages=(response,))
 
     async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
@@ -144,7 +144,7 @@ async def test_send_spec_plain_preserves_raw_response() -> None:
         patch.object(Conversation, "send", fake_send),
         patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
     ):
-        conv = Conversation[None](model="gpt-5")
+        conv = Conversation[str](model="gpt-5")
         result = await conv.send_spec(PlainSpec())
 
     assert result.content == raw_content
@@ -159,7 +159,7 @@ async def test_send_spec_plain_preserves_raw_response() -> None:
 async def test_send_spec_logs_missing_documents(caplog: pytest.LogCaptureFixture) -> None:
     """Warning logged when spec declares input_documents but no documents passed."""
     response = _make_model_response("response")
-    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+    conv_after_send = Conversation[str](model="gpt-5", messages=(response,))
 
     async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
@@ -168,7 +168,7 @@ async def test_send_spec_logs_missing_documents(caplog: pytest.LogCaptureFixture
         patch.object(Conversation, "send", fake_send),
         patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
     ):
-        conv = Conversation[None](model="gpt-5")
+        conv = Conversation[str](model="gpt-5")
         with caplog.at_level("WARNING"):
             await conv.send_spec(SpecWithInputDocs())
 
@@ -180,7 +180,7 @@ async def test_send_spec_no_warning_when_documents_provided(caplog: pytest.LogCa
     """No warning when documents are actually provided."""
     doc = ApiDoc(name="test.txt", content=b"data")
     response = _make_model_response("response")
-    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+    conv_after_send = Conversation[str](model="gpt-5", messages=(response,))
 
     async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
@@ -189,7 +189,7 @@ async def test_send_spec_no_warning_when_documents_provided(caplog: pytest.LogCa
         patch.object(Conversation, "send", fake_send),
         patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
     ):
-        conv = Conversation[None](model="gpt-5")
+        conv = Conversation[str](model="gpt-5")
         with caplog.at_level("WARNING"):
             await conv.send_spec(SpecWithInputDocs(), documents=[doc])
 
@@ -211,7 +211,7 @@ async def test_send_spec_follow_up_no_warning_for_missing_docs(caplog: pytest.Lo
         task = "Continue analysis"
 
     response = _make_model_response("follow-up response")
-    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+    conv_after_send = Conversation[str](model="gpt-5", messages=(response,))
 
     async def fake_send(self, prompt_text, *, purpose, expected_cost=None, **kwargs):
         return conv_after_send
@@ -220,7 +220,7 @@ async def test_send_spec_follow_up_no_warning_for_missing_docs(caplog: pytest.Lo
         patch.object(Conversation, "send", fake_send),
         patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
     ):
-        conv = Conversation[None](model="gpt-5")
+        conv = Conversation[str](model="gpt-5")
         with caplog.at_level("WARNING"):
             await conv.send_spec(FollowSpec())
 
@@ -239,7 +239,7 @@ async def test_send_spec_follow_up_documents_in_messages() -> None:
 
     doc = ApiDoc(name="extra.txt", content=b"extra data")
     response = _make_model_response("follow-up with docs")
-    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+    conv_after_send = Conversation[str](model="gpt-5", messages=(response,))
 
     calls: dict[str, int] = {"with_documents": 0, "with_context": 0}
     original_with_documents = Conversation.with_documents
@@ -262,7 +262,7 @@ async def test_send_spec_follow_up_documents_in_messages() -> None:
         patch.object(Conversation, "with_context", tracking_with_context),
         patch("ai_pipeline_core.llm.conversation.render_text", return_value="RENDERED"),
     ):
-        conv = Conversation[None](model="gpt-5")
+        conv = Conversation[str](model="gpt-5")
         await conv.send_spec(FollowWithDocs(), documents=[doc])
 
     assert calls["with_documents"] == 1, "Follow-up should use with_documents()"

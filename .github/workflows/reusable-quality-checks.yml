@@ -27,13 +27,15 @@ jobs:
           python-version: '3.14'
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: |
+          uv sync --extra dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Ruff check
-        run: uv run ruff check .
+        run: ruff check .
 
       - name: Ruff format (check only)
-        run: uv run ruff format --check .
+        run: ruff format --check .
 
   static-analysis:
     runs-on: ubuntu-latest
@@ -47,22 +49,24 @@ jobs:
           python-version: '3.14'
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: |
+          uv sync --extra dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: BasedPyright (source)
-        run: uv run basedpyright --level warning
+        run: basedpyright --level warning
 
       - name: BasedPyright (tests, errors only)
-        run: uv run basedpyright --level error -p pyrightconfig.tests.json
+        run: basedpyright --level error -p pyrightconfig.tests.json
 
       - name: Vulture dead code
-        run: uv run vulture ai_pipeline_core/ .vulture_whitelist.py --min-confidence 80
+        run: vulture ai_pipeline_core/ .vulture_whitelist.py --min-confidence 80
 
       - name: Semgrep custom rules
         run: uvx semgrep --config .semgrep/ ai_pipeline_core/ tests/ --error --quiet
 
       - name: Docstring coverage (Interrogate)
-        run: uv run interrogate -v --fail-under 100 ai_pipeline_core
+        run: interrogate -v --fail-under 100 ai_pipeline_core
 
       - name: File size limits
         run: make filesize
@@ -71,7 +75,7 @@ jobs:
         run: make docs-ai-check
 
       - name: Verify all test modules importable
-        run: uv run pytest --collect-only -q --no-header
+        run: pytest --collect-only -q --no-header
 
   test:
     runs-on: ubuntu-latest
@@ -88,10 +92,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: |
+          uv sync --extra dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Run tests with coverage (unit only)
-        run: uv run pytest -v --tb=short --maxfail=1 --durations=10 --cov=ai_pipeline_core --cov-report=term-missing --cov-fail-under=80 -n 4 -m "not integration and not clickhouse and not pubsub and not pubsub_live"
+        run: pytest -v --tb=short --maxfail=1 --durations=10 --cov=ai_pipeline_core --cov-report=term-missing --cov-fail-under=80 -n 4 -m "not integration and not clickhouse and not pubsub and not pubsub_live"
 
   clickhouse-test:
     if: github.event_name == 'push' || github.event_name == 'workflow_call'
@@ -106,10 +112,12 @@ jobs:
           python-version: '3.14'
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: |
+          uv sync --extra dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Run ClickHouse integration tests
-        run: uv run pytest -v --tb=short -m "clickhouse" --maxfail=1 --durations=30 -n 0
+        run: pytest -v --tb=short -m "clickhouse" --maxfail=1 --durations=30 -n 0
 
   pubsub-test:
     if: github.event_name == 'push' || github.event_name == 'workflow_call'
@@ -124,10 +132,12 @@ jobs:
           python-version: '3.14'
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: |
+          uv sync --extra dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Run Pub/Sub emulator integration tests
-        run: uv run pytest -v --tb=short -m "pubsub" --maxfail=1 --durations=30 -n 0
+        run: pytest -v --tb=short -m "pubsub" --maxfail=1 --durations=30 -n 0
 
   integration-test:
     if: (github.event_name == 'push' || github.event_name == 'workflow_call') && inputs.skip_integration_tests != true
@@ -139,9 +149,12 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+          python-version: '3.14'
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: |
+          uv sync --extra dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Run integration tests
         env:
@@ -150,7 +163,7 @@ jobs:
         run: |
           if [ -n "$OPENAI_API_KEY" ]; then
             echo "Running integration tests with configured API keys..."
-            uv run pytest -v --tb=short -m "integration" --maxfail=1 --durations=30 -n 4
+            pytest -v --tb=short -m "integration" --maxfail=1 --durations=30 -n 4
           else
             if [ "${{ github.event_name }}" == "workflow_call" ]; then
               echo "ERROR: Integration tests are required for releases but OPENAI_API_KEY is not set!"

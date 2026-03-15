@@ -6,9 +6,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from ai_pipeline_core.database import BlobRecord, DocumentRecord, LogRecord, SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database import DocumentRecord, LogRecord, SpanKind, SpanRecord, SpanStatus
 from ai_pipeline_core.database._documents import load_documents_from_database
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
+from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents import Attachment, Document
 
 
@@ -63,13 +64,13 @@ def _make_document(**kwargs: object) -> DocumentRecord:
     return DocumentRecord(**defaults)
 
 
-def _make_blob(**kwargs: object) -> BlobRecord:
+def _make_blob(**kwargs: object) -> _BlobRecord:
     defaults: dict[str, object] = {
         "content_sha256": f"blob-{uuid4().hex}",
         "content": b"blob-content",
     }
     defaults.update(kwargs)
-    return BlobRecord(**defaults)
+    return _BlobRecord(**defaults)
 
 
 def _make_log(**kwargs: object) -> LogRecord:
@@ -90,8 +91,8 @@ def _make_log(**kwargs: object) -> LogRecord:
     return LogRecord(**defaults)
 
 
-async def _seed_database() -> tuple[MemoryDatabase, UUID, UUID]:
-    database = MemoryDatabase()
+async def _seed_database() -> tuple[_MemoryDatabase, UUID, UUID]:
+    database = _MemoryDatabase()
     root_deployment_id = uuid4()
     child_deployment_id = uuid4()
     base = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
@@ -223,7 +224,7 @@ async def test_get_all_document_shas_for_tree_collects_inputs_and_outputs() -> N
 
 @pytest.mark.asyncio
 async def test_update_document_summary_changes_only_summary() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     original = _make_document(document_sha256="doc-1", summary="old")
     await database.save_document(original)
 
@@ -237,7 +238,7 @@ async def test_update_document_summary_changes_only_summary() -> None:
 
 @pytest.mark.asyncio
 async def test_save_document_insert_once() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     first = _make_document(document_sha256="doc-1", summary="first")
     second = _make_document(document_sha256="doc-1", summary="second")
 
@@ -250,7 +251,7 @@ async def test_save_document_insert_once() -> None:
 
 @pytest.mark.asyncio
 async def test_get_document_with_content_raises_for_missing_attachment_blob() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     await database.save_document(
         _make_document(
             document_sha256="doc-1",
@@ -270,7 +271,7 @@ async def test_get_document_with_content_raises_for_missing_attachment_blob() ->
 
 @pytest.mark.asyncio
 async def test_load_documents_from_database_reconstructs_attachments() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     document = MemoryLoadDoc(
         name="report.md",
         content=b"# Report",
@@ -305,7 +306,7 @@ async def test_load_documents_from_database_reconstructs_attachments() -> None:
 
 @pytest.mark.asyncio
 async def test_get_cached_completion_filters_by_max_age() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     now = datetime.now(UTC)
     recent = _make_span(
         span_id=uuid4(),
@@ -330,8 +331,70 @@ async def test_get_cached_completion_filters_by_max_age() -> None:
 
 
 @pytest.mark.asyncio
+async def test_find_documents_by_name_returns_matching_records() -> None:
+    database = _MemoryDatabase()
+    doc_a = _make_document(document_sha256="aaa", name="report.md", document_type="Report")
+    doc_b = _make_document(document_sha256="bbb", name="summary.md", document_type="Summary")
+    doc_c = _make_document(document_sha256="ccc", name="other.md", document_type="Report")
+    for doc in (doc_a, doc_b, doc_c):
+        await database.save_document(doc)
+
+    found = await database.find_documents_by_name(["report.md", "summary.md"])
+
+    assert set(found.keys()) == {"report.md", "summary.md"}
+    assert found["report.md"].document_sha256 == "aaa"
+    assert found["summary.md"].document_sha256 == "bbb"
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_name_filters_by_document_type() -> None:
+    database = _MemoryDatabase()
+    doc_a = _make_document(document_sha256="aaa", name="report.md", document_type="Report")
+    doc_b = _make_document(document_sha256="bbb", name="report.md", document_type="Draft")
+    for doc in (doc_a, doc_b):
+        await database.save_document(doc)
+
+    found = await database.find_documents_by_name(["report.md"], document_type="Draft")
+
+    assert found["report.md"].document_sha256 == "bbb"
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_name_tiebreaks_by_highest_sha256() -> None:
+    database = _MemoryDatabase()
+    doc_low = _make_document(document_sha256="aaa-low", name="report.md")
+    doc_high = _make_document(document_sha256="zzz-high", name="report.md")
+    for doc in (doc_low, doc_high):
+        await database.save_document(doc)
+
+    found = await database.find_documents_by_name(["report.md"])
+
+    assert found["report.md"].document_sha256 == "zzz-high"
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_name_empty_names_returns_empty() -> None:
+    database = _MemoryDatabase()
+    await database.save_document(_make_document(name="report.md"))
+
+    found = await database.find_documents_by_name([])
+
+    assert found == {}
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_name_no_matches_returns_empty() -> None:
+    database = _MemoryDatabase()
+    await database.save_document(_make_document(name="report.md"))
+
+    found = await database.find_documents_by_name(["nonexistent.md"])
+
+    assert found == {}
+
+
+@pytest.mark.asyncio
 async def test_get_span_logs_filters_level_and_category() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     span_id = uuid4()
     deployment_id = uuid4()
     await database.save_logs_batch([

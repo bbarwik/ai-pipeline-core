@@ -1,4 +1,4 @@
-"""Tests for reconstruct_lifecycle_events."""
+"""Tests for _reconstruct_lifecycle_events."""
 
 import json
 from datetime import UTC, datetime, timedelta
@@ -6,8 +6,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from ai_pipeline_core.database import DocumentRecord, MemoryDatabase, SpanKind, SpanRecord, SpanStatus
-from ai_pipeline_core.deployment import reconstruct_lifecycle_events
+from ai_pipeline_core.database import DocumentRecord, SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database._memory import _MemoryDatabase
+from ai_pipeline_core.deployment._event_reconstruction import _reconstruct_lifecycle_events
 from ai_pipeline_core.deployment._types import EventType
 from ai_pipeline_core.deployment._event_serialization import event_to_payload
 from ai_pipeline_core.deployment._types import ErrorCode
@@ -53,7 +54,7 @@ def _make_document(**kwargs: object) -> DocumentRecord:
     return DocumentRecord(**defaults)
 
 
-async def _seed_successful_run(db: MemoryDatabase) -> tuple[UUID, UUID]:
+async def _seed_successful_run(db: _MemoryDatabase) -> tuple[UUID, UUID]:
     """Seed a complete deployment → flow → task span tree. Returns (root_deployment_id, deployment_span_id)."""
     root_id = uuid4()
     deploy_id = root_id
@@ -122,10 +123,10 @@ async def _seed_successful_run(db: MemoryDatabase) -> tuple[UUID, UUID]:
 
 @pytest.mark.asyncio
 async def test_successful_run_reconstruction() -> None:
-    db = MemoryDatabase()
+    db = _MemoryDatabase()
     root_id, _ = await _seed_successful_run(db)
 
-    events = await reconstruct_lifecycle_events(db, root_id)
+    events = await _reconstruct_lifecycle_events(db, root_id)
 
     event_types = [e.event_type for e in events]
     assert EventType.RUN_STARTED in event_types
@@ -156,7 +157,7 @@ async def test_successful_run_reconstruction() -> None:
 
 @pytest.mark.asyncio
 async def test_in_progress_run() -> None:
-    db = MemoryDatabase()
+    db = _MemoryDatabase()
     root_id = uuid4()
     t0 = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
 
@@ -173,14 +174,14 @@ async def test_in_progress_run() -> None:
     )
     await db.insert_span(deploy)
 
-    events = await reconstruct_lifecycle_events(db, root_id)
+    events = await _reconstruct_lifecycle_events(db, root_id)
     event_types = [e.event_type for e in events]
     assert event_types == [EventType.RUN_STARTED]
 
 
 @pytest.mark.asyncio
 async def test_failed_run_with_error_code() -> None:
-    db = MemoryDatabase()
+    db = _MemoryDatabase()
     root_id = uuid4()
     t0 = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
 
@@ -198,7 +199,7 @@ async def test_failed_run_with_error_code() -> None:
     )
     await db.insert_span(deploy)
 
-    events = await reconstruct_lifecycle_events(db, root_id)
+    events = await _reconstruct_lifecycle_events(db, root_id)
     run_failed = next(e for e in events if e.event_type == EventType.RUN_FAILED)
     assert run_failed.data["error_code"] == "provider_error"
     assert run_failed.data["error_message"] == "boom"
@@ -206,7 +207,7 @@ async def test_failed_run_with_error_code() -> None:
 
 @pytest.mark.asyncio
 async def test_skipped_flow() -> None:
-    db = MemoryDatabase()
+    db = _MemoryDatabase()
     root_id = uuid4()
     deploy_span_id = uuid4()
     t0 = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
@@ -238,7 +239,7 @@ async def test_skipped_flow() -> None:
     for span in (deploy, flow):
         await db.insert_span(span)
 
-    events = await reconstruct_lifecycle_events(db, root_id)
+    events = await _reconstruct_lifecycle_events(db, root_id)
     skipped = next(e for e in events if e.event_type == EventType.FLOW_SKIPPED)
     assert skipped.data["reason"] == "resumed_past_step"
     assert skipped.data["status"] == "skipped"
@@ -249,7 +250,7 @@ async def test_skipped_flow() -> None:
 
 @pytest.mark.asyncio
 async def test_cached_flow() -> None:
-    db = MemoryDatabase()
+    db = _MemoryDatabase()
     root_id = uuid4()
     deploy_span_id = uuid4()
     t0 = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
@@ -281,7 +282,7 @@ async def test_cached_flow() -> None:
     for span in (deploy, flow):
         await db.insert_span(span)
 
-    events = await reconstruct_lifecycle_events(db, root_id)
+    events = await _reconstruct_lifecycle_events(db, root_id)
     skipped = next(e for e in events if e.event_type == EventType.FLOW_SKIPPED)
     assert skipped.data["status"] == "cached"
     assert skipped.data["reason"] == "cached_result_available"
@@ -289,7 +290,7 @@ async def test_cached_flow() -> None:
 
 @pytest.mark.asyncio
 async def test_cached_task_no_started_event() -> None:
-    db = MemoryDatabase()
+    db = _MemoryDatabase()
     root_id = uuid4()
     deploy_span_id = uuid4()
     flow_span_id = uuid4()
@@ -333,7 +334,7 @@ async def test_cached_task_no_started_event() -> None:
     for span in (deploy, flow, task):
         await db.insert_span(span)
 
-    events = await reconstruct_lifecycle_events(db, root_id)
+    events = await _reconstruct_lifecycle_events(db, root_id)
 
     task_started = [e for e in events if e.event_type == EventType.TASK_STARTED]
     assert len(task_started) == 0
@@ -345,10 +346,10 @@ async def test_cached_task_no_started_event() -> None:
 
 @pytest.mark.asyncio
 async def test_event_ordering_deterministic() -> None:
-    db = MemoryDatabase()
+    db = _MemoryDatabase()
     root_id, _ = await _seed_successful_run(db)
 
-    events = await reconstruct_lifecycle_events(db, root_id)
+    events = await _reconstruct_lifecycle_events(db, root_id)
     timestamps = [e.timestamp for e in events]
     assert timestamps == sorted(timestamps)
 
@@ -360,14 +361,14 @@ async def test_event_ordering_deterministic() -> None:
 
 @pytest.mark.asyncio
 async def test_empty_tree_returns_empty() -> None:
-    db = MemoryDatabase()
-    events = await reconstruct_lifecycle_events(db, uuid4())
+    db = _MemoryDatabase()
+    events = await _reconstruct_lifecycle_events(db, uuid4())
     assert events == []
 
 
 @pytest.mark.asyncio
 async def test_operation_spans_are_ignored() -> None:
-    db = MemoryDatabase()
+    db = _MemoryDatabase()
     root_id = uuid4()
     deploy_span_id = uuid4()
     t0 = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
@@ -397,7 +398,7 @@ async def test_operation_spans_are_ignored() -> None:
     for span in (deploy, operation):
         await db.insert_span(span)
 
-    events = await reconstruct_lifecycle_events(db, root_id)
+    events = await _reconstruct_lifecycle_events(db, root_id)
     for event in events:
         assert "operation" not in event.event_type
 

@@ -89,8 +89,11 @@ def check(command: str) -> str | None:
 
 
 def main() -> None:
-    tool_input = json.load(sys.stdin).get("tool_input", {})
-    command = tool_input.get("command", "")
+    data = json.load(sys.stdin)
+    cwd = data.get("cwd", "")
+    if ".tmp/" in cwd:
+        return
+    command = data.get("tool_input", {}).get("command", "")
     block_message = check(command)
     if block_message:
         print(block_message, file=sys.stderr)

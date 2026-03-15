@@ -15,11 +15,11 @@ from ai_pipeline_core._llm_core import ModelOptions
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import TokenUsage
 from ai_pipeline_core.database import SpanKind, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm.conversation import Conversation
-from ai_pipeline_core.llm.tools import Tool, ToolOutput
+from ai_pipeline_core.llm.tools import Tool
 from ai_pipeline_core.pipeline import PipelineTask
 from ai_pipeline_core.pipeline._execution_context import ExecutionContext, FlowFrame, set_execution_context
 from ai_pipeline_core.pipeline._runtime_sinks import build_runtime_sinks
@@ -41,11 +41,14 @@ class SearchTool(Tool):
     class Input(BaseModel):
         query: str = Field(description="Search query")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content=f"Results for {input.query}")
+    class Output(BaseModel):
+        results: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(results=f"Results for {input.query}")
 
 
-class _RecordingSpanDatabase(MemoryDatabase):
+class _RecordingSpanDatabase(_MemoryDatabase):
     def __init__(self) -> None:
         super().__init__()
         self.inserted_spans: list[object] = []
@@ -106,7 +109,7 @@ def _make_fake_generate(results: list[ModelResponse[str] | BaseException]):
     return _fake_generate
 
 
-def _make_context_with_db(database: MemoryDatabase) -> ExecutionContext:
+def _make_context_with_db(database: _MemoryDatabase) -> ExecutionContext:
     deployment_id = uuid7()
     flow_span_id = uuid7()
     return ExecutionContext(
@@ -242,7 +245,7 @@ class _StartedSpanTask(PipelineTask):
         return (_RecorderOutputDoc.derive(derived_from=documents, name="started.txt", content=conv.content),)
 
 
-def _spans(database: MemoryDatabase, kind: str) -> list[object]:
+def _spans(database: _MemoryDatabase, kind: str) -> list[object]:
     return sorted(
         (span for span in database._spans.values() if span.kind == kind),
         key=lambda span: (span.sequence_no, str(span.span_id)),

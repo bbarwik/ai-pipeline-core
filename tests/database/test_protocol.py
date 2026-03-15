@@ -6,16 +6,16 @@ from typing import get_type_hints
 from uuid import UUID
 
 from ai_pipeline_core.database import (
-    BlobRecord,
     CostTotals,
     DatabaseReader,
     DocumentRecord,
     HydratedDocument,
     LogRecord,
-    MemoryDatabase,
     SpanRecord,
 )
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.database._protocol import DatabaseWriter
+from ai_pipeline_core.database._types import _BlobRecord
 
 
 async def _async_method(*args: object, **kwargs: object) -> object:
@@ -42,6 +42,7 @@ def _make_reader_stub() -> object:
         "get_span_logs",
         "get_spans_referencing_document",
         "list_deployments",
+        "find_documents_by_name",
     }
     return type("ReaderStub", (), {name: _async_method for name in method_names})()
 
@@ -83,7 +84,7 @@ def _assert_signature(
 
 
 def test_memory_database_conforms_to_protocols() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     assert isinstance(database, DatabaseReader)
     assert isinstance(database, DatabaseWriter)
     assert database.supports_remote is False
@@ -119,7 +120,7 @@ def test_database_reader_method_signatures() -> None:
         DatabaseReader,
         "get_blob",
         parameter_types={"content_sha256": str},
-        return_type=BlobRecord | None,
+        return_type=_BlobRecord | None,
     )
     _assert_signature(
         DatabaseReader,
@@ -155,10 +156,17 @@ def test_database_reader_method_signatures() -> None:
         return_type=list[LogRecord],
         keyword_only={"level", "category"},
     )
+    _assert_signature(
+        DatabaseReader,
+        "find_documents_by_name",
+        parameter_types={"names": list[str], "document_type": str | None},
+        return_type=dict[str, DocumentRecord],
+        keyword_only={"document_type"},
+    )
 
 
 def test_database_writer_method_signatures() -> None:
     _assert_signature(DatabaseWriter, "insert_span", parameter_types={"span": SpanRecord}, return_type=type(None))
     _assert_signature(DatabaseWriter, "save_document", parameter_types={"record": DocumentRecord}, return_type=type(None))
-    _assert_signature(DatabaseWriter, "save_blob", parameter_types={"blob": BlobRecord}, return_type=type(None))
+    _assert_signature(DatabaseWriter, "save_blob", parameter_types={"blob": _BlobRecord}, return_type=type(None))
     _assert_signature(DatabaseWriter, "save_logs_batch", parameter_types={"logs": list[LogRecord]}, return_type=type(None))

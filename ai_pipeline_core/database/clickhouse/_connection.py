@@ -1,6 +1,7 @@
 """Shared ClickHouse async client helpers."""
 
 import asyncio
+import warnings
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
@@ -11,6 +12,10 @@ from clickhouse_connect.driver.exceptions import DatabaseError as ClickHouseData
 
 from ai_pipeline_core.database.clickhouse._ddl import DDL_STATEMENTS, SCHEMA_META_TABLE, SCHEMA_VERSION
 from ai_pipeline_core.settings import Settings
+
+# clickhouse-connect 0.14+ warns that the thread-pool async wrapper will be replaced
+# by a native async client in 1.0. Suppress globally until we migrate.
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"clickhouse_connect")
 
 __all__ = [
     "SchemaVersionError",

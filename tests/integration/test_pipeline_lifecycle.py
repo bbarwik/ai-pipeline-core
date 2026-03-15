@@ -10,11 +10,11 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from ai_pipeline_core import Conversation, DeploymentResult, Document, FlowOptions, PipelineDeployment, Tool, ToolOutput, traced_operation
+from ai_pipeline_core import Conversation, DeploymentResult, Document, FlowOptions, PipelineDeployment, Tool, traced_operation
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import RawToolCall, TokenUsage
 from ai_pipeline_core.database import CostTotals, SpanKind, SpanRecord, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._helpers import _build_flow_cache_key, _compute_input_fingerprint
 from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask
 from tests.llm.conftest import make_tool_call
@@ -39,8 +39,11 @@ class LifecycleSearchTool(Tool):
     class Input(BaseModel):
         query: str = Field(description="Search query.")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content=f"Search result for {input.query}")
+    class Output(BaseModel):
+        result: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(result=f"Search result for {input.query}")
 
 
 class LifecycleTask(PipelineTask):
@@ -147,7 +150,7 @@ class _GenerateSequence:
 
 async def _run_deployment(
     deployment: PipelineDeployment[Any, Any],
-    database: MemoryDatabase,
+    database: _MemoryDatabase,
     *,
     run_id: str,
     documents: Sequence[Document] | None = None,
@@ -166,7 +169,7 @@ async def _run_deployment(
     return await deployment._run_with_context(run_id, resolved_documents, FlowOptions(), database=database)
 
 
-def _sorted_spans(database: MemoryDatabase, kind: str, *, status: str | None = None) -> list[SpanRecord]:
+def _sorted_spans(database: _MemoryDatabase, kind: str, *, status: str | None = None) -> list[SpanRecord]:
     spans = [span for span in database._spans.values() if span.kind == kind]
     if status is not None:
         spans = [span for span in spans if span.status == status]
@@ -211,7 +214,7 @@ async def test_full_deployment_lifecycle_records_complete_span_tree(monkeypatch:
     ])
     monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", generate)
 
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     input_doc = LifecycleInputDocument.create_root(name="input.txt", content="seed", reason="integration lifecycle")
     result = await _run_deployment(LifecycleDeployment(), database, run_id="integration-lifecycle", documents=[input_doc])
 
@@ -283,7 +286,7 @@ async def test_flow_cache_keys_hit_across_runs_with_new_root_deployments(monkeyp
     ])
     monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", generate)
 
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     input_doc = LifecycleInputDocument.create_root(name="input.txt", content="seed", reason="cache integration")
     deployment = CachedLifecycleDeployment()
 

@@ -20,6 +20,7 @@ Runtime behavior:
 import asyncio
 import contextlib
 import inspect
+import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import timedelta
@@ -117,6 +118,7 @@ class PipelineTask:
     cache_version: ClassVar[int] = 1
     cache_ttl_seconds: ClassVar[int | None] = None
     _abstract_task: ClassVar[bool] = False
+    BASE_COST_USD: ClassVar[float] = 0.0
     expected_cost: ClassVar[float | None] = None
 
     input_document_types: ClassVar[list[type[Document]]] = []
@@ -157,6 +159,11 @@ class PipelineTask:
             cls.name = cls.__name__
         if cls.estimated_minutes < 1:
             raise TypeError(f"PipelineTask '{cls.__name__}' has estimated_minutes={cls.estimated_minutes}. Use a value >= 1.")
+        if not math.isfinite(cls.BASE_COST_USD) or cls.BASE_COST_USD < 0:
+            raise TypeError(
+                f"PipelineTask '{cls.__name__}' has BASE_COST_USD={cls.BASE_COST_USD}. "
+                "Use a finite float >= 0 representing the minimum cost in USD per execution."
+            )
         if cls.retries < 0:
             raise TypeError(f"PipelineTask '{cls.__name__}' has retries={cls.retries}. Use a value >= 0.")
         if cls.timeout_seconds is not None and cls.timeout_seconds <= 0:
@@ -773,6 +780,8 @@ class PipelineTask:
                 db=database,
                 input_preview=task_input_preview,
             ) as span_ctx:
+                if cls.BASE_COST_USD > 0:
+                    span_ctx._add_cost(cls.BASE_COST_USD)
                 span_ctx.set_meta(
                     attempt=task_attempt,
                     retries=cls.retries,

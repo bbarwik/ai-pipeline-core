@@ -22,8 +22,11 @@ class ToolA(Tool):
     class Input(BaseModel):
         x: str = Field(description="Value")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content="a")
+    class Output(BaseModel):
+        value: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(value="a")
 
 
 class ToolB(Tool):
@@ -32,8 +35,11 @@ class ToolB(Tool):
     class Input(BaseModel):
         y: str = Field(description="Value")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content="b")
+    class Output(BaseModel):
+        value: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(value="b")
 
 
 # ── _to_core_messages ─────────────────────────────────────────────────────────
@@ -109,8 +115,11 @@ async def test_duplicate_tool_name_detected() -> None:
         class Input(BaseModel):
             q: str = Field(description="Query")
 
-        async def execute(self, input: Input) -> ToolOutput:
-            return ToolOutput(content="a")
+        class Output(BaseModel):
+            value: str
+
+        async def run(self, input: Input) -> Output:
+            return self.Output(value="a")
 
     class My_Search(Tool):
         """Search B."""
@@ -118,8 +127,11 @@ async def test_duplicate_tool_name_detected() -> None:
         class Input(BaseModel):
             q: str = Field(description="Query")
 
-        async def execute(self, input: Input) -> ToolOutput:
-            return ToolOutput(content="b")
+        class Output(BaseModel):
+            value: str
+
+        async def run(self, input: Input) -> Output:
+            return self.Output(value="b")
 
     # Verify names collide
     assert to_snake_case(MySearch.__name__) == to_snake_case(My_Search.__name__) == "my_search"
@@ -256,3 +268,39 @@ def test_tool_calls_for_multi_phase_collection() -> None:
 
     all_calls = conv_phase1.tool_calls_for(ToolA) + conv_phase2.tool_calls_for(ToolA)
     assert len(all_calls) == 3
+
+
+# ── Phase 7d: Conversation messages ──────────────────────────────────────────
+
+
+def test_serialize_tool_config_name_and_class_path_only() -> None:
+    """_serialize_tool_config returns only name and class_path, no constructor_args."""
+    from ai_pipeline_core.llm._conversation_messages import _serialize_tool_config
+
+    config = _serialize_tool_config(ToolA())
+    assert set(config.keys()) == {"name", "class_path"}
+    assert config["name"] == "tool_a"
+
+
+def test_serialize_tool_config_no_api_key_leakage() -> None:
+    """Tool with API key in __init__ state: _serialize_tool_config excludes it."""
+    from ai_pipeline_core.llm._conversation_messages import _serialize_tool_config
+
+    class ApiTool(Tool):
+        """Tool with API key."""
+
+        class Input(BaseModel):
+            q: str = Field(description="q")
+
+        class Output(BaseModel):
+            result: str
+
+        def __init__(self, api_key: str) -> None:
+            self._api_key = api_key
+
+        async def run(self, input: Input) -> Output:
+            return self.Output(result="ok")
+
+    config = _serialize_tool_config(ApiTool(api_key="secret-123"))
+    assert "secret-123" not in str(config)
+    assert "constructor_args" not in config

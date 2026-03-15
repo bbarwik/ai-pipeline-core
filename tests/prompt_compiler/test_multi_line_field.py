@@ -479,7 +479,7 @@ async def test_send_spec_adds_multi_line_fields_as_user_messages() -> None:
         review: str = MultiLineField(description="Review text")
 
     response = _make_model_response("analysis result")
-    conv_after_send = Conversation[None](model="gpt-5", messages=(response,))
+    conv_after_send = Conversation[str](model="gpt-5", messages=(response,))
 
     sent_content: list[str] = []
 
@@ -489,7 +489,7 @@ async def test_send_spec_adds_multi_line_fields_as_user_messages() -> None:
         return conv_after_send
 
     with patch.object(Conversation, "send", fake_send):
-        conv = Conversation[None](model="gpt-5")
+        conv = Conversation[str](model="gpt-5")
         spec = SendMlSpec(review="This is the review\nwith multiple lines")
         await conv.send_spec(spec)
 
@@ -521,10 +521,10 @@ async def test_send_spec_multi_line_fields_in_single_message() -> None:
 
     async def fake_send(self, content, *, purpose=None, expected_cost=None, **kwargs):
         messages_at_send.append(self.messages)
-        return Conversation[None](model="gpt-5", messages=(*self.messages, response))
+        return Conversation[str](model="gpt-5", messages=(*self.messages, response))
 
     with patch.object(Conversation, "send", fake_send):
-        conv = Conversation[None](model="gpt-5")
+        conv = Conversation[str](model="gpt-5")
         spec = OrderMlSpec(review="review text", notes="note text")
         await conv.send_spec(spec)
 
@@ -559,11 +559,11 @@ async def test_send_spec_multi_line_with_documents() -> None:
     async def fake_send(self, content, *, purpose=None, expected_cost=None, **kwargs):
         context_at_send.append(self.context)
         messages_at_send.append(self.messages)
-        return Conversation[None](model="gpt-5", messages=(*self.messages, response))
+        return Conversation[str](model="gpt-5", messages=(*self.messages, response))
 
     doc = MlDoc(name="source.txt", content=b"source data")
     with patch.object(Conversation, "send", fake_send):
-        conv = Conversation[None](model="gpt-5")
+        conv = Conversation[str](model="gpt-5")
         spec = DocMlSpec(review="review content")
         await conv.send_spec(spec, documents=[doc])
 
@@ -601,10 +601,10 @@ async def test_send_spec_follow_up_multi_line_in_messages() -> None:
 
     async def fake_send(self, content, *, purpose=None, expected_cost=None, **kwargs):
         messages_at_send.append(self.messages)
-        return Conversation[None](model="gpt-5", messages=(*self.messages, response))
+        return Conversation[str](model="gpt-5", messages=(*self.messages, response))
 
     with patch.object(Conversation, "send", fake_send):
-        conv = Conversation[None](model="gpt-5")
+        conv = Conversation[str](model="gpt-5")
         spec = FollowMlSpec(feedback="Please fix\nthe issues")
         await conv.send_spec(spec)
 
@@ -624,7 +624,7 @@ def test_approximate_tokens_includes_multi_line_messages() -> None:
 
     long_text = "x" * 4000  # ~1000 tokens at 4 chars/token
     xml_msg = f"<review>{long_text}</review>"
-    conv = Conversation[None](
+    conv = Conversation[str](
         model="gpt-5",
         messages=(UserMessage(xml_msg),),
     )

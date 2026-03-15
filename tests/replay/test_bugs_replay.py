@@ -9,9 +9,10 @@ Bugs C1, C2, C3 from CORE-BUGS.md:
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
 from pydantic import BaseModel, Field
 
-from ai_pipeline_core.llm.tools import Tool, ToolOutput
+from ai_pipeline_core.llm.tools import Tool
 from ai_pipeline_core.replay._execute import _apply_overrides, _override_tools_in_recorded_order
 
 
@@ -34,8 +35,11 @@ class SearchTool(Tool):
     class Input(BaseModel):
         query: str = Field(description="Query")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content="results")
+    class Output(BaseModel):
+        results: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(results="results")
 
 
 class SummarizeTool(Tool):
@@ -44,8 +48,11 @@ class SummarizeTool(Tool):
     class Input(BaseModel):
         text: str = Field(description="Text to summarize")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content="summary")
+    class Output(BaseModel):
+        summary: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(summary="summary")
 
 
 class NewTool(Tool):
@@ -54,8 +61,11 @@ class NewTool(Tool):
     class Input(BaseModel):
         data: str = Field(description="Data")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content="new result")
+    class Output(BaseModel):
+        result: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(result="new result")
 
 
 # ── C1: response_format override silently dropped ───────────────────────────
@@ -149,3 +159,36 @@ def test_model_override_applies_to_constructor_args_receiver() -> None:
 
     assert isinstance(new_receiver, dict)
     assert new_receiver["value"]["model"] == "new-model", "Model override should apply to constructor_args receiver, not just Conversation"
+
+
+# ── Phase 7e: Replay tool override enforcement ───────────────────────────────
+
+
+def test_replay_tool_conversation_without_override_tools_raises() -> None:
+    """Replaying recorded conversation that used tools without override_tools raises TypeError."""
+    recorded_tools = [{"name": "search_tool", "class_path": "tests.replay.test_bugs_replay:SearchTool"}]
+    arguments: dict[str, Any] = {"tools": recorded_tools, "content": "test"}
+
+    with pytest.raises(TypeError, match="override_tools"):
+        _apply_overrides(receiver=None, arguments=arguments, overrides=None)
+
+
+def test_replay_tool_conversation_without_override_tools_with_overrides_raises() -> None:
+    """Even with model overrides, missing override_tools raises TypeError."""
+    recorded_tools = [{"name": "search_tool", "class_path": "tests.replay.test_bugs_replay:SearchTool"}]
+    arguments: dict[str, Any] = {"tools": recorded_tools, "content": "test"}
+    overrides = FakeOverrides(model="new-model")
+
+    with pytest.raises(TypeError, match="override_tools"):
+        _apply_overrides(receiver=None, arguments=arguments, overrides=overrides)
+
+
+def test_replay_tool_conversation_with_override_tools_works() -> None:
+    """Replaying recorded conversation with override_tools succeeds."""
+    recorded_tools = [{"name": "search_tool", "class_path": "tests.replay.test_bugs_replay:SearchTool"}]
+    arguments: dict[str, Any] = {"tools": recorded_tools, "content": "test"}
+    overrides = FakeOverrides(tools={"search_tool": SearchTool()})
+
+    _, new_args = _apply_overrides(receiver=None, arguments=arguments, overrides=overrides)
+    assert isinstance(new_args["tools"], list)
+    assert isinstance(new_args["tools"][0], SearchTool)

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from ai_pipeline_core._codec import UniversalCodec, import_by_path
+from ai_pipeline_core._codec import UniversalCodec
 from ai_pipeline_core._llm_core import ModelOptions
 from ai_pipeline_core.database._protocol import DatabaseReader, DatabaseWriter
 from ai_pipeline_core.deployment._types import _NoopPublisher
@@ -71,31 +71,6 @@ def _override_tools_in_recorded_order(value: Any, override_tools: dict[str, Tool
     return ordered
 
 
-def _materialize_recorded_tool(item: Any) -> Tool:
-    if not isinstance(item, dict):
-        raise TypeError(f"Recorded tool config must decode to a JSON object, got {type(item).__name__}.")
-    class_path = item.get("class_path")
-    constructor_args = item.get("constructor_args", {})
-    if not isinstance(class_path, str) or not class_path:
-        raise TypeError("Recorded tool config is missing class_path. Replay requires class_path and constructor_args for every stored tool.")
-    tool_cls = import_by_path(class_path)
-    if not isinstance(tool_cls, type) or not issubclass(tool_cls, Tool):
-        raise TypeError(f"Recorded tool path {class_path!r} resolved to {type(tool_cls).__name__}, not a Tool subclass.")
-    if not isinstance(constructor_args, dict):
-        raise TypeError(f"Recorded constructor_args for tool {class_path!r} must decode to a JSON object.")
-    return tool_cls(**constructor_args)
-
-
-def _materialize_tools(value: Any, override_tools: dict[str, Tool] | None) -> list[Tool] | None:
-    if override_tools is not None:
-        return _override_tools_in_recorded_order(value, override_tools)
-    if not value:
-        return None
-    if not isinstance(value, (list, tuple)):
-        raise TypeError(f"Recorded tools must decode to a list or tuple of tool configs. Got {type(value).__name__}.")
-    return [_materialize_recorded_tool(item) for item in value]
-
-
 def _override_receiver(receiver: Any, overrides: Any) -> Any:
     if not isinstance(receiver, dict):
         return receiver
@@ -125,7 +100,13 @@ def _override_arguments(arguments: Any, overrides: Any) -> Any:
     result = dict(arguments)
     if "tools" in result:
         override_tools = getattr(overrides, "tools", None)
-        result["tools"] = _materialize_tools(result["tools"], dict(override_tools) if override_tools is not None else None)
+        if override_tools is not None:
+            result["tools"] = _override_tools_in_recorded_order(result["tools"], dict(override_tools))
+        elif result["tools"]:
+            raise TypeError(
+                "Recorded conversation used tools but no override_tools were provided. "
+                "Pass override_tools= with live tool instances to replay tool-using conversations."
+            )
     if getattr(overrides, "response_format", None) is not None:
         result["response_format"] = overrides.response_format
     if getattr(overrides, "model", None) is not None:
@@ -144,9 +125,11 @@ def _apply_overrides(
     if overrides is not None:
         receiver = _override_receiver(receiver, overrides)
         arguments = _override_arguments(arguments, overrides)
-    elif isinstance(arguments, dict) and "tools" in arguments:
-        arguments = dict(arguments)
-        arguments["tools"] = _materialize_tools(arguments["tools"], None)
+    elif isinstance(arguments, dict) and "tools" in arguments and arguments["tools"]:
+        raise TypeError(
+            "Recorded conversation used tools but no override_tools were provided. "
+            "Pass override_tools= with live tool instances to replay tool-using conversations."
+        )
     return receiver, arguments
 
 
@@ -168,11 +151,11 @@ async def _copy_document(document_sha: str, *, source_db: DatabaseReader, sink_d
             "Persist the document record and all referenced blobs before replaying."
         )
     await sink_db.save_document(document)
-    from ai_pipeline_core.database import BlobRecord
+    from ai_pipeline_core.database._types import _BlobRecord
 
-    blobs = [BlobRecord(content_sha256=hydrated.record.content_sha256, content=hydrated.content)]
+    blobs = [_BlobRecord(content_sha256=hydrated.record.content_sha256, content=hydrated.content)]
     for att_sha, att_content in hydrated.attachment_contents.items():
-        blobs.append(BlobRecord(content_sha256=att_sha, content=att_content))
+        blobs.append(_BlobRecord(content_sha256=att_sha, content=att_content))
     await sink_db.save_blob_batch(blobs)
 
 

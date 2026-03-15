@@ -100,3 +100,9 @@ async def test_decoded_method_adapter_splits_method_name_from_class_path(
 def test_resolve_callable_rejects_unknown_target_kind() -> None:
     with pytest.raises(ValueError, match="is not supported"):
         resolve_callable(f"unknown:{__name__}:adapter_function", receiver=None)
+
+
+def test_resolve_callable_rejects_tool_call_target() -> None:
+    """resolve_callable raises ValueError for tool_call:... targets."""
+    with pytest.raises(ValueError, match="tool_call span"):
+        resolve_callable("tool_call:some.module:SomeTool", receiver=None)

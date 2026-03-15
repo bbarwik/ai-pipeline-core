@@ -8,7 +8,7 @@ from uuid import uuid7
 import pytest
 
 from ai_pipeline_core.database import SpanKind
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.pipeline import PipelineTask
@@ -33,7 +33,7 @@ class PersistTask(PipelineTask):
         return (OutputDoc.derive(derived_from=(source,), name="out.txt", content="ok"),)
 
 
-def _make_context(database: MemoryDatabase) -> ExecutionContext:
+def _make_context(database: _MemoryDatabase) -> ExecutionContext:
     deployment_id = uuid7()
     flow_span_id = uuid7()
     return ExecutionContext(
@@ -64,7 +64,7 @@ def _make_context(database: MemoryDatabase) -> ExecutionContext:
 
 @pytest.mark.asyncio
 async def test_task_output_document_shas_are_queryable_from_span_tree() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     source = InputDoc.create_root(name="in.txt", content="hello", reason="flow-storage-test")
     with set_execution_context(_make_context(database)):
         outputs = await PersistTask.run((source,))

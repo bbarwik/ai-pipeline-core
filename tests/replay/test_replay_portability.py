@@ -2,7 +2,7 @@
 
 import pytest
 
-from ai_pipeline_core.database import BlobRecord
+from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.replay import execute_span
 from tests.replay.conftest import ReplayTextDocument, make_span, store_document_in_database
@@ -22,7 +22,7 @@ async def test_execute_span_copies_input_artifacts_when_source_and_sink_differ(
     await store_document_in_database(memory_database, sample_text_doc)
     payload = b"binary-payload"
     payload_sha = compute_content_sha256(payload)
-    await memory_database.save_blob(BlobRecord(content_sha256=payload_sha, content=payload))
+    await memory_database.save_blob(_BlobRecord(content_sha256=payload_sha, content=payload))
 
     span = make_span(
         kind="task",

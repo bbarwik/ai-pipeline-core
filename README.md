@@ -85,8 +85,10 @@ logger = get_pipeline_logger(__name__)
 class InputDocument(Document):
     """Pipeline input."""
 
+
 class AnalysisDocument(Document):
     """Per-document analysis result."""
+
 
 class ReportDocument(Document):
     """Final compiled report."""
@@ -106,11 +108,13 @@ class AnalyzeDocument(PipelineTask):
     async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[AnalysisDocument, ...]:
         _ = cls
         doc = documents[0]
-        return (AnalysisDocument.derive(
-            name=f"analysis_{doc.sha256[:12]}.json",
-            content=AnalysisSummary(word_count=42, top_keywords=["ai", "pipeline"]),
-            derived_from=(doc,),
-        ),)
+        return (
+            AnalysisDocument.derive(
+                name=f"analysis_{doc.sha256[:12]}.json",
+                content=AnalysisSummary(word_count=42, top_keywords=["ai", "pipeline"]),
+                derived_from=(doc,),
+            ),
+        )
 
 
 # 4. Pipeline flow -- type contract is in the run() annotations
@@ -157,9 +161,7 @@ class MyPipeline(PipelineDeployment[FlowOptions, MyResult]):
 
 # 6. CLI initializer provides run ID and initial documents
 def initialize(options: FlowOptions) -> tuple[str, tuple[Document, ...]]:
-    docs: tuple[Document, ...] = (
-        InputDocument.create_root(name="input.txt", content="Sample data", reason="CLI input"),
-    )
+    docs: tuple[Document, ...] = (InputDocument.create_root(name="input.txt", content="Sample data", reason="CLI input"),)
     return "my-project", docs
 
 
@@ -196,16 +198,17 @@ print(conv.content)
 
 # Access response properties
 print(conv.reasoning_content)  # Thinking/reasoning text (if available)
-print(conv.usage)              # Token usage with input/output counts
-print(conv.cost)               # Estimated cost
-print(conv.citations)          # Citation objects (for search models)
+print(conv.usage)  # Token usage with input/output counts
+print(conv.cost)  # Estimated cost
+print(conv.citations)  # Citation objects (for search models)
 ```
 
 ### Tool Calling
 
 ```python
 from pydantic import BaseModel, Field
-from ai_pipeline_core import Conversation, Tool, ToolOutput
+from ai_pipeline_core import Conversation, Tool
+
 
 # 1. Define a tool — docstring becomes the LLM description
 class GetWeather(Tool):
@@ -215,9 +218,13 @@ class GetWeather(Tool):
         city: str = Field(description="City name")
         unit: str = Field(default="celsius", description="Temperature unit")
 
-    async def execute(self, input: Input) -> ToolOutput:
+    class Output(BaseModel):
+        weather: str
+
+    async def run(self, input: Input) -> Output:
         # Call your API, database, or any async operation here
-        return ToolOutput(content=f"Sunny, 22°C in {input.city}")
+        return self.Output(weather=f"Sunny, 22°C in {input.city}")
+
 
 # 2. Pass tools to send() — auto-loop handles everything
 conv = Conversation(model="gemini-3-flash")
@@ -231,7 +238,8 @@ print(conv.content)  # "It's sunny and 22°C in Paris!"
 for record in conv.tool_call_records:
     print(f"Tool: {record.tool.__name__}, Round: {record.round}")
     print(f"Input: {record.input}")
-    print(f"Output: {record.output.content}")
+    print(f"Output JSON: {record.output.content}")
+    print(f"Output model: {record.output.data}")
 ```
 
 **How the auto-loop works:** `send()` calls the LLM → if the LLM requests tool calls, the framework executes them in parallel → sends results back → repeats until the LLM produces a final text answer or `max_tool_rounds` is exhausted.
@@ -239,8 +247,10 @@ for record in conv.tool_call_records:
 **Tool definition rules (validated at import time):**
 - Must have a non-empty docstring (becomes the tool description for the LLM)
 - Must define an `Input` inner class (BaseModel with `Field(description=...)` on every field)
-- Must define an `async def execute(self, input) -> ToolOutput` method
-- Optional: define an `Output` inner class extending `ToolOutput` for typed metadata
+- Must define an `Output` inner class (BaseModel)
+- Must define an `async def run(self, input: Input) -> Output` method
+- `execute()` is sealed and framework-owned; do not override it (it handles retry, timeout, error handling, and serialization)
+- Lifecycle behavior is configurable through ClassVars: `retries`, `retry_delay_seconds`, `timeout_seconds`, `max_response_bytes`, `handled_exceptions`
 - `dict[str, V]` field types are forbidden in `Input` (OpenAI strict mode incompatible)
 - Field names `strict` and `additionalProperties` are reserved and cannot be used (collide with LiteLLM's recursive key stripping)
 
@@ -258,10 +268,12 @@ for record in conv.tool_call_records:
 from pydantic import BaseModel
 from ai_pipeline_core import Conversation
 
+
 class Analysis(BaseModel):
     summary: str
     sentiment: float
     key_points: list[str]
+
 
 # Generate structured output via Conversation
 conv = Conversation(model="gemini-3-pro")
@@ -282,8 +294,10 @@ for point in analysis.key_points:
 ```python
 from ai_pipeline_core import Document
 
+
 class MyDocument(Document):
     """Custom document type -- must subclass Document."""
+
 
 # Create documents from external sources (URI provenance)
 doc = MyDocument.create_external(
@@ -320,12 +334,15 @@ Declare a Pydantic BaseModel as the content schema for a Document subclass. Cont
 from pydantic import BaseModel
 from ai_pipeline_core import Document
 
+
 class ResearchDefinition(BaseModel, frozen=True):
     topic: str
     max_sources: int = 10
 
+
 class ResearchPlanDocument(Document[ResearchDefinition]):
     """Plan document with typed content schema."""
+
 
 # Content is validated against the schema at creation time
 plan = ResearchPlanDocument.derive(
@@ -336,16 +353,18 @@ plan = ResearchPlanDocument.derive(
 
 # Zero-boilerplate typed access (cached, returns ResearchDefinition)
 definition = plan.parsed
-print(definition.topic)       # "AI safety"
+print(definition.topic)  # "AI safety"
 print(definition.max_sources)  # 10
+
 
 # Wrong schema type is rejected at creation time
 class WrongModel(BaseModel, frozen=True):
     x: int
 
+
 plan = ResearchPlanDocument.derive(
     name="plan.json",
-    content=WrongModel(x=1),   # TypeError: Expected content of type ResearchDefinition
+    content=WrongModel(x=1),  # TypeError: Expected content of type ResearchDefinition
     derived_from=(input_doc,),
 )
 
@@ -362,6 +381,7 @@ Documents are immutable Pydantic models that wrap binary content with metadata. 
 ```python
 class MyDocument(Document):
     """All documents subclass Document directly."""
+
 
 # Use derive() for content transformations
 doc = MyDocument.derive(
@@ -380,7 +400,7 @@ model = doc.as_pydantic_model(MyModel)  # Requires model_type argument
 
 # Content-addressed identity
 print(doc.sha256)  # Full SHA256 hash (base32)
-print(doc.id)      # Short 6-char identifier
+print(doc.id)  # Short 6-char identifier
 ```
 
 **Typed content** — declare a content schema via generic parameter for automatic validation and typed access:
@@ -388,6 +408,7 @@ print(doc.id)      # Short 6-char identifier
 ```python
 class PlanDocument(Document[PlanModel]):
     """Content is validated against PlanModel at creation time."""
+
 
 plan = PlanDocument.derive(name="plan.json", content=PlanModel(...), derived_from=(source_doc,))
 plan.parsed  # → PlanModel (cached, typed)
@@ -467,10 +488,12 @@ conv = conv.with_context(doc1, doc2, doc3)
 conv = conv.with_document(my_document)
 
 # Configure model options
-conv = conv.with_model_options(ModelOptions(
-    system_prompt="You are a research analyst.",
-    reasoning_effort="high",
-))
+conv = conv.with_model_options(
+    ModelOptions(
+        system_prompt="You are a research analyst.",
+        reasoning_effort="high",
+    )
+)
 
 # Send a message (returns NEW Conversation instance)
 conv = await conv.send("Analyze the document")
@@ -492,6 +515,7 @@ conv = conv.with_assistant_message("Previous analysis result...")
 
 # Warmup + fork pattern for parallel calls with shared cache
 import asyncio
+
 base = await conv.send("Acknowledge the context")  # Warmup
 # Fork: create parallel conversations from the same base
 results = await asyncio.gather(
@@ -505,8 +529,8 @@ print(conv.approximate_tokens_count)
 
 # Tool calling — LLM can call tools, framework auto-loops
 conv = await conv.send("Search for recent news", tools=[SearchTool()])
-print(conv.content)              # Final answer after tool execution
-print(conv.tool_call_records)    # Records of all tool calls made
+print(conv.content)  # Final answer after tool execution
+print(conv.tool_call_records)  # Records of all tool calls made
 ```
 
 **`send_spec()`** — sends a `PromptSpec` to the LLM. Handles document placement, stop sequences, and auto-extraction of `<result>` tags. For structured specs (`PromptSpec[SomeModel]`), dispatches to `send_structured()` automatically.
@@ -575,6 +599,7 @@ Base class for pipeline tasks with automatic execution-node tracking, document p
 ```python
 from ai_pipeline_core import PipelineTask
 
+
 class ProcessChunk(PipelineTask):
     """Process a single document chunk."""
 
@@ -582,11 +607,13 @@ class ProcessChunk(PipelineTask):
     async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[OutputDocument, ...]:
         _ = cls
         doc = documents[0]
-        return (OutputDocument.derive(
-            name="result.json",
-            content={"processed": True},
-            derived_from=(doc,),
-        ),)
+        return (
+            OutputDocument.derive(
+                name="result.json",
+                content={"processed": True},
+                derived_from=(doc,),
+            ),
+        )
 
 
 class ExpensiveTask(PipelineTask):
@@ -635,14 +662,15 @@ Base class for pipeline flows that orchestrate tasks:
 ```python
 from ai_pipeline_core import PipelineFlow, FlowOptions
 
+
 class AnalysisFlow(PipelineFlow):
     """Analyze input documents."""
 
     async def run(
         self,
         documents: tuple[InputDoc, ...],  # Input types extracted from annotation
-        options: MyFlowOptions,           # Must be FlowOptions or subclass
-    ) -> tuple[OutputDoc, ...]:           # Output types extracted from annotation
+        options: MyFlowOptions,  # Must be FlowOptions or subclass
+    ) -> tuple[OutputDoc, ...]:  # Output types extracted from annotation
         results: list[OutputDoc] = []
         for doc in documents:
             results.extend(await AnalyzeTask.run((doc,)))
@@ -658,6 +686,7 @@ class ConfigurableFlow(PipelineFlow):
     async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
         model = self.model  # Access constructor params as attributes
         ...
+
 
 flow = ConfigurableFlow(model="gemini-3-pro", temperature=0.7)
 flow.get_params()  # {"model": "gemini-3-pro", "temperature": 0.7}
@@ -689,14 +718,14 @@ class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
         run_id: str,
         documents: tuple[Document, ...],
         options: MyOptions,
-    ) -> MyResult:
-        ...
+    ) -> MyResult: ...
 ```
 
 **Dynamic flow control** with `plan_next_flow()`:
 
 ```python
 from ai_pipeline_core.deployment.base import FlowDirective, FlowAction
+
 
 class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
     def build_flows(self, options: MyOptions) -> list[PipelineFlow]:
@@ -743,9 +772,10 @@ Declare cross-run concurrency and rate limits on `PipelineDeployment` to prevent
 ```python
 from ai_pipeline_core import LimitKind, PipelineLimit, PipelineDeployment, pipeline_concurrency
 
+
 class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
     concurrency_limits = {
-        "provider-a": PipelineLimit(500, LimitKind.CONCURRENT),       # max 500 simultaneous
+        "provider-a": PipelineLimit(500, LimitKind.CONCURRENT),  # max 500 simultaneous
         "provider-b": PipelineLimit(15, LimitKind.PER_MINUTE, timeout=300),  # 15/min token bucket
     }
     ...
@@ -755,6 +785,7 @@ Use `pipeline_concurrency()` at call sites to acquire slots:
 
 ```python
 from ai_pipeline_core import pipeline_concurrency
+
 
 async def fetch_data(url: str) -> Data:
     async with pipeline_concurrency("provider-a"):
@@ -804,13 +835,17 @@ from ai_pipeline_core import safe_gather, safe_gather_indexed
 
 # safe_gather: returns successes only, filters out failures
 results = await safe_gather(
-    process(doc1), process(doc2), process(doc3),
+    process(doc1),
+    process(doc2),
+    process(doc3),
     label="processing",
 )  # Returns list of successful results (order may shift)
 
 # safe_gather_indexed: preserves positional correspondence (None for failures)
 results = await safe_gather_indexed(
-    process(doc1), process(doc2), process(doc3),
+    process(doc1),
+    process(doc2),
+    process(doc3),
     label="processing",
 )  # Returns [result1, None, result3] if doc2 failed
 ```
@@ -841,15 +876,20 @@ python -m ai_pipeline_core.deployment.deploy
 ```python
 from ai_pipeline_core import RemoteDeployment, DeploymentResult, FlowOptions, Document
 
+
 class RemoteInputDocument(Document):
     """Mirror type -- class_name must match the remote pipeline's document type."""
 
+
 class RemoteResult(DeploymentResult):
     """Result type matching the remote pipeline's result."""
+
     report_count: int = 0
+
 
 class MyPipeline(RemoteDeployment[FlowOptions, RemoteResult]):
     """Client for the remote MyPipeline deployment."""
+
 
 client = MyPipeline()
 result = await client.run(
@@ -874,20 +914,28 @@ Type-safe prompt specifications that replace Jinja2 templates. Every piece of pr
 ```python
 from ai_pipeline_core import Role, Rule, OutputRule, Guide
 
+
 class ResearchAnalyst(Role):
     """Analyst role for research pipelines."""
+
     text = "experienced research analyst with expertise in data synthesis"
+
 
 class CiteEvidence(Rule):
     """Citation rule."""
+
     text = "Always cite specific evidence from the source documents.\nInclude document IDs when referencing."
+
 
 class DontUseMarkdownTables(OutputRule):
     """Table formatting rule."""
+
     text = "Do not use markdown tables in the output."
+
 
 class RiskFrameworkGuide(Guide):
     """Risk assessment framework guide."""
+
     template = "guides/risk_framework.md"  # Relative to module file, loaded at import time
 ```
 
@@ -897,11 +945,14 @@ class RiskFrameworkGuide(Guide):
 from ai_pipeline_core import PromptSpec, Document
 from pydantic import Field
 
+
 class SourceDocument(Document):
     """Source material for analysis."""
 
+
 class AnalysisSpec(PromptSpec):
     """Analyze source documents for key findings."""
+
     role = ResearchAnalyst
     input_documents = (SourceDocument,)
     task = "Analyze the provided documents and identify key findings."
@@ -920,14 +971,16 @@ class AnalysisSpec(PromptSpec):
 from ai_pipeline_core import PromptSpec, MultiLineField
 from pydantic import Field
 
+
 class ReviewSpec(PromptSpec):
     """Analyze a review."""
+
     role = ResearchAnalyst
     input_documents = (SourceDocument,)
     task = "Analyze the review and identify key themes."
 
-    project_name: str = Field(description="Project name")          # Short, inline in prompt
-    review: str = MultiLineField(description="Review text")        # Sent as <review>...</review> message
+    project_name: str = Field(description="Project name")  # Short, inline in prompt
+    review: str = MultiLineField(description="Review text")  # Sent as <review>...</review> message
 ```
 
 **Rendering and sending:**
@@ -1128,10 +1181,13 @@ Create custom settings by inheriting from the base Settings class:
 ```python
 from ai_pipeline_core import Settings
 
+
 class ProjectSettings(Settings):
     """Project-specific configuration."""
+
     app_name: str = "my-app"
     max_retries: int = 3
+
 
 # Create singleton instance
 settings = ProjectSettings()
@@ -1161,7 +1217,7 @@ Always import from the top-level package when possible:
 
 ```python
 # Top-level imports (preferred)
-from ai_pipeline_core import Document, PipelineTask, PipelineFlow, PipelineDeployment, Conversation, Tool, ToolOutput
+from ai_pipeline_core import Document, PipelineTask, PipelineFlow, PipelineDeployment, Conversation, Tool
 from ai_pipeline_core import collect_tasks, as_task_completed, run_tasks_until, TaskHandle, TaskBatch
 
 # Sub-package imports for symbols not at top level

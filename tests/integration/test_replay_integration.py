@@ -10,14 +10,14 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from ai_pipeline_core import Conversation, DeploymentResult, Document, FlowOptions, PipelineDeployment, Tool, ToolOutput
+from ai_pipeline_core import Conversation, DeploymentResult, Document, FlowOptions, PipelineDeployment, Tool
 from ai_pipeline_core._llm_core import CoreMessage, TextContent
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import RawToolCall, TokenUsage
 from ai_pipeline_core.database import SpanKind, SpanRecord
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.database.snapshot._download import download_deployment
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask
 from ai_pipeline_core.replay import execute_span
 from tests.llm.conftest import make_tool_call
@@ -50,8 +50,11 @@ class HistorySearchTool(Tool):
     class Input(BaseModel):
         query: str = Field(description="Search query.")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content=f"Tool result for {input.query}")
+    class Output(BaseModel):
+        result: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(result=f"Tool result for {input.query}")
 
 
 class SnapshotTask(PipelineTask):
@@ -184,7 +187,7 @@ class _GenerateRecorder:
 
 async def _run_deployment(
     deployment: PipelineDeployment[Any, Any],
-    database: MemoryDatabase,
+    database: _MemoryDatabase,
     *,
     run_id: str,
     documents: Sequence[Document],
@@ -229,7 +232,7 @@ async def test_downloaded_snapshot_round_trips_spans_and_replays_task(
     original_generate = _GenerateRecorder([_make_response(content="stored summary", prompt_tokens=12, completion_tokens=4, cost=0.18)])
     monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", original_generate)
 
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     input_doc = SnapshotInputDocument.create_root(name="input.txt", content="snapshot source", reason="snapshot integration")
     await _run_deployment(SnapshotDeployment(), database, run_id="snapshot-run", documents=[input_doc])
 
@@ -284,7 +287,7 @@ async def test_replay_reconstructs_multiturn_history_with_tool_use(
     ])
     monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", original_generate)
 
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     input_doc = HistoryInputDocument.create_root(name="input.txt", content="history source", reason="history integration")
     await _run_deployment(HistoryDeployment(), database, run_id="history-run", documents=[input_doc])
 

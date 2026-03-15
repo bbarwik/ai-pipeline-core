@@ -3,6 +3,7 @@
 import annotationlib
 import ast
 import inspect
+import math
 import textwrap
 from collections.abc import Callable
 from typing import Any, ClassVar, cast, get_origin
@@ -112,6 +113,7 @@ class PipelineFlow:
 
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
+    BASE_COST_USD: ClassVar[float] = 0.0
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
     task_graph: ClassVar[list[tuple[str, str]]] = []
@@ -147,6 +149,11 @@ class PipelineFlow:
             cls.name = cls.__name__
         if cls.estimated_minutes < 1:
             raise TypeError(f"PipelineFlow '{cls.__name__}' has estimated_minutes={cls.estimated_minutes}. Use a value >= 1.")
+        if not math.isfinite(cls.BASE_COST_USD) or cls.BASE_COST_USD < 0:
+            raise TypeError(
+                f"PipelineFlow '{cls.__name__}' has BASE_COST_USD={cls.BASE_COST_USD}. "
+                "Use a finite float >= 0 representing the minimum cost in USD per execution."
+            )
 
     @classmethod
     def _validate_run_signature(cls) -> tuple[Callable[..., Any], dict[str, Any], list[inspect.Parameter]]:

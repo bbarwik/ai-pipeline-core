@@ -81,7 +81,8 @@ docstrings-cover:
 
 .PHONY: docs-ai-build
 docs-ai-build:
-	@python -m docs_generator generate
+	@ai-docs generate
+	@ruff format .ai-docs/ --quiet 2>/dev/null || true
 
 .PHONY: docs-ai-check
 docs-ai-check: docs-ai-build

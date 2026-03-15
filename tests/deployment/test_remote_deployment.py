@@ -14,11 +14,11 @@ import pytest
 from pydantic import BaseModel
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment
-from ai_pipeline_core.database import MemoryDatabase
 from ai_pipeline_core.database import SpanKind
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.deployment._helpers import class_name_to_deployment_name, extract_generic_params
-from ai_pipeline_core.deployment._resolve import DocumentInput
+from ai_pipeline_core.deployment._resolve import _DocumentInput
 from ai_pipeline_core.deployment.remote import RemoteDeployment, _derive_remote_run_id
 from ai_pipeline_core.pipeline import PipelineFlow, pipeline_test_context
 from ai_pipeline_core.pipeline._runtime_sinks import build_runtime_sinks
@@ -278,7 +278,7 @@ class TestInlineModeDetection:
             pass
 
         mock_ctx = MagicMock()
-        mock_ctx.database = MemoryDatabase()
+        mock_ctx.database = _MemoryDatabase()
         mock_ctx.deployment_id = uuid4()
         mock_ctx.root_deployment_id = uuid4()
         mock_ctx.current_span_id = uuid4()
@@ -401,7 +401,7 @@ class TestInlineModeDetection:
         publisher = MagicMock()
         execution_id = uuid4()
         mock_ctx = MagicMock()
-        mock_ctx.database = MemoryDatabase()
+        mock_ctx.database = _MemoryDatabase()
         mock_ctx.deployment_id = uuid4()
         mock_ctx.root_deployment_id = uuid4()
         mock_ctx.current_span_id = uuid4()
@@ -427,7 +427,7 @@ class TestInlineModeDetection:
             deployment_class = f"{__name__}:InlineRemoteChildDeployment"
 
         doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test input")
-        database = MemoryDatabase()
+        database = _MemoryDatabase()
 
         with pipeline_test_context(run_id="project") as ctx:
             ctx.database = database
@@ -549,7 +549,7 @@ class TestRunResultDeserialization:
 
         parameters = mock_prefect.await_args.args[1]
         serialized = parameters["document_inputs"][0]
-        validated = DocumentInput.model_validate(serialized)
+        validated = _DocumentInput.model_validate(serialized)
         assert validated.class_name == "AlphaDoc"
         assert "sha256" not in serialized
 

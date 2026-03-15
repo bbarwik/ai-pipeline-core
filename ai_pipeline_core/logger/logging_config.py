@@ -125,6 +125,14 @@ class LoggingConfig:
                     "level": "WARNING",
                     "propagate": True,
                 },
+                "LiteLLM": {
+                    "level": "WARNING",
+                    "propagate": True,
+                },
+                "clickhouse_connect": {
+                    "level": "WARNING",
+                    "propagate": True,
+                },
             },
             "root": {
                 "level": "DEBUG",

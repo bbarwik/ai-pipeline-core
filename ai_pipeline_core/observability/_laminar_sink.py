@@ -126,6 +126,8 @@ class LaminarSpanSink:
             return
 
         attributes: dict[str, Any] = {}
+        if metrics.cost_usd is not None:
+            attributes["gen_ai.usage.cost"] = metrics.cost_usd
         if open_span.kind == SpanKind.LLM_ROUND:
             attributes.update(_llm_gen_ai_attrs(meta, metrics, input_preview, output_preview))
         if error is not None:
@@ -223,7 +225,6 @@ def _llm_gen_ai_attrs(
         "gen_ai.usage.output_tokens": metrics.tokens_output,
         "gen_ai.usage.cache_read_input_tokens": metrics.tokens_cache_read,
         "gen_ai.usage.reasoning_tokens": metrics.tokens_reasoning,
-        "gen_ai.usage.cost": metrics.cost_usd,
         "gen_ai.input.messages": json.dumps(input_preview, default=str) if input_preview is not None else None,
         "gen_ai.output.messages": json.dumps(output_preview, default=str) if output_preview is not None else None,
     }

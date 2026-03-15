@@ -7,8 +7,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from ai_pipeline_core.database import BlobRecord, DocumentRecord, SpanKind, SpanRecord, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database import DocumentRecord, SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database._memory import _MemoryDatabase
+from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.database.snapshot._download import download_deployment
 from ai_pipeline_core.database.snapshot._spans import build_span_tree_view, format_span_tree_lines
 from ai_pipeline_core.database.snapshot._summary import generate_costs, generate_summary
@@ -57,8 +58,8 @@ def _make_span(**kwargs: object) -> SpanRecord:
     return SpanRecord(**defaults)
 
 
-async def _seed_summary_database() -> tuple[MemoryDatabase, UUID]:
-    database = MemoryDatabase()
+async def _seed_summary_database() -> tuple[_MemoryDatabase, UUID]:
+    database = _MemoryDatabase()
     deployment_id = uuid4()
     base = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
 
@@ -120,7 +121,7 @@ async def _seed_summary_database() -> tuple[MemoryDatabase, UUID]:
         sequence_no=1,
         started_at=base + timedelta(seconds=4),
         ended_at=base + timedelta(seconds=8),
-        cost_usd=999.0,
+        cost_usd=0.0,
         meta_json=json.dumps({
             "model": "gpt-5.1",
             "purpose": "analyze_document",
@@ -220,7 +221,7 @@ async def _seed_summary_database() -> tuple[MemoryDatabase, UUID]:
             summary="Short summary",
         )
     )
-    await database.save_blob(BlobRecord(content_sha256="summary-blob", content=b"# Summary\nHi"))
+    await database.save_blob(_BlobRecord(content_sha256="summary-blob", content=b"# Summary\nHi"))
 
     return database, deployment_id
 
@@ -233,7 +234,6 @@ async def test_generate_summary_renders_all_span_kinds_and_cache_hits() -> None:
 
     assert "# span-pipeline / span-run" in summary
     assert "**Total Cost**: $0.5000" in summary
-    assert "999.0000" not in summary
     assert "flow[1/1]: GatherFlow completed 50s cache-hit" in summary
     assert "task: GatherTask completed 40s" in summary
     assert "operation: collect_sources completed 30s" in summary
@@ -252,7 +252,7 @@ async def test_generate_costs_groups_llm_round_costs_by_model() -> None:
     assert "# Cost by Model" in costs
     assert "| gemini-3-flash | 1 | 4,000 | 2,500 | 200 | 40 | $0.3000 |" in costs
     assert "| gpt-5.1 | 1 | 3,000 | 1,000 | 150 | 20 | $0.2000 |" in costs
-    assert "**Total**: $0.5000 across 2 llm_round spans" in costs
+    assert "**Total**: $0.5000" in costs
 
 
 @pytest.mark.asyncio
@@ -285,14 +285,14 @@ async def test_download_deployment_writes_llm_calls_errors_and_documents_artifac
 
 @pytest.mark.asyncio
 async def test_generate_summary_returns_no_data_for_empty_tree() -> None:
-    summary = await generate_summary(MemoryDatabase(), uuid4())
+    summary = await generate_summary(_MemoryDatabase(), uuid4())
 
     assert summary == "# No execution data found\n"
 
 
 @pytest.mark.asyncio
 async def test_generate_summary_raises_actionable_error_for_invalid_meta_json() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     deployment_id = uuid4()
     base = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
     await database.insert_span(
@@ -314,7 +314,7 @@ async def test_generate_summary_raises_actionable_error_for_invalid_meta_json() 
 
 @pytest.mark.asyncio
 async def test_generate_summary_flow_plan_includes_unplanned_executed_flows() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     deployment_id = uuid4()
     base = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
 

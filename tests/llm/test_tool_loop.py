@@ -3,7 +3,7 @@
 import json
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid7
 
 from pydantic import BaseModel, Field
@@ -11,10 +11,10 @@ from pydantic import BaseModel, Field
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import CoreMessage, Role
 from ai_pipeline_core.database import SpanKind
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.llm._tool_loop import _execute_single_tool, execute_tool_loop
-from ai_pipeline_core.llm.tools import Tool, ToolOutput
+from ai_pipeline_core.llm.tools import Tool
 from ai_pipeline_core.pipeline._execution_context import ExecutionContext, set_execution_context
 from ai_pipeline_core.pipeline._runtime_sinks import build_runtime_sinks
 from ai_pipeline_core.pipeline.limits import _SharedStatus
@@ -29,8 +29,11 @@ class SearchTool(Tool):
     class Input(BaseModel):
         query: str = Field(description="Search query")
 
-    async def execute(self, input: Input) -> ToolOutput:
-        return ToolOutput(content=f"Results for: {input.query}")
+    class Output(BaseModel):
+        results: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(results=f"Results for: {input.query}")
 
 
 class FailingTool(Tool):
@@ -39,7 +42,10 @@ class FailingTool(Tool):
     class Input(BaseModel):
         reason: str = Field(description="Failure reason")
 
-    async def execute(self, input: Input) -> ToolOutput:
+    class Output(BaseModel):
+        result: str
+
+    async def run(self, input: Input) -> Output:
         raise RuntimeError(f"Intentional: {input.reason}")
 
 
@@ -49,11 +55,38 @@ class SlowTool(Tool):
     class Input(BaseModel):
         delay: float = Field(description="Delay in seconds")
 
-    async def execute(self, input: Input) -> ToolOutput:
+    timeout_seconds: ClassVar[int] = 2
+
+    class Output(BaseModel):
+        status: str
+
+    async def run(self, input: Input) -> Output:
         import asyncio
 
         await asyncio.sleep(input.delay)
-        return ToolOutput(content="done")
+        return self.Output(status="done")
+
+
+class FastTimeoutSlowTool(SlowTool):
+    """SlowTool with a very short timeout for testing."""
+
+    timeout_seconds: ClassVar[int] = 1
+
+
+class _StatefulTool(Tool):
+    """Tool with init state for testing no-API-key-leakage."""
+
+    class Input(BaseModel):
+        q: str = Field(description="q")
+
+    class Output(BaseModel):
+        result: str
+
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(result="ok")
 
 
 @dataclass(frozen=True)
@@ -67,7 +100,7 @@ def _build_msg(tid: str, fn: str, content: str) -> _FakeToolResultMsg:
     return _FakeToolResultMsg(tool_call_id=tid, function_name=fn, content=content)
 
 
-class _RecordingSpanDatabase(MemoryDatabase):
+class _RecordingSpanDatabase(_MemoryDatabase):
     def __init__(self) -> None:
         super().__init__()
         self.inserted_spans: list[object] = []
@@ -77,7 +110,7 @@ class _RecordingSpanDatabase(MemoryDatabase):
         await super().insert_span(span)  # type: ignore[arg-type]
 
 
-def _make_context(database: MemoryDatabase) -> ExecutionContext:
+def _make_context(database: _MemoryDatabase) -> ExecutionContext:
     deployment_id = uuid7()
     span_id = uuid7()
     return ExecutionContext(
@@ -111,11 +144,11 @@ async def test_execute_single_tool_success_returns_record_output_and_span() -> N
 
     assert record is not None
     assert record.tool is SearchTool
-    assert "Results for: test" in output.content
     tool_call_span = _finished_spans(database, SpanKind.TOOL_CALL)[0]
     tool_meta = json.loads(tool_call_span.meta_json)
     assert tool_meta["tool_name"] == "search_tool"
     assert tool_meta["round_index"] == 1
+    assert json.loads(output.content)["results"] == "Results for: test"
 
 
 async def test_execute_single_tool_validation_error_records_failed_tool_call() -> None:
@@ -136,18 +169,11 @@ async def test_execute_single_tool_validation_error_records_failed_tool_call() -
 
 
 async def test_execute_single_tool_timeout_records_failed_tool_call() -> None:
-    import ai_pipeline_core.llm._tool_loop as tool_loop
-
-    original = tool_loop.TOOL_EXECUTION_TIMEOUT_SECONDS
     database = _RecordingSpanDatabase()
-    tool_loop.TOOL_EXECUTION_TIMEOUT_SECONDS = 0.01
-    try:
-        tool = SlowTool()
-        tc = make_tool_call("c1", "slow", '{"delay": 10}')
-        with set_execution_context(_make_context(database)):
-            record, output = await _execute_single_tool(tool, tc, round_num=2)
-    finally:
-        tool_loop.TOOL_EXECUTION_TIMEOUT_SECONDS = original
+    tool = FastTimeoutSlowTool()
+    tc = make_tool_call("c1", "fast_timeout_slow_tool", '{"delay": 10}')
+    with set_execution_context(_make_context(database)):
+        record, output = await _execute_single_tool(tool, tc, round_num=2)
 
     assert record is not None
     assert "timed out" in output.content
@@ -221,3 +247,78 @@ async def test_execute_tool_loop_unknown_tool_records_tool_call_span() -> None:
     assert resp.content == "done"
     assert records == ()
     assert any("Unknown tool" in msg.content for msg in msgs if isinstance(msg, _FakeToolResultMsg))
+
+
+# ── Phase 7c: Tool loop span metadata ───────────────────────────────────────
+
+
+async def test_execute_single_tool_uses_name_classvar() -> None:
+    """Span metadata uses tool_cls.name (ClassVar) instead of to_snake_case()."""
+    tool = SearchTool()
+    tc = make_tool_call("c1", "search", '{"query": "test"}')
+    database = _RecordingSpanDatabase()
+
+    with set_execution_context(_make_context(database)):
+        await _execute_single_tool(tool, tc, round_num=1)
+
+    tool_call_span = _finished_spans(database, SpanKind.TOOL_CALL)[0]
+    tool_meta = json.loads(tool_call_span.meta_json)
+    assert tool_meta["tool_name"] == "search_tool"  # from name ClassVar
+
+
+async def test_execute_single_tool_span_target_tool_call_prefix() -> None:
+    """Span target uses 'tool_call:module:qualname'."""
+    tool = SearchTool()
+    tc = make_tool_call("c1", "search", '{"query": "test"}')
+    database = _RecordingSpanDatabase()
+
+    with set_execution_context(_make_context(database)):
+        await _execute_single_tool(tool, tc, round_num=1)
+
+    tool_call_span = _finished_spans(database, SpanKind.TOOL_CALL)[0]
+    assert tool_call_span.target.startswith("tool_call:")
+    assert "SearchTool" in tool_call_span.target
+
+
+async def test_execute_single_tool_receiver_tool_ref_mode() -> None:
+    """Span receiver payload uses mode='tool_ref' with name and class_path only."""
+    tool = SearchTool()
+    tc = make_tool_call("c1", "search", '{"query": "test"}')
+    database = _RecordingSpanDatabase()
+
+    with set_execution_context(_make_context(database)):
+        await _execute_single_tool(tool, tc, round_num=1)
+
+    tool_call_span = _finished_spans(database, SpanKind.TOOL_CALL)[0]
+    receiver = json.loads(tool_call_span.receiver_json)
+    assert receiver["mode"] == "tool_ref"
+    assert receiver["value"]["name"] == "search_tool"
+    assert "class_path" in receiver["value"]
+
+
+async def test_execute_single_tool_no_constructor_args_in_span() -> None:
+    """Span receiver payload does not contain constructor_args."""
+    tool = _StatefulTool(api_key="secret-key-123")
+    tc = make_tool_call("c1", "stateful_tool", '{"q": "test"}')
+    database = _RecordingSpanDatabase()
+
+    with set_execution_context(_make_context(database)):
+        await _execute_single_tool(tool, tc, round_num=1)
+
+    tool_call_span = _finished_spans(database, SpanKind.TOOL_CALL)[0]
+    receiver = json.loads(tool_call_span.receiver_json)
+    assert "constructor_args" not in receiver
+    assert "secret-key-123" not in tool_call_span.receiver_json
+
+
+async def test_execute_single_tool_unhandled_error_caught_by_tool_loop() -> None:
+    """Unhandled exceptions from run() propagate through execute() to tool loop's except block."""
+    tool = FailingTool()
+    tc = make_tool_call("c1", "failing_tool", '{"reason": "crash"}')
+    database = _RecordingSpanDatabase()
+
+    with set_execution_context(_make_context(database)):
+        record, output = await _execute_single_tool(tool, tc, round_num=1)
+
+    assert record is not None
+    assert "failed" in output.content or "Intentional" in output.content

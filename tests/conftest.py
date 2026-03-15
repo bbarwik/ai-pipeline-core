@@ -12,7 +12,8 @@ import warnings
 
 import pytest
 
-from ai_pipeline_core.pipeline._execution_context import RunContext, set_run_context
+from ai_pipeline_core.pipeline._execution_context import set_run_context
+from ai_pipeline_core.pipeline._execution_context import _RunContext
 from prefect.logging import disable_run_logger
 from prefect.testing.utilities import prefect_test_harness
 
@@ -111,7 +112,7 @@ def run_context():
 
     Automatically resets the ContextVar after the test.
     """
-    ctx = RunContext(run_id="test-run-scope")
+    ctx = _RunContext(run_id="test-run-scope")
     with set_run_context(ctx):
         yield ctx
 

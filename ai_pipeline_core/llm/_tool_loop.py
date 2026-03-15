@@ -7,11 +7,10 @@ re-sends results until the LLM produces a final answer or max rounds is reached.
 import asyncio
 import json
 from collections.abc import Callable, Coroutine
-from typing import Any, cast
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from ai_pipeline_core._codec import UniversalCodec
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import CoreMessage, ModelOptions, RawToolCall, Role, TokenUsage
 from ai_pipeline_core.database import SpanKind
@@ -20,13 +19,11 @@ from ai_pipeline_core.pipeline._execution_context import get_execution_context, 
 from ai_pipeline_core.pipeline._track_span import track_span
 
 from ._substitutor import URLSubstitutor
-from .tools import Tool, ToolCallRecord, ToolOutput, to_snake_case
+from .tools import Tool, ToolCallRecord, ToolOutput
 
 __all__: list[str] = []
 
 logger = get_pipeline_logger(__name__)
-
-TOOL_EXECUTION_TIMEOUT_SECONDS = 120
 
 
 async def _execute_single_tool(
@@ -36,10 +33,13 @@ async def _execute_single_tool(
 ) -> tuple[ToolCallRecord | None, ToolOutput]:
     """Execute a single tool call with error handling and timeout."""
     tool_cls = type(tool)
-    snake_name = to_snake_case(tool_cls.__name__)
+    snake_name = tool_cls.name
     execution_ctx = get_execution_context()
-    tool_target = f"instance_method:{tool_cls.__module__}:{tool_cls.__qualname__}.execute"
-    receiver_payload = {"mode": "constructor_args", "value": _serialize_tool_constructor_args(tool)}
+    tool_target = f"tool_call:{tool_cls.__module__}:{tool_cls.__qualname__}"
+    receiver_payload = {
+        "mode": "tool_ref",
+        "value": {"name": tool_cls.name, "class_path": f"{tool_cls.__module__}:{tool_cls.__qualname__}"},
+    }
 
     async with track_span(
         SpanKind.TOOL_CALL,
@@ -66,19 +66,9 @@ async def _execute_single_tool(
             span_ctx._set_output_value(output)
             return None, output
         try:
-            result = await asyncio.wait_for(tool.execute(parsed_input), timeout=TOOL_EXECUTION_TIMEOUT_SECONDS)
-        except TimeoutError:
-            logger.warning("Tool execution timed out: %s", tool_cls.__name__)
-            output = ToolOutput(content=f"Error: Tool '{snake_name}' timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS}s")
-            span_ctx.set_meta(
-                tool_name=snake_name,
-                tool_class_path=f"{tool_cls.__module__}:{tool_cls.__qualname__}",
-                tool_call_id=tool_call.id,
-                round_index=round_num,
-            )
-            span_ctx.set_output_preview(output.model_dump(mode="json"))
-            span_ctx._set_output_value(output)
-            return (ToolCallRecord(tool=tool_cls, input=parsed_input, output=output, round=round_num), output)
+            result = await tool.execute(parsed_input)
+        except TypeError, AssertionError:
+            raise
         except Exception as e:
             logger.warning("Tool execution failed for %s: %s", tool_cls.__name__, e)
             output = ToolOutput(content=f"Error: Tool '{snake_name}' failed: {e}")
@@ -92,22 +82,16 @@ async def _execute_single_tool(
             span_ctx._set_output_value(output)
             return (ToolCallRecord(tool=tool_cls, input=parsed_input, output=output, round=round_num), output)
 
-        validated_result = cast(Any, result)
-        if not isinstance(validated_result, ToolOutput):
-            raise TypeError(
-                f"Tool '{tool_cls.__name__}'.execute() must return ToolOutput (or subclass), got {type(validated_result).__name__}. "
-                f"This is a programming error in the tool implementation."
-            )
-        record = ToolCallRecord(tool=tool_cls, input=parsed_input, output=validated_result, round=round_num)
+        record = ToolCallRecord(tool=tool_cls, input=parsed_input, output=result, round=round_num)
         span_ctx.set_meta(
             tool_name=snake_name,
             tool_class_path=f"{tool_cls.__module__}:{tool_cls.__qualname__}",
             tool_call_id=tool_call.id,
             round_index=round_num,
         )
-        span_ctx.set_output_preview(validated_result.model_dump(mode="json"))
-        span_ctx._set_output_value(validated_result)
-        return record, validated_result
+        span_ctx.set_output_preview(result.model_dump(mode="json"))
+        span_ctx._set_output_value(result)
+        return record, result
 
 
 InvokeLLMFn = Callable[..., Coroutine[Any, Any, ModelResponse[Any]]]
@@ -238,8 +222,3 @@ def _parse_tool_arguments(arguments: str) -> Any:
         return json.loads(arguments)
     except json.JSONDecodeError:
         return {"_raw": arguments}
-
-
-def _serialize_tool_constructor_args(tool: Tool) -> dict[str, Any]:
-    """Serialize tool constructor state into JSON-friendly values."""
-    return cast(dict[str, Any], UniversalCodec().encode(tool.__dict__).value)

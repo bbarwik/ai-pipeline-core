@@ -306,16 +306,16 @@ class TestSchemaDefinitionsAreValidJsonSchema:
 
 
 class TestDocumentInputFieldDescriptions:
-    """DocumentInput and AttachmentInput fields must have descriptions in JSON schema."""
+    """_DocumentInput and AttachmentInput fields must have descriptions in JSON schema."""
 
     def test_document_input_fields_have_descriptions(self):
-        """All DocumentInput fields must have a description in JSON schema output."""
-        from ai_pipeline_core.deployment._resolve import DocumentInput
+        """All _DocumentInput fields must have a description in JSON schema output."""
+        from ai_pipeline_core.deployment._resolve import _DocumentInput
 
-        schema = DocumentInput.model_json_schema()
+        schema = _DocumentInput.model_json_schema()
         props = schema["properties"]
         for field_name in ("content", "url", "name", "description", "class_name", "derived_from", "triggered_by", "attachments"):
-            assert "description" in props[field_name], f"DocumentInput.{field_name} missing description"
+            assert "description" in props[field_name], f"_DocumentInput.{field_name} missing description"
 
     def test_attachment_input_fields_have_descriptions(self):
         """All AttachmentInput fields must have a description in JSON schema output."""

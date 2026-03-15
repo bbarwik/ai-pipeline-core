@@ -11,7 +11,7 @@ import pytest
 from clickhouse_connect.driver.exceptions import DatabaseError as ClickHouseDatabaseError
 
 from ai_pipeline_core.database import SpanKind, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logger._buffer import ExecutionLogBuffer
@@ -32,7 +32,7 @@ class _SpanOutputDoc(Document):
     """Output document for span sink tests."""
 
 
-class _RecordingMemoryDatabase(MemoryDatabase):
+class _RecordingMemoryDatabase(_MemoryDatabase):
     def __init__(self) -> None:
         super().__init__()
         self.inserted_spans: list[object] = []
@@ -101,7 +101,7 @@ class _FailingSink:
 
 
 def _make_context(
-    database: MemoryDatabase,
+    database: _MemoryDatabase,
     *,
     log_buffer: ExecutionLogBuffer | None = None,
 ) -> ExecutionContext:

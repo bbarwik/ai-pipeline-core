@@ -4,14 +4,16 @@ Provides the public Tool class with import-time validation, schema generation,
 and supporting types (ToolOutput, ToolCallRecord).
 
 Tools are regular Python classes (not Pydantic models) with runtime state in __init__
-and an async execute() method called by the tool loop.
+and a framework-owned async execute() method wrapped around user-defined run().
 """
 
+import asyncio
 import inspect
+import json
 import re
 from dataclasses import dataclass
 from textwrap import dedent
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -34,50 +36,122 @@ def to_snake_case(name: str) -> str:
 
 
 class ToolOutput(BaseModel):
-    """Base for tool outputs. ``content`` is sent to the LLM as the tool result.
-
-    Subclass to add metadata fields accessible to the caller but not sent to the LLM.
-    """
+    """Container for serialized tool output sent to the LLM and caller metadata."""
 
     model_config = ConfigDict(frozen=True)
 
     content: str
+    data: Any = None
 
 
 class Tool:
-    """Base class for LLM tools with import-time validation.
+    """Base class for LLM tools with import-time validation and a sealed lifecycle.
 
     Subclasses must define:
     - A non-empty docstring (becomes the LLM tool description)
     - An ``Input`` inner class (BaseModel with Field(description=...) on every field)
-    - An ``async def execute(self, input: Input) -> ToolOutput`` method
+    - An ``Output`` inner class (BaseModel)
+    - An ``async def run(self, input: Input) -> Output`` method
 
-    Optionally define an ``Output`` inner class extending ToolOutput for typed metadata.
-
-    Tools are regular classes — use ``__init__`` for runtime state (API clients,
-    lookup tables, other Conversations). ``execute()`` is called once per tool
-    invocation by the tool loop.
+    Tool authors should not override ``execute()``. The framework owns:
+    retries, timeout, structured error handling, and serialization.
     """
 
     Input: type[BaseModel]
-    Output: type[ToolOutput]
+    Output: type[BaseModel]
+    _abstract_tool: ClassVar[bool] = False
+    name: ClassVar[str]
+    _tool_spec: ClassVar[Any]
+    retries: ClassVar[int] = 0
+    retry_delay_seconds: ClassVar[float] = 2.0
+    timeout_seconds: ClassVar[int] = 120
+    max_response_bytes: ClassVar[int | None] = None
+    handled_exceptions: ClassVar[tuple[type[Exception], ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        name = cls.__name__
+        cls.name = to_snake_case(cls.__name__)
 
-        if not cls.__doc__ or not cls.__doc__.strip():
-            raise TypeError(f"Tool '{name}' must define a non-empty docstring. The docstring becomes the LLM tool description.")
+        if cls.__dict__.get("_abstract_tool", False) is True:
+            return
 
-        if "Input" not in cls.__dict__:
+        if "execute" in cls.__dict__:
             raise TypeError(
-                f"Tool '{name}' must define an 'Input' inner class (BaseModel). Example: class Input(BaseModel): query: str = Field(description='...')"
+                f"Tool '{cls.name}' must not override execute(). "
+                f"Implement 'async def run(self, input: Input) -> Output' instead. "
+                f"The framework owns execute() and wraps run() with retry, timeout, and error handling."
             )
+
+        _validate_tool_class(cls)
+
+    async def run(self, input: Any) -> BaseModel:
+        """Override this method with your tool logic. Return self.Output(...)."""
+        raise NotImplementedError
+
+    def _is_retryable(self, error: Exception) -> bool:  # noqa: PLR6301 — overridable hook, self used by subclasses
+        """Classify whether a handled exception should be retried. Default: False."""
+        return False
+
+    def handle_error(self, error: Exception) -> ToolOutput:
+        """Format a handled exception into a caller-facing ToolOutput."""
+        return ToolOutput(content=f"Error: Tool '{self.name}' failed: {error}")
+
+    async def execute(self, input: BaseModel) -> ToolOutput:
+        """Execute tool lifecycle (retry, timeout, errors, serialization)."""
+        result: BaseModel | None = None
+        for attempt in range(self.retries + 1):
+            try:
+                result = await asyncio.wait_for(self.run(input), timeout=self.timeout_seconds)
+            except TimeoutError:
+                if attempt < self.retries:
+                    await asyncio.sleep(self.retry_delay_seconds)
+                    continue
+                return ToolOutput(content=f"Error: Tool '{self.name}' timed out after {self.timeout_seconds}s ({self.retries + 1} attempts).")
+            except self.handled_exceptions as error:
+                if self._is_retryable(error) and attempt < self.retries:
+                    await asyncio.sleep(self.retry_delay_seconds)
+                    continue
+                try:
+                    return self.handle_error(error)
+                except Exception:  # noqa: BLE001 — re-raise original if handle_error bugs
+                    raise error from None
+            else:
+                break
+
+        expected_output = type(self).Output
+        if not isinstance(result, expected_output):
+            raise TypeError(
+                f"Tool '{self.name}'.run() must return {expected_output.__name__}, got {type(result).__name__}. Return self.Output(...) from run()."
+            )
+
+        data = result.model_dump(mode="json")
+        content = json.dumps(data, indent=2)
+
+        content_bytes = len(content.encode("utf-8"))
+        if self.max_response_bytes is not None and content_bytes > self.max_response_bytes:
+            return ToolOutput(
+                content=json.dumps({
+                    "error": "response_too_large",
+                    "message": f"Tool '{self.name}' response exceeds {self.max_response_bytes} bytes. Use narrower filters or pagination.",
+                    "actual_bytes": content_bytes,
+                }),
+                data=result,
+            )
+
+        return ToolOutput(content=content, data=result)
+
+
+def _validate_tool_class(cls: type[Tool]) -> None:  # noqa: C901, PLR0912
+    """Validate a concrete Tool subclass at definition time."""
+    name = cls.name
+
+    if not cls.__doc__ or not cls.__doc__.strip():
+        raise TypeError(f"Tool '{name}' must define a non-empty docstring. The docstring becomes the LLM tool description.")
+
+    if "Input" in cls.__dict__:
         input_cls = cls.__dict__["Input"]
         if not isinstance(input_cls, type) or not issubclass(input_cls, BaseModel):
             raise TypeError(f"Tool '{name}'.Input must be a BaseModel subclass")
-
-        # Validate all Input fields have descriptions and no reserved names
         for field_name, field_info in input_cls.model_fields.items():
             if field_info.description is None:
                 raise TypeError(
@@ -90,28 +164,47 @@ class Tool:
                     f"schemas for some providers (Gemini, xAI), causing required/properties mismatches. "
                     f"Rename the field (e.g., '{field_name}_value', '{field_name}_mode')."
                 )
-
-        # Validate Input schema is compatible with OpenAI strict mode
         _validate_strict_mode_compatibility(input_cls.model_json_schema(), name)
+    elif not getattr(cls, "_tool_spec", None):
+        raise TypeError(f"Tool '{name}' must define an 'Input' inner class (BaseModel). Example: class Input(BaseModel): query: str = Field(description='...')")
 
-        # Validate Output if defined
-        if "Output" in cls.__dict__:
-            output_cls = cls.__dict__["Output"]
-            if not isinstance(output_cls, type) or not issubclass(output_cls, ToolOutput):
-                raise TypeError(f"Tool '{name}'.Output must extend ToolOutput")
-        else:
-            cls.Output = ToolOutput
+    if "Output" in cls.__dict__:
+        output_cls = cls.__dict__["Output"]
+        if not isinstance(output_cls, type) or not issubclass(output_cls, BaseModel):
+            raise TypeError(f"Tool '{name}'.Output must be a BaseModel subclass")
+        if issubclass(output_cls, ToolOutput):
+            raise TypeError(f"Tool '{name}'.Output must extend BaseModel, not ToolOutput. The framework creates ToolOutput internally.")
+    elif not getattr(cls, "_tool_spec", None):
+        raise TypeError(f"Tool '{name}' must define an 'Output' inner class (BaseModel) or inherit one from a validated parent tool.")
 
-        # Validate execute method
-        if "execute" not in cls.__dict__:
-            raise TypeError(f"Tool '{name}' must define an 'async def execute(self, input: Input) -> ToolOutput' method")
-        execute_method = cls.__dict__["execute"]
-        if not inspect.iscoroutinefunction(execute_method):
-            raise TypeError(f"Tool '{name}'.execute must be async (async def execute)")
+    if "run" in cls.__dict__:
+        if not inspect.iscoroutinefunction(cls.__dict__["run"]):
+            raise TypeError(f"Tool '{name}'.run must be async (async def run)")
+    elif not getattr(cls, "_tool_spec", None):
+        raise TypeError(f"Tool '{name}' must define an 'async def run(self, input: Input) -> Output' method or inherit one from a validated parent tool.")
 
-    async def execute(self, input: Any) -> ToolOutput:
-        """Execute the tool with validated input and return the result."""
-        raise NotImplementedError
+    _validate_lifecycle_classvars(cls, name)
+    cls._tool_spec = True
+
+
+def _validate_lifecycle_classvars(cls: type[Tool], name: str) -> None:
+    """Validate lifecycle ClassVars and error handling methods on a concrete Tool."""
+    if cls.retries < 0:
+        raise TypeError(f"Tool '{name}' has invalid retries={cls.retries}. Use a value >= 0.")
+    if cls.retry_delay_seconds <= 0:
+        raise TypeError(f"Tool '{name}' has invalid retry_delay_seconds={cls.retry_delay_seconds}. Use a value > 0.")
+    if cls.timeout_seconds <= 0:
+        raise TypeError(f"Tool '{name}' has invalid timeout_seconds={cls.timeout_seconds}. Use a value > 0.")
+    if cls.max_response_bytes is not None and cls.max_response_bytes <= 0:
+        raise TypeError(f"Tool '{name}' has invalid max_response_bytes={cls.max_response_bytes}. Use None or a value > 0.")
+    if not isinstance(cls.handled_exceptions, tuple):
+        raise TypeError(f"Tool '{name}' handled_exceptions must be a tuple of Exception subclasses.")
+    if any(not isinstance(exc_type, type) or not issubclass(exc_type, Exception) for exc_type in cls.handled_exceptions):
+        raise TypeError(f"Tool '{name}' handled_exceptions must contain only Exception subclasses.")
+    if inspect.iscoroutinefunction(cls._is_retryable):
+        raise TypeError(f"Tool '{name}' _is_retryable must be sync; async definitions break execute() control flow.")
+    if inspect.iscoroutinefunction(cls.handle_error):
+        raise TypeError(f"Tool '{name}' handle_error must be sync; async definitions break execute() control flow.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +293,7 @@ def generate_tool_schema(tool: Tool) -> dict[str, Any]:
     return {
         "type": "function",
         "function": {
-            "name": to_snake_case(tool_cls.__name__),
+            "name": tool_cls.name,
             "description": dedent(tool_cls.__doc__ or "").strip(),
             "parameters": schema,
             "strict": True,

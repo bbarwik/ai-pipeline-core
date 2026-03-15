@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from ai_pipeline_core._codec import UniversalCodec
 from ai_pipeline_core.database import DocumentRecord, SpanKind, SpanRecord, SpanStatus
 from ai_pipeline_core.database._documents import document_to_blobs, document_to_record
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.documents import Attachment, Document
 from ai_pipeline_core.pipeline.options import FlowOptions
 
@@ -66,7 +66,7 @@ def make_test_png_bytes() -> bytes:
 
 
 async def store_document_in_database(
-    database: MemoryDatabase,
+    database: _MemoryDatabase,
     doc: Document,
 ) -> DocumentRecord:
     """Persist a document and its blobs into the in-memory database."""
@@ -161,8 +161,8 @@ def make_span(
 
 
 @pytest.fixture
-def memory_database() -> MemoryDatabase:
-    return MemoryDatabase()
+def memory_database() -> _MemoryDatabase:
+    return _MemoryDatabase()
 
 
 @pytest.fixture

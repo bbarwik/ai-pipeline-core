@@ -10,7 +10,7 @@ from uuid import UUID, uuid7
 import pytest
 
 from ai_pipeline_core.database import SpanKind, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logger._buffer import ExecutionLogBuffer
@@ -22,7 +22,7 @@ from ai_pipeline_core.pipeline.limits import _SharedStatus
 from ai_pipeline_core.settings import settings
 
 
-class _RecordingSpanDatabase(MemoryDatabase):
+class _RecordingSpanDatabase(_MemoryDatabase):
     def __init__(self) -> None:
         super().__init__()
         self.inserted_spans: list[object] = []
@@ -96,7 +96,7 @@ def _make_flow_frame() -> FlowFrame:
 
 
 def _make_context_with_db(
-    db: MemoryDatabase,
+    db: _MemoryDatabase,
     *,
     deployment_id: UUID | None = None,
     flow_span_id: UUID | None = None,
@@ -123,7 +123,7 @@ def _make_context_with_db(
     )
 
 
-def _latest_task_span(database: MemoryDatabase) -> object:
+def _latest_task_span(database: _MemoryDatabase) -> object:
     spans = [span for span in database._spans.values() if span.kind == SpanKind.TASK]
     assert len(spans) == 1
     return spans[0]

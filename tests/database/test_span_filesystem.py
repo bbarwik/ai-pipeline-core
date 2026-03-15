@@ -7,7 +7,8 @@ from uuid import uuid4
 
 import pytest
 
-from ai_pipeline_core.database import BlobRecord, DocumentRecord, LogRecord, SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database import DocumentRecord, LogRecord, SpanKind, SpanRecord, SpanStatus
+from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 
 
@@ -58,13 +59,13 @@ def _make_document(**kwargs: object) -> DocumentRecord:
     return DocumentRecord(**defaults)
 
 
-def _make_blob(**kwargs: object) -> BlobRecord:
+def _make_blob(**kwargs: object) -> _BlobRecord:
     defaults: dict[str, object] = {
         "content_sha256": f"blob-{uuid4().hex}",
         "content": b"blob-content",
     }
     defaults.update(kwargs)
-    return BlobRecord(**defaults)
+    return _BlobRecord(**defaults)
 
 
 def _make_log(**kwargs: object) -> LogRecord:
@@ -227,6 +228,58 @@ async def test_filesystem_read_only_rejects_writes(tmp_path: Path) -> None:
 
     with pytest.raises(PermissionError, match="read-only"):
         await read_only.save_document(_make_document())
+
+
+@pytest.mark.asyncio
+async def test_filesystem_find_documents_by_name(tmp_path: Path) -> None:
+    database = FilesystemDatabase(tmp_path)
+    doc_a = _make_document(document_sha256="aaa", name="report.md", document_type="Report")
+    doc_b = _make_document(document_sha256="bbb", name="summary.md", document_type="Summary")
+    doc_c = _make_document(document_sha256="ccc", name="other.md", document_type="Report")
+    for doc in (doc_a, doc_b, doc_c):
+        await database.save_document(doc)
+
+    found = await database.find_documents_by_name(["report.md", "summary.md"])
+
+    assert set(found.keys()) == {"report.md", "summary.md"}
+    assert found["report.md"].document_sha256 == "aaa"
+    assert found["summary.md"].document_sha256 == "bbb"
+
+
+@pytest.mark.asyncio
+async def test_filesystem_find_documents_by_name_filters_by_type(tmp_path: Path) -> None:
+    database = FilesystemDatabase(tmp_path)
+    doc_a = _make_document(document_sha256="aaa", name="report.md", document_type="Report")
+    doc_b = _make_document(document_sha256="bbb", name="report.md", document_type="Draft")
+    for doc in (doc_a, doc_b):
+        await database.save_document(doc)
+
+    found = await database.find_documents_by_name(["report.md"], document_type="Draft")
+
+    assert found["report.md"].document_sha256 == "bbb"
+
+
+@pytest.mark.asyncio
+async def test_filesystem_find_documents_by_name_tiebreaks_by_sha256(tmp_path: Path) -> None:
+    database = FilesystemDatabase(tmp_path)
+    doc_low = _make_document(document_sha256="aaa-low", name="report.md")
+    doc_high = _make_document(document_sha256="zzz-high", name="report.md")
+    for doc in (doc_low, doc_high):
+        await database.save_document(doc)
+
+    found = await database.find_documents_by_name(["report.md"])
+
+    assert found["report.md"].document_sha256 == "zzz-high"
+
+
+@pytest.mark.asyncio
+async def test_filesystem_find_documents_by_name_empty_returns_empty(tmp_path: Path) -> None:
+    database = FilesystemDatabase(tmp_path)
+    await database.save_document(_make_document(name="report.md"))
+
+    found = await database.find_documents_by_name([])
+
+    assert found == {}
 
 
 @pytest.mark.asyncio

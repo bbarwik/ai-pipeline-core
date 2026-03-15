@@ -10,7 +10,8 @@ import json
 from typing import override
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, PipelineFlow, PipelineTask
-from ai_pipeline_core.database import DatabaseReader, MemoryDatabase, SpanKind, SpanRecord
+from ai_pipeline_core.database import DatabaseReader, SpanKind, SpanRecord
+from ai_pipeline_core.database._memory import _MemoryDatabase
 
 
 class RawDataDocument(Document):
@@ -95,7 +96,7 @@ class DatabaseShowcaseResult(DeploymentResult):
 
 
 class DatabaseShowcasePipeline(PipelineDeployment[FlowOptions, DatabaseShowcaseResult]):
-    """Minimal deployment used to populate MemoryDatabase."""
+    """Minimal deployment used to populate _MemoryDatabase."""
 
     @override
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
@@ -127,7 +128,7 @@ def _select_span(tree: list[SpanRecord], kind: SpanKind, name: str) -> SpanRecor
 
 
 async def main() -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     reader: DatabaseReader = database
     pipeline = DatabaseShowcasePipeline()
 

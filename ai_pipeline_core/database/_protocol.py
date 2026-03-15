@@ -5,12 +5,12 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from ai_pipeline_core.database._types import (
-    BlobRecord,
     CostTotals,
     DocumentRecord,
     HydratedDocument,
     LogRecord,
     SpanRecord,
+    _BlobRecord,
 )
 
 __all__ = [
@@ -41,11 +41,11 @@ class DatabaseWriter(Protocol):
         """Persist multiple document records in one operation."""
         ...
 
-    async def save_blob(self, blob: BlobRecord) -> None:
+    async def save_blob(self, blob: _BlobRecord) -> None:
         """Persist a single blob."""
         ...
 
-    async def save_blob_batch(self, blobs: list[BlobRecord]) -> None:
+    async def save_blob_batch(self, blobs: list[_BlobRecord]) -> None:
         """Persist multiple blobs in one operation."""
         ...
 
@@ -106,7 +106,7 @@ class DatabaseReader(Protocol):
         ...
 
     async def get_deployment_cost_totals(self, root_deployment_id: UUID) -> CostTotals:
-        """Aggregate llm_round cost and token totals for a deployment tree."""
+        """Aggregate cost (all spans) and token totals (llm_round only) for a deployment tree."""
         ...
 
     async def get_deployment_span_count(
@@ -146,11 +146,11 @@ class DatabaseReader(Protocol):
         """Collect all document SHA256s referenced anywhere in a deployment tree."""
         ...
 
-    async def get_blob(self, content_sha256: str) -> BlobRecord | None:
+    async def get_blob(self, content_sha256: str) -> _BlobRecord | None:
         """Retrieve a blob by content SHA256."""
         ...
 
-    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, BlobRecord]:
+    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, _BlobRecord]:
         """Retrieve blobs keyed by content SHA256."""
         ...
 
@@ -182,4 +182,17 @@ class DatabaseReader(Protocol):
         category: str | None = None,
     ) -> list[LogRecord]:
         """Retrieve logs for multiple deployments in one operation."""
+        ...
+
+    async def find_documents_by_name(
+        self,
+        names: list[str],
+        *,
+        document_type: str | None = None,
+    ) -> dict[str, DocumentRecord]:
+        """Find document records by exact name match.
+
+        Returns {name: record}. When multiple documents share a name,
+        the record with the highest document_sha256 wins (deterministic tiebreak).
+        """
         ...

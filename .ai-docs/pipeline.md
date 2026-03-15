@@ -1,14 +1,32 @@
 # MODULE: pipeline
-# CLASSES: LimitKind, PipelineLimit, FlowOptions, RunContext, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
+# CLASSES: LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
 # DEPENDS: BaseModel, StrEnum
 # PURPOSE: Pipeline framework primitives.
-# VERSION: 0.15.1
+# VERSION: 0.16.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import FlowOptions, LimitKind, PipelineFlow, PipelineLimit, PipelineTask, RunContext, TaskBatch, TaskHandle, as_task_completed, collect_tasks, get_run_id, pipeline_concurrency, pipeline_test_context, run_tasks_until, safe_gather, safe_gather_indexed, traced_operation
+from ai_pipeline_core import (
+    FlowOptions,
+    LimitKind,
+    PipelineFlow,
+    PipelineLimit,
+    PipelineTask,
+    TaskBatch,
+    TaskHandle,
+    add_cost,
+    as_task_completed,
+    collect_tasks,
+    get_run_id,
+    pipeline_concurrency,
+    pipeline_test_context,
+    run_tasks_until,
+    safe_gather,
+    safe_gather_indexed,
+    traced_operation,
+)
 ```
 
 ## Public API
@@ -18,24 +36,26 @@ from ai_pipeline_core import FlowOptions, LimitKind, PipelineFlow, PipelineLimit
 class LimitKind(StrEnum):
     """Kind of concurrency/rate limit.
 
-CONCURRENT: Slots held for duration of operation (lease-based).
-    limit=500 means at most 500 simultaneous operations across all runs.
+    CONCURRENT: Slots held for duration of operation (lease-based).
+        limit=500 means at most 500 simultaneous operations across all runs.
 
-PER_MINUTE: Token bucket with limit/60 decay per second.
-    Allows bursting up to `limit` immediately, then refills gradually.
-    NOT a sliding window.
+    PER_MINUTE: Token bucket with limit/60 decay per second.
+        Allows bursting up to `limit` immediately, then refills gradually.
+        NOT a sliding window.
 
-PER_HOUR: Token bucket with limit/3600 decay per second. Same burst semantics."""
-    CONCURRENT = 'concurrent'
-    PER_MINUTE = 'per_minute'
-    PER_HOUR = 'per_hour'
+    PER_HOUR: Token bucket with limit/3600 decay per second. Same burst semantics."""
+
+    CONCURRENT = "concurrent"
+    PER_MINUTE = "per_minute"
+    PER_HOUR = "per_hour"
 
 
 @dataclass(frozen=True, slots=True)
 class PipelineLimit:
     """Concurrency/rate limit configuration.
 
-Must use names matching ``[a-zA-Z0-9_-]+`` in PipelineDeployment.concurrency_limits (validated at class definition time)."""
+    Must use names matching ``[a-zA-Z0-9_-]+`` in PipelineDeployment.concurrency_limits (validated at class definition time)."""
+
     limit: int
     kind: LimitKind = LimitKind.CONCURRENT
     timeout: int = 600
@@ -50,47 +70,43 @@ Must use names matching ``[a-zA-Z0-9_-]+`` in PipelineDeployment.concurrency_lim
 class FlowOptions(BaseModel):
     """Base configuration for pipeline flows.
 
-Use FlowOptions for deployment/environment configuration that may
-differ between environments (dev/staging/production).
+    Use FlowOptions for deployment/environment configuration that may
+    differ between environments (dev/staging/production).
 
-Never inherit from FlowOptions for task-level options, writer configs,
-or programmatically-constructed parameter objects — use BaseModel instead."""
-    model_config = ConfigDict(frozen=True, extra='forbid')
+    Never inherit from FlowOptions for task-level options, writer configs,
+    or programmatically-constructed parameter objects — use BaseModel instead."""
 
-
-@dataclass(frozen=True, slots=True)
-class RunContext:
-    """Immutable context for a pipeline run, carried via ContextVar."""
-    run_id: str
-    execution_id: UUID | None = None
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 class PipelineFlow:
     """Base class for pipeline flows.
 
-Flows are the unit of resume, progress tracking, and document hand-off in a deployment.
-Define ``run`` as an **instance method** (not @classmethod) because flows can carry
-per-instance configuration passed via ``build_flows()``::
+    Flows are the unit of resume, progress tracking, and document hand-off in a deployment.
+    Define ``run`` as an **instance method** (not @classmethod) because flows can carry
+    per-instance configuration passed via ``build_flows()``::
 
-    class TranslateFlow(PipelineFlow):
-        target_language: str = "en"
+        class TranslateFlow(PipelineFlow):
+            target_language: str = "en"
 
-        async def run(self, documents: tuple[SourceDoc, ...], options: FlowOptions) -> tuple[TranslatedDoc, ...]:
-            return await TranslateTask.run(documents, language=self.target_language)
+            async def run(self, documents: tuple[SourceDoc, ...], options: FlowOptions) -> tuple[TranslatedDoc, ...]:
+                return await TranslateTask.run(documents, language=self.target_language)
 
-The deployment creates flow instances with constructor kwargs::
+    The deployment creates flow instances with constructor kwargs::
 
-    def build_flows(self, options):
-        return [TranslateFlow(target_language="fr"), TranslateFlow(target_language="de")]
+        def build_flows(self, options):
+            return [TranslateFlow(target_language="fr"), TranslateFlow(target_language="de")]
 
-Each instance runs independently with its own parameters, resume record, and progress.
-Constructor kwargs are captured for replay serialization via ``get_params()``.
+    Each instance runs independently with its own parameters, resume record, and progress.
+    Constructor kwargs are captured for replay serialization via ``get_params()``.
 
-Signature must be exactly ``(self, documents: tuple[DocType, ...], options: FlowOptions)``
-and is validated at class definition time by ``__init_subclass__``.
-Use ``get_run_id()`` from ``ai_pipeline_core.pipeline`` to access the run ID inside a flow."""
+    Signature must be exactly ``(self, documents: tuple[DocType, ...], options: FlowOptions)``
+    and is validated at class definition time by ``__init_subclass__``.
+    Use ``get_run_id()`` from ``ai_pipeline_core.pipeline`` to access the run ID inside a flow."""
+
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
+    BASE_COST_USD: ClassVar[float] = 0.0
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
     task_graph: ClassVar[list[tuple[str, str]]] = []
@@ -148,6 +164,7 @@ Use ``get_run_id()`` from ``ai_pipeline_core.pipeline`` to access the run ID ins
 @dataclass(frozen=True, slots=True, eq=False)
 class TaskHandle:
     """Handle for an executing pipeline task."""
+
     task_class: type[Any] | None
     input_arguments: Mapping[str, Any]
 
@@ -171,6 +188,7 @@ class TaskHandle:
 @dataclass(frozen=True, slots=True)
 class TaskBatch:
     """Collected task results and handles that did not complete successfully."""
+
     completed: list[tuple[Document[Any], ...]]
     incomplete: list[TaskHandle[tuple[Document[Any], ...]]]
 
@@ -178,26 +196,27 @@ class TaskBatch:
 class PipelineTask:
     """Base class for pipeline tasks.
 
-Tasks are stateless units of work. Define ``run`` as a **@classmethod** because tasks
-carry no per-invocation instance state — all inputs arrive as arguments, all outputs
-are returned documents. The framework wraps ``run`` with retries, persistence,
-and event emission automatically.
+    Tasks are stateless units of work. Define ``run`` as a **@classmethod** because tasks
+    carry no per-invocation instance state — all inputs arrive as arguments, all outputs
+    are returned documents. The framework wraps ``run`` with retries, persistence,
+    and event emission automatically.
 
-Set ``_abstract_task = True`` on an intermediate base class to skip ``run()``
-validation on that class. Concrete subclasses do not inherit that skip; they must
-define ``run()`` or inherit a validated implementation from a non-abstract parent.
+    Set ``_abstract_task = True`` on an intermediate base class to skip ``run()``
+    validation on that class. Concrete subclasses do not inherit that skip; they must
+    define ``run()`` or inherit a validated implementation from a non-abstract parent.
 
-Minimal example::
+    Minimal example::
 
-    class SummarizeTask(PipelineTask):
-        @classmethod
-        async def run(cls, documents: tuple[ArticleDocument, ...]) -> tuple[SummaryDocument, ...]:
-            conv = Conversation(model="gemini-3-flash").with_context(documents[0])
-            conv = await conv.send("Summarize this article.")
-            return (SummaryDocument.derive(from_documents=(documents[0],), name="summary.md", content=conv.content),)
+        class SummarizeTask(PipelineTask):
+            @classmethod
+            async def run(cls, documents: tuple[ArticleDocument, ...]) -> tuple[SummaryDocument, ...]:
+                conv = Conversation(model="gemini-3-flash").with_context(documents[0])
+                conv = await conv.send("Summarize this article.")
+                return (SummaryDocument.derive(derived_from=(documents[0],), name="summary.md", content=conv.content),)
 
-Calling ``await SummarizeTask.run((doc,))`` dispatches the full lifecycle. Calling without
-``await`` returns a ``TaskHandle`` for parallel execution via ``collect_tasks``."""
+    Calling ``await SummarizeTask.run((doc,))`` dispatches the full lifecycle. Calling without
+    ``await`` returns a ``TaskHandle`` for parallel execution via ``collect_tasks``."""
+
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
     retries: ClassVar[int] = 0
@@ -206,6 +225,7 @@ Calling ``await SummarizeTask.run((doc,))`` dispatches the full lifecycle. Calli
     cacheable: ClassVar[bool] = False
     cache_version: ClassVar[int] = 1
     cache_ttl_seconds: ClassVar[int | None] = None
+    BASE_COST_USD: ClassVar[float] = 0.0
     expected_cost: ClassVar[float | None] = None
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
@@ -233,8 +253,6 @@ Calling ``await SummarizeTask.run((doc,))`` dispatches the full lifecycle. Calli
         cls.input_document_types = list(spec.input_document_types)
         cls.output_document_types = list(spec.output_document_types)
         cls.run = classmethod(cls._build_run_wrapper(spec))
-
-
 ```
 
 ## Functions
@@ -268,6 +286,7 @@ async def safe_gather[T](
 
     return successes
 
+
 async def safe_gather_indexed[T](
     *coroutines: Coroutine[Any, Any, T],
     label: str = "",
@@ -295,6 +314,7 @@ async def safe_gather_indexed[T](
         raise RuntimeError(f"All {len(failures)} tasks failed{f' in {label!r}' if label else ''}. First error: {first_error}") from first_error
 
     return output
+
 
 @asynccontextmanager
 async def pipeline_concurrency(
@@ -355,6 +375,7 @@ async def pipeline_concurrency(
         state.status.prefect_available = False
         yield
 
+
 def get_run_id() -> str:
     """Return the current run ID from the active execution context."""
     ctx = get_execution_context()
@@ -367,6 +388,7 @@ def get_run_id() -> str:
         )
         raise RuntimeError(msg)
     return ctx.run_id
+
 
 @contextmanager
 def pipeline_test_context(
@@ -389,6 +411,27 @@ def pipeline_test_context(
     )
     with set_execution_context(ctx), set_task_context(TaskContext(scope_kind="test", task_class_name="pipeline_test_context")):
         yield ctx
+
+
+def add_cost(amount: float, reason: str = "") -> None:
+    """Attach a cost to the current execution span.
+
+    Accumulates across multiple calls within the same span. No-op outside
+    execution context or when no span is active.
+
+    Args:
+        amount: Cost in USD. Must be non-negative and finite.
+        reason: Reserved for future use. Currently discarded.
+    """
+    _ = reason
+    if not math.isfinite(amount):
+        raise ValueError(f"add_cost() amount must be a finite USD value, got {amount!r}. Pass the actual cost as a positive float (e.g. 0.006).")
+    if amount < 0:
+        raise ValueError(f"add_cost() amount must be non-negative, got {amount}. Pass the actual cost as a positive float (e.g. 0.006).")
+    if amount <= 0:
+        return
+    _apply_cost_to_current_span(amount)
+
 
 async def collect_tasks(
     *handles: TaskAwaitableGroup,
@@ -425,6 +468,7 @@ async def collect_tasks(
     incomplete.extend(by_task[still_pending] for still_pending in pending)
     return TaskBatch(completed=completed, incomplete=incomplete)
 
+
 async def as_task_completed(*handles: TaskAwaitableGroup) -> AsyncIterator[TaskHandle[tuple[Document[Any], ...]]]:
     """Yield task handles in completion order."""
     ordered_handles = _normalize_handles(handles)
@@ -438,6 +482,7 @@ async def as_task_completed(*handles: TaskAwaitableGroup) -> AsyncIterator[TaskH
         for finished in done:
             yield by_task[finished]
 
+
 async def run_tasks_until(
     task_cls: type[Any],
     argument_groups: Sequence[tuple[tuple[Any, ...], dict[str, Any]]],
@@ -447,6 +492,7 @@ async def run_tasks_until(
     """Launch ``task_cls.run(*args, **kwargs)`` for each argument group and collect the handles."""
     handles = [task_cls.run(*args, **kwargs) for args, kwargs in argument_groups]
     return await collect_tasks(handles, deadline_seconds=deadline_seconds)
+
 
 @asynccontextmanager
 async def traced_operation(name: str, description: str = "") -> AsyncGenerator[None]:
@@ -481,7 +527,6 @@ async def traced_operation(name: str, description: str = "") -> AsyncGenerator[N
             except Exception, asyncio.CancelledError:
                 span_ctx.set_meta(description=description)
                 raise
-
 ```
 
 ## Examples
@@ -493,6 +538,31 @@ def test_name_with_dashes_and_underscores(self):
     raw = {"my-limit_v2": PipelineLimit(10)}
     result = _validate_concurrency_limits("TestDeploy", raw)
     assert "my-limit_v2" in result
+```
+
+**Add cost after span exits targets parent** (`tests/pipeline/test_add_cost.py:120`)
+
+```python
+@pytest.mark.asyncio
+async def test_add_cost_after_span_exits_targets_parent(self) -> None:
+    with pipeline_test_context():
+        async with track_span(SpanKind.OPERATION, "parent", "", sinks=()) as parent:
+            async with track_span(SpanKind.OPERATION, "child", "", sinks=()):
+                pass
+            add_cost(0.01)
+            assert parent._added_cost_usd == pytest.approx(0.01)
+```
+
+**Add cost reaches span context** (`tests/pipeline/test_add_cost.py:102`)
+
+```python
+@pytest.mark.asyncio
+async def test_add_cost_reaches_span_context(self) -> None:
+    with pipeline_test_context():
+        async with track_span(SpanKind.OPERATION, "test-op", "", sinks=()) as span_ctx:
+            add_cost(0.006)
+            add_cost(0.004)
+            assert span_ctx._added_cost_usd == pytest.approx(0.01)
 ```
 
 **Collect tasks accepts list** (`tests/pipeline/test_parallel_primitives.py:124`)
@@ -541,52 +611,22 @@ def test_pipeline_test_context_sets_and_restores() -> None:
     assert get_execution_context() is before
 ```
 
-**As task completed yields handles** (`tests/pipeline/test_parallel_primitives.py:135`)
+**Add cost persists to span record** (`tests/pipeline/test_add_cost.py:264`)
 
 ```python
 @pytest.mark.asyncio
-async def test_as_task_completed_yields_handles() -> None:
-    with pipeline_test_context() as ctx:
-        with set_execution_context(ctx.with_flow(_make_flow_frame())):
-            h1 = _FastTask.run((_make_doc("1"),))
-            h2 = _FastTask.run((_make_doc("2"),))
-            yielded = [handle async for handle in as_task_completed(h1, h2)]
+async def test_add_cost_persists_to_span_record(self) -> None:
+    db = _MemoryDatabase()
+    ctx = _make_execution_context(db)
+    with set_execution_context(ctx):
+        async with track_span(SpanKind.OPERATION, "api-call", "", sinks=ctx.sinks, db=ctx.database) as span_ctx:
+            add_cost(0.006)
+            add_cost(0.004)
+            span_id = span_ctx.span_id
 
-    assert len(yielded) == 2
-    assert all(isinstance(handle, TaskHandle) for handle in yielded)
-```
-
-**As task completed yields results** (`tests/pipeline/test_flow_resume.py:26`)
-
-```python
-@pytest.mark.asyncio
-async def test_as_task_completed_yields_results() -> None:
-    first = InputDoc.create_root(name="1.txt", content="a", reason="test input")
-    second = InputDoc.create_root(name="2.txt", content="b", reason="test input")
-
-    names: list[str] = []
-    with pipeline_test_context():
-        async for handle in as_task_completed(EchoTask.run((first,)), EchoTask.run((second,))):
-            docs = await handle.result()
-            names.extend(doc.name for doc in docs)
-
-    assert set(names) == {"out_1.txt", "out_2.txt"}
-```
-
-**Collect tasks all complete** (`tests/pipeline/test_parallel_primitives.py:82`)
-
-```python
-@pytest.mark.asyncio
-async def test_collect_tasks_all_complete() -> None:
-    with pipeline_test_context() as ctx:
-        with set_execution_context(ctx.with_flow(_make_flow_frame())):
-            h1 = _FastTask.run((_make_doc("a"),))
-            h2 = _FastTask.run((_make_doc("b"),))
-            batch = await collect_tasks(h1, h2)
-
-    assert isinstance(batch, TaskBatch)
-    assert len(batch.completed) == 2
-    assert batch.incomplete == []
+    span = await db.get_span(span_id)
+    assert span is not None
+    assert span.cost_usd == pytest.approx(0.01)
 ```
 
 
@@ -648,6 +688,26 @@ def test_flow_options_is_frozen(self):
         options.core_model = "new-model"
 ```
 
+**Inf raises** (`tests/pipeline/test_add_cost.py:201`)
+
+```python
+def test_inf_raises(self) -> None:
+    from ai_pipeline_core.pipeline._task import PipelineTask
+
+    with pytest.raises(TypeError, match="BASE_COST_USD"):
+        type("InfCostTask", (PipelineTask,), {"name": "InfCostTask", "BASE_COST_USD": float("inf"), "estimated_minutes": 1.0})
+```
+
+**Inf raises** (`tests/pipeline/test_add_cost.py:226`)
+
+```python
+def test_inf_raises(self) -> None:
+    from ai_pipeline_core.pipeline._flow import PipelineFlow
+
+    with pytest.raises(TypeError, match="BASE_COST_USD"):
+        type("InfCostFlow", (PipelineFlow,), {"name": "InfCostFlow", "BASE_COST_USD": float("inf"), "estimated_minutes": 1.0})
+```
+
 **Inherited flow options maintains frozen** (`tests/pipeline/test_options.py:111`)
 
 ```python
@@ -660,30 +720,4 @@ def test_inherited_flow_options_maintains_frozen(self):
     options = CustomFlowOptions()
     with pytest.raises(ValidationError):
         options.custom_field = "new_value"
-```
-
-**Invalid kind type** (`tests/pipeline/test_limits.py:143`)
-
-```python
-def test_invalid_kind_type(self):
-    """Test that kind must be LimitKind enum instance."""
-    # Create a PipelineLimit-like object with wrong kind type
-    limit = PipelineLimit.__new__(PipelineLimit)
-    object.__setattr__(limit, "limit", 10)
-    object.__setattr__(limit, "kind", "concurrent")  # str, not LimitKind
-    object.__setattr__(limit, "timeout", 600)
-    with pytest.raises(TypeError, match="kind must be LimitKind"):
-        _validate_concurrency_limits("TestDeploy", {"test": limit})
-```
-
-**Key error shows available limits** (`tests/pipeline/test_limits.py:192`)
-
-```python
-async def test_key_error_shows_available_limits(self):
-    limits = {"alpha": PipelineLimit(10), "beta": PipelineLimit(20)}
-    state = _LimitsState(limits=MappingProxyType(limits), status=_SharedStatus())
-    with _set_limits_state(state):
-        with pytest.raises(KeyError, match="alpha, beta"):
-            async with pipeline_concurrency("missing"):
-                pass
 ```

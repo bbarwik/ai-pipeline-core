@@ -1,7 +1,7 @@
 """Document input resolution for pipeline deployments.
 
 Provides typed input/output models and the resolver that converts
-DocumentInput (inline content or URL references) into typed Documents.
+_DocumentInput (inline content or URL references) into typed Documents.
 """
 
 import asyncio
@@ -44,7 +44,7 @@ def _string_key_dict(data: Any) -> dict[str, Any]:
 
 
 class _InputBase(BaseModel):
-    """Shared validators for deployment input models (AttachmentInput, DocumentInput).
+    """Shared validators for deployment input models (AttachmentInput, _DocumentInput).
 
     Subclasses must define STRIP_KEYS and have `url` and `content` fields.
     """
@@ -83,7 +83,7 @@ class AttachmentInput(_InputBase):
     STRIP_KEYS: ClassVar[frozenset[str]] = frozenset({"mime_type", "size"})
 
 
-class DocumentInput(_InputBase):
+class _DocumentInput(_InputBase):
     """Document provided to a deployment — inline content or a URL reference."""
 
     name: str = Field(default="", description="Document filename (e.g. 'task.md'). Auto-derived from URL path if omitted.")
@@ -217,17 +217,17 @@ async def _fetch_url(url: str, client: httpx.AsyncClient, semaphore: asyncio.Sem
 
 
 async def resolve_document_inputs(
-    inputs: list[DocumentInput],
+    inputs: list[_DocumentInput],
     known_types: list[type[Document]],
     start_step_input_types: list[type[Document]] | None = None,
 ) -> tuple[Document, ...]:
-    """Resolve DocumentInput list into typed Documents.
+    """Resolve _DocumentInput list into typed Documents.
 
     Handles both inline content and URL references. URL references are fetched
     in parallel with bounded concurrency.
 
     Args:
-        inputs: List of DocumentInput from the deployment parameters.
+        inputs: List of _DocumentInput from the deployment parameters.
         known_types: All document types from all flows (for explicit class_name matching).
         start_step_input_types: Input types from the start-step flow (for class_name inference).
     """
@@ -256,7 +256,7 @@ async def resolve_document_inputs(
                 raise ValueError(f"Cannot derive attachment name from URL: {att_input.url}")
             return Attachment(name=name, content=content, description=att_input.description)
 
-        async def _resolve_one(doc_input: DocumentInput) -> Document:
+        async def _resolve_one(doc_input: _DocumentInput) -> Document:
             # Resolve class_name
             class_name = doc_input.class_name
             if not class_name:
@@ -282,7 +282,7 @@ async def resolve_document_inputs(
             if doc_input.derived_from or doc_input.triggered_by:
                 raise ValueError(
                     "Deployment input documents are root documents and cannot set derived_from/triggered_by. "
-                    "Remove provenance fields from DocumentInput. PipelineTask outputs should set provenance via derive()/create()."
+                    "Remove provenance fields from _DocumentInput. PipelineTask outputs should set provenance via derive()/create()."
                 )
 
             if doc_input.content is not None:
@@ -322,6 +322,6 @@ async def resolve_document_inputs(
 
 __all__ = [
     "AttachmentInput",
-    "DocumentInput",
+    "_DocumentInput",
     "resolve_document_inputs",
 ]

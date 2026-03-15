@@ -1,7 +1,7 @@
 # MODULE: exceptions
-# CLASSES: LLMError, OutputDegenerationError, PipelineCoreError
+# CLASSES: LLMError, OutputDegenerationError, EmptyResponseError, PipelineCoreError
 # DEPENDS: Exception
-# VERSION: 0.15.1
+# VERSION: 0.16.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -16,12 +16,17 @@ from ai_pipeline_core import LLMError, OutputDegenerationError, PipelineCoreErro
 class LLMError(PipelineCoreError):
     """Raised when LLM generation fails after all retries, including timeouts and provider errors."""
 
+
 class OutputDegenerationError(LLMError):
     """LLM output contains degeneration patterns (e.g., token repetition loops). Triggers retry with cache disabled."""
 
+
+class EmptyResponseError(LLMError):
+    """Model returned empty content (no text and no tool calls). Retried with LiteLLM cache disabled."""
+
+
 class PipelineCoreError(Exception):
     """Base exception for all AI Pipeline Core errors."""
-
 ```
 
 ## Examples

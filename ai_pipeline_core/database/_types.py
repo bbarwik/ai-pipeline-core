@@ -14,7 +14,6 @@ __all__ = [
     "TOKENS_INPUT_KEY",
     "TOKENS_OUTPUT_KEY",
     "TOKENS_REASONING_KEY",
-    "BlobRecord",
     "CostTotals",
     "DocumentRecord",
     "HydratedDocument",
@@ -22,6 +21,7 @@ __all__ = [
     "SpanKind",
     "SpanRecord",
     "SpanStatus",
+    "_BlobRecord",
     "get_token_count",
 ]
 
@@ -201,7 +201,7 @@ class DocumentRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class BlobRecord:
+class _BlobRecord:
     """Row from the immutable blobs table."""
 
     content_sha256: str
@@ -210,7 +210,7 @@ class BlobRecord:
 
 @dataclass(frozen=True, slots=True)
 class CostTotals:
-    """Aggregated cost and token totals for llm_round spans."""
+    """Aggregated cost and token totals for a deployment. Cost includes all span kinds, token counts include llm_round spans only."""
 
     cost_usd: float = 0.0
     tokens_input: int = 0

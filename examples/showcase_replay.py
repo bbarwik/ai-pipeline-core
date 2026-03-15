@@ -8,7 +8,8 @@ Usage:
 import asyncio
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment, PipelineFlow, PipelineTask
-from ai_pipeline_core.database import MemoryDatabase, SpanKind
+from ai_pipeline_core.database import SpanKind
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.replay import execute_span
 
 
@@ -83,8 +84,8 @@ def _select_recorded_task_span(tree: tuple[object, ...]) -> object:
 
 
 async def main() -> None:
-    source_database = MemoryDatabase()
-    replay_database = MemoryDatabase()
+    source_database = _MemoryDatabase()
+    replay_database = _MemoryDatabase()
     pipeline = ReplayShowcasePipeline()
 
     input_document = ReplaySourceDocument.create_root(

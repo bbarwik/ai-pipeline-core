@@ -2,20 +2,30 @@
 # CLASSES: Attachment, Document, DocumentValidationError, DocumentSizeError, DocumentNameError
 # DEPENDS: BaseModel, Exception
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.15.1
+# VERSION: 0.16.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import Attachment, Document, DocumentSha256, ensure_extension, find_document, is_document_sha256, replace_extension, sanitize_url
+from ai_pipeline_core import (
+    Attachment,
+    Document,
+    DocumentSha256,
+    ensure_extension,
+    find_all,
+    find_document,
+    find_latest,
+    is_document_sha256,
+    replace_extension,
+    sanitize_url,
+)
 ```
 
 ## Types & Constants
 
 ```python
 DocumentSha256 = NewType("DocumentSha256", str)
-
 ```
 
 ## Public API
@@ -24,10 +34,11 @@ DocumentSha256 = NewType("DocumentSha256", str)
 class Attachment(BaseModel):
     """Immutable binary attachment for multi-part documents.
 
-Carries binary content (screenshots, PDFs, supplementary files) without full Document machinery.
-``mime_type`` is a cached_property — not included in ``model_dump()`` output."""
-    model_config = ConfigDict(frozen=True, extra='forbid')
-    SERIALIZE_METADATA_KEYS: ClassVar[frozenset[str]] = frozenset({'mime_type', 'size'})
+    Carries binary content (screenshots, PDFs, supplementary files) without full Document machinery.
+    ``mime_type`` is a cached_property — not included in ``model_dump()`` output."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    SERIALIZE_METADATA_KEYS: ClassVar[frozenset[str]] = frozenset({"mime_type", "size"})
     name: str
     content: bytes
     description: str | None = None
@@ -68,30 +79,31 @@ Carries binary content (screenshots, PDFs, supplementary files) without full Doc
 class Document(BaseModel):
     """Immutable base class for all pipeline documents. Cannot be instantiated directly — must be subclassed.
 
-Content is stored as bytes. Use `create()` for automatic conversion from str/dict/list/BaseModel.
-Use `parse()` to reverse the conversion. Serialization is extension-driven (.json → JSON, .yaml → YAML).
+    Content is stored as bytes. Use `create()` for automatic conversion from str/dict/list/BaseModel.
+    Use `parse()` to reverse the conversion. Serialization is extension-driven (.json → JSON, .yaml → YAML).
 
-Provenance:
-    - `derived_from`: content sources (document SHA256 hashes or external URLs)
-    - `triggered_by`: causal provenance (document SHA256 hashes only)
-    - `create()` requires at least one provenance field. Use `create_root()` for pipeline inputs.
+    Provenance:
+        - `derived_from`: content sources (document SHA256 hashes or external URLs)
+        - `triggered_by`: causal provenance (document SHA256 hashes only)
+        - `create()` requires at least one provenance field. Use `create_root()` for pipeline inputs.
 
-Attachments:
-    Secondary content bundled with the primary document. The primary content lives in `content`,
-    while `attachments` carries supplementary material of the same logical document — e.g. a webpage
-    stored as HTML in `content` with its screenshot in an attachment, or a report with embedded images.
-    Attachments affect the document SHA256 hash."""
+    Attachments:
+        Secondary content bundled with the primary document. The primary content lives in `content`,
+        while `attachments` carries supplementary material of the same logical document — e.g. a webpage
+        stored as HTML in `content` with its screenshot in an attachment, or a report with embedded images.
+        Attachments affect the document SHA256 hash."""
+
     MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024  # Maximum allowed total size in bytes (default 25MB).
     FILES: ClassVar[type[StrEnum] | None] = None  # Allowed filenames enum. Define as nested ``class FILES(StrEnum)`` or assign an external StrEnum subclass.
     publicly_visible: ClassVar[bool] = False  # Whether this document type should be displayed in frontend dashboards.
     name: str
     description: str | None = None
-    summary: str = ''
+    summary: str = ""
     content: bytes
     derived_from: tuple[str, ...] = ()  # Content provenance: documents and references this document's content was directly
     triggered_by: tuple[DocumentSha256, ...] = ()  # Causal provenance: documents that triggered this document's creation without directly
     attachments: tuple[Attachment, ...] = ()
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra='forbid')
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     def __init__(
         self,
@@ -223,23 +235,27 @@ Attachments:
         *,
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
+        triggered_by: Sequence[Document],
+        derived_from: Sequence[Document] | None = None,
         description: str | None = None,
         summary: str = "",
-        derived_from: tuple[str, ...] | None = None,
-        triggered_by: tuple[DocumentSha256, ...] | None = None,
         attachments: tuple[Attachment, ...] | None = None,
     ) -> Self:
-        """Create a document with automatic content-to-bytes conversion.
+        """Create a document triggered by other documents (causal provenance).
 
-        Must be called within a PipelineTask or PipelineFlow context.
-        Must provide derived_from or triggered_by for provenance tracking.
-        For root inputs (no provenance), use create_root(reason='...') instead.
-        All created documents must be returned from the task — unreturned documents are flagged as orphans.
-        Serialization is extension-driven: .json → JSON, .yaml → YAML, others → UTF-8.
-        Reversible via parse(). Cannot be called on Document directly — must use a subclass.
+        Use when something triggered the creation of new content — e.g. a research plan
+        triggers webpage captures. ``triggered_by`` is required. Optionally provide
+        ``derived_from`` for content provenance.
+
+        For content transformations (summaries, analyses), use ``derive()`` instead.
+        For external URI sources (URLs, MCP), use ``create_external()``.
+        For pipeline root inputs with no provenance, use ``create_root(reason='...')``.
         """
-        if not derived_from and not triggered_by:
-            raise ValueError(f"Document.create() requires derived_from or triggered_by. For root inputs use {cls.__name__}.create_root(reason='...').")
+        if not triggered_by:
+            raise ValueError(
+                f"{cls.__name__}.create() requires at least one triggered_by document. "
+                f"For content transformations use derive(). For root inputs use create_root(reason='...')."
+            )
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
             _validate_content_schema(cls._content_type, content, content_bytes, name)
@@ -248,8 +264,47 @@ Attachments:
             content=content_bytes,
             description=description,
             summary=summary,
-            derived_from=derived_from,
-            triggered_by=triggered_by,
+            derived_from=tuple(d.sha256 for d in derived_from) if derived_from else None,
+            triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by),
+            attachments=attachments,
+        )
+
+    @classmethod
+    def create_external(
+        cls,
+        *,
+        name: str,
+        content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
+        from_sources: Sequence[str],
+        triggered_by: Sequence[Document] | None = None,
+        description: str | None = None,
+        summary: str = "",
+        attachments: tuple[Attachment, ...] | None = None,
+    ) -> Self:
+        """Create a document from external URI sources (websites, APIs, MCP responses).
+
+        ``from_sources`` accepts URI strings (https://, search://, email://, mcp://, etc.)
+        validated by the presence of ``://``. This is the only constructor that accepts
+        URI strings as provenance.
+        """
+        if not from_sources:
+            raise ValueError(f"{cls.__name__}.create_external() requires at least one URI in from_sources.")
+        for src in from_sources:
+            if "://" not in src:
+                raise ValueError(
+                    f"{cls.__name__}.create_external() from_sources entries must be URIs containing '://'. "
+                    f"Got: {src!r}. For document-to-document provenance use derive() or create()."
+                )
+        content_bytes = _convert_content(name, content)
+        if cls._content_type is not None:
+            _validate_content_schema(cls._content_type, content, content_bytes, name)
+        return cls(
+            name=name,
+            content=content_bytes,
+            description=description,
+            summary=summary,
+            derived_from=tuple(from_sources),
+            triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by) if triggered_by else None,
             attachments=attachments,
         )
 
@@ -290,28 +345,35 @@ Attachments:
     def derive(
         cls,
         *,
-        from_documents: tuple[Document, ...],
         name: str,
         content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
-        triggered_by: tuple[Document, ...] = (),
+        derived_from: Sequence[Document],
+        triggered_by: Sequence[Document] | None = None,
         description: str | None = None,
         summary: str = "",
         attachments: tuple[Attachment, ...] | None = None,
     ) -> Self:
-        """Create a document derived from other documents. The 95% API path.
+        """Create a document derived from other documents (content provenance).
 
-        Must be called within a PipelineTask or PipelineFlow context.
-        All created documents must be returned from the task — unreturned documents are flagged as orphans.
-        Accepts Document objects directly (extracts SHA256 hashes automatically).
-        Use this for content transformations (summaries, analyses, reviews).
+        The primary API path for content transformations: summaries, analyses, reviews.
+        ``derived_from`` is required — the documents whose content was used.
+        Optionally provide ``triggered_by`` for causal provenance.
         """
-        return cls.create(
+        if not derived_from:
+            raise ValueError(
+                f"{cls.__name__}.derive() requires at least one derived_from document. "
+                f"For triggered creation use create(). For root inputs use create_root(reason='...')."
+            )
+        content_bytes = _convert_content(name, content)
+        if cls._content_type is not None:
+            _validate_content_schema(cls._content_type, content, content_bytes, name)
+        return cls(
             name=name,
-            content=content,
-            summary=summary,
-            derived_from=tuple(d.sha256 for d in from_documents),
-            triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by) if triggered_by else None,
+            content=content_bytes,
             description=description,
+            summary=summary,
+            derived_from=tuple(d.sha256 for d in derived_from),
+            triggered_by=tuple(DocumentSha256(d.sha256) for d in triggered_by) if triggered_by else None,
             attachments=attachments,
         )
 
@@ -526,12 +588,13 @@ Attachments:
 class DocumentValidationError(Exception):
     """Raised when document validation fails."""
 
+
 class DocumentSizeError(DocumentValidationError):
     """Raised when document content exceeds MAX_CONTENT_SIZE limit."""
 
+
 class DocumentNameError(DocumentValidationError):
     """Raised when document name contains path traversal, reserved suffixes, or invalid format."""
-
 ```
 
 ## Functions
@@ -564,6 +627,7 @@ def sanitize_url(url: str) -> str:
 
     return sanitized
 
+
 def is_document_sha256(value: str) -> bool:
     """Check if a string is a valid base32-encoded SHA256 hash (52 chars, A-Z2-7, sufficient entropy)."""
     if not isinstance(value, str) or len(value) != 52:  # pyright: ignore[reportUnnecessaryIsInstance]
@@ -576,6 +640,7 @@ def is_document_sha256(value: str) -> bool:
     unique_chars = len(set(value))
     return unique_chars >= _MIN_HASH_UNIQUE_CHARS
 
+
 def ensure_extension(name: str, ext: str) -> str:
     """Ensure a filename has the given extension, adding it only if missing.
 
@@ -586,6 +651,7 @@ def ensure_extension(name: str, ext: str) -> str:
     if name.endswith(ext):
         return name
     return name + ext
+
 
 def replace_extension(name: str, ext: str) -> str:
     """Replace the file extension (or add one if missing).
@@ -599,6 +665,28 @@ def replace_extension(name: str, ext: str) -> str:
         return name[:dot_pos] + ext
     return name + ext
 
+
+def find_all[T](documents: Sequence[Any], doc_type: type[T]) -> list[T]:
+    """Find all documents of the given type in a sequence."""
+    return [doc for doc in documents if isinstance(doc, doc_type)]
+
+
+def find_latest[T](documents: Sequence[Any], doc_type: type[T]) -> T:
+    """Find the last document of the given type in a sequence.
+
+    Returns the last matching document by position — the most recently appended.
+    Raises DocumentValidationError if no match is found.
+    """
+    result: T | None = None
+    for doc in documents:
+        if isinstance(doc, doc_type):
+            result = doc
+    if result is None:
+        available = sorted({type(d).__name__ for d in documents})
+        raise DocumentValidationError(f"No document of type '{doc_type.__name__}' found. Available types: {', '.join(available) or 'none'}")
+    return result
+
+
 def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
     """Find a document of the given type in a sequence.
 
@@ -611,7 +699,6 @@ def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
             return doc
     available = sorted({type(d).__name__ for d in documents})
     raise DocumentValidationError(f"No document of type '{doc_type.__name__}' found. Available types: {', '.join(available) or 'none'}")
-
 ```
 
 ## Examples

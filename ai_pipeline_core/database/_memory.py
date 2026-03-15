@@ -16,7 +16,6 @@ from ai_pipeline_core.database._types import (
     TOKENS_INPUT_KEY,
     TOKENS_OUTPUT_KEY,
     TOKENS_REASONING_KEY,
-    BlobRecord,
     CostTotals,
     DocumentRecord,
     HydratedDocument,
@@ -24,13 +23,14 @@ from ai_pipeline_core.database._types import (
     SpanKind,
     SpanRecord,
     SpanStatus,
+    _BlobRecord,
     get_token_count,
 )
 
-__all__ = ["MemoryDatabase"]
+__all__ = ["_MemoryDatabase"]
 
 
-class MemoryDatabase:
+class _MemoryDatabase:
     """Dict-based backend for tests covering the span schema."""
 
     supports_remote = False
@@ -38,7 +38,7 @@ class MemoryDatabase:
     def __init__(self) -> None:
         self._spans: dict[UUID, SpanRecord] = {}
         self._documents: dict[str, DocumentRecord] = {}
-        self._blobs: dict[str, BlobRecord] = {}
+        self._blobs: dict[str, _BlobRecord] = {}
         self._logs: list[LogRecord] = []
 
     async def insert_span(self, span: SpanRecord) -> None:
@@ -55,12 +55,12 @@ class MemoryDatabase:
         for record in records:
             await self.save_document(record)
 
-    async def save_blob(self, blob: BlobRecord) -> None:
+    async def save_blob(self, blob: _BlobRecord) -> None:
         if blob.content_sha256 in self._blobs:
             return
         self._blobs[blob.content_sha256] = blob
 
-    async def save_blob_batch(self, blobs: list[BlobRecord]) -> None:
+    async def save_blob_batch(self, blobs: list[_BlobRecord]) -> None:
         for blob in blobs:
             await self.save_blob(blob)
 
@@ -126,19 +126,19 @@ class MemoryDatabase:
         return max(matches, key=lambda span: (span.ended_at or span.started_at, span.version, str(span.span_id)))
 
     async def get_deployment_cost_totals(self, root_deployment_id: UUID) -> CostTotals:
-        totals = CostTotals()
+        cost_usd = 0.0
+        ti, to, tc, tr = 0, 0, 0, 0
         for span in self._spans.values():
-            if span.root_deployment_id != root_deployment_id or span.kind != SpanKind.LLM_ROUND:
+            if span.root_deployment_id != root_deployment_id:
                 continue
-            metrics = parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json")
-            totals = CostTotals(
-                cost_usd=totals.cost_usd + span.cost_usd,
-                tokens_input=totals.tokens_input + get_token_count(metrics, TOKENS_INPUT_KEY),
-                tokens_output=totals.tokens_output + get_token_count(metrics, TOKENS_OUTPUT_KEY),
-                tokens_cache_read=totals.tokens_cache_read + get_token_count(metrics, TOKENS_CACHE_READ_KEY),
-                tokens_reasoning=totals.tokens_reasoning + get_token_count(metrics, TOKENS_REASONING_KEY),
-            )
-        return totals
+            cost_usd += span.cost_usd
+            if span.kind == SpanKind.LLM_ROUND:
+                metrics = parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json")
+                ti += get_token_count(metrics, TOKENS_INPUT_KEY)
+                to += get_token_count(metrics, TOKENS_OUTPUT_KEY)
+                tc += get_token_count(metrics, TOKENS_CACHE_READ_KEY)
+                tr += get_token_count(metrics, TOKENS_REASONING_KEY)
+        return CostTotals(cost_usd=cost_usd, tokens_input=ti, tokens_output=to, tokens_cache_read=tc, tokens_reasoning=tr)
 
     async def get_deployment_span_count(
         self,
@@ -210,10 +210,10 @@ class MemoryDatabase:
             shas.update(span.output_document_shas)
         return shas
 
-    async def get_blob(self, content_sha256: str) -> BlobRecord | None:
+    async def get_blob(self, content_sha256: str) -> _BlobRecord | None:
         return self._blobs.get(content_sha256)
 
-    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, BlobRecord]:
+    async def get_blobs_batch(self, content_sha256s: list[str]) -> dict[str, _BlobRecord]:
         return {sha256: self._blobs[sha256] for sha256 in content_sha256s if sha256 in self._blobs}
 
     async def get_span_logs(
@@ -260,3 +260,21 @@ class MemoryDatabase:
             ),
             key=log_sort_key,
         )
+
+    async def find_documents_by_name(
+        self,
+        names: list[str],
+        *,
+        document_type: str | None = None,
+    ) -> dict[str, DocumentRecord]:
+        name_set = set(names)
+        found: dict[str, DocumentRecord] = {}
+        for record in self._documents.values():
+            if record.name not in name_set:
+                continue
+            if document_type is not None and record.document_type != document_type:
+                continue
+            existing = found.get(record.name)
+            if existing is None or record.document_sha256 > existing.document_sha256:
+                found[record.name] = record
+        return found

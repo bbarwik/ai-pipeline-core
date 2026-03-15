@@ -23,7 +23,7 @@ from ai_pipeline_core import (
     PipelineFlow,
 )
 from ai_pipeline_core.database import SpanKind, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._contract import (
     CompletedRun,
     DeploymentResultData,
@@ -634,7 +634,7 @@ async def test_deployment_run_executes_flow_instances(input_documents):
 @pytest.mark.asyncio
 async def test_deployment_persists_logs_and_log_summaries(input_documents) -> None:
     deployment = ExampleDeployment()
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
 
     result = await deployment.run("run-with-logs", input_documents, _TestOptions(), database=database)
 
@@ -667,7 +667,7 @@ async def test_skipped_flow_persists_lifecycle_log_and_summary(input_documents) 
                 return FlowDirective(action=FlowAction.SKIP, reason="skip-for-test")
             return FlowDirective()
 
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     await SkipSecondFlowDeployment().run("run-skip-logs", input_documents, _TestOptions(), database=database)
 
     deployment_span = max(
@@ -684,7 +684,7 @@ async def test_skipped_flow_persists_lifecycle_log_and_summary(input_documents) 
 
 @pytest.mark.asyncio
 async def test_cached_flow_persists_lifecycle_log_and_summary(input_documents) -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     deployment = ExampleDeployment()
 
     await deployment.run("run-cache-logs", input_documents, _TestOptions(), database=database)
@@ -715,7 +715,7 @@ def test_deployment_requires_build_flows_override():
 @pytest.mark.asyncio
 async def test_deployment_captures_flow_replay_payload(input_documents: list[Document]) -> None:
     """Flow execution stores replay_payload on the persisted flow node payload."""
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     deployment = ExampleDeployment()
 
     await deployment.run("run-replay", input_documents, _TestOptions(), database=database)
@@ -729,7 +729,7 @@ async def test_deployment_captures_flow_replay_payload(input_documents: list[Doc
 
 @pytest.mark.asyncio
 async def test_flow_detail_includes_default_flow_options(input_documents: list[Document]) -> None:
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     await ExampleDeployment().run("run-flow-options", input_documents, _TestOptions(), database=database)
 
     flow_spans = [span for span in database._spans.values() if span.kind == SpanKind.FLOW]
@@ -742,7 +742,7 @@ async def test_flow_detail_includes_default_flow_options(input_documents: list[D
 @pytest.mark.asyncio
 async def test_deployment_stores_parent_execution_id_on_deployment_node(input_documents: list[Document]) -> None:
     """Deployment node payload keeps parent_execution_id for cross-deployment DAG linking."""
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     deployment = ExampleDeployment()
     parent_execution_id = uuid4()
 
@@ -766,7 +766,7 @@ def test_run_local_forces_memory_database(monkeypatch: pytest.MonkeyPatch, input
     def _unexpected_database_creation(*args: object, **kwargs: object) -> object:
         nonlocal called
         called = True
-        return MemoryDatabase()
+        return _MemoryDatabase()
 
     monkeypatch.setattr("ai_pipeline_core.deployment.base._create_span_database_from_settings", _unexpected_database_creation)
 

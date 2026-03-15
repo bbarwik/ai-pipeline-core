@@ -13,7 +13,7 @@ import pytest
 from testcontainers.clickhouse import ClickHouseContainer
 
 from ai_pipeline_core.database._types import (
-    BlobRecord,
+    _BlobRecord,
     CostTotals,
     DocumentRecord,
     LogRecord,
@@ -119,13 +119,13 @@ def _make_document(**kwargs: object) -> DocumentRecord:
     return DocumentRecord(**defaults)
 
 
-def _make_blob(**kwargs: object) -> BlobRecord:
+def _make_blob(**kwargs: object) -> _BlobRecord:
     defaults: dict[str, object] = {
         "content_sha256": f"blob-{uuid4().hex[:16]}",
         "content": b"blob-content",
     }
     defaults.update(kwargs)
-    return BlobRecord(**defaults)
+    return _BlobRecord(**defaults)
 
 
 def _make_log(**kwargs: object) -> LogRecord:
@@ -1381,3 +1381,64 @@ async def test_document_publicly_visible_survives_summary_update(database: Click
     assert loaded is not None
     assert loaded.publicly_visible is True
     assert loaded.summary == "new summary"
+
+
+# ---------------------------------------------------------------------------
+# find_documents_by_name
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_name_returns_matching_records(database: ClickHouseDatabase) -> None:
+    suffix = uuid4().hex[:8]
+    doc_a = _make_document(document_sha256=f"fname-a-{suffix}", name=f"report-{suffix}.md", document_type="Report")
+    doc_b = _make_document(document_sha256=f"fname-b-{suffix}", name=f"summary-{suffix}.md", document_type="Summary")
+    doc_c = _make_document(document_sha256=f"fname-c-{suffix}", name=f"other-{suffix}.md", document_type="Report")
+    for doc in (doc_a, doc_b, doc_c):
+        await database.save_document(doc)
+
+    found = await database.find_documents_by_name([f"report-{suffix}.md", f"summary-{suffix}.md"])
+
+    assert set(found.keys()) == {f"report-{suffix}.md", f"summary-{suffix}.md"}
+    assert found[f"report-{suffix}.md"].document_sha256 == f"fname-a-{suffix}"
+    assert found[f"summary-{suffix}.md"].document_sha256 == f"fname-b-{suffix}"
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_name_filters_by_document_type(database: ClickHouseDatabase) -> None:
+    suffix = uuid4().hex[:8]
+    doc_a = _make_document(document_sha256=f"ftype-a-{suffix}", name=f"report-{suffix}.md", document_type="Report")
+    doc_b = _make_document(document_sha256=f"ftype-b-{suffix}", name=f"report-{suffix}.md", document_type="Draft")
+    for doc in (doc_a, doc_b):
+        await database.save_document(doc)
+
+    found = await database.find_documents_by_name([f"report-{suffix}.md"], document_type="Draft")
+
+    assert found[f"report-{suffix}.md"].document_sha256 == f"ftype-b-{suffix}"
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_name_tiebreaks_by_highest_sha256(database: ClickHouseDatabase) -> None:
+    suffix = uuid4().hex[:8]
+    doc_low = _make_document(document_sha256=f"aaa-{suffix}", name=f"tie-{suffix}.md")
+    doc_high = _make_document(document_sha256=f"zzz-{suffix}", name=f"tie-{suffix}.md")
+    for doc in (doc_low, doc_high):
+        await database.save_document(doc)
+
+    found = await database.find_documents_by_name([f"tie-{suffix}.md"])
+
+    assert found[f"tie-{suffix}.md"].document_sha256 == f"zzz-{suffix}"
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_name_empty_names_returns_empty(database: ClickHouseDatabase) -> None:
+    found = await database.find_documents_by_name([])
+
+    assert found == {}
+
+
+@pytest.mark.asyncio
+async def test_find_documents_by_name_no_matches_returns_empty(database: ClickHouseDatabase) -> None:
+    found = await database.find_documents_by_name(["nonexistent-doc-name.md"])
+
+    assert found == {}

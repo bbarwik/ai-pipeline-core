@@ -6,7 +6,7 @@ import pytest
 
 from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDeployment
 from ai_pipeline_core.database import SpanKind, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._types import (
     FlowCompletedEvent,
     FlowFailedEvent,
@@ -180,7 +180,7 @@ async def test_invalid_flow_returns_emit_failed_event_and_fail_flow_node(
     error_pattern: str,
 ) -> None:
     publisher = _MemoryPublisher()
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
 
     with pytest.raises(TypeError, match=error_pattern):
         await deployment.run("invalid-flow-return", [_make_input_doc()], FlowOptions(), publisher=publisher, database=database)

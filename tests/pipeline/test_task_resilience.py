@@ -11,7 +11,7 @@ import pytest
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import TokenUsage
 from ai_pipeline_core.database import SpanKind, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm.conversation import Conversation
@@ -118,7 +118,7 @@ def _make_input() -> EdgeInputDoc:
     return EdgeInputDoc.create_root(name="in.txt", content="x", reason="task-resilience-test")
 
 
-def _make_retry_test_context(database: MemoryDatabase) -> ExecutionContext:
+def _make_retry_test_context(database: _MemoryDatabase) -> ExecutionContext:
     deployment_id = uuid7()
     flow_span_id = uuid7()
     return ExecutionContext(
@@ -196,7 +196,7 @@ async def test_retried_task_persists_final_attempt_and_failed_attempt_llm_rounds
         ]),
     )
     _RetryWithConversationTask.attempt_count = 0
-    database = MemoryDatabase()
+    database = _MemoryDatabase()
     with set_execution_context(_make_retry_test_context(database)):
         result = await _RetryWithConversationTask.run((_make_input(),))
 

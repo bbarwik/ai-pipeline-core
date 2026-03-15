@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from google.api_core.exceptions import GoogleAPICallError
 
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._pubsub import PubSubPublisher
 from ai_pipeline_core.deployment._types import EventType
 
@@ -123,7 +123,7 @@ class TestRunCompletedEvent:
         """After full resume (all flows cached), completed event is still emitted."""
         deployment = TwoStageDeployment()
         input_doc = make_input_doc()
-        db = MemoryDatabase()
+        db = _MemoryDatabase()
 
         # First run — all flows execute
         await run_pipeline(deployment, real_publisher.publisher, docs=[input_doc], database=db)
@@ -157,7 +157,7 @@ class TestRunCompletedEvent:
         """After full resume on 3-flow pipeline, completed event is still emitted with correct structure."""
         deployment = ThreeStageDeployment()
         input_doc = make_input_doc()
-        db = MemoryDatabase()
+        db = _MemoryDatabase()
 
         # First run — all 3 flows execute
         await run_pipeline(deployment, real_publisher.publisher, docs=[input_doc], database=db)

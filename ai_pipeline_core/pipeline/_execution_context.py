@@ -7,6 +7,7 @@ such as task handles and child-sequence counters across derived contexts.
 
 import importlib
 import json
+import math
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -35,10 +36,11 @@ __all__ = [
     "ExecutionContext",
     "FlowFrame",
     "ReplayExecutionContext",
-    "RunContext",
     "TaskContext",
     "TaskFrame",
+    "_RunContext",
     "_TaskDocumentContext",
+    "add_cost",
     "get_execution_context",
     "get_run_id",
     "get_sinks",
@@ -56,17 +58,17 @@ logger = get_pipeline_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class RunContext:
+class _RunContext:
     """Immutable context for a pipeline run, carried via ContextVar."""
 
     run_id: str
     execution_id: UUID | None = None
 
 
-_run_context: ContextVar[RunContext | None] = ContextVar("_run_context", default=None)
+_run_context: ContextVar[_RunContext | None] = ContextVar("_run_context", default=None)
 
 
-def set_run_context(ctx: RunContext) -> Token[RunContext | None]:
+def set_run_context(ctx: _RunContext) -> Token[_RunContext | None]:
     """Set the run context for the current scope."""
     return _run_context.set(ctx)
 
@@ -392,3 +394,31 @@ def pipeline_test_context(
     )
     with set_execution_context(ctx), set_task_context(TaskContext(scope_kind="test", task_class_name="pipeline_test_context")):
         yield ctx
+
+
+def add_cost(amount: float, reason: str = "") -> None:
+    """Attach a cost to the current execution span.
+
+    Accumulates across multiple calls within the same span. No-op outside
+    execution context or when no span is active.
+
+    Args:
+        amount: Cost in USD. Must be non-negative and finite.
+        reason: Reserved for future use. Currently discarded.
+    """
+    _ = reason
+    if not math.isfinite(amount):
+        raise ValueError(f"add_cost() amount must be a finite USD value, got {amount!r}. Pass the actual cost as a positive float (e.g. 0.006).")
+    if amount < 0:
+        raise ValueError(f"add_cost() amount must be non-negative, got {amount}. Pass the actual cost as a positive float (e.g. 0.006).")
+    if amount <= 0:
+        return
+    _apply_cost_to_current_span(amount)
+
+
+def _apply_cost_to_current_span(amount: float) -> None:
+    from ai_pipeline_core.pipeline._track_span import get_current_span_context  # noqa: PLC0415  # circular: _track_span imports from this module
+
+    span_ctx = get_current_span_context()
+    if span_ctx is not None:
+        span_ctx._add_cost(amount)

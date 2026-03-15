@@ -25,7 +25,8 @@ from ai_pipeline_core._token_estimates import (
     estimate_pdf_tokens,
     estimate_text_tokens,
 )
-from ai_pipeline_core.database import BlobRecord, SpanKind
+from ai_pipeline_core.database import SpanKind
+from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.logger import get_pipeline_logger
@@ -53,7 +54,7 @@ from ._conversation_messages import (
 )
 from ._substitutor import URLSubstitutor
 from ._tool_loop import execute_tool_loop
-from .tools import Tool, ToolCallRecord, ToolOutput, generate_tool_schema, to_snake_case
+from .tools import Tool, ToolCallRecord, ToolOutput, generate_tool_schema
 
 __all__ = [
     "_LLM_ROUND_REPLAY_TARGET",
@@ -85,7 +86,7 @@ _CHARS_PER_TOKEN = 4
 MAX_TOOL_ROUNDS_DEFAULT = 10
 _LLM_ROUND_REPLAY_TARGET = f"function:{__name__}:_replay_llm_round"
 
-T = TypeVar("T", default=None)
+T = TypeVar("T", default=str)
 U = TypeVar("U", bound=BaseModel)
 
 
@@ -239,12 +240,12 @@ class Conversation(BaseModel, Generic[T]):
 
     @property
     def parsed(self) -> T | None:
-        """Parsed Pydantic model from last send_structured() call."""
+        """Parsed result from last send() call.
+
+        For Conversation[str]: returns the content string (or None if no response yet).
+        For Conversation[SomeModel]: returns the typed model instance (or None if no response yet).
+        """
         if r := self._last_response:
-            # For ModelResponse[str], parsed is the content string
-            # For ModelResponse[SomeModel], parsed is the model instance (or dict after deser)
-            if isinstance(r.parsed, str):
-                return None  # Unstructured response, no typed parsed
             return r.parsed  # type: ignore[return-value]
         return None
 
@@ -395,7 +396,7 @@ class Conversation(BaseModel, Generic[T]):
     def _collect_multimodal_blobs(core_messages: Sequence[CoreMessage]) -> list[Any]:
         """Collect unique image/PDF blobs referenced by multimodal request messages."""
         seen_content_shas: set[str] = set()
-        blobs: list[BlobRecord] = []
+        blobs: list[_BlobRecord] = []
         for message in core_messages:
             if not isinstance(message.content, tuple):
                 continue
@@ -407,7 +408,7 @@ class Conversation(BaseModel, Generic[T]):
                 if content_sha256 in seen_content_shas:
                     continue
                 seen_content_shas.add(content_sha256)
-                blobs.append(BlobRecord(content_sha256=content_sha256, content=content_bytes))
+                blobs.append(_BlobRecord(content_sha256=content_sha256, content=content_bytes))
         return blobs
 
     # --- Send methods ---
@@ -589,7 +590,7 @@ class Conversation(BaseModel, Generic[T]):
             tool_schemas = [generate_tool_schema(t) for t in tools]
             tool_lookup = {}
             for t in tools:
-                name = to_snake_case(type(t).__name__)
+                name = type(t).name
                 if name in tool_lookup:
                     raise ValueError(f"Duplicate tool name '{name}'. Tool names must be unique after snake_case conversion.")
                 tool_lookup[name] = t
@@ -736,7 +737,7 @@ class Conversation(BaseModel, Generic[T]):
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> Conversation[None]:
+    ) -> Conversation[str]:
         """Send message, returns NEW Conversation with response.
 
         Document content is wrapped in <document> XML tags with id, name, description.
@@ -796,7 +797,7 @@ class Conversation(BaseModel, Generic[T]):
         max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> Conversation[None]: ...
+    ) -> Conversation[str]: ...
 
     @overload
     async def send_spec(

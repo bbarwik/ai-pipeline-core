@@ -134,6 +134,8 @@ async def _execute_flow_with_context(
             db=database,
             input_preview=flow_input_preview,
         ) as span_ctx:
+            if flow_class.BASE_COST_USD > 0:
+                span_ctx._add_cost(flow_class.BASE_COST_USD)
             span_ctx.set_meta(
                 step=step,
                 total_steps=total_steps,

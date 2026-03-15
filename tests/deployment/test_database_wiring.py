@@ -13,7 +13,7 @@ from ai_pipeline_core import DeploymentResult, Document, FlowOptions, PipelineDe
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import TokenUsage
 from ai_pipeline_core.database import SpanKind, SpanStatus
-from ai_pipeline_core.database._memory import MemoryDatabase
+from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.deployment._helpers import _build_flow_cache_key, _compute_input_fingerprint
 from ai_pipeline_core.llm.conversation import Conversation
 from ai_pipeline_core.pipeline import PipelineFlow, PipelineTask
@@ -152,7 +152,7 @@ def _make_fake_generate(result: ModelResponse[str]):
 
 async def _run_with_db(
     deployment: PipelineDeployment[Any, Any],
-    database: MemoryDatabase,
+    database: _MemoryDatabase,
     *,
     run_id: str = "wire-test",
     docs: list[Document] | None = None,
@@ -171,13 +171,13 @@ async def _run_with_db(
     )
 
 
-def _spans(database: MemoryDatabase, kind: str) -> list[Any]:
+def _spans(database: _MemoryDatabase, kind: str) -> list[Any]:
     return sorted((span for span in database._spans.values() if span.kind == kind), key=lambda span: span.sequence_no)
 
 
 @pytest.fixture
-def db() -> MemoryDatabase:
-    return MemoryDatabase()
+def db() -> _MemoryDatabase:
+    return _MemoryDatabase()
 
 
 class TestDeploymentSpans:
@@ -191,7 +191,7 @@ class TestDeploymentSpans:
 
         assert key == f"flow:a1b2c3d4e5f6g7h8:{WireFlowOne.__module__}:{WireFlowOne.__qualname__}:2"
 
-    def test_deployment_span_created(self, db: MemoryDatabase) -> None:
+    def test_deployment_span_created(self, db: _MemoryDatabase) -> None:
         deployment = WireTwoStageDeployment()
         asyncio.run(_run_with_db(deployment, db))
 
@@ -206,7 +206,7 @@ class TestDeploymentSpans:
         assert meta["input_fingerprint"]
         assert len(_spans(db, SpanKind.FLOW)) == 2
 
-    def test_root_input_documents_persist_content_addressed(self, db: MemoryDatabase) -> None:
+    def test_root_input_documents_persist_content_addressed(self, db: _MemoryDatabase) -> None:
         deployment = WireTwoStageDeployment()
         asyncio.run(_run_with_db(deployment, db))
 
@@ -214,7 +214,7 @@ class TestDeploymentSpans:
         input_doc = next(document for document in db._documents.values() if document.document_type == "WireInputDoc")
         assert input_doc.name == "input.txt"
 
-    def test_flow_spans_are_children_of_deployment(self, db: MemoryDatabase) -> None:
+    def test_flow_spans_are_children_of_deployment(self, db: _MemoryDatabase) -> None:
         deployment = WireTwoStageDeployment()
         asyncio.run(_run_with_db(deployment, db))
 
@@ -224,7 +224,7 @@ class TestDeploymentSpans:
         assert all(span.parent_span_id == deployment_span.span_id for span in flow_spans)
         assert all(span.status == SpanStatus.COMPLETED for span in flow_spans)
 
-    def test_completed_flow_spans_persist_deterministic_cache_keys(self, db: MemoryDatabase) -> None:
+    def test_completed_flow_spans_persist_deterministic_cache_keys(self, db: _MemoryDatabase) -> None:
         deployment = WireTwoStageDeployment()
         input_doc = _make_input_doc()
         asyncio.run(_run_with_db(deployment, db, docs=[input_doc]))
@@ -237,7 +237,7 @@ class TestDeploymentSpans:
             _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowTwo, step=2, flow_params={}),
         ]
 
-    def test_cached_flow_spans_keep_cache_key(self, db: MemoryDatabase) -> None:
+    def test_cached_flow_spans_keep_cache_key(self, db: _MemoryDatabase) -> None:
         deployment = WireTwoStageDeployment()
         input_doc = _make_input_doc()
         asyncio.run(_run_with_db(deployment, db, docs=[input_doc], run_id="first-run"))
@@ -254,7 +254,7 @@ class TestDeploymentSpans:
             _build_flow_cache_key(input_fingerprint=fingerprint, flow_class=WireFlowTwo, step=2, flow_params={}),
         ]
 
-    def test_flow_spans_keep_zero_cost_rollup(self, db: MemoryDatabase, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_flow_spans_keep_zero_cost_rollup(self, db: _MemoryDatabase, monkeypatch: pytest.MonkeyPatch) -> None:
         deployment = WireConversationDeployment()
         response = _make_response(content="hello", prompt_tokens=10, completion_tokens=4, cached_tokens=2, cost=0.42)
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", _make_fake_generate(response))
@@ -270,7 +270,7 @@ class TestDeploymentSpans:
         totals = asyncio.run(db.get_deployment_cost_totals(deployment_span.root_deployment_id))
         assert totals.cost_usd == pytest.approx(0.42)
 
-    def test_failing_flow_marks_flow_and_deployment_failed(self, db: MemoryDatabase) -> None:
+    def test_failing_flow_marks_flow_and_deployment_failed(self, db: _MemoryDatabase) -> None:
         deployment = WireFailingDeployment()
         with pytest.raises(RuntimeError, match="deliberate test failure"):
             asyncio.run(_run_with_db(deployment, db))
@@ -282,7 +282,7 @@ class TestDeploymentSpans:
         assert flow_spans[1].status == SpanStatus.FAILED
         assert flow_spans[1].error_type == "RuntimeError"
 
-    def test_run_with_context_accepts_preallocated_ids(self, db: MemoryDatabase) -> None:
+    def test_run_with_context_accepts_preallocated_ids(self, db: _MemoryDatabase) -> None:
         deployment = WireTwoStageDeployment()
         deployment_span_id = uuid7()
         root_deployment_id = uuid7()

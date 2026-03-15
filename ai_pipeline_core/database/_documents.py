@@ -2,7 +2,7 @@
 
 from ai_pipeline_core.database._hydrate import hydrate_document
 from ai_pipeline_core.database._protocol import DatabaseReader, DatabaseWriter
-from ai_pipeline_core.database._types import BlobRecord, DocumentRecord, HydratedDocument
+from ai_pipeline_core.database._types import DocumentRecord, HydratedDocument, _BlobRecord
 from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.documents.document import Document, _class_name_registry
@@ -40,11 +40,11 @@ def document_to_record(document: Document) -> DocumentRecord:
     )
 
 
-def document_to_blobs(document: Document) -> list[BlobRecord]:
-    """Extract all BlobRecords (primary content + attachments) from a Document."""
-    blobs = [BlobRecord(content_sha256=compute_content_sha256(document.content), content=document.content)]
+def document_to_blobs(document: Document) -> list[_BlobRecord]:
+    """Extract all _BlobRecords (primary content + attachments) from a Document."""
+    blobs = [_BlobRecord(content_sha256=compute_content_sha256(document.content), content=document.content)]
     for att in document.attachments:
-        blobs.append(BlobRecord(content_sha256=compute_content_sha256(att.content), content=att.content))
+        blobs.append(_BlobRecord(content_sha256=compute_content_sha256(att.content), content=att.content))
     return blobs
 
 
@@ -117,7 +117,7 @@ def _filtered_records(
 
 def _attachment_contents_for_record(
     record: DocumentRecord,
-    blobs: dict[str, BlobRecord],
+    blobs: dict[str, _BlobRecord],
 ) -> dict[str, bytes]:
     contents: dict[str, bytes] = {}
     missing: list[str] = []
@@ -138,7 +138,7 @@ def _attachment_contents_for_record(
 
 def _reconstruct_documents(
     records: list[DocumentRecord],
-    blobs: dict[str, BlobRecord],
+    blobs: dict[str, _BlobRecord],
 ) -> list[Document]:
     result: list[Document] = []
     for record in records:

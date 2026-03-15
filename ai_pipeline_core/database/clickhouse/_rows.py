@@ -11,7 +11,7 @@ from ai_pipeline_core.database._serialization import (
     decode_text,
     string_tuple,
 )
-from ai_pipeline_core.database._types import BlobRecord, DocumentRecord, SpanRecord
+from ai_pipeline_core.database._types import DocumentRecord, SpanRecord, _BlobRecord
 from ai_pipeline_core.logger._types import LogRecord
 
 __all__ = [
@@ -138,11 +138,11 @@ def row_to_document(row: tuple[Any, ...]) -> DocumentRecord:
     return DocumentRecord(**fields)
 
 
-def blob_to_row(blob: BlobRecord) -> list[Any]:
+def blob_to_row(blob: _BlobRecord) -> list[Any]:
     return [blob.content_sha256, blob.content]
 
 
-def row_to_blob(row: tuple[Any, ...]) -> BlobRecord:
+def row_to_blob(row: tuple[Any, ...]) -> _BlobRecord:
     fields = dict(zip(BLOB_COLUMNS, row, strict=True))
     content = fields["content"]
     if isinstance(content, bytes):
@@ -152,7 +152,7 @@ def row_to_blob(row: tuple[Any, ...]) -> BlobRecord:
     else:
         fields["content"] = bytes(content)
     fields["content_sha256"] = decode_text(fields["content_sha256"])
-    return BlobRecord(**fields)
+    return _BlobRecord(**fields)
 
 
 def log_to_row(log: LogRecord) -> list[Any]:
