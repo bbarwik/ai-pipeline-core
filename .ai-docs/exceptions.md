@@ -45,6 +45,10 @@ def test_output_degeneration_error_is_llm_error() -> None:
 **Document name error on path traversal** (`tests/test_exceptions_ai_docs.py:20`)
 
 ```python
+class _TestExDoc(Document):
+    """Document for exception testing."""
+
+
 def test_document_name_error_on_path_traversal() -> None:
     """Path traversal in document names raises DocumentNameError."""
     with pytest.raises(DocumentNameError):
@@ -54,6 +58,12 @@ def test_document_name_error_on_path_traversal() -> None:
 **Document size error on limit exceeded** (`tests/test_exceptions_ai_docs.py:27`)
 
 ```python
+class _TinyDoc(Document):
+    """Document with tiny size limit."""
+
+    MAX_CONTENT_SIZE = 4
+
+
 def test_document_size_error_on_limit_exceeded() -> None:
     """Content beyond MAX_CONTENT_SIZE raises DocumentSizeError."""
     with pytest.raises(DocumentSizeError):

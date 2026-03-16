@@ -67,7 +67,9 @@ def _all_prompt_spec_subclasses() -> list[type[PromptSpec[Any]]]:
     while stack:
         cls = stack.pop()
         # Skip Pydantic-generated parameterized classes (e.g. PromptSpec[str])
-        if "[" not in cls.__name__:
+        # Skip partially-constructed classes whose __init_subclass__ raised before
+        # setting _output_type (e.g. test classes inside pytest.raises blocks)
+        if "[" not in cls.__name__ and hasattr(cls, "_output_type"):
             seen.setdefault((cls.__module__, cls.__qualname__), cls)
         stack.extend(cls.__subclasses__())
     return list(seen.values())

@@ -39,6 +39,26 @@ rules:
         - "**/replay/cli.py"
         - "**/tests/**"
 
+  - id: no-document-model-validate
+    pattern: $DOC.model_validate(...)
+    message: >
+      Document.model_validate() is blocked to prevent cross-type casting.
+      Use from_dict() for deserialization, or create()/derive()/create_root()/create_external() for new documents.
+    severity: ERROR
+    languages: [python]
+    paths:
+      exclude:
+        # Framework internals that use model_validate on non-Document Pydantic models
+        - "**/_llm_core/**"
+        - "**/llm/conversation.py"
+        - "**/deployment/**"
+        - "**/observability/**"
+        - "**/prompt_compiler/**"
+        - "**/replay/**"
+        - "**/ai_pipeline_core/documents/document.py"
+        - "**/ai_pipeline_core/_codec.py"
+        - "**/tests/**"
+
   - id: no-model-convert-legacy
     pattern: $DOC.model_convert(...)
     message: "model_convert() renamed to retype(new_type, provenance='preserve'|'reset')"

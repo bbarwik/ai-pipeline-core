@@ -1,4 +1,4 @@
-"""Tests for binary content serialization roundtrip via model_dump/model_validate and serialize_model/from_dict."""
+"""Tests for binary content serialization roundtrip via serialize_model/from_dict and model_validate blocking."""
 
 import base64
 
@@ -31,92 +31,76 @@ def _suppress_registration():
     return
 
 
-class TestDocumentPydanticSerializationBug:
-    """Tests proving Document binary content is corrupted via Pydantic path."""
+class TestDocumentModelValidateBlocked:
+    """model_validate is blocked on Document to prevent cross-type casting."""
 
-    def test_text_content_pydantic_roundtrip_works(self):
-        """Text content should roundtrip correctly via Pydantic (sanity check)."""
+    def test_model_validate_raises_type_error(self):
+        original = ConcreteDocument.create_root(name="test.txt", content="hello", reason="test")
+        dumped = original.model_dump(mode="json")
+        with pytest.raises(TypeError, match=r"model_validate.*not supported"):
+            ConcreteDocument.model_validate(dumped)
+
+    def test_model_validate_error_guides_to_from_dict(self):
+        dumped = ConcreteDocument(name="x.txt", content=b"x").model_dump(mode="json")
+        with pytest.raises(TypeError, match=r"from_dict"):
+            ConcreteDocument.model_validate(dumped)
+
+    def test_model_validate_blocked_even_with_valid_data(self):
+        """model_validate is blocked regardless of whether the data is valid."""
+        with pytest.raises(TypeError, match=r"model_validate.*not supported"):
+            ConcreteDocument.model_validate({"name": "test.txt", "content": "hello"})
+
+    def test_from_dict_still_works_after_model_validate_blocked(self):
+        """from_dict uses model_validate internally but is not affected by the block."""
+        original = ConcreteDocument.create_root(name="test.txt", content="hello", reason="test")
+        serialized = original.serialize_model()
+        restored = ConcreteDocument.from_dict(serialized)
+        assert restored.sha256 == original.sha256
+
+
+class TestDocumentSerializationRoundtrip:
+    """Tests proving Document content roundtrips correctly via serialize_model/from_dict."""
+
+    def test_text_content_roundtrip(self):
         original = ConcreteDocument.create_root(
             name="test.txt",
             content="Hello, World! 你好世界 🎉",
             reason="test input",
         )
-        original_sha256 = original.sha256
-
-        # Pydantic serialization path
-        dumped = original.model_dump(mode="json")
-        restored = ConcreteDocument.model_validate(dumped)
-
-        assert restored.sha256 == original_sha256, "Text content should roundtrip correctly"
-        assert restored.content == original.content
-
-    def test_binary_content_pydantic_roundtrip_corrupted(self):
-        """PROVES BUG: Binary content is CORRUPTED via Pydantic path.
-
-        This test should FAIL before the fix (content gets corrupted).
-        After fix, this test should PASS.
-        """
-        original = ConcreteDocument(
-            name="image.png",
-            content=MINIMAL_PNG,
-        )
-        original_sha256 = original.sha256
-        original_content = original.content
-
-        # Pydantic serialization path
-        dumped = original.model_dump(mode="json")
-        restored = ConcreteDocument.model_validate(dumped)
-
-        # These assertions prove the bug exists
-        assert restored.sha256 == original_sha256, (
-            f"Binary content SHA256 mismatch!\n"
-            f"Original: {original_sha256}\n"
-            f"Restored: {restored.sha256}\n"
-            f"Original content length: {len(original_content)}\n"
-            f"Restored content length: {len(restored.content)}\n"
-            f"This proves the Pydantic serialization bug exists."
-        )
-        assert restored.content == original_content, "Binary content bytes should match"
-
-    def test_jpeg_content_pydantic_roundtrip_corrupted(self):
-        """PROVES BUG: JPEG content is CORRUPTED via Pydantic path."""
-        original = ConcreteDocument(
-            name="photo.jpg",
-            content=MINIMAL_JPEG,
-        )
-        original_sha256 = original.sha256
-
-        dumped = original.model_dump(mode="json")
-        restored = ConcreteDocument.model_validate(dumped)
-
-        assert restored.sha256 == original_sha256, "JPEG content should roundtrip correctly"
-
-    def test_arbitrary_binary_pydantic_roundtrip_corrupted(self):
-        """PROVES BUG: Arbitrary binary data is CORRUPTED via Pydantic path."""
-        original = ConcreteDocument(
-            name="data.bin",
-            content=BINARY_DATA,
-        )
-        original_sha256 = original.sha256
-
-        dumped = original.model_dump(mode="json")
-        restored = ConcreteDocument.model_validate(dumped)
-
-        assert restored.sha256 == original_sha256, "Binary data should roundtrip correctly"
-
-    def test_serialize_model_roundtrip_works(self):
-        """serialize_model/from_dict path works correctly (control test)."""
-        original = ConcreteDocument(
-            name="image.png",
-            content=MINIMAL_PNG,
-        )
-        original_sha256 = original.sha256
-
-        # Correct serialization path
         serialized = original.serialize_model()
         restored = ConcreteDocument.from_dict(serialized)
 
-        assert restored.sha256 == original_sha256, "serialize_model path should work"
+        assert restored.sha256 == original.sha256
+        assert restored.content == original.content
+
+    def test_binary_content_roundtrip(self):
+        original = ConcreteDocument(name="image.png", content=MINIMAL_PNG)
+        serialized = original.serialize_model()
+        restored = ConcreteDocument.from_dict(serialized)
+
+        assert restored.sha256 == original.sha256
+        assert restored.content == original.content
+
+    def test_jpeg_content_roundtrip(self):
+        original = ConcreteDocument(name="photo.jpg", content=MINIMAL_JPEG)
+        serialized = original.serialize_model()
+        restored = ConcreteDocument.from_dict(serialized)
+
+        assert restored.sha256 == original.sha256
+
+    def test_arbitrary_binary_roundtrip(self):
+        original = ConcreteDocument(name="data.bin", content=BINARY_DATA)
+        serialized = original.serialize_model()
+        restored = ConcreteDocument.from_dict(serialized)
+
+        assert restored.sha256 == original.sha256
+
+    def test_serialize_model_roundtrip_works(self):
+        original = ConcreteDocument(name="image.png", content=MINIMAL_PNG)
+        serialized = original.serialize_model()
+        restored = ConcreteDocument.from_dict(serialized)
+
+        assert restored.sha256 == original.sha256
         assert restored.content == original.content
 
 
@@ -172,29 +156,23 @@ class TestAttachmentPydanticSerializationBug:
         assert restored.content == original_content, "JPEG attachment should roundtrip"
 
 
-class TestDocumentWithBinaryAttachmentsBug:
-    """Tests proving Document with binary attachments is corrupted via Pydantic path."""
+class TestDocumentWithBinaryAttachmentsRoundtrip:
+    """Tests proving Document with binary attachments roundtrips via serialize_model/from_dict."""
 
-    def test_document_with_binary_attachment_pydantic_roundtrip_corrupted(self):
-        """PROVES BUG: Document with binary attachment is CORRUPTED via Pydantic path."""
+    def test_document_with_binary_attachment_roundtrip(self):
         original = ConcreteDocument.create_root(
             name="report.md",
             content="# Report\n\nSee attached screenshot.",
             attachments=(Attachment(name="screenshot.png", content=MINIMAL_PNG),),
             reason="test input",
         )
-        original_sha256 = original.sha256
-        original_attachment_content = original.attachments[0].content
+        serialized = original.serialize_model()
+        restored = ConcreteDocument.from_dict(serialized)
 
-        dumped = original.model_dump(mode="json")
-        restored = ConcreteDocument.model_validate(dumped)
+        assert restored.sha256 == original.sha256
+        assert restored.attachments[0].content == original.attachments[0].content
 
-        # Document SHA256 includes attachments, so this will fail if attachment is corrupted
-        assert restored.sha256 == original_sha256, f"Document with attachment SHA256 mismatch!\nOriginal: {original_sha256}\nRestored: {restored.sha256}"
-        assert restored.attachments[0].content == original_attachment_content, "Attachment content should match"
-
-    def test_document_with_multiple_binary_attachments_corrupted(self):
-        """PROVES BUG: Multiple binary attachments all get corrupted."""
+    def test_document_with_multiple_binary_attachments_roundtrip(self):
         original = ConcreteDocument.create_root(
             name="gallery.md",
             content="# Gallery",
@@ -205,73 +183,33 @@ class TestDocumentWithBinaryAttachmentsBug:
             ),
             reason="test input",
         )
-        original_sha256 = original.sha256
+        serialized = original.serialize_model()
+        restored = ConcreteDocument.from_dict(serialized)
 
-        dumped = original.model_dump(mode="json")
-        restored = ConcreteDocument.model_validate(dumped)
-
-        assert restored.sha256 == original_sha256, "All attachments should roundtrip correctly"
-
+        assert restored.sha256 == original.sha256
         for i, (orig_att, rest_att) in enumerate(zip(original.attachments, restored.attachments, strict=True)):
             assert rest_att.content == orig_att.content, f"Attachment {i} content mismatch"
 
 
-class TestPydanticVsSerializeModelComparison:
-    """Direct comparison showing the two paths now both work correctly."""
+class TestSerializationFormat:
+    """Verify serialize_model uses data URI format for binary content."""
 
     def test_serialization_output_format(self):
-        """Verify both Pydantic and serialize_model use data URI format for binary.
+        doc = ConcreteDocument(name="image.png", content=MINIMAL_PNG)
 
-        Both paths use data URI format: "data:mime/type;base64,..." for binary content,
-        plain string for text content.
-        """
-        doc = ConcreteDocument(
-            name="image.png",
-            content=MINIMAL_PNG,
-        )
-
-        # Pydantic path
-        pydantic_dump = doc.model_dump(mode="json")
-        pydantic_content = pydantic_dump["content"]
-
-        # Data URI format for binary
-        assert isinstance(pydantic_content, str), "Pydantic content should be string"
-        assert pydantic_content.startswith("data:image/png;base64,"), "Binary should be data URI"
-
-        # serialize_model path - uses same format (delegates to model_dump)
         serialize_dump = doc.serialize_model()
         serialize_content = serialize_dump["content"]
 
-        # Both should use data URI format
-        assert isinstance(serialize_content, str), "serialize_model content should be string"
-        assert serialize_content.startswith("data:image/png;base64,"), "serialize_model should use data URI"
-        assert serialize_content == pydantic_content, "Both should produce identical content"
+        assert isinstance(serialize_content, str)
+        assert serialize_content.startswith("data:image/png;base64,")
+        assert "sha256" in serialize_dump
+        assert "class_name" in serialize_dump
 
-        # serialize_model adds metadata
-        assert "sha256" in serialize_dump, "serialize_model should add metadata"
-        assert "class_name" in serialize_dump, "serialize_model should add class_name"
+    def test_from_dict_restores_binary_correctly(self):
+        doc = ConcreteDocument(name="image.png", content=MINIMAL_PNG)
 
-    def test_both_paths_restore_binary_correctly(self):
-        """Verify both Pydantic and from_dict now restore binary correctly.
-
-        After the fix, both paths produce identical results.
-        """
-        doc = ConcreteDocument(
-            name="image.png",
-            content=MINIMAL_PNG,
-        )
-
-        # Pydantic deserialization
-        pydantic_dump = doc.model_dump(mode="json")
-        pydantic_restored = ConcreteDocument.model_validate(pydantic_dump)
-
-        # serialize_model deserialization
         serialize_dump = doc.serialize_model()
-        from_dict_restored = ConcreteDocument.from_dict(serialize_dump)
+        restored = ConcreteDocument.from_dict(serialize_dump)
 
-        # Both should restore correctly
-        assert from_dict_restored.content == MINIMAL_PNG, "from_dict restores correctly"
-        assert pydantic_restored.content == MINIMAL_PNG, "Pydantic restores correctly"
-
-        # Both should produce identical documents
-        assert pydantic_restored.sha256 == from_dict_restored.sha256, "Both paths produce same document"
+        assert restored.content == MINIMAL_PNG
+        assert restored.sha256 == doc.sha256

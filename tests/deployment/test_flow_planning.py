@@ -123,20 +123,13 @@ class _ContinueWhenDocsExist(PipelineDeployment[FlowOptions, PlanResult]):
 
 
 @pytest.mark.asyncio
-async def test_plan_next_flow_skips_when_no_output_docs() -> None:
-    """plan_next_flow receives empty output_documents and skips next flow."""
+async def test_empty_flow_return_raises_type_error() -> None:
+    """Flows returning empty tuple are rejected — every flow must produce output documents."""
     publisher = _MemoryPublisher()
     ConsumerFlow.ran = False
     doc = PlanInputDoc.create_root(name="in.txt", content="x", reason="gap7")
-    result = await _SkipWhenEmptyDeployment().run("gap7-skip", [doc], FlowOptions(), publisher=publisher)
-
-    assert result.success
-    assert not ConsumerFlow.ran
-
-    skipped = [e for e in publisher.events if isinstance(e, FlowSkippedEvent)]
-    assert len(skipped) == 1
-    assert skipped[0].flow_name == "consumer"
-    assert "no intermediate documents" in skipped[0].reason
+    with pytest.raises(TypeError, match="returned an empty tuple"):
+        await _SkipWhenEmptyDeployment().run("gap7-skip", [doc], FlowOptions(), publisher=publisher)
 
 
 @pytest.mark.asyncio

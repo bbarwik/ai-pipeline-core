@@ -229,6 +229,13 @@ def test_main_show_from_db_displays_meta_and_metrics(tmp_path: Path, capsys: pyt
 **Main run from file writes output** (`tests/replay/test_cli_usage.py:55`)
 
 ```python
+class _MockResult:
+    def __init__(self, content: str = "LLM response") -> None:
+        self.content = content
+        self.usage = SimpleNamespace(total_tokens=150, model_dump=lambda: {"total_tokens": 150})
+        self.cost = 0.003
+
+
 def test_main_run_from_file_writes_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _database, span = _conversation_span(tmp_path)
     replay_file = tmp_path / "bundle" / "spans" / f"{span.span_id}.json"
@@ -249,6 +256,13 @@ def test_main_run_from_file_writes_output(tmp_path: Path, monkeypatch: pytest.Mo
 **Main run with overrides uses experiment span** (`tests/replay/test_cli_usage.py:73`)
 
 ```python
+class _MockResult:
+    def __init__(self, content: str = "LLM response") -> None:
+        self.content = content
+        self.usage = SimpleNamespace(total_tokens=150, model_dump=lambda: {"total_tokens": 150})
+        self.cost = 0.003
+
+
 def test_main_run_with_overrides_uses_experiment_span(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _database, span = _conversation_span(tmp_path)
     replay_file = tmp_path / "bundle" / "spans" / f"{span.span_id}.json"

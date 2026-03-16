@@ -179,6 +179,11 @@ async def _execute_flow_with_context(
                         "or wrap a list: return tuple(results)"
                     )
                 raw_result_docs = cast(tuple[object, ...], raw_flow_result)
+                if not raw_result_docs:
+                    raise TypeError(
+                        f"PipelineFlow '{flow_class.__name__}' returned an empty tuple. "
+                        "run() must return at least one Document. Every flow must produce output documents."
+                    )
                 if any(not isinstance(document, Document) for document in raw_result_docs):
                     raise TypeError(f"PipelineFlow '{flow_class.__name__}' returned non-Document items. run() must return tuple[Document, ...].")
                 validated_docs = cast(tuple[Document, ...], raw_flow_result)

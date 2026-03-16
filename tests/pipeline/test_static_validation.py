@@ -193,6 +193,50 @@ def test_pipeline_task_rejects_bare_document() -> None:
                 return ()
 
 
+def test_pipeline_task_rejects_list_document_input() -> None:
+    """list[Document] is rejected as task input — use tuple[Document, ...] instead."""
+    with pytest.raises(TypeError, match=r"must not use list.*Document.*tuple"):
+
+        class BadTask(PipelineTask):
+            @classmethod
+            async def run(cls, documents: list[InputDoc]) -> tuple[OutputDoc, ...]:
+                _ = (cls, documents)
+                return ()
+
+
+def test_pipeline_task_rejects_list_union_document_input() -> None:
+    """list[DocA | DocB] is rejected as task input."""
+    with pytest.raises(TypeError, match=r"must not use list.*Document.*tuple"):
+
+        class BadTask(PipelineTask):
+            @classmethod
+            async def run(cls, documents: list[InputDoc | OutputDoc]) -> tuple[OutputDoc, ...]:
+                _ = (cls, documents)
+                return ()
+
+
+def test_pipeline_task_accepts_tuple_document_input() -> None:
+    """tuple[Document, ...] is the correct way to pass document collections."""
+
+    class GoodTask(PipelineTask):
+        @classmethod
+        async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
+            _ = (cls, documents)
+            return ()
+
+    assert GoodTask.input_document_types == [InputDoc]
+
+
+def test_pipeline_task_accepts_list_non_document_input() -> None:
+    """list[str] is fine — the restriction only applies to Document types."""
+
+    class GoodTask(PipelineTask):
+        @classmethod
+        async def run(cls, tags: list[str]) -> tuple[OutputDoc, ...]:
+            _ = (cls, tags)
+            return ()
+
+
 def test_pipeline_task_rejects_non_classmethod_run() -> None:
     with pytest.raises(TypeError, match="@classmethod"):
 

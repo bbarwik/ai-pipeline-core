@@ -524,6 +524,58 @@ def _collect_internal_types(
     )
 
 
+def _resolve_class_dependencies(referenced_names: set[str], module_classes: dict[str, ast.ClassDef]) -> set[str]:
+    """Transitively resolve class dependencies from referenced names."""
+    to_include: set[str] = set()
+
+    def _resolve(name: str) -> None:
+        if name in to_include or name not in module_classes:
+            return
+        to_include.add(name)
+        cls_node = module_classes[name]
+        for child in ast.walk(cls_node):
+            if isinstance(child, ast.Name) and child.id in module_classes and child.id != name:
+                _resolve(child.id)
+
+    for name in referenced_names:
+        if name in module_classes:
+            _resolve(name)
+
+    return to_include
+
+
+def _collect_module_context(
+    func_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    tree: ast.Module,
+    source_lines: list[str],
+) -> str:
+    """Collect module-level class definitions referenced by a marked test function.
+
+    Scans the function body for Name references, finds matching top-level ClassDef
+    nodes in the same file, and transitively resolves base classes and type annotation
+    dependencies. Returns their source in file-definition order.
+    """
+    referenced_names: set[str] = set()
+    for node in ast.walk(func_node):
+        if isinstance(node, ast.Name):
+            referenced_names.add(node.id)
+
+    module_classes: dict[str, ast.ClassDef] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("Test"):
+            module_classes[node.name] = node
+
+    if not module_classes:
+        return ""
+
+    to_include = _resolve_class_dependencies(referenced_names, module_classes)
+    if not to_include:
+        return ""
+
+    parts = [get_source(source_lines, node) for node in tree.body if isinstance(node, ast.ClassDef) and node.name in to_include]
+    return "\n\n\n".join(parts)
+
+
 def _extract_test_functions(path: Path, repo_root: Path | None = None) -> list[ScoredExample]:
     source = path.read_text(encoding="utf-8")
     source_lines = source.splitlines()
@@ -547,6 +599,14 @@ def _extract_test_functions(path: Path, repo_root: Path | None = None) -> list[S
         code = get_source(source_lines, node)
         code = "\n".join(line for line in code.splitlines() if "pytest.mark.ai_docs" not in line and "mark.ai_docs" not in line)
         code = "\n".join(_dedented_source(code))
+
+        is_marked = _has_ai_docs_marker(node)
+
+        if is_marked:
+            context = _collect_module_context(node, tree, source_lines)
+            if context:
+                code = context + "\n\n\n" + code
+
         results.append(
             ScoredExample(
                 name=node.name,
@@ -555,7 +615,7 @@ def _extract_test_functions(path: Path, repo_root: Path | None = None) -> list[S
                 code=code,
                 score=0,
                 is_error_example=_uses_pytest_raises(node),
-                is_marked=_has_ai_docs_marker(node),
+                is_marked=is_marked,
             )
         )
     return results

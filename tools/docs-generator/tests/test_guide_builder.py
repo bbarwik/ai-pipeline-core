@@ -550,6 +550,133 @@ def test_discover_tests_unrelated_marker_not_detected(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# @pytest.mark.ai_docs module-level context inclusion
+# ---------------------------------------------------------------------------
+
+
+def test_marked_test_includes_referenced_module_classes(tmp_path):
+    """Module-level classes referenced by @pytest.mark.ai_docs test appear in extracted code."""
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_mymod.py").write_text(
+        "import pytest\n"
+        "from pydantic import BaseModel\n\n"
+        "class MyModel(BaseModel):\n"
+        "    name: str\n\n"
+        "class MyDoc:\n"
+        "    pass\n\n"
+        "@pytest.mark.ai_docs\n"
+        "def test_usage():\n"
+        "    m = MyModel(name='hello')\n"
+        "    d = MyDoc()\n"
+        "    assert m.name == 'hello'\n"
+    )
+    results = discover_tests("mymod", tests_dir)
+    assert len(results) == 1
+    code = results[0].code
+    assert "class MyModel" in code
+    assert "name: str" in code
+    assert "class MyDoc" in code
+    assert "def test_usage" in code
+
+
+def test_marked_test_excludes_unreferenced_module_classes(tmp_path):
+    """Only classes actually referenced by the test function are included."""
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_mymod.py").write_text(
+        "import pytest\n"
+        "from pydantic import BaseModel\n\n"
+        "class UsedModel(BaseModel):\n"
+        "    value: int\n\n"
+        "class UnusedModel(BaseModel):\n"
+        "    other: str\n\n"
+        "@pytest.mark.ai_docs\n"
+        "def test_only_used():\n"
+        "    m = UsedModel(value=1)\n"
+        "    assert m.value == 1\n"
+    )
+    results = discover_tests("mymod", tests_dir)
+    code = results[0].code
+    assert "class UsedModel" in code
+    assert "UnusedModel" not in code
+
+
+def test_marked_test_includes_transitive_dependencies(tmp_path):
+    """If class A references class B in annotations, both are included."""
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_mymod.py").write_text(
+        "import pytest\n"
+        "from pydantic import BaseModel\n\n"
+        "class Inner(BaseModel):\n"
+        "    value: str\n\n"
+        "class Outer(BaseModel):\n"
+        "    inner: Inner\n\n"
+        "@pytest.mark.ai_docs\n"
+        "def test_outer():\n"
+        "    o = Outer(inner=Inner(value='x'))\n"
+        "    assert o.inner.value == 'x'\n"
+    )
+    results = discover_tests("mymod", tests_dir)
+    code = results[0].code
+    assert "class Inner" in code
+    assert "class Outer" in code
+    assert code.index("class Inner") < code.index("class Outer")
+
+
+def test_unmarked_test_does_not_include_module_classes(tmp_path):
+    """Auto-selected (unmarked) tests do not get module-level class context."""
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_mymod.py").write_text(
+        "from pydantic import BaseModel\n\nclass Helper(BaseModel):\n    x: int\n\ndef test_auto():\n    h = Helper(x=1)\n    assert h.x == 1\n"
+    )
+    results = discover_tests("mymod", tests_dir)
+    code = results[0].code
+    assert "class Helper" not in code
+    assert "def test_auto" in code
+
+
+def test_marked_test_context_appears_before_function(tmp_path):
+    """Module-level context is prepended before the test function body."""
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_mymod.py").write_text(
+        "import pytest\n\nclass Cfg:\n    val: int = 0\n\n@pytest.mark.ai_docs\ndef test_cfg():\n    c = Cfg()\n    assert c.val == 0\n"
+    )
+    results = discover_tests("mymod", tests_dir)
+    code = results[0].code
+    assert code.index("class Cfg") < code.index("def test_cfg")
+
+
+def test_multiple_marked_tests_independent_context(tmp_path):
+    """Each marked test gets only its own referenced classes."""
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_mymod.py").write_text(
+        "import pytest\n"
+        "from pydantic import BaseModel\n\n"
+        "class Alpha(BaseModel):\n"
+        "    a: int\n\n"
+        "class Beta(BaseModel):\n"
+        "    b: str\n\n"
+        "@pytest.mark.ai_docs\n"
+        "def test_alpha():\n"
+        "    Alpha(a=1)\n\n"
+        "@pytest.mark.ai_docs\n"
+        "def test_beta():\n"
+        "    Beta(b='x')\n"
+    )
+    results = discover_tests("mymod", tests_dir)
+    by_name = {r.name: r for r in results}
+    assert "class Alpha" in by_name["test_alpha"].code
+    assert "Beta" not in by_name["test_alpha"].code
+    assert "class Beta" in by_name["test_beta"].code
+    assert "Alpha" not in by_name["test_beta"].code
+
+
+# ---------------------------------------------------------------------------
 # select_examples with marked tests
 # ---------------------------------------------------------------------------
 

@@ -744,6 +744,19 @@ def test_document_wrapped_in_xml_tags():
 **Send with tools auto loop** (`tests/llm/test_conversation_patterns.py:113`)
 
 ```python
+class GetWeather(Tool):
+    """Get current weather for a city."""
+
+    class Input(BaseModel):
+        city: str = Field(description="City name")
+
+    class Output(BaseModel):
+        weather: str
+
+    async def run(self, input: Input) -> Output:
+        return self.Output(weather=f"Sunny, 22°C in {input.city}")
+
+
 @pytest.mark.asyncio
 async def test_send_with_tools_auto_loop(monkeypatch):
     """Tools enable the LLM to call functions. Conversation.send() auto-loops: call LLM → execute tools → re-send results until LLM produces a final answer."""

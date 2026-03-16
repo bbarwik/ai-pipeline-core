@@ -409,6 +409,20 @@ def test_main_compile_finds_specs(capsys: pytest.CaptureFixture[str]) -> None:
 **Main inspect minimal spec** (`tests/prompt_compiler/test_cli.py:363`)
 
 ```python
+class CliRole(Role):
+    """CLI test role."""
+
+    text = "experienced analyst"
+
+
+class MinimalInspectSpec(PromptSpec):
+    """A minimal spec for inspect testing."""
+
+    input_documents = ()
+    role = CliRole
+    task = "Do the task"
+
+
 def test_main_inspect_minimal_spec(capsys: pytest.CaptureFixture[str]) -> None:
     """Inspect a spec with no rules, no guides, no output rules, no fields."""
     ret = main(["inspect", f"{MinimalInspectSpec.__module__}:MinimalInspectSpec"])
@@ -505,6 +519,21 @@ def test_render_full_prompt_spec_workflow() -> None:
 **Mixed field types coexist** (`tests/prompt_compiler/test_structured_list_fields.py:390`)
 
 ```python
+class SLRole(Role):
+    """Test role."""
+
+    text = "experienced analyst"
+
+
+class Finding(BaseModel):
+    """A single finding."""
+
+    model_config = {"frozen": True}
+
+    title: str
+    severity: str
+
+
 def test_mixed_field_types_coexist() -> None:
     """All four field types on one PromptSpec: Field, MultiLineField, StructuredField, ListField."""
     from ai_pipeline_core.prompt_compiler import MultiLineField
@@ -619,6 +648,12 @@ def test_spec_bare_field_no_description() -> None:
 **Task field placeholder single field** (`tests/prompt_compiler/test_spec.py:1089`)
 
 ```python
+class SpecRole(Role):
+    """Spec role."""
+
+    text = "experienced reviewer"
+
+
 def test_task_field_placeholder_single_field() -> None:
     """Task referencing a single field via {field_name} should raise."""
     with pytest.raises(TypeError, match=r"task contains field placeholder references.*\{topic\}"):

@@ -205,10 +205,25 @@ def _union_annotation_error(annotation: Any, validator: Callable[[Any], str | No
     return None
 
 
+def _contains_document_subclass(annotation: Any) -> bool:
+    """Check whether an annotation contains any concrete Document subclass."""
+    unwrapped = _unwrap_annotated(annotation)
+    if _is_document_subclass(unwrapped):
+        return True
+    if _is_union_annotation(unwrapped):
+        return any(_contains_document_subclass(arg) for arg in get_args(unwrapped))
+    return False
+
+
 def _input_list_annotation_error(annotation: Any) -> str | None:
     args = get_args(annotation)
     if len(args) != 1:
         return "must annotate list inputs as list[T] with exactly one element type."
+    if _contains_document_subclass(args[0]):
+        return (
+            "must not use list[Document] for task inputs — lists are mutable and bypass pipeline immutability guarantees. "
+            "Use tuple[DocumentSubclass, ...] instead."
+        )
     return _task_input_annotation_error(args[0])
 
 

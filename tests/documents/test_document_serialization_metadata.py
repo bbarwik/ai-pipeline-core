@@ -75,10 +75,6 @@ async def test_roundtrip_preserves_content():
     )
 
     serialized = doc.serialize_model()
-
-    # Modify class_name to prove it's ignored
-    serialized["class_name"] = "WrongClass"
-
     restored = DebugSampleDocument.from_dict(serialized)
 
     assert restored.name == doc.name
@@ -88,6 +84,52 @@ async def test_roundtrip_preserves_content():
 
     re_serialized = restored.serialize_model()
     assert re_serialized["class_name"] == "DebugSampleDocument"
+
+
+@pytest.mark.asyncio
+async def test_from_dict_rejects_wrong_class_name():
+    """Test that from_dict rejects cross-type casting via mismatched class_name."""
+    doc = DebugSampleDocument(name="test.txt", content=b"test content")
+    serialized = doc.serialize_model()
+    serialized["class_name"] = "WrongClass"
+
+    with pytest.raises(TypeError, match="Cannot deserialize 'WrongClass' as 'DebugSampleDocument'"):
+        DebugSampleDocument.from_dict(serialized)
+
+
+@pytest.mark.asyncio
+async def test_cross_type_casting_blocked_via_from_dict():
+    """Deserializing one Document type as another is rejected."""
+    doc = DebugSampleDocument(name="test.txt", content=b"content")
+    serialized = doc.serialize_model()
+    assert serialized["class_name"] == "DebugSampleDocument"
+
+    with pytest.raises(TypeError, match="Cannot deserialize 'DebugSampleDocument' as 'VeryLongNamedDebugSampleDocument'"):
+        VeryLongNamedDebugSampleDocument.from_dict(serialized)
+
+
+@pytest.mark.asyncio
+async def test_from_dict_allows_matching_class_name():
+    """from_dict accepts when class_name matches the target type."""
+    doc = DebugSampleDocument(name="test.txt", content=b"content")
+    serialized = doc.serialize_model()
+    restored = DebugSampleDocument.from_dict(serialized)
+    assert restored.content == doc.content
+
+
+@pytest.mark.asyncio
+async def test_from_dict_allows_missing_class_name():
+    """from_dict accepts dicts without class_name (e.g. manually constructed)."""
+    data = {"name": "test.txt", "content": "hello"}
+    restored = DebugSampleDocument.from_dict(data)
+    assert restored.name == "test.txt"
+
+
+@pytest.mark.asyncio
+async def test_model_validate_blocked_on_document():
+    """model_validate is blocked on Document subclasses."""
+    with pytest.raises(TypeError, match=r"model_validate.*not supported"):
+        DebugSampleDocument.model_validate({"name": "x.txt", "content": "x"})
 
 
 # --- Attachment serialization metadata tests ---

@@ -7,6 +7,7 @@ SHA256 hashing, and serialization. All documents must be concrete subclasses of 
 import base64
 import json
 from collections.abc import Sequence
+from contextvars import ContextVar
 from enum import StrEnum
 from functools import cached_property
 from io import BytesIO
@@ -72,6 +73,9 @@ _DOCUMENT_SERIALIZE_METADATA_KEYS: frozenset[str] = frozenset({
     "mime_type",
     "class_name",
 })
+
+# Context variable to allow from_dict() to call model_validate() internally.
+_from_dict_active: ContextVar[bool] = ContextVar("_from_dict_active", default=False)
 
 
 def _is_test_module(cls: type) -> bool:
@@ -804,6 +808,21 @@ class Document[TContent: BaseModel = Any](BaseModel):
 
         return result
 
+    @override
+    @classmethod
+    def model_validate(cls, obj: Any, *args: Any, **kwargs: Any) -> Self:
+        """Blocked: model_validate bypasses Document lifecycle tracking and enables cross-type casting.
+
+        Use from_dict() for deserialization, or create()/derive()/create_root()/create_external() for new documents.
+        """
+        if not _from_dict_active.get():
+            raise TypeError(
+                f"{cls.__name__}.model_validate() is not supported — it bypasses Document lifecycle tracking "
+                "and enables cross-type casting between Document subclasses. "
+                "Use from_dict() for deserialization, or create()/derive()/create_root()/create_external() for new documents."
+            )
+        return super().model_validate(obj, *args, **kwargs)
+
     @final
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
@@ -812,6 +831,14 @@ class Document[TContent: BaseModel = Any](BaseModel):
         Delegates to model_validate() which handles content decoding via field_validator.
         Metadata keys are stripped before validation since custom __init__ receives raw data.
         """
+        # Reject cross-type casting: if serialized data carries a class_name, it must match
+        stored_class = data.get("class_name")
+        if stored_class is not None and stored_class != cls.__name__:
+            raise TypeError(
+                f"Cannot deserialize '{stored_class}' as '{cls.__name__}' — document type casting is not allowed. "
+                f"Use the original document type's from_dict(), or create a new document with derive()/create()."
+            )
+
         # Strip metadata keys added by serialize_model() (model_validator mode="before"
         # doesn't work with custom __init__ - Pydantic passes raw data to __init__ first)
         cleaned = {k: v for k, v in data.items() if k not in _DOCUMENT_SERIALIZE_METADATA_KEYS}
@@ -820,7 +847,11 @@ class Document[TContent: BaseModel = Any](BaseModel):
         if cleaned.get("attachments"):
             cleaned["attachments"] = [{k: v for k, v in att.items() if k not in Attachment.SERIALIZE_METADATA_KEYS} for att in cleaned["attachments"]]
 
-        return cls.model_validate(cleaned)
+        token = _from_dict_active.set(True)
+        try:
+            return cls.model_validate(cleaned)
+        finally:
+            _from_dict_active.reset(token)
 
     @override
     def model_copy(self, *args: Any, **kwargs: Any) -> Self:

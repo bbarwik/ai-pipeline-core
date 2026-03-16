@@ -388,6 +388,10 @@ Set ``deployment_class`` to enable inline mode (test/local):
 **Format starts with base run id** (`tests/deployment/test_remote_deployment.py:769`)
 
 ```python
+class AlphaDoc(Document):
+    """First test document type."""
+
+
 def test_format_starts_with_base_run_id(self):
     """Derived run_id starts with the user's base run_id."""
     doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
