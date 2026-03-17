@@ -1,6 +1,7 @@
 """Strict JSON codec for replayable span payloads."""
 
 import asyncio
+import dataclasses
 import importlib
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -38,6 +39,7 @@ UUID_TYPE = "uuid"
 DATETIME_TYPE = "datetime"
 ENUM_TYPE = "enum"
 PATH_TYPE = "path"
+DATACLASS_TYPE = "dataclass"
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,9 +172,11 @@ class UniversalCodec:
             return self._encode_tuple(value, ctx)
         if isinstance(value, dict):
             return self._encode_dict(value, ctx)
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            return self._encode_dataclass(value, ctx)
         raise CodecError(
             f"Codec cannot encode value at {ctx.path} with type {type(value).__module__}:{type(value).__qualname__}. "
-            "Use JSON primitives, bytes, Document, BaseModel, UUID, datetime, Enum, type, list, tuple, or dict."
+            "Use JSON primitives, bytes, Document, BaseModel, dataclass, UUID, datetime, Enum, type, list, tuple, or dict."
         )
 
     def _encode_simple(self, value: Any, ctx: _EncodeContext) -> Any:
@@ -234,6 +238,12 @@ class UniversalCodec:
                 data = self._encode_value(model_data, ctx.child(f"{ctx.path}.data"))
             return {TYPE_KEY: PYDANTIC_TYPE, "class_path": _class_path(type(value)), "data": data}
 
+    def _encode_dataclass(self, value: Any, ctx: _EncodeContext) -> dict[str, Any]:
+        with _cycle_guard(value, ctx):
+            data = {f.name: getattr(value, f.name) for f in dataclasses.fields(value)}
+            encoded_data = self._encode_value(data, ctx.child(f"{ctx.path}.data"))
+            return {TYPE_KEY: DATACLASS_TYPE, "class_path": _class_path(type(value)), "data": encoded_data}
+
     # ── Decode (async only) ─────────────────────────────────────────────
 
     async def _decode_value(self, encoded: Any, *, db: DatabaseReader | None, memo: _DecodeMemo) -> Any:
@@ -258,6 +268,8 @@ class UniversalCodec:
             return await self._decode_blob_ref(payload, db=db, memo=memo)
         if type_name == PYDANTIC_TYPE:
             return await self._decode_pydantic(payload, db=db, memo=memo)
+        if type_name == DATACLASS_TYPE:
+            return await self._decode_dataclass(payload, db=db, memo=memo)
         if type_name == ENUM_TYPE:
             return await self._decode_enum(payload, db=db, memo=memo)
         if type_name == TUPLE_TYPE:
@@ -272,7 +284,7 @@ class UniversalCodec:
             return Path(_require_string(payload, "value", type_name=PATH_TYPE))
         raise CodecError(
             f"Codec encountered unsupported envelope type {type_name!r}. "
-            "Only document_ref, blob_ref, pydantic, tuple, type_ref, uuid, datetime, path, and enum are supported."
+            "Only document_ref, blob_ref, pydantic, dataclass, tuple, type_ref, uuid, datetime, path, and enum are supported."
         )
 
     @staticmethod
@@ -332,6 +344,22 @@ class UniversalCodec:
             raise
         except Exception as exc:
             raise CodecError(f"Pydantic validation failed for {class_path!r}: {exc}") from exc
+
+    async def _decode_dataclass(self, payload: dict[str, Any], *, db: DatabaseReader | None, memo: _DecodeMemo) -> Any:
+        class_path = _require_string(payload, "class_path", type_name=DATACLASS_TYPE)
+        dc_cls = import_by_path(class_path)
+        if not isinstance(dc_cls, type) or not dataclasses.is_dataclass(dc_cls):
+            raise CodecError(
+                f"Codec dataclass path {class_path!r} resolved to {type(dc_cls).__name__}, not a dataclass. "
+                "Store dataclass instances with the dataclass envelope."
+            )
+        data = await self._decode_value(payload.get("data"), db=db, memo=memo)
+        if not isinstance(data, dict):
+            raise CodecError(f"Codec dataclass {class_path!r} requires 'data' to be a JSON object.")
+        try:
+            return dc_cls(**data)
+        except (TypeError, ValueError) as exc:
+            raise CodecError(f"Dataclass construction failed for {class_path!r}: {exc}") from exc
 
     async def _decode_enum(self, payload: dict[str, Any], *, db: DatabaseReader | None, memo: _DecodeMemo) -> Enum:
         class_path = _require_string(payload, "class_path", type_name=ENUM_TYPE)

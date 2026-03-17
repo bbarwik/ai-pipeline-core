@@ -2,7 +2,7 @@
 # CLASSES: DatabaseReader, SpanKind, SpanStatus, SpanRecord, DocumentRecord, CostTotals, HydratedDocument
 # DEPENDS: Protocol, StrEnum
 # PURPOSE: Unified database module for the span-based schema.
-# VERSION: 0.16.1
+# VERSION: 0.16.2
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -343,7 +343,7 @@ def test_span_status_members() -> None:
     )
 ```
 
-**Attachment contents returns all when present** (`tests/database/test_bugs_documents.py:91`)
+**Attachment contents returns all when present** (`tests/database/test_bugs_documents.py:85`)
 
 ```python
 def test_attachment_contents_returns_all_when_present() -> None:
@@ -374,7 +374,7 @@ def test_blobs_and_logs_ddl_match_expected_shape() -> None:
     assert "ORDER BY (deployment_id, span_id, timestamp, sequence_no)" in LOGS_DDL
 ```
 
-**Blobs ddl has no created at** (`tests/database/test_bugs_clickhouse_ddl.py:24`)
+**Blobs ddl has no created at** (`tests/database/test_bugs_clickhouse_ddl.py:21`)
 
 ```python
 def test_blobs_ddl_has_no_created_at() -> None:
@@ -382,7 +382,7 @@ def test_blobs_ddl_has_no_created_at() -> None:
     assert "created_at" not in BLOBS_DDL
 ```
 
-**Blobs ddl uses replacing merge tree** (`tests/database/test_bugs_clickhouse_ddl.py:9`)
+**Blobs ddl uses replacing merge tree** (`tests/database/test_bugs_clickhouse_ddl.py:6`)
 
 ```python
 def test_blobs_ddl_uses_replacing_merge_tree() -> None:
@@ -393,7 +393,7 @@ def test_blobs_ddl_uses_replacing_merge_tree() -> None:
 
 ## Error Examples
 
-**Attachment contents raises on missing blobs** (`tests/database/test_bugs_documents.py:71`)
+**Attachment contents raises on missing blobs** (`tests/database/test_bugs_documents.py:65`)
 
 ```python
 def test_attachment_contents_raises_on_missing_blobs() -> None:

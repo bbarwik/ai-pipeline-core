@@ -1,11 +1,4 @@
-"""Document loading behavior around resume checkpoints.
-
-Regression tests for resume document loading bugs:
-Bug 1: Resume loads all documents by type instead of using FlowCompletion.output_sha256s.
-Bug 2: FlowCompletion.output_sha256s recording is contaminated by preceding flows' documents.
-Bug 3: output_document_sha256s includes documents from all flows, not just the last.
-Bug 4: load_by_sha256s forces single-type construction, losing subclass identity.
-"""
+"""Regression tests for document loading behavior around resume checkpoints."""
 
 # pyright: reportPrivateUsage=false
 
@@ -69,7 +62,7 @@ async def test_run_loads_documents_from_store_between_flows(input_documents):
 
 
 # ---------------------------------------------------------------------------
-# Bug 1: Zombie docs from crashed flow pollute retry inputs on resume
+# Zombie docs from crashed flow pollute retry inputs on resume
 # ---------------------------------------------------------------------------
 
 _zombie_flow2_crash_flag: list[bool] = [False]
@@ -114,7 +107,7 @@ class _ZombieBugDeployment(PipelineDeployment[FlowOptions, _SimpleResult]):
 
 
 class TestBug1ResumeZombieDocuments:
-    """Bug 1: On resume after a crash, the retried flow receives zombie documents
+    """On resume after a crash, the retried flow must not receive zombie documents
     from its own previous crashed execution.
     """
 
@@ -166,7 +159,7 @@ class TestBug1ResumeZombieDocuments:
 
 
 # ---------------------------------------------------------------------------
-# Bug 2: output_sha256s recording is contaminated by preceding flows
+# output_sha256s recording must not be contaminated by preceding flows
 # ---------------------------------------------------------------------------
 
 
@@ -199,7 +192,7 @@ class _Bug2Deployment(PipelineDeployment[FlowOptions, _SimpleResult]):
 
 
 class TestBug2OutputSha256sContamination:
-    """Bug 2: FlowCompletion.output_sha256s for flow 2 includes flow 1's documents
+    """FlowCompletion.output_sha256s for flow 2 must not include flow 1's documents
     when output types overlap.
     """
 
@@ -223,7 +216,7 @@ class TestBug2OutputSha256sContamination:
 
 
 # ---------------------------------------------------------------------------
-# Bug 3: output_document_sha256s contamination
+# output_document_sha256s must not include documents from preceding flows
 # ---------------------------------------------------------------------------
 
 _bug3_published_events: list[object] = []
@@ -281,8 +274,8 @@ class _Bug3Deployment(PipelineDeployment[FlowOptions, _SimpleResult]):
 
 
 class TestBug3OutputDocumentContamination:
-    """Bug 3: output_document_sha256s includes docs from all flows
-    when the last flow's output type is shared with a preceding flow.
+    """output_document_sha256s must contain only the last flow's outputs
+    even when the last flow's output type is shared with a preceding flow.
     """
 
     @pytest.fixture(autouse=True)

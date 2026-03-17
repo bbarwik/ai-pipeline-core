@@ -1,9 +1,4 @@
-"""Bug-proving tests for tool loop forced-final response issues.
-
-Bugs B1, B2 from NEW-BUGS-REPORT.md:
-- B1: Forced final response sends tools it shouldn't
-- B2: Forced final response failure loses all tool results
-"""
+"""Regression tests for tool loop forced-final response handling."""
 
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -74,9 +69,6 @@ def _make_context(database: _MemoryDatabase) -> ExecutionContext:
 TOOL_SCHEMAS = [{"type": "function", "function": {"name": "search_tool", "parameters": {}}}]
 
 
-# ── B1: Forced final response sends tools it shouldn't ─────────────────────
-
-
 async def test_forced_final_omits_tools() -> None:
     """When max_tool_rounds is exhausted, the forced final LLM call must NOT include
     tool schemas or tool_choice. Currently it sends tools=tool_schemas, tool_choice='none'.
@@ -119,9 +111,6 @@ async def test_forced_final_omits_tools() -> None:
     assert forced_final_call.get("tool_schemas") in ([], None), (
         f"Forced final tool_schemas for span metadata should be empty, got: {forced_final_call.get('tool_schemas')}"
     )
-
-
-# ── B2: Forced final response failure loses all tool results ───────────────
 
 
 async def test_forced_final_failure_preserves_tool_records() -> None:

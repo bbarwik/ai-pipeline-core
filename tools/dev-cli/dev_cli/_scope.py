@@ -29,6 +29,8 @@ def detect_test_scope() -> tuple[list[str], list[str]]:
                     test_dir = f"{test_root}/{parts[0]}"
                     if (cfg.repo_root / test_dir).is_dir():
                         test_dirs.add(test_dir)
+                    elif len(parts) == 1 and parts[0].endswith(".py"):
+                        test_dirs.add(test_root)
 
         # If source changed, map to test directories
         for source_prefix, mapped_test_dirs in cfg.source_to_test.items():
@@ -89,6 +91,8 @@ def get_source_dirs_for_test_dirs(test_dirs: list[str]) -> list[str]:
     """Reverse lookup: given test dirs, find source dirs that map to them."""
     cfg = load_config()
     scope_set = set(test_dirs)
+    if any(root in scope_set for root in cfg.test_roots):
+        return sorted(cfg.source_to_test.keys())
     source_dirs: set[str] = set()
     for src, tests in cfg.source_to_test.items():
         if scope_set.intersection(tests):

@@ -1,8 +1,8 @@
 """Tests for filesystem backend fixes.
 
 Covers:
-- F1: Write serialization via threading.Lock
-- F2: Append-only log writes (O(N) instead of O(N^2))
+- Write serialization via threading.Lock
+- Append-only log writes
 """
 
 import asyncio
@@ -35,9 +35,6 @@ def _make_log(i: int) -> LogRecord:
         logger_name=f"test.module.{i}",
         message=f"Log message {i}",
     )
-
-
-# ── F2: Append-only log writes ──────────────────────────────────────────────
 
 
 async def test_log_file_append_only_io() -> None:
@@ -104,9 +101,6 @@ async def test_log_file_content_correct_after_multiple_batches() -> None:
         messages = {json.loads(line)["message"] for line in lines if line.strip()}
         for i in range(6):
             assert f"Log message {i}" in messages
-
-
-# ── F1: Write serialization ─────────────────────────────────────────────────
 
 
 async def test_concurrent_log_writes_no_data_loss() -> None:

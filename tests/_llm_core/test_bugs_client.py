@@ -1,9 +1,4 @@
-"""Bug-proving tests for LLM client response handling.
-
-Bugs B4, B6 from NEW-BUGS-REPORT.md:
-- B4: Empty response treated as retryable error (wastes ~80s on futile retries)
-- B6: Response extraction too narrow (provider_specific_fields not checked)
-"""
+"""Bug-proving tests for LLM client response handling."""
 
 from types import SimpleNamespace
 from typing import Any
@@ -43,9 +38,6 @@ def _make_response(
         completion_tokens_details=None,
     )
     return SimpleNamespace(id="resp-1", choices=[choice], usage=usage)
-
-
-# ── B4: Empty response treated as retryable error ──────────────────────────
 
 
 @patch("ai_pipeline_core._llm_core.client.settings")
@@ -89,9 +81,6 @@ def test_empty_response_raises_empty_response_error() -> None:
     resp = _make_response(content="")
     with pytest.raises(EmptyResponseError, match="Empty response content"):
         _build_model_response(resp, {}, None, "test-model", None)
-
-
-# ── B6: Response extraction too narrow ──────────────────────────────────────
 
 
 def test_empty_content_with_provider_fields_logs_warning(caplog: Any) -> None:

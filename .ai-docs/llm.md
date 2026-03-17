@@ -2,7 +2,7 @@
 # CLASSES: Citation, TokenUsage, ModelOptions, Conversation, ToolOutput, Tool, ToolCallRecord
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.16.1
+# VERSION: 0.16.2
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -39,13 +39,13 @@ MAX_TOOL_ROUNDS_DEFAULT = 10
 ## Public API
 
 ```python
-@dataclass(frozen=True, slots=True)
-class Citation:
+class Citation(BaseModel):
     """A URL citation returned by search-enabled models.
 
     The start_index and end_index fields indicate character positions in the response content
     where the citation applies. Note that index behavior varies by model."""
 
+    model_config = ConfigDict(frozen=True)
     title: str
     url: str
     start_index: int

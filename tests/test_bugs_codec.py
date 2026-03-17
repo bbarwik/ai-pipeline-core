@@ -1,8 +1,8 @@
 """Bug-proving tests for codec boundary issues.
 
-Bugs B2 and B3 from CORE-BUGS.md:
-- B2: model_validate() error escapes as raw ValidationError instead of CodecError
-- B3: CLI-invoked spans are unreplayable — <locals> in class path
+- model_validate() error must be wrapped as CodecError, not escape as raw ValidationError
+- Function-local classes (<locals> in qualname) must be rejected at encode time
+- Citation inside ModelResponse must survive codec encoding (was a dataclass, now BaseModel)
 """
 
 from typing import Any
@@ -11,9 +11,8 @@ import pytest
 from pydantic import BaseModel, Field
 
 from ai_pipeline_core._codec import CodecError, UniversalCodec
-
-
-# ── B2 fixtures (module-scope so codec can encode them) ───────────────────
+from ai_pipeline_core._llm_core.model_response import Citation, ModelResponse
+from ai_pipeline_core._llm_core.types import TokenUsage
 
 
 class _StrictModel(BaseModel):
@@ -29,9 +28,6 @@ class _FailingLoadModel(BaseModel):
 
     def __codec_state__(self) -> dict[str, Any]:
         return {"value": self.value}
-
-
-# ── B2: model_validate error escapes as raw ValidationError ─────────────────
 
 
 async def test_codec_decode_async_wraps_validation_error_as_codec_error() -> None:
@@ -60,9 +56,6 @@ async def test_codec_decode_async_wraps_codec_load_error_as_codec_error() -> Non
         await codec.decode_async(payload, db=None)
 
 
-# ── B3: <locals> in class path makes spans unreplayable ─────────────────────
-
-
 def test_codec_encode_rejects_function_local_class() -> None:
     """A class defined inside a function has '<locals>' in __qualname__,
     making it unresolvable during replay. The codec should reject it at encode time.
@@ -80,3 +73,22 @@ def test_codec_encode_rejects_function_local_class() -> None:
     codec = UniversalCodec()
     with pytest.raises(CodecError, match="<locals>"):
         codec.encode(LocalModel(x=42))
+
+
+def test_codec_encodes_model_response_with_citations() -> None:
+    """ModelResponse with non-empty citations must survive codec encoding.
+
+    Regression: Citation was a frozen dataclass which the codec couldn't encode.
+    Fixed by converting Citation to a frozen BaseModel and adding dataclass
+    support to the codec.
+    """
+    citation = Citation(title="Grammy Awards 2026", url="https://example.com/grammys", start_index=0, end_index=10)
+    response = ModelResponse[str](
+        content="Bad Bunny won Album of the Year",
+        parsed="Bad Bunny won Album of the Year",
+        model="gemini-3-flash-search",
+        usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        citations=(citation,),
+    )
+    codec = UniversalCodec()
+    codec.encode(response)

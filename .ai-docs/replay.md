@@ -1,7 +1,7 @@
 # MODULE: replay
 # CLASSES: ExperimentResult, ExperimentOverrides
 # PURPOSE: Generic replay and experimentation entry points.
-# VERSION: 0.16.1
+# VERSION: 0.16.2
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -410,7 +410,7 @@ async def test_execute_span_installs_replay_execution_context(memory_database) -
 
 ## Error Examples
 
-**Replay tool conversation without override tools raises** (`tests/replay/test_bugs_replay.py:167`)
+**Replay tool conversation without override tools raises** (`tests/replay/test_bugs_replay.py:152`)
 
 ```python
 def test_replay_tool_conversation_without_override_tools_raises() -> None:
@@ -422,7 +422,7 @@ def test_replay_tool_conversation_without_override_tools_raises() -> None:
         _apply_overrides(receiver=None, arguments=arguments, overrides=None)
 ```
 
-**Replay tool conversation without override tools with overrides raises** (`tests/replay/test_bugs_replay.py:176`)
+**Replay tool conversation without override tools with overrides raises** (`tests/replay/test_bugs_replay.py:161`)
 
 ```python
 def test_replay_tool_conversation_without_override_tools_with_overrides_raises() -> None:

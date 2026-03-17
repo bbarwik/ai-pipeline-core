@@ -1,11 +1,4 @@
-"""Bug-proving tests for snapshot export issues.
-
-Bugs from CORE-BUGS.md:
-- A3: Input documents mislabeled as "produced by" conversations
-- E2: llm_calls.jsonl missing purpose and latency fields
-- F4: Downloaded snapshots lack schema_meta
-- E3: previous_conversation_id chain rendering incomplete
-"""
+"""Regression tests for snapshot export correctness."""
 
 import json
 from datetime import UTC, datetime, timedelta
@@ -54,9 +47,6 @@ def _make_document(**kwargs: object) -> DocumentRecord:
     }
     defaults.update(kwargs)
     return DocumentRecord(**defaults)
-
-
-# ── A3: Input documents must not appear as "produced by" conversations ────────
 
 
 def test_input_documents_not_in_producer_map() -> None:
@@ -113,9 +103,6 @@ def test_input_doc_shows_as_referenced_input() -> None:
     text = "\n".join(lines)
 
     assert "referenced input" in text, "Document that is only an input should show producer='referenced input', not be attributed to the conversation"
-
-
-# ── E2: llm_calls.jsonl must include purpose and latency fields ──────────────
 
 
 def test_llm_call_lines_include_purpose() -> None:
@@ -182,9 +169,6 @@ def test_llm_call_lines_include_latency() -> None:
     assert record["first_token_ms"] == 350
 
 
-# ── F4: validate_bundle must require schema_meta ─────────────────────────────
-
-
 def test_validate_bundle_requires_schema_meta(tmp_path: Path) -> None:
     """A snapshot bundle must contain schema_meta.json for provenance tracking."""
     from ai_pipeline_core.database.filesystem._validation import validate_bundle
@@ -198,9 +182,6 @@ def test_validate_bundle_requires_schema_meta(tmp_path: Path) -> None:
     # validation should fail because schema_meta.json is missing
     with pytest.raises((FileNotFoundError, ValueError), match="schema_meta"):
         validate_bundle(tmp_path)
-
-
-# ── E3: Conversation chain rendering must show full topology ─────────────────
 
 
 def test_conversation_chain_section_in_summary() -> None:

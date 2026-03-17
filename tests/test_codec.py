@@ -273,6 +273,55 @@ def test_pydantic_round_trip_recursively_encodes_nested_special_values() -> None
     assert encoded.value["data"]["tool_type"] == {"$type": "type_ref", "path": "tests.test_codec:WeatherTool"}
 
 
+@dataclass(frozen=True, slots=True)
+class CodecPoint:
+    """Frozen dataclass used by codec tests."""
+
+    x: int
+    y: int
+    label: str
+
+
+def test_dataclass_round_trip() -> None:
+    value = CodecPoint(x=1, y=2, label="origin")
+
+    decoded, encoded = _assert_round_trip(value)
+
+    assert decoded == value
+    assert encoded.value["$type"] == "dataclass"
+    assert encoded.value["class_path"] == "tests.test_codec:CodecPoint"
+    assert encoded.value["data"] == {"x": 1, "y": 2, "label": "origin"}
+
+
+def test_dataclass_inside_container_round_trip() -> None:
+    value = [CodecPoint(x=1, y=2, label="a"), CodecPoint(x=3, y=4, label="b")]
+
+    decoded, encoded = _assert_round_trip(value)
+
+    assert decoded == value
+    assert all(isinstance(v, CodecPoint) for v in decoded)
+
+
+def test_model_response_with_citations_round_trip() -> None:
+    from ai_pipeline_core._llm_core.model_response import Citation
+
+    citation = Citation(title="Test", url="https://example.com", start_index=0, end_index=5)
+    response = ModelResponse[Any](
+        content="Hello",
+        parsed="Hello",
+        model="test-model",
+        usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        citations=(citation,),
+    )
+
+    decoded, encoded = _assert_round_trip(response)
+
+    assert isinstance(decoded, ModelResponse)
+    assert len(decoded.citations) == 1
+    assert decoded.citations[0].title == "Test"
+    assert decoded.citations[0].url == "https://example.com"
+
+
 def test_serialized_error_uses_pydantic_envelope() -> None:
     value = SerializedError(
         error_class_path="builtins:ValueError",

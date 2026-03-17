@@ -1,7 +1,4 @@
-"""Tests for ClickHouse DDL correctness.
-
-Covers A2 resolution: blobs table uses ReplacingMergeTree for content-addressed dedup.
-"""
+"""Tests for ClickHouse DDL correctness."""
 
 from ai_pipeline_core.database.clickhouse._ddl import BLOBS_DDL, DOCUMENTS_DDL, SCHEMA_VERSION
 

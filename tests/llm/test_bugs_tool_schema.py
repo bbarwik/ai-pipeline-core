@@ -1,17 +1,9 @@
-"""Bug-proving tests for Tool.Input schema incompatibilities.
-
-Bugs A1 and A2 from NEW-BUGS-REPORT.md:
-- A1: dict[str, V] in Tool.Input produces invalid OpenAI strict-mode schemas
-- A2: Field named 'strict' collides with LiteLLM recursive key stripping
-"""
+"""Regression tests for Tool.Input schema incompatibilities."""
 
 import pytest
 from pydantic import BaseModel, Field
 
 from ai_pipeline_core.llm.tools import Tool
-
-
-# ── A1: dict[str, V] in Tool.Input ──────────────────────────────────────────
 
 
 def test_tool_definition_rejects_dict_field() -> None:
@@ -140,9 +132,6 @@ def test_make_strict_schema_corrupts_dict_field() -> None:
     assert coins_after.get("required") == []
     # Top-level required still has "coins" — schema mismatch
     assert "coins" in schema["required"]
-
-
-# ── A2: Reserved field names ────────────────────────────────────────────────
 
 
 def test_tool_definition_rejects_reserved_field_strict() -> None:

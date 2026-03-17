@@ -5,7 +5,6 @@ unstructured LLM output. Fully serializable with Pydantic.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
@@ -16,13 +15,14 @@ T = TypeVar("T", default=str)
 """Type parameter for response output. str for unstructured, BaseModel subclass for structured."""
 
 
-@dataclass(frozen=True, slots=True)
-class Citation:
+class Citation(BaseModel):
     """A URL citation returned by search-enabled models.
 
     The start_index and end_index fields indicate character positions in the response content
     where the citation applies. Note that index behavior varies by model.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     title: str
     url: str
@@ -95,8 +95,3 @@ class ModelResponse(BaseModel, Generic[T]):
         if isinstance(value, BaseModel):
             return value.model_dump()
         return value
-
-    @field_serializer("citations", when_used="always")
-    def serialize_citations(self, value: tuple[Citation, ...]) -> list[dict[str, Any]]:
-        """Serialize citations dataclass to dict."""
-        return [{"title": c.title, "url": c.url, "start_index": c.start_index, "end_index": c.end_index} for c in value]

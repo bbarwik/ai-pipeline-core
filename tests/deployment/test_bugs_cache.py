@@ -1,8 +1,4 @@
-"""Bug-proving tests for deployment cache key issues.
-
-Bug D from CORE-BUGS.md:
-- D: Flow cache key ignores constructor params
-"""
+"""Regression tests for deployment cache key correctness."""
 
 from ai_pipeline_core.deployment._helpers import _build_flow_cache_key
 

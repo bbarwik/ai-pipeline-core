@@ -1,8 +1,4 @@
-"""Bug-proving test for CLI options codec boundary issue.
-
-Bug from CORE-BUGS.md:
-- B3 (partial): _CliOptions is still function-local in deployment/_cli.py
-"""
+"""Regression test: CLI classes must not be function-local (breaks codec)."""
 
 
 def test_cli_options_class_is_not_function_local() -> None:

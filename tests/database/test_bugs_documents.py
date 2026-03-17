@@ -1,8 +1,8 @@
 """Tests for document persistence fixes.
 
 Covers:
-- Insert-once semantics for documents (A1 resolution: created_at removed)
-- F5: Missing attachment blob detection raises explicit error
+- Insert-once semantics for documents
+- Missing attachment blob detection raises explicit error
 """
 
 import pytest
@@ -17,9 +17,6 @@ class SampleDoc(Document):
     """Sample document for tests."""
 
     publicly_visible = False
-
-
-# ── Insert-once semantics (A1 resolution) ────────────────────────────────────
 
 
 async def test_save_document_is_insert_once() -> None:
@@ -63,9 +60,6 @@ async def test_update_document_summary_changes_only_summary() -> None:
     assert stored.summary == "new summary"
     assert stored.name == record.name
     assert stored.content_sha256 == record.content_sha256
-
-
-# ── F5: Missing attachment blob detection ────────────────────────────────────
 
 
 def test_attachment_contents_raises_on_missing_blobs() -> None:

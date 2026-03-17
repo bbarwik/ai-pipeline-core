@@ -34,8 +34,12 @@ def cmd_test(args: argparse.Namespace) -> int:
     if args.coverage and not args.scope:
         args.full = True
 
-    scope_dirs = resolve_scope(args.scope)
-    scope_label = args.scope or "auto"
+    if args.full and not args.scope:
+        scope_dirs = list(load_config().test_roots)
+        scope_label = "full"
+    else:
+        scope_dirs = resolve_scope(args.scope)
+        scope_label = args.scope or "auto"
 
     cmd = list(cfg.command("pytest"))
 

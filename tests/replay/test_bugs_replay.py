@@ -1,10 +1,4 @@
-"""Bug-proving tests for replay override issues.
-
-Bugs C1, C2, C3 from CORE-BUGS.md:
-- C1: response_format override silently dropped on unstructured calls
-- C2: New tools dropped when any recorded tool matches
-- C3: Model override partially ignored for non-Conversation replay
-"""
+"""Regression tests for replay override handling."""
 
 from dataclasses import dataclass
 from typing import Any
@@ -68,9 +62,6 @@ class NewTool(Tool):
         return self.Output(result="new result")
 
 
-# ── C1: response_format override silently dropped ───────────────────────────
-
-
 def test_response_format_override_applied_when_key_absent() -> None:
     """When overriding an unstructured call to structured, response_format must be applied
     even if 'response_format' key was not in the original arguments.
@@ -90,9 +81,6 @@ def test_response_format_override_applied_when_key_absent() -> None:
 
     assert isinstance(new_args, dict)
     assert new_args.get("response_format") is OutputModel, "response_format override should be applied even when key was absent in original arguments"
-
-
-# ── C2: New tools dropped when any recorded tool matches ────────────────────
 
 
 def test_override_tools_appends_new_tools_after_matching() -> None:
@@ -137,9 +125,6 @@ def test_override_tools_preserves_recorded_order_and_appends_new() -> None:
     assert isinstance(result[0], SummarizeTool)
     assert isinstance(result[1], SearchTool)
     assert len(result) == 3, f"Expected 3 tools (2 matched + 1 new), got {len(result)}"
-
-
-# ── C3: Model override partially ignored for non-Conversation replay ────────
 
 
 def test_model_override_applies_to_constructor_args_receiver() -> None:

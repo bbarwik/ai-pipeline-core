@@ -400,6 +400,29 @@ class TestLLMIntegration:
         assert conv.cost > 0, f"{model}: cost is {conv.cost}, expected > 0"
 
     @pytest.mark.asyncio
+    async def test_search_model_citations_survive_codec(self):
+        """Search-enabled models return Citation dataclasses that must survive codec encoding.
+
+        Regression: Citation is a frozen dataclass, not a BaseModel. The codec
+        could not encode it, crashing any span that recorded a search model response.
+        """
+        from ai_pipeline_core._codec import UniversalCodec
+
+        conv = Conversation(
+            model="gemini-3-flash-search",
+            model_options=ModelOptions(max_completion_tokens=2000),
+        )
+        conv = await conv.send("Who won the Grammy for Album of the Year in 2026?")
+
+        assert "bad bunny" in conv.content.lower(), f"Expected 'bad bunny' in response, got: {conv.content!r}"
+        assert len(conv.citations) > 0, "Search model should return citations"
+
+        # The actual bug: codec.encode crashes on Citation dataclass
+        codec = UniversalCodec()
+        encoded = codec.encode(conv)
+        assert encoded.value["$type"] == "pydantic"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("model", ["gemini-3-pro", "gpt-5.1", "gemini-3-flash", "gpt-5-mini", "grok-4.1-fast"])
     async def test_current_date_awareness(self, model):
         """LLM correctly reports the current date injected via Conversation.current_date."""

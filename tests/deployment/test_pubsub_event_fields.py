@@ -1,8 +1,4 @@
-"""Regression tests for Pub/Sub event field correctness.
-
-Each test class targets a specific bug from the .tmp/pubsub-test/findings.md audit.
-Bugs are already fixed in source — these tests serve as permanent regression guards.
-"""
+"""Regression tests for Pub/Sub event field correctness."""
 
 # pyright: reportPrivateUsage=false
 
@@ -219,11 +215,6 @@ def _make_input_doc(name: str = "in.txt", content: str = "test") -> _EventInput:
     return _EventInput.create_root(name=name, content=content, reason="test")
 
 
-# ---------------------------------------------------------------------------
-# BUG-1: flow_plan flow_class format inconsistency
-# ---------------------------------------------------------------------------
-
-
 class TestBug1FlowClassFormat:
     """flow_plan entries must use short __name__, not module:qualname."""
 
@@ -246,11 +237,6 @@ class TestBug1FlowClassFormat:
         started = [e for e in pub.events if isinstance(e, RunStartedEvent)][0]
         for entry in started.flow_plan:
             assert ":" not in entry["flow_class"], f"flow_plan flow_class '{entry['flow_class']}' contains ':'"
-
-
-# ---------------------------------------------------------------------------
-# BUG-2: Task events missing total_steps
-# ---------------------------------------------------------------------------
 
 
 class TestBug2TaskTotalSteps:
@@ -284,11 +270,6 @@ class TestBug2TaskTotalSteps:
         task_failed = [e for e in pub.events if isinstance(e, TaskFailedEvent)]
         assert len(task_failed) == 1
         assert task_failed[0].total_steps == 1
-
-
-# ---------------------------------------------------------------------------
-# BUG-3: Task events missing input_document_sha256s
-# ---------------------------------------------------------------------------
 
 
 class TestBug3TaskInputShas:
@@ -340,11 +321,6 @@ class TestBug3TaskInputShas:
         assert len(matching_started) == 1
 
 
-# ---------------------------------------------------------------------------
-# BUG-4: Flow events missing input_document_sha256s
-# ---------------------------------------------------------------------------
-
-
 class TestBug4FlowInputShas:
     """Flow events must carry input_document_sha256s."""
 
@@ -380,11 +356,6 @@ class TestBug4FlowInputShas:
         assert doc.sha256 in flow_failed[0].input_document_sha256s
 
 
-# ---------------------------------------------------------------------------
-# BUG-5: Heartbeat missing root_deployment_id and span_id
-# ---------------------------------------------------------------------------
-
-
 class TestBug5Heartbeat:
     """Heartbeat must carry root_deployment_id and span_id."""
 
@@ -412,11 +383,6 @@ class TestBug5Heartbeat:
             assert pub.heartbeats[0]["span_id"]
 
 
-# ---------------------------------------------------------------------------
-# BUG-7: flow.started fires before span written to database
-# ---------------------------------------------------------------------------
-
-
 class TestBug7FlowStartedSpanTiming:
     """flow.started must be published inside track_span, not before."""
 
@@ -438,11 +404,6 @@ class TestBug7FlowStartedSpanTiming:
         assert span_ids_at_publish, "No flow.started events captured"
         for span_id, existed in span_ids_at_publish.items():
             assert existed, f"flow.started published for span {span_id} but span was NOT in database at publish time"
-
-
-# ---------------------------------------------------------------------------
-# BUG-9: Run events missing deployment_name and deployment_class
-# ---------------------------------------------------------------------------
 
 
 class TestBug9DeploymentIdentity:
@@ -477,11 +438,6 @@ class TestBug9DeploymentIdentity:
         assert failed.deployment_class == "_DirectFailingDeployment"
 
 
-# ---------------------------------------------------------------------------
-# BUG-10: RunCompletedEvent and RunFailedEvent missing duration_ms
-# ---------------------------------------------------------------------------
-
-
 class TestBug10RunDuration:
     """Run events must include duration_ms."""
 
@@ -503,11 +459,6 @@ class TestBug10RunDuration:
         assert failed.duration_ms >= 0
 
 
-# ---------------------------------------------------------------------------
-# BUG-11: RunStartedEvent missing input_document_sha256s
-# ---------------------------------------------------------------------------
-
-
 class TestBug11RunInputShas:
     """RunStartedEvent must include input document SHA256s."""
 
@@ -521,11 +472,6 @@ class TestBug11RunInputShas:
         started = [e for e in pub.events if isinstance(e, RunStartedEvent)][0]
         assert doc1.sha256 in started.input_document_sha256s
         assert doc2.sha256 in started.input_document_sha256s
-
-
-# ---------------------------------------------------------------------------
-# GAP-1: Events missing parent_span_id
-# ---------------------------------------------------------------------------
 
 
 class TestGap1ParentSpanId:
@@ -563,11 +509,6 @@ class TestGap1ParentSpanId:
         assert hasattr(completed, "parent_span_id")
 
 
-# ---------------------------------------------------------------------------
-# GAP-2: run.completed output_document_sha256s is final outputs only (contract)
-# ---------------------------------------------------------------------------
-
-
 class TestGap2FinalOutputsOnly:
     """RunCompletedEvent.output_document_sha256s must be final flow outputs only."""
 
@@ -585,11 +526,6 @@ class TestGap2FinalOutputsOnly:
         assert run_output_shas == last_flow_output_shas, (
             f"RunCompletedEvent should have only final flow outputs. Got {run_output_shas}, expected {last_flow_output_shas}"
         )
-
-
-# ---------------------------------------------------------------------------
-# MINOR-1: Cached flow reason is misleading
-# ---------------------------------------------------------------------------
 
 
 class TestMinor1CachedFlowReason:
@@ -625,11 +561,6 @@ class TestMinor1CachedFlowReason:
         for event in cached_skipped:
             assert event.reason != "completed", f"Cached flow reason should not be 'completed', got '{event.reason}'"
             assert "cached" in event.reason.lower() or "cache" in event.reason.lower()
-
-
-# ---------------------------------------------------------------------------
-# MINOR-3: root_deployment_id in PubSub attributes
-# ---------------------------------------------------------------------------
 
 
 class TestMinor3PubsubAttributes:
