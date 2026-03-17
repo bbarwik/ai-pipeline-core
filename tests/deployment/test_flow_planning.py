@@ -1,5 +1,5 @@
 # pyright: reportPrivateUsage=false
-"""Tests for plan_next_flow skip/continue logic and resolve_document_inputs provenance rejection."""
+"""Tests for plan_next_flow skip/continue logic and resolve_document_inputs provenance preservation."""
 
 from collections.abc import Sequence
 
@@ -152,7 +152,7 @@ async def test_plan_next_flow_continues_when_output_docs_exist() -> None:
 
 
 # ---------------------------------------------------------------------------
-# resolve_document_inputs provenance rejection
+# resolve_document_inputs provenance preservation
 # ---------------------------------------------------------------------------
 
 
@@ -161,16 +161,20 @@ class ResolveInputDoc(Document):
 
 
 @pytest.mark.asyncio
-async def test_resolve_rejects_derived_from_on_input() -> None:
-    """DocumentInput with derived_from raises ValueError."""
-    inputs = [_DocumentInput(content="hello", name="x.txt", class_name="ResolveInputDoc", derived_from=("SOMESHA256",))]
-    with pytest.raises(ValueError, match="cannot set derived_from"):
-        await resolve_document_inputs(inputs, [ResolveInputDoc])
+async def test_resolve_preserves_derived_from_on_input() -> None:
+    """DocumentInput with derived_from preserves provenance through resolution."""
+    root = ResolveInputDoc.create_root(name="root.txt", content="root", reason="test")
+    inputs = [_DocumentInput(content="hello", name="x.txt", class_name="ResolveInputDoc", derived_from=(root.sha256,))]
+    result = await resolve_document_inputs(inputs, [ResolveInputDoc])
+    assert len(result) == 1
+    assert result[0].derived_from == (root.sha256,)
 
 
 @pytest.mark.asyncio
-async def test_resolve_rejects_triggered_by_on_input() -> None:
-    """DocumentInput with triggered_by raises ValueError."""
-    inputs = [_DocumentInput(content="hello", name="x.txt", class_name="ResolveInputDoc", triggered_by=("SOMESHA256",))]
-    with pytest.raises(ValueError, match="cannot set derived_from"):
-        await resolve_document_inputs(inputs, [ResolveInputDoc])
+async def test_resolve_preserves_triggered_by_on_input() -> None:
+    """DocumentInput with triggered_by preserves provenance through resolution."""
+    trigger = ResolveInputDoc.create_root(name="trigger.txt", content="trigger", reason="test")
+    inputs = [_DocumentInput(content="hello", name="x.txt", class_name="ResolveInputDoc", triggered_by=(trigger.sha256,))]
+    result = await resolve_document_inputs(inputs, [ResolveInputDoc])
+    assert len(result) == 1
+    assert result[0].triggered_by == (trigger.sha256,)

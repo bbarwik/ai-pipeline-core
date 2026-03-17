@@ -336,6 +336,33 @@ class _StageTask(PipelineTask):
         return ()
 
 
+class _SlowStageTask(PipelineTask):
+    estimated_minutes: ClassVar[float] = 5.0
+
+    @classmethod
+    async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
+        _ = cls
+        return ()
+
+
+class _FastStageTask(PipelineTask):
+    estimated_minutes: ClassVar[float] = 2.0
+
+    @classmethod
+    async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
+        _ = cls
+        return ()
+
+
+class _TimedStageTask(PipelineTask):
+    estimated_minutes: ClassVar[float] = 3.0
+
+    @classmethod
+    async def run(cls, documents: tuple[InputDoc, ...]) -> tuple[OutputDoc, ...]:
+        _ = cls
+        return ()
+
+
 def test_pipeline_flow_extracts_types_and_task_graph() -> None:
     class GoodFlow(PipelineFlow):
         async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
@@ -344,7 +371,7 @@ def test_pipeline_flow_extracts_types_and_task_graph() -> None:
 
     assert GoodFlow.input_document_types == [InputDoc]
     assert GoodFlow.output_document_types == [OutputDoc]
-    assert GoodFlow.expected_tasks() == ["_StageTask"]
+    assert GoodFlow.expected_tasks() == [{"name": "_StageTask", "estimated_minutes": 1.0}]
 
 
 def test_pipeline_flow_ast_extracts_handle_pattern() -> None:
@@ -354,7 +381,7 @@ def test_pipeline_flow_ast_extracts_handle_pattern() -> None:
             handle = _StageTask.run(documents)
             return await handle
 
-    assert ("_StageTask", "dispatched") in HandleFlow.task_graph
+    assert ("_StageTask", "dispatched", 1.0) in HandleFlow.task_graph
 
 
 def test_pipeline_flow_rejects_wrong_signature() -> None:
@@ -1038,3 +1065,71 @@ def test_multi_level_abstract_task_chain() -> None:
 
         class BadConcreteTask(_SVMultiLevelLevelTwoTask):
             pass
+
+
+# --------------------------------------------------------------------------- #
+# expected_tasks() returns dicts with estimated_minutes
+# --------------------------------------------------------------------------- #
+
+
+def test_expected_tasks_returns_dicts_with_custom_estimated_minutes() -> None:
+    class SlowFlow(PipelineFlow):
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = options
+            return await _SlowStageTask.run(documents)
+
+    tasks = SlowFlow.expected_tasks()
+    assert len(tasks) == 1
+    assert tasks[0] == {"name": "_SlowStageTask", "estimated_minutes": 5.0}
+
+
+def test_expected_tasks_default_estimated_minutes() -> None:
+    class DefaultFlow(PipelineFlow):
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = options
+            return await _StageTask.run(documents)
+
+    assert DefaultFlow.expected_tasks() == [{"name": "_StageTask", "estimated_minutes": 1.0}]
+
+
+def test_expected_tasks_empty_for_no_task_calls() -> None:
+    class EmptyFlow(PipelineFlow):
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = (self, options)
+            return ()
+
+    assert EmptyFlow.expected_tasks() == []
+    assert EmptyFlow.task_graph == []
+
+
+def test_expected_tasks_multiple_tasks_preserves_order() -> None:
+    class MultiFlow(PipelineFlow):
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = options
+            await _StageTask.run(documents)
+            return await _FastStageTask.run(documents)
+
+    tasks = MultiFlow.expected_tasks()
+    assert len(tasks) == 2
+    assert tasks[0] == {"name": "_StageTask", "estimated_minutes": 1.0}
+    assert tasks[1] == {"name": "_FastStageTask", "estimated_minutes": 2.0}
+
+
+def test_expected_tasks_dispatched_task_included() -> None:
+    class DispatchFlow(PipelineFlow):
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = options
+            handle = _StageTask.run(documents)
+            return await handle
+
+    tasks = DispatchFlow.expected_tasks()
+    assert tasks == [{"name": "_StageTask", "estimated_minutes": 1.0}]
+
+
+def test_task_graph_contains_estimated_minutes() -> None:
+    class TimedFlow(PipelineFlow):
+        async def run(self, documents: tuple[InputDoc, ...], options: Opts) -> tuple[OutputDoc, ...]:
+            _ = options
+            return await _TimedStageTask.run(documents)
+
+    assert TimedFlow.task_graph == [("_TimedStageTask", "sequential", 3.0)]

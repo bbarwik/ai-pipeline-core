@@ -258,7 +258,7 @@ def _reconstruct_flow_events(
         step=step,
         total_steps=total_steps,
         status=str(SpanStatus.RUNNING),
-        expected_tasks=meta.get("expected_task_names", []),
+        expected_tasks=meta.get("expected_tasks", []),
         flow_params=flow_params,
         parent_span_id=deployment_span_id,
         input_document_sha256s=span.input_document_shas,

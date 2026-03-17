@@ -2,7 +2,7 @@
 # CLASSES: LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
 # DEPENDS: BaseModel, StrEnum
 # PURPOSE: Pipeline framework primitives.
-# VERSION: 0.17.0
+# VERSION: 0.17.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -111,7 +111,7 @@ class PipelineFlow:
     BASE_COST_USD: ClassVar[float] = 0.0
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
-    task_graph: ClassVar[list[tuple[str, str]]] = []
+    task_graph: ClassVar[list[tuple[str, str, float]]] = []
 
     def __init__(self, **kwargs: Any) -> None:
         """Constructor for per-flow instance configuration."""
@@ -133,9 +133,9 @@ class PipelineFlow:
             setattr(self, key, value)
 
     @classmethod
-    def expected_tasks(cls) -> list[str]:
-        """Return expected task names extracted from run() AST."""
-        return [name for name, _mode in cls.task_graph]
+    def expected_tasks(cls) -> list[dict[str, Any]]:
+        """Return expected task metadata extracted from run() AST."""
+        return [{"name": name, "estimated_minutes": minutes} for name, _mode, minutes in cls.task_graph]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

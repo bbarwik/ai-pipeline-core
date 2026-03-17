@@ -36,27 +36,29 @@ def _declared_init_annotations(klass: type) -> set[str]:
     return {name for name in annotations if not name.startswith("_")}
 
 
-def _resolve_task_name(globals_dict: dict[str, Any], name: str) -> str | None:
-    """Check if name refers to a PipelineTask subclass in the given globals."""
+def _resolve_task_info(globals_dict: dict[str, Any], name: str) -> tuple[str, float] | None:
+    """Check if name refers to a PipelineTask subclass; return (task_name, estimated_minutes)."""
     candidate = globals_dict.get(name)
     if isinstance(candidate, type) and issubclass(candidate, PipelineTask) and candidate is not PipelineTask:
-        return candidate.name
+        return candidate.name, candidate.estimated_minutes
     return None
 
 
-def _extract_task_name_from_call(node: ast.Call, globals_dict: dict[str, Any]) -> str | None:
-    """Extract task class name from supported task call patterns."""
+def _extract_task_info_from_call(node: ast.Call, globals_dict: dict[str, Any]) -> tuple[str, float] | None:
+    """Extract task info from supported task call patterns."""
     if isinstance(node.func, ast.Attribute) and node.func.attr == "run" and isinstance(node.func.value, ast.Name):
-        return _resolve_task_name(globals_dict, node.func.value.id)
+        return _resolve_task_info(globals_dict, node.func.value.id)
     return None
 
 
-def _parse_task_graph_from_source(run_fn: Any) -> list[tuple[str, str]]:
+def _parse_task_graph_from_source(run_fn: Any) -> list[tuple[str, str, float]]:
     """Extract task invocations from flow run() source.
 
     Recognizes:
     - `await TaskClass.run(...)` as sequential
     - `TaskClass.run(...)` as deferred / handle-producing
+
+    Returns list of (task_name, mode, estimated_minutes) tuples.
     """
     try:
         source = textwrap.dedent(inspect.getsource(run_fn))
@@ -64,7 +66,7 @@ def _parse_task_graph_from_source(run_fn: Any) -> list[tuple[str, str]]:
     except OSError, TypeError, SyntaxError:
         return []
 
-    graph: list[tuple[str, str]] = []
+    graph: list[tuple[str, str, float]] = []
     globals_dict = getattr(run_fn, "__globals__", {})
 
     awaited_calls: set[int] = set()
@@ -72,17 +74,17 @@ def _parse_task_graph_from_source(run_fn: Any) -> list[tuple[str, str]]:
     class _Visitor(ast.NodeVisitor):
         def visit_Await(self, node: ast.Await) -> None:
             if isinstance(node.value, ast.Call):
-                task_name = _extract_task_name_from_call(node.value, globals_dict)
-                if task_name is not None:
-                    graph.append((task_name, "sequential"))
+                task_info = _extract_task_info_from_call(node.value, globals_dict)
+                if task_info is not None:
+                    graph.append((task_info[0], "sequential", task_info[1]))
                     awaited_calls.add(id(node.value))
             self.generic_visit(node)
 
         def visit_Call(self, node: ast.Call) -> None:
             if id(node) not in awaited_calls:
-                task_name = _extract_task_name_from_call(node, globals_dict)
-                if task_name is not None:
-                    graph.append((task_name, "dispatched"))
+                task_info = _extract_task_info_from_call(node, globals_dict)
+                if task_info is not None:
+                    graph.append((task_info[0], "dispatched", task_info[1]))
             self.generic_visit(node)
 
     _Visitor().visit(tree)
@@ -122,7 +124,7 @@ class PipelineFlow:
     BASE_COST_USD: ClassVar[float] = 0.0
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
-    task_graph: ClassVar[list[tuple[str, str]]] = []
+    task_graph: ClassVar[list[tuple[str, str, float]]] = []
     _prefect_flow_fn: ClassVar[Any] = None
 
     async def run(self, documents: tuple[Any, ...], options: Any) -> tuple[Any, ...]:
@@ -254,7 +256,7 @@ class PipelineFlow:
         return input_types, output_types
 
     @classmethod
-    def _parse_task_graph(cls, run_fn: Callable[..., Any]) -> list[tuple[str, str]]:
+    def _parse_task_graph(cls, run_fn: Callable[..., Any]) -> list[tuple[str, str, float]]:
         return _parse_task_graph_from_source(run_fn)
 
     @classmethod
@@ -304,6 +306,6 @@ class PipelineFlow:
         return dict(getattr(self, "_params", {}))
 
     @classmethod
-    def expected_tasks(cls) -> list[str]:
-        """Return expected task names extracted from run() AST."""
-        return [name for name, _mode in cls.task_graph]
+    def expected_tasks(cls) -> list[dict[str, Any]]:
+        """Return expected task metadata extracted from run() AST."""
+        return [{"name": name, "estimated_minutes": minutes} for name, _mode, minutes in cls.task_graph]

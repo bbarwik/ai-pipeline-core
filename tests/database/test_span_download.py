@@ -210,6 +210,69 @@ async def test_download_deployment_bundle_validation_reads_attachment_fields(tmp
 
 
 @pytest.mark.asyncio
+async def test_llm_calls_jsonl_excludes_heavyweight_payload_fields(tmp_path: Path) -> None:
+    source, deployment_id = await _seed_source_database()
+    output_path = tmp_path / "snapshot"
+
+    await download_deployment(source, deployment_id, output_path)
+
+    llm_calls_text = (output_path / "llm_calls.jsonl").read_text(encoding="utf-8")
+    lines = [json.loads(line) for line in llm_calls_text.strip().splitlines()]
+    assert len(lines) == 1
+    entry = lines[0]
+
+    heavyweight_fields = {"request_messages", "response_content", "response_tool_calls", "tool_schemas"}
+    present = heavyweight_fields & set(entry)
+    assert not present, f"Index file must not contain heavyweight fields: {present}"
+
+
+@pytest.mark.asyncio
+async def test_llm_calls_jsonl_contains_only_index_fields(tmp_path: Path) -> None:
+    source, deployment_id = await _seed_source_database()
+    output_path = tmp_path / "snapshot"
+
+    await download_deployment(source, deployment_id, output_path)
+
+    llm_calls_text = (output_path / "llm_calls.jsonl").read_text(encoding="utf-8")
+    lines = [json.loads(line) for line in llm_calls_text.strip().splitlines()]
+    assert len(lines) == 1
+    entry = lines[0]
+
+    expected_fields = {
+        "span_id",
+        "parent_span_id",
+        "deployment_id",
+        "run_id",
+        "started_at",
+        "ended_at",
+        "model",
+        "round_index",
+        "prompt_tokens",
+        "completion_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
+        "cost_usd",
+        "finish_reason",
+        "response_id",
+        "tool_call_count",
+        "request_message_count",
+        "response_format_path",
+        "purpose",
+        "time_taken_ms",
+        "first_token_ms",
+    }
+    assert set(entry) == expected_fields
+
+    assert entry["model"] == "test-model"
+    assert entry["prompt_tokens"] == 100
+    assert entry["completion_tokens"] == 25
+    assert entry["cost_usd"] == 0.5
+    assert entry["round_index"] == 1
+    assert entry["request_message_count"] == 1
+    assert entry["tool_call_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_download_deployment_documents_artifact_uses_promoted_fields(tmp_path: Path) -> None:
     source, deployment_id = await _seed_source_database()
     output_path = tmp_path / "snapshot"

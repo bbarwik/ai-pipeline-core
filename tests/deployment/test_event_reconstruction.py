@@ -77,7 +77,7 @@ async def _seed_successful_run(db: _MemoryDatabase) -> tuple[UUID, UUID]:
         ended_at=t0 + timedelta(seconds=10),
         meta_json=json.dumps({
             "input_fingerprint": "abc123",
-            "flow_plan": [{"name": "Flow1", "flow_class": "TestFlow", "step": 1}],
+            "flow_plan": [{"name": "Flow1", "flow_class": "TestFlow", "step": 1, "expected_tasks": [{"name": "TestTask", "estimated_minutes": 1.0}]}],
             "deployment_class": "TestPipeline",
         }),
         output_json=json.dumps({"result": {"ok": True}}),
@@ -97,7 +97,7 @@ async def _seed_successful_run(db: _MemoryDatabase) -> tuple[UUID, UUID]:
         meta_json=json.dumps({
             "step": 1,
             "total_steps": 1,
-            "expected_task_names": ["TestTask"],
+            "expected_tasks": [{"name": "TestTask", "estimated_minutes": 1.0}],
         }),
         receiver_json=json.dumps({"mode": "constructor_args", "value": {"param": "val"}}),
         output_document_shas=("out-sha-1",),
@@ -148,7 +148,7 @@ async def test_successful_run_reconstruction() -> None:
     flow_started = next(e for e in events if e.event_type == EventType.FLOW_STARTED)
     assert flow_started.data["flow_name"] == "Flow1"
     assert flow_started.data["flow_params"] == {"param": "val"}
-    assert flow_started.data["expected_tasks"] == ["TestTask"]
+    assert flow_started.data["expected_tasks"] == [{"name": "TestTask", "estimated_minutes": 1.0}]
 
     flow_completed = next(e for e in events if e.event_type == EventType.FLOW_COMPLETED)
     assert len(flow_completed.data["output_documents"]) == 1
@@ -444,3 +444,160 @@ async def test_document_ref_from_record() -> None:
     assert ref.publicly_visible is True
     assert ref.derived_from == ("https://a.com",)
     assert ref.triggered_by == ("sha-xyz",)
+
+
+@pytest.mark.asyncio
+async def test_reconstruction_expected_tasks_are_dicts() -> None:
+    """Reconstructed flow.started carries expected_tasks as list of dicts."""
+    db = _MemoryDatabase()
+    root_id, _ = await _seed_successful_run(db)
+
+    events = await _reconstruct_lifecycle_events(db, root_id)
+    flow_started = next(e for e in events if e.event_type == EventType.FLOW_STARTED)
+
+    expected = [{"name": "TestTask", "estimated_minutes": 1.0}]
+    assert flow_started.data["expected_tasks"] == expected
+
+
+@pytest.mark.asyncio
+async def test_reconstruction_expected_tasks_custom_minutes() -> None:
+    """Reconstructed flow.started preserves custom estimated_minutes values."""
+    db = _MemoryDatabase()
+    root_id = uuid4()
+    deploy_span_id = uuid4()
+    flow_span_id = uuid4()
+    t0 = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
+
+    expected_tasks = [
+        {"name": "TaskA", "estimated_minutes": 3.0},
+        {"name": "TaskB", "estimated_minutes": 7.0},
+    ]
+    flow_plan = [
+        {
+            "name": "Flow1",
+            "flow_class": "MultiTaskFlow",
+            "step": 1,
+            "estimated_minutes": 10.0,
+            "expected_tasks": expected_tasks,
+        }
+    ]
+
+    deploy = _make_span(
+        span_id=deploy_span_id,
+        deployment_id=root_id,
+        root_deployment_id=root_id,
+        kind=SpanKind.DEPLOYMENT,
+        name="Deploy",
+        status=SpanStatus.COMPLETED,
+        started_at=t0,
+        ended_at=t0 + timedelta(seconds=10),
+        meta_json=json.dumps({
+            "input_fingerprint": "fp",
+            "deployment_class": "P",
+            "flow_plan": flow_plan,
+        }),
+        output_json=json.dumps({"result": {}}),
+    )
+    flow = _make_span(
+        span_id=flow_span_id,
+        parent_span_id=deploy_span_id,
+        deployment_id=root_id,
+        root_deployment_id=root_id,
+        kind=SpanKind.FLOW,
+        name="Flow1",
+        status=SpanStatus.COMPLETED,
+        started_at=t0 + timedelta(seconds=1),
+        ended_at=t0 + timedelta(seconds=8),
+        target="classmethod:mod:MultiTaskFlow.run",
+        meta_json=json.dumps({
+            "step": 1,
+            "total_steps": 1,
+            "expected_tasks": expected_tasks,
+        }),
+        receiver_json=json.dumps({"mode": "constructor_args", "value": {}}),
+    )
+    for span in (deploy, flow):
+        await db.insert_span(span)
+
+    events = await _reconstruct_lifecycle_events(db, root_id)
+
+    flow_started = next(e for e in events if e.event_type == EventType.FLOW_STARTED)
+    assert flow_started.data["expected_tasks"] == expected_tasks
+
+    run_started = next(e for e in events if e.event_type == EventType.RUN_STARTED)
+    assert run_started.data["flow_plan"][0]["expected_tasks"] == expected_tasks
+
+
+@pytest.mark.asyncio
+async def test_reconstruction_expected_tasks_empty_list() -> None:
+    """Reconstructed flow.started with no expected_tasks returns empty list."""
+    db = _MemoryDatabase()
+    root_id = uuid4()
+    deploy_span_id = uuid4()
+    flow_span_id = uuid4()
+    t0 = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
+
+    deploy = _make_span(
+        span_id=deploy_span_id,
+        deployment_id=root_id,
+        root_deployment_id=root_id,
+        kind=SpanKind.DEPLOYMENT,
+        name="Deploy",
+        status=SpanStatus.COMPLETED,
+        started_at=t0,
+        ended_at=t0 + timedelta(seconds=5),
+        meta_json=json.dumps({"input_fingerprint": "fp", "deployment_class": "P", "flow_plan": []}),
+        output_json=json.dumps({"result": {}}),
+    )
+    flow = _make_span(
+        span_id=flow_span_id,
+        parent_span_id=deploy_span_id,
+        deployment_id=root_id,
+        root_deployment_id=root_id,
+        kind=SpanKind.FLOW,
+        name="EmptyTasksFlow",
+        status=SpanStatus.COMPLETED,
+        started_at=t0 + timedelta(seconds=1),
+        ended_at=t0 + timedelta(seconds=4),
+        target="classmethod:mod:EmptyFlow.run",
+        meta_json=json.dumps({
+            "step": 1,
+            "total_steps": 1,
+            "expected_tasks": [],
+        }),
+        receiver_json=json.dumps({"mode": "constructor_args", "value": {}}),
+    )
+    for span in (deploy, flow):
+        await db.insert_span(span)
+
+    events = await _reconstruct_lifecycle_events(db, root_id)
+    flow_started = next(e for e in events if e.event_type == EventType.FLOW_STARTED)
+    assert flow_started.data["expected_tasks"] == []
+
+
+@pytest.mark.asyncio
+async def test_expected_tasks_roundtrip_serialization() -> None:
+    """event_to_payload serializes expected_tasks dicts correctly for PubSub."""
+    from ai_pipeline_core.deployment._types import FlowStartedEvent
+
+    expected_tasks = [
+        {"name": "TaskA", "estimated_minutes": 3.0},
+        {"name": "TaskB", "estimated_minutes": 1.0},
+    ]
+    event = FlowStartedEvent(
+        run_id="test-run",
+        span_id="span-1",
+        root_deployment_id="root-1",
+        parent_deployment_task_id=None,
+        flow_name="Flow1",
+        flow_class="FlowClass",
+        step=1,
+        total_steps=1,
+        status="running",
+        expected_tasks=expected_tasks,
+    )
+    payload = event_to_payload(event)
+    assert payload["expected_tasks"] == expected_tasks
+    # Verify JSON round-trip
+    serialized = json.loads(json.dumps(payload))
+    assert serialized["expected_tasks"] == expected_tasks

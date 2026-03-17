@@ -189,21 +189,52 @@ class TestResolveDocumentInputs:
         with pytest.raises(ValueError, match="No input document types"):
             await resolve_document_inputs(inputs, [ResolveDoc], start_step_input_types=[])
 
-    async def test_rejects_provenance_fields_for_root_inputs(self):
-        """Deployment input documents are root documents and cannot have provenance."""
-        with pytest.raises(ValueError, match="root documents"):
-            await resolve_document_inputs(
-                [
-                    _DocumentInput(
-                        class_name="ResolveDoc",
-                        name="a.txt",
-                        content="hello",
-                        derived_from=("https://example.com",),
-                    )
-                ],
-                [ResolveDoc],
-                start_step_input_types=[ResolveDoc],
-            )
+    async def test_resolve_preserves_derived_from(self):
+        """Documents with derived_from should survive the serialize → resolve roundtrip."""
+        root = ResolveDoc.create_root(name="root.txt", content="root content", reason="test")
+        derived = ResolveDoc.derive(derived_from=(root,), name="derived.txt", content="derived content")
+
+        serialized = derived.serialize_model()
+        doc_input = _DocumentInput.model_validate(serialized)
+
+        assert doc_input.derived_from == (root.sha256,), "derived_from lost during _DocumentInput creation"
+
+        result = await resolve_document_inputs([doc_input], [ResolveDoc])
+        assert len(result) == 1
+        assert result[0].derived_from == (root.sha256,), "derived_from lost during resolve"
+
+    async def test_resolve_preserves_triggered_by(self):
+        """Documents with triggered_by should survive the serialize → resolve roundtrip."""
+        trigger = ResolveDoc.create_root(name="trigger.txt", content="trigger", reason="test")
+        created = ResolveDoc.create(triggered_by=(trigger,), name="created.txt", content="created content")
+
+        serialized = created.serialize_model()
+        doc_input = _DocumentInput.model_validate(serialized)
+
+        assert doc_input.triggered_by == (trigger.sha256,), "triggered_by lost during _DocumentInput creation"
+
+        result = await resolve_document_inputs([doc_input], [ResolveDoc])
+        assert len(result) == 1
+        assert result[0].triggered_by == (trigger.sha256,), "triggered_by lost during resolve"
+
+    async def test_resolve_preserves_both_provenance_fields(self):
+        """Documents with both derived_from and triggered_by should survive roundtrip."""
+        source = ResolveDoc.create_root(name="source.txt", content="source", reason="test")
+        trigger = OtherDoc.create_root(name="trigger.txt", content="trigger", reason="test")
+        doc = ResolveDoc.derive(
+            derived_from=(source,),
+            triggered_by=(trigger,),
+            name="both.txt",
+            content="has both provenance fields",
+        )
+
+        serialized = doc.serialize_model()
+        doc_input = _DocumentInput.model_validate(serialized)
+
+        result = await resolve_document_inputs([doc_input], [ResolveDoc])
+        assert len(result) == 1
+        assert result[0].derived_from == (source.sha256,)
+        assert result[0].triggered_by == (trigger.sha256,)
 
 
 # ---------------------------------------------------------------------------

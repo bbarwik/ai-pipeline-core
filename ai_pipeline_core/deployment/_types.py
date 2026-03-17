@@ -107,7 +107,7 @@ class FlowStartedEvent:
     step: int
     total_steps: int
     status: str
-    expected_tasks: list[str] = field(default_factory=list)
+    expected_tasks: list[dict[str, Any]] = field(default_factory=list)
     flow_params: dict[str, Any] = field(default_factory=dict)
     parent_span_id: str = ""
     input_document_sha256s: tuple[str, ...] = ()

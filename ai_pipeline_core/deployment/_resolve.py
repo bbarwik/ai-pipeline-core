@@ -16,6 +16,7 @@ from google.cloud import storage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents.attachment import Attachment
 from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.settings import settings
@@ -279,37 +280,27 @@ async def resolve_document_inputs(
                 att_list = await asyncio.gather(*[_resolve_attachment(a) for a in doc_input.attachments])
                 attachments = tuple(att_list)
 
-            if doc_input.derived_from or doc_input.triggered_by:
-                raise ValueError(
-                    "Deployment input documents are root documents and cannot set derived_from/triggered_by. "
-                    "Remove provenance fields from _DocumentInput. PipelineTask outputs should set provenance via derive()/create()."
-                )
-
+            # Resolve content: inline or URL fetch
+            # Note: inline content is str; Pydantic's _validate_content field validator
+            # handles str→bytes conversion including data URI decoding for binary content.
             if doc_input.content is not None:
-                content = doc_input.content
-                return doc_type.create_root(
-                    name=doc_input.name,
-                    content=content,
-                    description=doc_input.description,
-                    summary=doc_input.summary,
-                    attachments=attachments if attachments else None,
-                    reason="deployment input (inline content)",
-                )
+                content: bytes = cast(bytes, doc_input.content)
+                name = doc_input.name
+            else:
+                await _validate_url(doc_input.url)
+                content, disposition = await _fetch_url(doc_input.url, client, semaphore)
+                name = doc_input.name or _derive_name(doc_input.url, disposition)
+                if not name:
+                    raise ValueError(f"Cannot derive document name from URL: {doc_input.url}")
 
-            # URL document
-            await _validate_url(doc_input.url)
-            content_bytes, disposition = await _fetch_url(doc_input.url, client, semaphore)
-            name = doc_input.name or _derive_name(doc_input.url, disposition)
-            if not name:
-                raise ValueError(f"Cannot derive document name from URL: {doc_input.url}")
-
-            return doc_type.create_root(
+            return doc_type(
                 name=name,
-                content=content_bytes,
+                content=content,
                 description=doc_input.description,
                 summary=doc_input.summary,
+                derived_from=doc_input.derived_from if doc_input.derived_from else None,
+                triggered_by=tuple(DocumentSha256(t) for t in doc_input.triggered_by) if doc_input.triggered_by else None,
                 attachments=attachments if attachments else None,
-                reason=f"deployment input (url source: {doc_input.url})",
             )
 
         results = await asyncio.gather(*[_resolve_one(inp) for inp in inputs], return_exceptions=True)

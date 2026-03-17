@@ -683,6 +683,53 @@ class TestSerializationRoundTrip:
             assert type(restored) is type(original)
             assert restored.sha256 == original.sha256
 
+    async def test_serialize_document_inputs_roundtrip_preserves_provenance(self):
+        """Full remote serialization path: document with provenance survives _serialize → resolve."""
+        from ai_pipeline_core.deployment._resolve import resolve_document_inputs
+        from ai_pipeline_core.deployment.remote import _serialize_document_inputs
+
+        root = AlphaDoc.create_root(name="root.txt", content="root", reason="test")
+        derived = AlphaDoc.derive(derived_from=(root,), name="derived.txt", content="derived")
+        trigger_source = BetaDoc.create_root(name="trigger.txt", content="trigger", reason="test")
+        triggered = AlphaDoc.create(triggered_by=(trigger_source,), name="triggered.txt", content="triggered")
+
+        for original in [derived, triggered]:
+            serialized_dicts = _serialize_document_inputs([original])
+            doc_inputs = [_DocumentInput.model_validate(d) for d in serialized_dicts]
+            resolved = await resolve_document_inputs(doc_inputs, [AlphaDoc, BetaDoc])
+            assert len(resolved) == 1
+            assert resolved[0].derived_from == original.derived_from, (
+                f"derived_from lost for {original.name}: expected {original.derived_from}, got {resolved[0].derived_from}"
+            )
+            assert resolved[0].triggered_by == original.triggered_by, (
+                f"triggered_by lost for {original.name}: expected {original.triggered_by}, got {resolved[0].triggered_by}"
+            )
+
+    async def test_remote_path_preserves_provenance_on_derived_documents(self):
+        """The remote Prefect path (_run_remote) must preserve provenance on input documents.
+
+        Simulates what happens when RemoteDeployment._run_remote serializes documents
+        via _serialize_document_inputs and the worker resolves them via resolve_document_inputs.
+        This is the exact path that breaks: parent creates derived documents, sends them
+        as Prefect parameters, and the worker rejects them.
+        """
+        from ai_pipeline_core.deployment._resolve import resolve_document_inputs
+        from ai_pipeline_core.deployment.remote import _serialize_document_inputs
+
+        root = AlphaDoc.create_root(name="root.txt", content="root content", reason="test")
+        derived_input = AlphaDoc.derive(derived_from=(root,), name="derived.txt", content="derived content")
+
+        # This is what _run_remote does (remote.py:321)
+        serialized = _serialize_document_inputs([derived_input])
+
+        # This is what the Prefect worker does (_prefect.py:81-85)
+        doc_inputs = [_DocumentInput.model_validate(s) for s in serialized]
+        resolved = await resolve_document_inputs(doc_inputs, [AlphaDoc])
+
+        assert len(resolved) == 1
+        assert resolved[0].derived_from == derived_input.derived_from
+        assert resolved[0].name == "derived.txt"
+
 
 # ===================================================================
 # 8. Edge cases

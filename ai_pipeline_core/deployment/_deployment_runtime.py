@@ -192,7 +192,7 @@ async def _execute_flow_with_context(
     flow_span_id: UUID,
     flow_cache_key: str,
     flow_options_payload: dict[str, Any],
-    expected_tasks: list[str],
+    expected_tasks: list[dict[str, Any]],
     step: int,
     total_steps: int,
     root_id_str: str,
@@ -236,7 +236,7 @@ async def _execute_flow_with_context(
                 step=step,
                 total_steps=total_steps,
                 estimated_minutes=flow_instance.estimated_minutes,
-                expected_task_names=expected_tasks,
+                expected_tasks=expected_tasks,
                 cache_hit=False,
                 cache_key=flow_cache_key,
             )

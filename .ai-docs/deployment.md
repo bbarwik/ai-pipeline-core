@@ -2,7 +2,7 @@
 # CLASSES: DeploymentResult, FlowAction, FlowDirective, PipelineDeployment, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.17.0
+# VERSION: 0.17.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -387,7 +387,7 @@ Set ``deployment_class`` to enable inline mode (test/local):
 
 ## Examples
 
-**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:771`)
+**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:818`)
 
 ```python
 class AlphaDoc(Document):
@@ -444,7 +444,7 @@ def test_two_args_returned_by_helper(self):
     assert args[1] is SimpleResult
 ```
 
-**Two params from remote deployment** (`tests/deployment/test_remote_deployment.py:718`)
+**Two params from remote deployment** (`tests/deployment/test_remote_deployment.py:765`)
 
 ```python
 def test_two_params_from_remote_deployment(self):
