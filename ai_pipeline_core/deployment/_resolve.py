@@ -254,7 +254,7 @@ async def resolve_document_inputs(
             name = att_input.name or _derive_name(att_input.url, disposition)
             if not name:
                 raise ValueError(f"Cannot derive attachment name from URL: {att_input.url}")
-            return Attachment(name=name, content=content, description=att_input.description)
+            return Attachment(name=name, content=content, description=att_input.description)  # pyright: ignore[reportArgumentType]
 
         async def _resolve_one(doc_input: _DocumentInput) -> Document:
             # Resolve class_name
@@ -290,9 +290,9 @@ async def resolve_document_inputs(
                 return doc_type.create_root(
                     name=doc_input.name,
                     content=content,
-                    description=doc_input.description or None,
+                    description=doc_input.description,
                     summary=doc_input.summary,
-                    attachments=attachments or None,
+                    attachments=attachments if attachments else None,
                     reason="deployment input (inline content)",
                 )
 
@@ -306,9 +306,9 @@ async def resolve_document_inputs(
             return doc_type.create_root(
                 name=name,
                 content=content_bytes,
-                description=doc_input.description or None,
+                description=doc_input.description,
                 summary=doc_input.summary,
-                attachments=attachments or None,
+                attachments=attachments if attachments else None,
                 reason=f"deployment input (url source: {doc_input.url})",
             )
 

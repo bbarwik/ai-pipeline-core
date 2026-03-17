@@ -343,6 +343,29 @@ def test_span_status_members() -> None:
     )
 ```
 
+**All byte values blob roundtrip** (`tests/database/test_bugs_sha256_roundtrip.py:494`)
+
+```python
+async def test_all_byte_values_blob_roundtrip(self, ch_database) -> None:
+    """Blob with every byte value 0x00-0xFF — maximally adversarial for encoding."""
+    sha = compute_content_sha256(ALL_BYTES)
+    await ch_database.save_blob(_BlobRecord(content_sha256=sha, content=ALL_BYTES))
+    loaded = await ch_database.get_blob(sha)
+    assert loaded is not None
+    assert loaded.content == ALL_BYTES, f"All-bytes blob corrupted: original 256 bytes, loaded {len(loaded.content)} bytes"
+```
+
+**All byte values hex decoded** (`tests/database/test_bugs_sha256_roundtrip.py:197`)
+
+```python
+def test_all_byte_values_hex_decoded(self) -> None:
+    """Every possible byte value survives hex encode → decode."""
+    hex_str = ALL_BYTES.hex()
+    blob = row_to_blob(("sha_test", hex_str))
+    assert blob.content == ALL_BYTES
+    assert len(blob.content) == 256
+```
+
 **Attachment contents returns all when present** (`tests/database/test_bugs_documents.py:85`)
 
 ```python
@@ -364,34 +387,42 @@ def test_attachment_contents_returns_all_when_present() -> None:
     assert result == {"att_sha1": b"data1"}
 ```
 
-**Blobs and logs ddl match expected shape** (`tests/database/test_clickhouse.py:107`)
+**Binary attachment** (`tests/database/test_bugs_sha256_roundtrip.py:391`)
 
 ```python
-def test_blobs_and_logs_ddl_match_expected_shape() -> None:
-    assert len(_extract_column_lines(BLOBS_DDL)) == 2
-    assert "ORDER BY (content_sha256)" in BLOBS_DDL
-    assert len(_extract_column_lines(LOGS_DDL)) == 11
-    assert "ORDER BY (deployment_id, span_id, timestamp, sequence_no)" in LOGS_DDL
-```
-
-**Blobs ddl has no created at** (`tests/database/test_bugs_clickhouse_ddl.py:21`)
-
-```python
-def test_blobs_ddl_has_no_created_at() -> None:
-    """Blobs are content-addressed — no timestamp needed."""
-    assert "created_at" not in BLOBS_DDL
-```
-
-**Blobs ddl uses replacing merge tree** (`tests/database/test_bugs_clickhouse_ddl.py:6`)
-
-```python
-def test_blobs_ddl_uses_replacing_merge_tree() -> None:
-    """Blobs table uses ReplacingMergeTree for content-addressed deduplication."""
-    assert "ReplacingMergeTree()" in BLOBS_DDL
+async def test_binary_attachment(self, tmp_path: Path) -> None:
+    """Binary attachment (PNG) survives filesystem round-trip."""
+    att = Attachment(name="screenshot.png", content=MINIMAL_PNG)
+    doc = RoundTripDoc(name="report.md", content=b"# Report", attachments=(att,))
+    loaded = await _roundtrip_filesystem(doc, tmp_path)
+    assert loaded.sha256 == doc.sha256
+    assert loaded.attachments[0].content == MINIMAL_PNG
 ```
 
 
 ## Error Examples
+
+**Tampered content raises** (`tests/database/test_bugs_sha256_roundtrip.py:245`)
+
+```python
+def test_tampered_content_raises(self) -> None:
+    doc = RoundTripDoc(name="test.txt", content=b"original")
+    record = document_to_record(doc)
+    hydrated = HydratedDocument(record=record, content=b"TAMPERED", attachment_contents={})
+    with pytest.raises(ValueError, match="integrity check failed"):
+        hydrate_document(RoundTripDoc, hydrated)
+```
+
+**Wrong primary content raises** (`tests/database/test_bugs_sha256_roundtrip.py:215`)
+
+```python
+def test_wrong_primary_content_raises(self) -> None:
+    doc = RoundTripDoc(name="image.png", content=MINIMAL_PNG)
+    record = document_to_record(doc)
+    hydrated = HydratedDocument(record=record, content=b"wrong content", attachment_contents={})
+    with pytest.raises(ValueError, match="integrity check failed"):
+        hydrate_document(RoundTripDoc, hydrated)
+```
 
 **Attachment contents raises on missing blobs** (`tests/database/test_bugs_documents.py:65`)
 
@@ -480,54 +511,4 @@ async def test_filesystem_read_only_rejects_writes(tmp_path: Path) -> None:
 
     with pytest.raises(PermissionError, match="read-only"):
         await read_only.save_document(_make_document())
-```
-
-**Document record defaults and attachment fields** (`tests/database/test_types.py:85`)
-
-```python
-def test_document_record_defaults_and_attachment_fields() -> None:
-    record = DocumentRecord(
-        document_sha256="doc-sha",
-        content_sha256="blob-sha",
-        document_type="ExampleDocument",
-        name="example.md",
-    )
-
-    assert record.description == ""
-    assert record.mime_type == ""
-    assert record.size_bytes == 0
-    assert record.summary == ""
-    assert record.derived_from == ()
-    assert record.triggered_by == ()
-    assert record.attachment_names == ()
-    assert record.attachment_descriptions == ()
-    assert record.attachment_content_sha256s == ()
-    assert record.attachment_mime_types == ()
-    assert record.attachment_size_bytes == ()
-
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        record.name = "changed"  # type: ignore[misc]
-```
-
-**Filesystem get document with content raises for missing attachment blob** (`tests/database/test_span_filesystem.py:203`)
-
-```python
-@pytest.mark.asyncio
-async def test_filesystem_get_document_with_content_raises_for_missing_attachment_blob(tmp_path: Path) -> None:
-    database = FilesystemDatabase(tmp_path)
-    await database.save_document(
-        _make_document(
-            document_sha256="doc-1",
-            content_sha256="blob-1",
-            attachment_names=("preview.png",),
-            attachment_descriptions=("Preview",),
-            attachment_content_sha256s=("blob-missing",),
-            attachment_mime_types=("image/png",),
-            attachment_size_bytes=(10,),
-        )
-    )
-    await database.save_blob(_make_blob(content_sha256="blob-1", content=b"root"))
-
-    with pytest.raises(ValueError, match="missing from storage"):
-        await database.get_document_with_content("doc-1")
 ```

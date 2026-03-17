@@ -35,7 +35,7 @@ class Attachment(BaseModel):
 
     name: str
     content: bytes
-    description: str | None = None
+    description: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -45,6 +45,14 @@ class Attachment(BaseModel):
             d = cast(dict[str, Any], data)
             return {k: v for k, v in d.items() if k not in cls.SERIALIZE_METADATA_KEYS}
         return data
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, v: str | None) -> str:
+        """Normalize None to empty string. description is always str, never None."""
+        if v is None:
+            return ""
+        return v
 
     @field_validator("name")
     @classmethod

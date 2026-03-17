@@ -15,6 +15,7 @@ class _Hashable(Protocol):
     """Protocol for objects whose identity hash can be computed."""
 
     name: str
+    description: str
     content: bytes
     derived_from: tuple[str, ...]
     triggered_by: tuple[DocumentSha256, ...]
@@ -24,16 +25,18 @@ class _Hashable(Protocol):
 def compute_document_sha256(doc: _Hashable) -> DocumentSha256:
     """Compute the document identity hash including provenance.
 
-    Fields included: name, content, derived_from, triggered_by, attachments.
+    Fields included: name, description, content, derived_from, triggered_by,
+    attachments (name, description, content).
     Uses length-prefixed fields with null-byte separators for collision resistance.
     Groups (derived_from, triggered_by, attachments) are count-prefixed for unambiguous boundaries.
     Result is BASE32 encoded (uppercase, no padding), consistent with Document.sha256.
 
-    Excluded from hash: description, class_name.
+    Excluded from hash: summary, mime_type, class_name.
     """
     h = hashlib.sha256()
 
     _hash_field(h, doc.name.encode("utf-8"))
+    _hash_field(h, doc.description.encode("utf-8"))
     _hash_field(h, doc.content)
 
     # derived_from group (sorted for order-independence)
@@ -48,11 +51,12 @@ def compute_document_sha256(doc: _Hashable) -> DocumentSha256:
     for trigger in sorted_triggers:
         _hash_field(h, trigger.encode("utf-8"))
 
-    # Attachments group (sorted by name)
+    # Attachments group (sorted by name, includes description)
     sorted_atts = sorted(doc.attachments, key=lambda a: a.name)
     _hash_field(h, str(len(sorted_atts)).encode("ascii"))
     for att in sorted_atts:
         _hash_field(h, att.name.encode("utf-8"))
+        _hash_field(h, att.description.encode("utf-8"))
         _hash_field(h, att.content)
 
     return DocumentSha256(b32encode(h.digest()).decode("ascii").upper().rstrip("=")[:26])

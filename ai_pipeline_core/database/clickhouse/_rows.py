@@ -16,6 +16,7 @@ from ai_pipeline_core.logger._types import LogRecord
 
 __all__ = [
     "BLOB_COLUMNS",
+    "BLOB_SELECT_COLUMNS",
     "DOCUMENT_COLUMNS",
     "blob_to_row",
     "document_to_row",
@@ -47,6 +48,14 @@ DOCUMENT_COLUMNS = (
 BLOB_COLUMNS = (
     "content_sha256",
     "content",
+)
+
+# SELECT uses hex(content) so clickhouse_connect always returns a hex string,
+# avoiding silent corruption of non-UTF-8 binary (the driver hex-encodes or
+# latin-1 decodes raw bytes unpredictably). row_to_blob decodes back with bytes.fromhex().
+BLOB_SELECT_COLUMNS = (
+    "content_sha256",
+    "hex(content) as content",
 )
 
 
@@ -143,12 +152,18 @@ def blob_to_row(blob: _BlobRecord) -> list[Any]:
 
 
 def row_to_blob(row: tuple[Any, ...]) -> _BlobRecord:
+    """Convert a ClickHouse result row to a _BlobRecord.
+
+    SELECT queries use hex(content) via BLOB_SELECT_COLUMNS, so content arrives as
+    a hex string that must be decoded with bytes.fromhex(). Raw bytes (from tests or
+    direct construction) are accepted as-is.
+    """
     fields = dict(zip(BLOB_COLUMNS, row, strict=True))
     content = fields["content"]
     if isinstance(content, bytes):
         fields["content"] = content
     elif isinstance(content, str):
-        fields["content"] = content.encode("utf-8")
+        fields["content"] = bytes.fromhex(content)
     else:
         fields["content"] = bytes(content)
     fields["content_sha256"] = decode_text(fields["content_sha256"])

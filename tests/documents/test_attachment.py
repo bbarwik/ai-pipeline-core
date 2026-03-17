@@ -22,13 +22,13 @@ class TestAttachmentConstruction:
         att = Attachment(name="notes.txt", content=b"Hello world")
         assert att.name == "notes.txt"
         assert att.content == b"Hello world"
-        assert att.description is None
+        assert att.description == ""
 
     def test_create_with_binary_content(self):
         att = Attachment(name="image.png", content=PNG_HEADER)
         assert att.name == "image.png"
         assert att.content == PNG_HEADER
-        assert att.description is None
+        assert att.description == ""
 
     def test_create_with_description(self):
         att = Attachment(name="screenshot.jpg", content=JPEG_HEADER, description="Homepage screenshot")
@@ -36,7 +36,7 @@ class TestAttachmentConstruction:
 
     def test_create_without_description(self):
         att = Attachment(name="file.txt", content=b"data")
-        assert att.description is None
+        assert att.description == ""
 
 
 class TestAttachmentNameValidation:

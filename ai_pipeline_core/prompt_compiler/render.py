@@ -64,7 +64,7 @@ def _render_documents_preview(spec_cls: type[PromptSpec[Any]]) -> str:
 
 def _render_documents_actual(documents: Sequence[Document]) -> str:
     """Render document listing from actual Document instances."""
-    items = [(f"[{doc.id}] {doc.name}", doc.description or "") for doc in documents]
+    items = [(f"[{doc.id}] {doc.name}", doc.description) for doc in documents]
     return _render_document_listing(items)
 
 

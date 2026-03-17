@@ -432,18 +432,20 @@ class Document[TContent: BaseModel = Any](BaseModel):
         if type(self) is Document or "[" in type(self).__name__:
             raise TypeError("Cannot instantiate Document directly — define a named subclass")
 
+        # None → default conversions for convenience (callers can pass None).
+        # Field validators handle description (None → "").
         super().__init__(
             name=name,
             content=content,
             description=description,
             summary=summary,
-            derived_from=derived_from or (),
-            triggered_by=triggered_by or (),
-            attachments=attachments or (),
+            derived_from=derived_from if derived_from is not None else (),
+            triggered_by=triggered_by if triggered_by is not None else (),
+            attachments=attachments if attachments is not None else (),
         )
 
     name: str
-    description: str | None = None
+    description: str = ""
     summary: str = ""
     content: bytes
     derived_from: tuple[str, ...] = ()
@@ -510,6 +512,14 @@ class Document[TContent: BaseModel = Any](BaseModel):
                 else:
                     hint = f"\nFIX: Use one of: {', '.join(members)}"
             raise DocumentNameError(f"Invalid filename '{name}' for {cls.__name__}. Allowed: {allowed_str}{hint}")
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, v: str | None) -> str:
+        """Normalize None to empty string. description is always str, never None."""
+        if v is None:
+            return ""
+        return v
 
     @field_validator("name")
     @classmethod
@@ -624,7 +634,7 @@ class Document[TContent: BaseModel = Any](BaseModel):
     @final
     @cached_property
     def sha256(self) -> DocumentSha256:
-        """Full SHA256 identity hash (name + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
+        """Full SHA256 identity hash (name + description + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
         return compute_document_sha256(self)
 
     @final

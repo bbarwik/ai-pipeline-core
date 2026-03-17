@@ -11,19 +11,31 @@ __all__ = [
 
 
 def hydrate_document(document_cls: type[Document], hydrated: HydratedDocument) -> Document:
-    """Build a concrete Document instance from hydrated metadata and blobs."""
-    return document_cls(
+    """Build a concrete Document instance from hydrated metadata and blobs.
+
+    Verifies the recomputed sha256 matches the stored sha256 to catch
+    data corruption (e.g. blob encoding issues, field normalization drift).
+    """
+    doc = document_cls(
         name=hydrated.record.name,
         content=hydrated.content,
-        description=hydrated.record.description or None,
+        description=hydrated.record.description,
         summary=hydrated.record.summary,
         derived_from=hydrated.record.derived_from,
         triggered_by=tuple(DocumentSha256(sha) for sha in hydrated.record.triggered_by),
         attachments=_hydrate_attachments(hydrated),
     )
+    if doc.sha256 != hydrated.record.document_sha256:
+        raise ValueError(
+            f"Document integrity check failed: '{hydrated.record.name}' ({hydrated.record.document_type}) "
+            f"stored sha256={hydrated.record.document_sha256}, recomputed sha256={doc.sha256}. "
+            "This indicates data corruption during storage or retrieval. "
+            "Check blob content integrity and ClickHouse String encoding settings."
+        )
+    return doc
 
 
-def _hydrate_attachments(hydrated: HydratedDocument) -> tuple[Attachment, ...] | None:
+def _hydrate_attachments(hydrated: HydratedDocument) -> tuple[Attachment, ...]:
     built_attachments: list[Attachment] = []
     for name, description, content_sha256 in zip(
         hydrated.record.attachment_names,
@@ -41,7 +53,7 @@ def _hydrate_attachments(hydrated: HydratedDocument) -> tuple[Attachment, ...] |
             Attachment(
                 name=name,
                 content=content,
-                description=description or None,
+                description=description,
             )
         )
-    return tuple(built_attachments) if built_attachments else None
+    return tuple(built_attachments)

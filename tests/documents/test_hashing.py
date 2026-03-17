@@ -53,11 +53,25 @@ class TestComputeDocumentSha256:
         doc2 = HashDoc.create_root(name="doc.txt", content="content", attachments=(att_b, att_a), reason="test input")
         assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
 
-    def test_description_does_not_affect_hash(self):
-        """Description is excluded from document_sha256."""
+    def test_different_description_different_hash(self):
+        """Description is included in document_sha256."""
         doc1 = HashDoc.create_root(name="a.txt", content="hello", description="desc1", reason="test input")
         doc2 = HashDoc.create_root(name="a.txt", content="hello", description="desc2", reason="test input")
+        assert compute_document_sha256(doc1) != compute_document_sha256(doc2)
+
+    def test_empty_description_deterministic(self):
+        """Empty description produces consistent hash."""
+        doc1 = HashDoc.create_root(name="a.txt", content="hello", reason="test input")
+        doc2 = HashDoc.create_root(name="a.txt", content="hello", reason="test input")
         assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
+
+    def test_attachment_description_affects_hash(self):
+        """Attachment description is included in document_sha256."""
+        att1 = Attachment(name="img.png", content=b"\x89PNG", description="screenshot")
+        att2 = Attachment(name="img.png", content=b"\x89PNG", description="thumbnail")
+        doc1 = HashDoc.create_root(name="a.txt", content="hello", attachments=(att1,), reason="test input")
+        doc2 = HashDoc.create_root(name="a.txt", content="hello", attachments=(att2,), reason="test input")
+        assert compute_document_sha256(doc1) != compute_document_sha256(doc2)
 
     def test_derived_from_affects_hash(self):
         """derived_from is included in document_sha256."""

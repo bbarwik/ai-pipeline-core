@@ -67,13 +67,13 @@ class TestSerializeAttachmentWithDescription:
         att_dict = serialized["attachments"][0]
         assert att_dict["description"] == "Homepage capture"
 
-    def test_description_none_when_absent(self):
+    def test_description_empty_when_absent(self):
         att = Attachment(name="file.txt", content=b"data")
         doc = SerFlowDoc(name="report.txt", content=b"body", attachments=(att,))
         serialized = doc.serialize_model()
 
         att_dict = serialized["attachments"][0]
-        assert att_dict["description"] is None
+        assert att_dict["description"] == ""
 
 
 class TestSerializeWithoutAttachments:

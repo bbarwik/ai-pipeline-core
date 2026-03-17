@@ -36,6 +36,7 @@ from ai_pipeline_core.database.clickhouse._connection import get_async_clickhous
 from ai_pipeline_core.database.clickhouse._ddl import BLOBS_TABLE, DOCUMENTS_TABLE, LOGS_TABLE, SPANS_TABLE
 from ai_pipeline_core.database.clickhouse._rows import (
     BLOB_COLUMNS,
+    BLOB_SELECT_COLUMNS,
     DOCUMENT_COLUMNS,
     blob_to_row,
     document_to_row,
@@ -414,7 +415,7 @@ class ClickHouseDatabase:
 
     async def get_blob(self, content_sha256: str) -> _BlobRecord | None:
         result = await self._query(
-            f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} WHERE content_sha256 = {{content_sha256:String}} LIMIT 1",
+            f"SELECT {', '.join(BLOB_SELECT_COLUMNS)} FROM {BLOBS_TABLE} WHERE content_sha256 = {{content_sha256:String}} LIMIT 1",
             parameters={"content_sha256": content_sha256},
         )
         if not result.result_rows:
@@ -426,7 +427,7 @@ class ClickHouseDatabase:
         if not unique_shas:
             return {}
         result = await self._query(
-            f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} WHERE content_sha256 IN {{content_sha256s:Array(String)}}",
+            f"SELECT {', '.join(BLOB_SELECT_COLUMNS)} FROM {BLOBS_TABLE} WHERE content_sha256 IN {{content_sha256s:Array(String)}}",
             parameters={"content_sha256s": unique_shas},
         )
         return {blob.content_sha256: blob for blob in (row_to_blob(tuple(row)) for row in result.result_rows)}

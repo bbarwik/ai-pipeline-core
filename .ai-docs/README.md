@@ -297,7 +297,7 @@ class Attachment(BaseModel):
     SERIALIZE_METADATA_KEYS: ClassVar[frozenset[str]] = frozenset({'mime_type', 'size'})
     name: str
     content: bytes
-    description: str | None = None
+    description: str = ''
 
     # Methods
     @property
@@ -328,7 +328,7 @@ class Document(BaseModel):
     FILES: ClassVar[type[StrEnum] | None] = None  # Allowed filenames enum. Define as nested ``class FILES(StrEnum)`` or assign an external StrEnum subclass.
     publicly_visible: ClassVar[bool] = False  # Whether this document type should be displayed in frontend dashboards.
     name: str
-    description: str | None = None
+    description: str = ''
     summary: str = ''
     content: bytes
     derived_from: tuple[str, ...] = ()  # Content provenance: documents and references this document's content was directly
@@ -371,7 +371,7 @@ class Document(BaseModel):
         """Content parsed against the declared generic type parameter. Cached."""
     @property
     def sha256(self) -> DocumentSha256: ...
-        """Full SHA256 identity hash (name + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
+        """Full SHA256 identity hash (name + description + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
     @property
     def size(self) -> int: ...
         """Total size of content + attachments in bytes."""

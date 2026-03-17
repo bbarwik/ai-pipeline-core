@@ -41,7 +41,7 @@ class Attachment(BaseModel):
     SERIALIZE_METADATA_KEYS: ClassVar[frozenset[str]] = frozenset({"mime_type", "size"})
     name: str
     content: bytes
-    description: str | None = None
+    description: str = ""
 
     @property
     def is_image(self) -> bool:
@@ -97,7 +97,7 @@ class Document(BaseModel):
     FILES: ClassVar[type[StrEnum] | None] = None  # Allowed filenames enum. Define as nested ``class FILES(StrEnum)`` or assign an external StrEnum subclass.
     publicly_visible: ClassVar[bool] = False  # Whether this document type should be displayed in frontend dashboards.
     name: str
-    description: str | None = None
+    description: str = ""
     summary: str = ""
     content: bytes
     derived_from: tuple[str, ...] = ()  # Content provenance: documents and references this document's content was directly
@@ -120,14 +120,16 @@ class Document(BaseModel):
         if type(self) is Document or "[" in type(self).__name__:
             raise TypeError("Cannot instantiate Document directly — define a named subclass")
 
+        # None → default conversions for convenience (callers can pass None).
+        # Field validators handle description (None → "").
         super().__init__(
             name=name,
             content=content,
             description=description,
             summary=summary,
-            derived_from=derived_from or (),
-            triggered_by=triggered_by or (),
-            attachments=attachments or (),
+            derived_from=derived_from if derived_from is not None else (),
+            triggered_by=triggered_by if triggered_by is not None else (),
+            attachments=attachments if attachments is not None else (),
         )
 
     @cached_property
@@ -213,7 +215,7 @@ class Document(BaseModel):
     @final
     @cached_property
     def sha256(self) -> DocumentSha256:
-        """Full SHA256 identity hash (name + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
+        """Full SHA256 identity hash (name + description + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
         return compute_document_sha256(self)
 
     @final
@@ -730,6 +732,18 @@ def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
 
 ## Examples
 
+**Attachment description affects hash** (`tests/documents/test_hashing.py:68`)
+
+```python
+def test_attachment_description_affects_hash(self):
+    """Attachment description is included in document_sha256."""
+    att1 = Attachment(name="img.png", content=b"\x89PNG", description="screenshot")
+    att2 = Attachment(name="img.png", content=b"\x89PNG", description="thumbnail")
+    doc1 = HashDoc.create_root(name="a.txt", content="hello", attachments=(att1,), reason="test input")
+    doc2 = HashDoc.create_root(name="a.txt", content="hello", attachments=(att2,), reason="test input")
+    assert compute_document_sha256(doc1) != compute_document_sha256(doc2)
+```
+
 **Attachment mime type** (`tests/documents/test_document_core.py:929`)
 
 ```python
@@ -788,18 +802,6 @@ def test_document_no_detected_mime_type(self):
     """Document has no detected_mime_type attribute (renamed to mime_type)."""
     doc = ConcreteTestDocument.create_root(name="test.txt", content="hello", reason="test input")
     assert not hasattr(doc, "detected_mime_type")
-```
-
-**Document type name** (`tests/documents/test_document_core.py:300`)
-
-```python
-def test_document_type_name(self):
-    """Test document class name is accessible."""
-    flow_doc = ConcreteTestDocument(name="test.txt", content=b"test")
-    assert type(flow_doc).__name__ == "ConcreteTestDocument"
-
-    task_doc = ConcreteTestTaskDoc(name="test.txt", content=b"test")
-    assert type(task_doc).__name__ == "ConcreteTestTaskDoc"
 ```
 
 
