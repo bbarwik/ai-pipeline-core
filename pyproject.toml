@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.16.0"
+version = "0.16.1"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -174,6 +174,8 @@ max-public-methods = 30
 "ai_pipeline_core/prompt_compiler/cli.py" = ["T201", "C901", "PLR0912", "PLR0915", "TID251"]
 "ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046", "BLE001", "TID251", "ARG001"]
 "ai_pipeline_core/deployment/_prefect.py" = ["TID251", "BLE001", "PLR0917"]
+"ai_pipeline_core/deployment/_deployment_runtime.py" = ["TID251"]
+"ai_pipeline_core/pipeline/_flow.py" = ["TID251"]
 "ai_pipeline_core/pipeline/limits.py" = ["BLE001", "ASYNC109", "TID251"]
 "tests/pipeline/test_limits.py" = ["PLC2801"]
 "ai_pipeline_core/deployment/deploy.py" = ["T20", "PLC0415", "PLC2701", "S404", "S602", "S603", "ASYNC", "C901", "PLR0912", "BLE001", "TID251"]
@@ -198,7 +200,7 @@ max-public-methods = 30
 "ai_pipeline_core/deployment/_resolve.py" = ["PLC0415", "C901", "PLR0915", "BLE001"]
 "ai_pipeline_core/_llm_core/_validation.py" = ["BLE001"]
 "ai_pipeline_core/llm/_images.py" = ["PLR0917", "BLE001"]
-"ai_pipeline_core/pipeline/_task.py" = ["ARG003", "PLR0914", "PLR0915", "PLC2801"]
+"ai_pipeline_core/pipeline/_task.py" = ["ARG003", "PLR0914", "PLR0915", "PLC2801", "TID251"]
 "ai_pipeline_core/pipeline/_type_validation.py" = ["BLE001"]
 "ai_pipeline_core/deployment/_types.py" = ["RUF029"]
 "ai_pipeline_core/replay/types.py" = ["PLC0415"]
@@ -292,7 +294,7 @@ ignore-docstrings = true
 ignore-signatures = true
 
 [tool.bumpversion]
-current_version = "0.15.2"
+current_version = "0.16.1"
 commit = true
 tag = true
 tag_name = "v{new_version}"

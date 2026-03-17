@@ -29,6 +29,10 @@ from types import MappingProxyType
 from typing import Any, ClassVar, cast
 from uuid import UUID, uuid7
 
+from prefect import task as _prefect_task
+from prefect.cache_policies import NONE as _PREFECT_NO_CACHE
+from prefect.context import FlowRunContext as _FlowRunContext
+
 from ai_pipeline_core._lifecycle_events import DocumentRef, TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent
 from ai_pipeline_core._llm_core import CoreMessage, Role
 from ai_pipeline_core._llm_core import generate as core_generate
@@ -124,6 +128,7 @@ class PipelineTask:
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
     _run_spec: ClassVar[_TaskRunSpec]
+    _prefect_task_fn: ClassVar[Any] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -141,6 +146,7 @@ class PipelineTask:
                 raise TypeError(f"PipelineTask '{cls.__name__}' must define @classmethod async def run(cls, ...) or inherit a validated run() implementation.")
             cls.input_document_types = list(inherited_spec.input_document_types)
             cls.output_document_types = list(inherited_spec.output_document_types)
+            cls._prefect_task_fn = cls._build_prefect_task()
             return
 
         spec = cls._validate_run_signature(own_run)
@@ -148,6 +154,7 @@ class PipelineTask:
         cls.input_document_types = list(spec.input_document_types)
         cls.output_document_types = list(spec.output_document_types)
         cls.run = classmethod(cls._build_run_wrapper(spec))
+        cls._prefect_task_fn = cls._build_prefect_task()
 
     @classmethod
     def _validate_class_config(cls) -> None:
@@ -284,6 +291,31 @@ class PipelineTask:
         wrapped.__doc__ = spec.user_run.__doc__
         wrapped.__signature__ = cls._public_signature()  # type: ignore[attr-defined]
         return update_wrapper(wrapped, spec.user_run)
+
+    @classmethod
+    def _build_prefect_task(cls) -> Any:
+        """Build a Prefect Task object wrapping the user's run() implementation.
+
+        Created at class definition time. Prefect 3.x Task.__init__ is pure Python
+        with no server registration — safe at import time.
+        Retries and timeouts are delegated to Prefect's engine.
+        Caching is disabled (handled by the framework's ClickHouse cache).
+        """
+        task_cls = cls
+
+        async def _prefect_body(arguments: dict[str, Any]) -> tuple[Document[Any], ...]:
+            return await task_cls._run_and_normalize(arguments)
+
+        return _prefect_task(
+            name=cls.name,
+            task_run_name=cls.name,
+            retries=cls.retries,
+            retry_delay_seconds=cls.retry_delay_seconds,
+            timeout_seconds=cls.timeout_seconds,
+            persist_result=False,
+            cache_policy=_PREFECT_NO_CACHE,
+            log_prints=False,
+        )(_prefect_body)
 
     @classmethod
     async def _persist_documents(
@@ -649,7 +681,11 @@ class PipelineTask:
             step=flow_step,
         )
         try:
-            documents, attempt = await cls._run_with_retries(arguments)
+            if _FlowRunContext.get() is not None and cls._prefect_task_fn is not None:
+                documents = await cls._prefect_task_fn(dict(arguments))
+                attempt = 0
+            else:
+                documents, attempt = await cls._run_with_retries(arguments)
 
             await cls._generate_summaries(documents)
             persisted_docs = await cls._persist_documents(documents)

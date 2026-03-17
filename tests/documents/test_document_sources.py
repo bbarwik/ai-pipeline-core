@@ -22,14 +22,14 @@ class TestDocumentDerivedFrom:
         """Test creating document with derived_from."""
         derived_from = [
             "https://example.com",
-            "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",  # Valid SHA256
+            "P3AEMA2PSYILKFYVBUALJLMIYW",  # Valid SHA256
         ]
 
         doc = SampleFlowDoc(name="test.txt", content=b"test content", derived_from=derived_from)
 
         assert len(doc.derived_from) == 2
         assert doc.derived_from[0] == "https://example.com"
-        assert doc.derived_from[1] == "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ"
+        assert doc.derived_from[1] == "P3AEMA2PSYILKFYVBUALJLMIYW"
 
     def test_default_empty_derived_from(self):
         """Test that derived_from defaults to empty tuple."""
@@ -60,13 +60,13 @@ class TestDocumentDerivedFrom:
             content=b"test",
             derived_from=(
                 "https://example.com/manual-input",
-                "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
+                "P3AEMA2PSYILKFYVBUALJLMIYW",
             ),
         )
 
         assert len(doc.derived_from) == 2
         assert doc.derived_from[0] == "https://example.com/manual-input"
-        assert doc.derived_from[1] == "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ"
+        assert doc.derived_from[1] == "P3AEMA2PSYILKFYVBUALJLMIYW"
 
     def test_create_with_duplicate_derived_from(self):
         """Test creating document with duplicate derived_from entries."""
@@ -78,22 +78,22 @@ class TestDocumentDerivedFrom:
     def test_get_content_documents(self):
         """Test getting document hash entries from derived_from."""
         derived_from = [
-            "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
+            "P3AEMA2PSYILKFYVBUALJLMIYW",
             "https://example.com",
-            "DSITTXMIGUJ5CHKJEVTW3IOQFYJ3LHOXZFWZBN7FH7AR3DGWTAXA",
+            "DSITTXMIGUJ5CHKJEVTW3IOQFY",
         ]
 
         doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=derived_from)
 
         hashes = doc.content_documents
         assert len(hashes) == 2
-        assert "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ" in hashes
-        assert "DSITTXMIGUJ5CHKJEVTW3IOQFYJ3LHOXZFWZBN7FH7AR3DGWTAXA" in hashes
+        assert "P3AEMA2PSYILKFYVBUALJLMIYW" in hashes
+        assert "DSITTXMIGUJ5CHKJEVTW3IOQFY" in hashes
 
     def test_get_content_references(self):
         """Test getting reference entries from derived_from."""
         derived_from = [
-            "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
+            "P3AEMA2PSYILKFYVBUALJLMIYW",
             "https://example.com/ref1",
             "https://example.com/ref2",
         ]
@@ -135,7 +135,7 @@ class TestDocumentDerivedFrom:
         """Test serialization includes derived_from."""
         derived_from = [
             "https://example.com/ref1",
-            "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
+            "P3AEMA2PSYILKFYVBUALJLMIYW",
         ]
 
         doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=derived_from)
@@ -144,7 +144,7 @@ class TestDocumentDerivedFrom:
         assert "derived_from" in data
         assert len(data["derived_from"]) == 2
         assert data["derived_from"][0] == "https://example.com/ref1"
-        assert data["derived_from"][1] == "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ"
+        assert data["derived_from"][1] == "P3AEMA2PSYILKFYVBUALJLMIYW"
 
     def test_from_dict_with_derived_from(self):
         """Test deserialization includes derived_from."""
@@ -153,14 +153,14 @@ class TestDocumentDerivedFrom:
             "content": "test content",
             "derived_from": [
                 "https://example.com/ref1",
-                "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
+                "P3AEMA2PSYILKFYVBUALJLMIYW",
             ],
         }
 
         doc = SampleFlowDoc.from_dict(data)
         assert len(doc.derived_from) == 2
         assert doc.derived_from[0] == "https://example.com/ref1"
-        assert doc.derived_from[1] == "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ"
+        assert doc.derived_from[1] == "P3AEMA2PSYILKFYVBUALJLMIYW"
 
     def test_derived_from_immutable(self):
         """Test that derived_from tuple itself is immutable."""
@@ -185,7 +185,7 @@ class TestDocumentDerivedFrom:
         derived_from = [
             "https://example.com/low-entropy-test",  # URL, not a document hash
             "https://example.com",
-            "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",  # Real hash
+            "P3AEMA2PSYILKFYVBUALJLMIYW",  # Real hash
         ]
 
         doc = SampleFlowDoc(name="test.txt", content=b"test", derived_from=derived_from)
@@ -193,7 +193,7 @@ class TestDocumentDerivedFrom:
         # content_documents should only return the real hash
         hashes = doc.content_documents
         assert len(hashes) == 1
-        assert hashes[0] == "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ"
+        assert hashes[0] == "P3AEMA2PSYILKFYVBUALJLMIYW"
 
         # content_references should return the low-entropy string and URL
         refs = doc.content_references
@@ -278,7 +278,7 @@ class TestDocumentDerivedFrom:
         """Test full roundtrip serialization preserves derived_from."""
         derived_from = [
             "https://example.com/data",
-            "P3AEMA2PSYILKFYVBUALJLMIYWVZIS2QDI3S5VTMD2X7SOODF2YQ",
+            "P3AEMA2PSYILKFYVBUALJLMIYW",
             "https://example.com/local-file.csv",
         ]
 
@@ -325,7 +325,7 @@ class TestDocumentSHA256WithAttachments:
         doc1 = SampleFlowDoc(name="test.txt", content=content)
         doc2 = SampleFlowDoc(name="test.txt", content=content)
         assert doc1.sha256 == doc2.sha256
-        assert len(doc1.sha256) == 52  # base32 SHA256 length without padding
+        assert len(doc1.sha256) == 26  # base32 SHA256 prefix
 
     def test_sha256_differs_with_attachment(self):
         """SHA256 changes when attachments are added."""

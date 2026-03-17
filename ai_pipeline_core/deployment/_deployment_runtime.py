@@ -8,6 +8,8 @@ from datetime import timedelta
 from typing import Any, cast
 from uuid import UUID
 
+from prefect.context import FlowRunContext as _FlowRunContext
+
 from ai_pipeline_core.database import SpanKind, SpanRecord, SpanStatus
 from ai_pipeline_core.database._documents import load_documents_from_database
 from ai_pipeline_core.documents import Document
@@ -170,7 +172,11 @@ async def _execute_flow_with_context(
                 total_steps=total_steps,
             )
             try:
-                raw_flow_result = cast(object, await flow_instance.run(tuple(current_docs), options))
+                prefect_flow_fn = flow_class._prefect_flow_fn
+                if _FlowRunContext.get() is not None and prefect_flow_fn is not None:
+                    raw_flow_result = cast(object, await prefect_flow_fn(flow_instance, tuple(current_docs), options))
+                else:
+                    raw_flow_result = cast(object, await flow_instance.run(tuple(current_docs), options))
                 if not isinstance(raw_flow_result, tuple):
                     raise TypeError(
                         f"PipelineFlow '{flow_class.__name__}' returned {type(raw_flow_result).__name__}. "

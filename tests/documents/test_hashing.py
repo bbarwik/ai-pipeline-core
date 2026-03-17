@@ -27,7 +27,7 @@ class TestComputeDocumentSha256:
         h = compute_document_sha256(doc)
         assert h.isascii()
         assert h == h.upper()
-        assert len(h) == 52  # SHA256 in base32 without padding
+        assert len(h) == 26  # SHA256 in base32, truncated to 26 chars
 
     def test_different_name_different_hash(self):
         doc1 = HashDoc.create_root(name="a.txt", content="hello", reason="test input")
@@ -126,11 +126,11 @@ class TestComputeContentSha256:
         h = compute_content_sha256(b"hello")
         assert h.isascii()
         assert h == h.upper()
-        assert len(h) == 52
+        assert len(h) == 26
 
     def test_different_content(self):
         assert compute_content_sha256(b"hello") != compute_content_sha256(b"world")
 
     def test_empty_content(self):
         h = compute_content_sha256(b"")
-        assert len(h) == 52
+        assert len(h) == 26

@@ -53,16 +53,16 @@ def sanitize_url(url: str) -> str:
     return sanitized
 
 
-_MIN_HASH_UNIQUE_CHARS = 8
+_MIN_HASH_UNIQUE_CHARS = 6
 
 
 def is_document_sha256(value: str) -> bool:
-    """Check if a string is a valid base32-encoded SHA256 hash (52 chars, A-Z2-7, sufficient entropy)."""
-    if not isinstance(value, str) or len(value) != 52:  # pyright: ignore[reportUnnecessaryIsInstance]
+    """Check if a string is a valid base32-encoded SHA256 hash (26 chars, A-Z2-7, sufficient entropy)."""
+    if not isinstance(value, str) or len(value) != 26:  # pyright: ignore[reportUnnecessaryIsInstance]
         return False
 
     # Check if all characters are valid base32 (A-Z, 2-7)
-    if not re.match(r"^[A-Z2-7]{52}$", value):
+    if not re.match(r"^[A-Z2-7]{26}$", value):
         return False
 
     unique_chars = len(set(value))

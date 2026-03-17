@@ -2,7 +2,7 @@
 # CLASSES: LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
 # DEPENDS: BaseModel, StrEnum
 # PURPOSE: Pipeline framework primitives.
-# VERSION: 0.16.0
+# VERSION: 0.16.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -146,6 +146,7 @@ class PipelineFlow:
         cls.input_document_types = input_types
         cls.output_document_types = output_types
         cls.task_graph = cls._parse_task_graph(run_fn)
+        cls._prefect_flow_fn = cls._build_prefect_flow()
 
     def get_params(self) -> dict[str, Any]:
         """Return constructor params for flow plan serialization."""
@@ -246,6 +247,7 @@ class PipelineTask:
                 raise TypeError(f"PipelineTask '{cls.__name__}' must define @classmethod async def run(cls, ...) or inherit a validated run() implementation.")
             cls.input_document_types = list(inherited_spec.input_document_types)
             cls.output_document_types = list(inherited_spec.output_document_types)
+            cls._prefect_task_fn = cls._build_prefect_task()
             return
 
         spec = cls._validate_run_signature(own_run)
@@ -253,6 +255,7 @@ class PipelineTask:
         cls.input_document_types = list(spec.input_document_types)
         cls.output_document_types = list(spec.output_document_types)
         cls.run = classmethod(cls._build_run_wrapper(spec))
+        cls._prefect_task_fn = cls._build_prefect_task()
 ```
 
 ## Functions

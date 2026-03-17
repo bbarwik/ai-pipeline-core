@@ -8,6 +8,8 @@ import textwrap
 from collections.abc import Callable
 from typing import Any, ClassVar, cast, get_origin
 
+from prefect import flow as _prefect_flow
+
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._task import PipelineTask
@@ -117,6 +119,7 @@ class PipelineFlow:
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
     task_graph: ClassVar[list[tuple[str, str]]] = []
+    _prefect_flow_fn: ClassVar[Any] = None
 
     async def run(self, documents: tuple[Any, ...], options: Any) -> tuple[Any, ...]:
         """Execute the flow.
@@ -138,6 +141,7 @@ class PipelineFlow:
         cls.input_document_types = input_types
         cls.output_document_types = output_types
         cls.task_graph = cls._parse_task_graph(run_fn)
+        cls._prefect_flow_fn = cls._build_prefect_flow()
 
     @classmethod
     def _validate_class_config(cls) -> None:
@@ -244,6 +248,27 @@ class PipelineFlow:
     @classmethod
     def _parse_task_graph(cls, run_fn: Callable[..., Any]) -> list[tuple[str, str]]:
         return _parse_task_graph_from_source(run_fn)
+
+    @classmethod
+    def _build_prefect_flow(cls) -> Any:
+        """Build a Prefect Flow object wrapping the user's run() as a sub-flow.
+
+        Created at class definition time. Prefect 3.x Flow.__init__ is pure Python
+        with no server registration — safe at import time.
+        The flow instance is passed as a parameter so the same Prefect Flow object
+        works for multiple instances of the same class (e.g., different constructor kwargs).
+        """
+
+        async def _prefect_body(flow_instance: PipelineFlow, documents: tuple[Any, ...], options: Any) -> tuple[Any, ...]:
+            return await flow_instance.run(documents, options)
+
+        return _prefect_flow(
+            name=cls.name,
+            flow_run_name=cls.name,
+            validate_parameters=False,
+            persist_result=False,
+            log_prints=False,
+        )(_prefect_body)
 
     def __init__(self, **kwargs: Any) -> None:
         """Constructor for per-flow instance configuration."""

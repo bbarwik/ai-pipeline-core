@@ -55,12 +55,12 @@ def compute_document_sha256(doc: _Hashable) -> DocumentSha256:
         _hash_field(h, att.name.encode("utf-8"))
         _hash_field(h, att.content)
 
-    return DocumentSha256(b32encode(h.digest()).decode("ascii").upper().rstrip("="))
+    return DocumentSha256(b32encode(h.digest()).decode("ascii").upper().rstrip("=")[:26])
 
 
 def compute_content_sha256(content: bytes) -> str:
     """Compute SHA256 of raw content bytes, BASE32 encoded."""
-    return b32encode(hashlib.sha256(content).digest()).decode("ascii").upper().rstrip("=")
+    return b32encode(hashlib.sha256(content).digest()).decode("ascii").upper().rstrip("=")[:26]
 
 
 def _hash_field(h: Any, data: bytes) -> None:
