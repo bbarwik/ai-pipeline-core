@@ -1,7 +1,7 @@
 """Dev CLI — enforces correct test/lint/check workflows.
 
 Usage:
-    dev test [SCOPE] [--lf] [--full] [--integration] [--all] [--force]
+    dev test [SCOPE] [--lf] [--full] [--integration] [--all] [--force] [--test-timeout N]
     dev lint [--fix]
     dev format
     dev typecheck
@@ -90,7 +90,8 @@ def cmd_test(args: argparse.Namespace) -> int:
         elif not args.scope and cfg.coverage_fail_under is not None:
             cmd.append(f"--cov-fail-under={cfg.coverage_fail_under}")
 
-    cmd.extend(["--tb=short", "--no-header", "-q", f"--timeout={TEST_TIMEOUT_SECONDS}"])
+    timeout = args.test_timeout if args.test_timeout is not None else TEST_TIMEOUT_SECONDS
+    cmd.extend(["--tb=short", "--no-header", "-q", f"--timeout={timeout}"])
     cmd.extend(scope_dirs)
 
     # Include coverage in label and key to differentiate runs
@@ -350,6 +351,7 @@ Commands and when to use them:
   dev test --coverage --threshold 90  Override coverage threshold.
   dev test --integration To run integration tests explicitly.
   dev test --all         To run everything (unit + integration).
+  dev test --test-timeout 10  Override per-test timeout (default: 300s).
 
   dev format             After writing code. Auto-fixes lint and formatting issues.
   dev lint               To check for lint errors without fixing them.
@@ -434,6 +436,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_test.add_argument("--available", action="store_true", help="Run tests for all available infrastructure")
     p_test.add_argument("--coverage", action="store_true", help="Run with code coverage (disables testmon, no scope implies --full)")
     p_test.add_argument("--threshold", type=int, default=None, help="Override coverage fail-under threshold")
+    p_test.add_argument("--test-timeout", type=int, default=None, help=f"Per-test timeout in seconds (default: {TEST_TIMEOUT_SECONDS})")
     p_test.add_argument(
         "--force", action="store_true", help="Force rerun even if no changes (rarely needed — testmon and idempotency handle this automatically)"
     )

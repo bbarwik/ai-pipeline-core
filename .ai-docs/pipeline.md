@@ -2,7 +2,7 @@
 # CLASSES: LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
 # DEPENDS: BaseModel, StrEnum
 # PURPOSE: Pipeline framework primitives.
-# VERSION: 0.16.3
+# VERSION: 0.17.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -106,6 +106,8 @@ class PipelineFlow:
 
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
+    retries: ClassVar[int] = 0
+    retry_delay_seconds: ClassVar[int] = DEFAULT_FLOW_RETRY_DELAY_SECONDS
     BASE_COST_USD: ClassVar[float] = 0.0
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
@@ -220,8 +222,8 @@ class PipelineTask:
 
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
-    retries: ClassVar[int] = 0
-    retry_delay_seconds: ClassVar[int] = 20
+    retries: ClassVar[int] = DEFAULT_TASK_RETRIES
+    retry_delay_seconds: ClassVar[int] = DEFAULT_TASK_RETRY_DELAY_SECONDS
     timeout_seconds: ClassVar[int | None] = None
     cacheable: ClassVar[bool] = False
     cache_version: ClassVar[int] = 1
@@ -568,7 +570,7 @@ async def test_add_cost_reaches_span_context(self) -> None:
             assert span_ctx._added_cost_usd == pytest.approx(0.01)
 ```
 
-**Collect tasks accepts list** (`tests/pipeline/test_parallel_primitives.py:124`)
+**Collect tasks accepts list** (`tests/pipeline/test_parallel_primitives.py:126`)
 
 ```python
 @pytest.mark.asyncio

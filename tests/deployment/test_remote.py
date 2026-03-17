@@ -42,6 +42,8 @@ class SampleResult(DeploymentResult):
 class SamplePipeline(PipelineDeployment[FlowOptions, SampleResult]):
     """Pipeline for testing."""
 
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [SampleFlow()]
 

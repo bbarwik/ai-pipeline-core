@@ -44,6 +44,8 @@ class WireToOutputTask(PipelineTask):
 
 
 class WireFailingTask(PipelineTask):
+    retries = 0
+
     @classmethod
     async def run(cls, documents: tuple[WireMiddleDoc, ...]) -> tuple[WireOutputDoc, ...]:
         raise RuntimeError("deliberate test failure")
@@ -82,6 +84,8 @@ class WireResult(DeploymentResult):
 
 
 class WireTwoStageDeployment(PipelineDeployment[FlowOptions, WireResult]):
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> Sequence[PipelineFlow]:
         return [WireFlowOne(), WireFlowTwo()]
 
@@ -91,6 +95,8 @@ class WireTwoStageDeployment(PipelineDeployment[FlowOptions, WireResult]):
 
 
 class WireFailingDeployment(PipelineDeployment[FlowOptions, WireResult]):
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> Sequence[PipelineFlow]:
         return [WireFlowOne(), WireFailingFlowTwo()]
 
@@ -100,6 +106,8 @@ class WireFailingDeployment(PipelineDeployment[FlowOptions, WireResult]):
 
 
 class WireConversationDeployment(PipelineDeployment[FlowOptions, WireResult]):
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> Sequence[PipelineFlow]:
         return [WireConversationFlow()]
 

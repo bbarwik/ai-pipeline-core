@@ -33,6 +33,8 @@ class _PassthroughTask(PipelineTask):
 
 
 class _FailingTask(PipelineTask):
+    retries = 0
+
     @classmethod
     async def run(cls, documents: tuple[_InDoc, ...]) -> tuple[_OutDoc, ...]:
         raise ValueError("task failed deliberately")

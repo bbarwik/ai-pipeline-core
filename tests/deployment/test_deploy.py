@@ -166,6 +166,8 @@ class _DeployTestFlow(PipelineFlow):
 
 
 class _DeploySchemaTestDeployment(PipelineDeployment[_DeployTestOptions, _DeployTestResult]):
+    flow_retries = 0
+
     def build_flows(self, options: _DeployTestOptions) -> list[PipelineFlow]:
         return [_DeployTestFlow()]
 

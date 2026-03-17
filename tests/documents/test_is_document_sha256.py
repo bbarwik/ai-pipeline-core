@@ -8,6 +8,14 @@ import pytest
 from ai_pipeline_core.documents import Document, is_document_sha256
 
 
+class _Sha256SampleDoc(Document):
+    """Document type used for SHA256 validation tests."""
+
+
+class _Sha256DerivedSampleDoc(Document):
+    """Document type used for SHA256 derived-document integration test."""
+
+
 @pytest.fixture(autouse=True)
 def _suppress_registration():
     return
@@ -20,10 +28,7 @@ class TestIsDocumentSha256:
         """Test with a real document SHA256 hash."""
 
         # Create a real document and get its hash
-        class SampleDoc(Document):
-            pass
-
-        doc = SampleDoc.create_root(name="test.txt", content="test content", reason="test input")
+        doc = _Sha256SampleDoc.create_root(name="test.txt", content="test content", reason="test input")
         assert is_document_sha256(doc.sha256)
 
     def test_various_real_hashes(self):
@@ -138,16 +143,13 @@ class TestIsDocumentSha256:
         """Test that it works correctly with document derived_from field."""
 
         # Create a document and use its hash
-        class SampleDoc(Document):
-            pass
-
-        doc = SampleDoc.create_root(name="test.txt", content="integration test", reason="test input")
+        doc = _Sha256DerivedSampleDoc.create_root(name="test.txt", content="integration test", reason="test input")
 
         # The hash should be valid
         assert is_document_sha256(doc.sha256)
 
         # Create another document with the first as source
-        doc2 = SampleDoc(
+        doc2 = _Sha256DerivedSampleDoc(
             name="derived.txt",
             content=b"derived from first",
             derived_from=(doc.sha256, "https://example.com/manual-reference"),

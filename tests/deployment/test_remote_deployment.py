@@ -67,6 +67,8 @@ class InlineRemoteChildFlow(PipelineFlow):
 
 
 class InlineRemoteChildDeployment(PipelineDeployment[FlowOptions, InlineRemoteChildResult]):
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         _ = options
         return [InlineRemoteChildFlow()]

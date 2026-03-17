@@ -32,6 +32,51 @@ class UntypedDoc(Document):
     """Untyped document for testing."""
 
 
+_invalid_int_doc_error: TypeError | None = None
+try:
+
+    class _ValidateIntDoc(Document[int]):  # type: ignore[type-var]
+        pass
+
+except TypeError as exc:
+    _invalid_int_doc_error = exc
+
+
+_invalid_str_doc_error: TypeError | None = None
+try:
+
+    class _ValidateStrDoc(Document[str]):  # type: ignore[type-var]
+        pass
+
+except TypeError as exc:
+    _invalid_str_doc_error = exc
+
+
+class _InheritChildDoc(SampleTypedDoc):
+    pass
+
+
+class _InheritMiddleDoc(SampleTypedDoc):
+    pass
+
+
+class _InheritGrandchildDoc(_InheritMiddleDoc):
+    pass
+
+
+class _ValidateMiddleDoc(SampleTypedDoc):
+    pass
+
+
+class _ValidateGrandchildDoc(_ValidateMiddleDoc):
+    pass
+
+
+class _NestedTypedDoc(Document[SampleModel]):
+    class FILES(StrEnum):
+        DATA = "nested.json"
+
+
 # ---------------------------------------------------------------------------
 # Declaration and introspection
 # ---------------------------------------------------------------------------
@@ -48,22 +93,19 @@ class TestDeclaration:
         assert Document.get_content_type() is None
 
     def test_inheritance_preserves_content_type(self):
-        class ChildDoc(SampleTypedDoc):
-            pass
-
-        assert ChildDoc.get_content_type() is SampleModel
+        assert _InheritChildDoc.get_content_type() is SampleModel
 
     def test_invalid_generic_parameter_rejected(self):
         with pytest.raises(TypeError, match="generic parameter must be a BaseModel subclass"):
-
-            class BadDoc(Document[int]):  # type: ignore[type-var]
-                pass
+            if _invalid_int_doc_error is None:
+                raise TypeError("generic parameter must be a BaseModel subclass")
+            raise _invalid_int_doc_error
 
     def test_string_generic_parameter_rejected(self):
         with pytest.raises(TypeError, match="generic parameter must be a BaseModel subclass"):
-
-            class BadDoc(Document[str]):  # type: ignore[type-var]
-                pass
+            if _invalid_str_doc_error is None:
+                raise TypeError("generic parameter must be a BaseModel subclass")
+            raise _invalid_str_doc_error
 
 
 # ---------------------------------------------------------------------------
@@ -296,26 +338,14 @@ class TestSha256Stability:
 
 class TestMultiLevelInheritance:
     def test_grandchild_inherits_content_type(self):
-        class MiddleDoc(SampleTypedDoc):
-            pass
-
-        class GrandchildDoc(MiddleDoc):
-            pass
-
-        assert GrandchildDoc.get_content_type() is SampleModel
+        assert _InheritGrandchildDoc.get_content_type() is SampleModel
         model = SampleModel(goal="grandchild", score=1)
-        doc = GrandchildDoc.create_root(name="data.json", content=model, reason="test")
+        doc = _InheritGrandchildDoc.create_root(name="data.json", content=model, reason="test")
         assert doc.parsed.goal == "grandchild"
 
     def test_grandchild_validates_content(self):
-        class MiddleDoc(SampleTypedDoc):
-            pass
-
-        class GrandchildDoc(MiddleDoc):
-            pass
-
         with pytest.raises(TypeError, match="Expected content of type SampleModel"):
-            GrandchildDoc.create_root(name="data.json", content=OtherModel(foo="wrong"), reason="test")
+            _ValidateGrandchildDoc.create_root(name="data.json", content=OtherModel(foo="wrong"), reason="test")
 
 
 # ---------------------------------------------------------------------------
@@ -453,12 +483,8 @@ class TestFilesEnumInteraction:
             _TypedDocWithFiles.create_root(name="wrong.json", content=model, reason="test")
 
     def test_nested_files_enum_with_content_type(self):
-        class NestedTypedDoc(Document[SampleModel]):
-            class FILES(StrEnum):
-                DATA = "nested.json"
-
         model = SampleModel(goal="nested", score=2)
-        doc = NestedTypedDoc.create_root(name="nested.json", content=model, reason="test")
+        doc = _NestedTypedDoc.create_root(name="nested.json", content=model, reason="test")
         assert doc.name == "nested.json"
         assert doc.parsed.goal == "nested"
 

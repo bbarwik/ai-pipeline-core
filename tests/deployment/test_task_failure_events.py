@@ -18,6 +18,8 @@ class _FailOutputDoc(Document):
 
 
 class _AlwaysFailTask(PipelineTask):
+    retries = 0
+
     @classmethod
     async def run(cls, documents: tuple[_FailInputDoc, ...]) -> tuple[_FailOutputDoc, ...]:
         raise ValueError("intentional task failure")

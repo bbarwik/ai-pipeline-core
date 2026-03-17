@@ -2,7 +2,7 @@
 # CLASSES: Attachment, Document, DocumentValidationError, DocumentSizeError, DocumentNameError
 # DEPENDS: BaseModel, Exception
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.16.3
+# VERSION: 0.17.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -744,7 +744,7 @@ def test_attachment_description_affects_hash(self):
     assert compute_document_sha256(doc1) != compute_document_sha256(doc2)
 ```
 
-**Attachment mime type** (`tests/documents/test_document_core.py:929`)
+**Attachment mime type** (`tests/documents/test_document_core.py:959`)
 
 ```python
 def test_attachment_mime_type(self):
@@ -753,7 +753,7 @@ def test_attachment_mime_type(self):
     assert "text" in att.mime_type
 ```
 
-**Attachment no detected mime type** (`tests/documents/test_document_core.py:934`)
+**Attachment no detected mime type** (`tests/documents/test_document_core.py:964`)
 
 ```python
 def test_attachment_no_detected_mime_type(self):
@@ -786,7 +786,7 @@ def test_attachment_order_does_not_matter(self):
     assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
 ```
 
-**Document mime type** (`tests/documents/test_document_core.py:919`)
+**Document mime type** (`tests/documents/test_document_core.py:949`)
 
 ```python
 def test_document_mime_type(self):
@@ -795,7 +795,7 @@ def test_document_mime_type(self):
     assert doc.mime_type == "application/json"
 ```
 
-**Document no detected mime type** (`tests/documents/test_document_core.py:939`)
+**Document no detected mime type** (`tests/documents/test_document_core.py:969`)
 
 ```python
 def test_document_no_detected_mime_type(self):
@@ -1004,7 +1004,7 @@ def test_document_instantiate_base_class_raises() -> None:
         Document(name="test.txt", content=b"data")
 ```
 
-**Cannot instantiate document** (`tests/documents/test_document_core.py:124`)
+**Cannot instantiate document** (`tests/documents/test_document_core.py:138`)
 
 ```python
 def test_cannot_instantiate_document(self):
@@ -1023,7 +1023,7 @@ async def test_model_validate_blocked_on_document():
         DebugSampleDocument.model_validate({"name": "x.txt", "content": "x"})
 ```
 
-**Content plus attachments exceeding limit** (`tests/documents/test_document_core.py:1022`)
+**Content plus attachments exceeding limit** (`tests/documents/test_document_core.py:1052`)
 
 ```python
 def test_content_plus_attachments_exceeding_limit(self):

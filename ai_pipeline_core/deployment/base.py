@@ -236,6 +236,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     # Does not affect topic routing. Requires PUBSUB_PROJECT_ID + PUBSUB_TOPIC_ID. Empty = _NoopPublisher.
     pubsub_service_type: ClassVar[str] = ""
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
+    flow_retries: ClassVar[int] = 3
+    flow_retry_delay_seconds: ClassVar[int] = 30
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -798,6 +800,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     total_steps=total_steps,
                     root_id_str=root_id_str,
                     parent_task_id_str=parent_task_id_str,
+                    deployment_flow_retries=self.flow_retries,
+                    deployment_flow_retry_delay_seconds=self.flow_retry_delay_seconds,
                 )
 
                 if current_exec_ctx is not None:

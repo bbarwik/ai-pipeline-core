@@ -13,6 +13,10 @@ class VeryLongNamedDebugSampleDocument(Document):
     """Sample document with long name for testing."""
 
 
+class _SerMetaTaskDoc(Document):
+    """Sample document for task-like class_name behavior tests."""
+
+
 @pytest.fixture(autouse=True)
 def _suppress_registration():
     return
@@ -55,13 +59,9 @@ async def test_from_dict_ignores_class_name():
 @pytest.mark.asyncio
 async def test_different_document_types_have_correct_class_name():
     """Test class_name for different document types."""
-
-    class MyTaskDoc(Document):
-        pass
-
-    task_doc = MyTaskDoc(name="task.txt", content=b"task")
+    task_doc = _SerMetaTaskDoc(name="task.txt", content=b"task")
     task_serialized = task_doc.serialize_model()
-    assert task_serialized["class_name"] == "MyTaskDoc"
+    assert task_serialized["class_name"] == "_SerMetaTaskDoc"
 
 
 @pytest.mark.asyncio

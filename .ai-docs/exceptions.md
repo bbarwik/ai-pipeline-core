@@ -1,13 +1,13 @@
 # MODULE: exceptions
-# CLASSES: LLMError, OutputDegenerationError, EmptyResponseError, PipelineCoreError
+# CLASSES: LLMError, OutputDegenerationError, EmptyResponseError, PipelineCoreError, NonRetriableError
 # DEPENDS: Exception
-# VERSION: 0.16.3
+# VERSION: 0.17.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import LLMError, OutputDegenerationError, PipelineCoreError
+from ai_pipeline_core import LLMError, NonRetriableError, OutputDegenerationError, PipelineCoreError
 ```
 
 ## Public API
@@ -27,6 +27,17 @@ class EmptyResponseError(LLMError):
 
 class PipelineCoreError(Exception):
     """Base exception for all AI Pipeline Core errors."""
+
+
+class NonRetriableError(PipelineCoreError):
+    """Raised when an operation fails and must not be retried.
+
+    The retry loops in PipelineTask and PipelineFlow check for this exception
+    and stop immediately without further retry attempts.
+
+    Can wrap another exception to preserve the original cause::
+
+        raise NonRetriableError("invalid API key") from original_exc"""
 ```
 
 ## Examples

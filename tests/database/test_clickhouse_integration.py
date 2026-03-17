@@ -805,21 +805,19 @@ async def test_get_cached_completion_respects_max_age(database: ClickHouseDataba
 
 @pytest.mark.asyncio
 async def test_circuit_breaker_opens_after_consecutive_failures(clickhouse_settings: Settings) -> None:
-    from clickhouse_connect.driver.exceptions import DatabaseError as ClickHouseDatabaseError
+    from unittest.mock import AsyncMock, patch
 
-    db = ClickHouseDatabase(
-        settings=Settings(
-            clickhouse_host="invalid-host-that-does-not-exist",
-            clickhouse_port=9999,
-            clickhouse_secure=False,
-            clickhouse_connect_timeout=1,
-            clickhouse_send_receive_timeout=1,
-        )
-    )
+    db = ClickHouseDatabase(settings=clickhouse_settings)
 
-    for _ in range(3):
-        with pytest.raises((ClickHouseDatabaseError, ConnectionError, OSError)):
-            await db.get_span(uuid4())
+    with patch(
+        "ai_pipeline_core.database.clickhouse._backend.get_async_clickhouse_client",
+        new_callable=AsyncMock,
+        side_effect=ConnectionError("mock connection refused"),
+    ):
+        for _ in range(3):
+            with pytest.raises(ConnectionError, match="mock connection refused"):
+                db._client = None  # force reconnect each time
+                await db.get_span(uuid4())
 
     assert db._circuit_open is True
     with pytest.raises(ConnectionError, match="circuit breaker"):

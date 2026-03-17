@@ -2,7 +2,7 @@
 # CLASSES: DeploymentResult, FlowAction, FlowDirective, PipelineDeployment, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.16.3
+# VERSION: 0.17.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -47,6 +47,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     result_type: ClassVar[type[DeploymentResult]]
     pubsub_service_type: ClassVar[str] = ''
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
+    flow_retries: ClassVar[int] = 3
+    flow_retry_delay_seconds: ClassVar[int] = 30
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -385,7 +387,7 @@ Set ``deployment_class`` to enable inline mode (test/local):
 
 ## Examples
 
-**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:769`)
+**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:771`)
 
 ```python
 class AlphaDoc(Document):
@@ -397,6 +399,14 @@ def test_format_starts_with_base_run_id(self):
     doc = AlphaDoc.create_root(name="test.txt", content="hello", reason="test")
     derived = _derive_remote_run_id("my-project", [doc], FlowOptions())
     assert derived.startswith("my-project-")
+```
+
+**Deployment default flow retries is three** (`tests/deployment/test_flow_retries.py:222`)
+
+```python
+def test_deployment_default_flow_retries_is_three(self) -> None:
+    assert PipelineDeployment.flow_retries == 3
+    assert PipelineDeployment.flow_retry_delay_seconds == 30
 ```
 
 **Deployment result data** (`tests/deployment/test_deployment_base.py:161`)
@@ -421,7 +431,7 @@ def test_extracts_remote_deployment_params(self):
     assert params[1] is SampleResult
 ```
 
-**Two args returned by helper** (`tests/deployment/test_remote_deployment.py:124`)
+**Two args returned by helper** (`tests/deployment/test_remote_deployment.py:126`)
 
 ```python
 def test_two_args_returned_by_helper(self):
@@ -434,7 +444,7 @@ def test_two_args_returned_by_helper(self):
     assert args[1] is SimpleResult
 ```
 
-**Two params from remote deployment** (`tests/deployment/test_remote_deployment.py:716`)
+**Two params from remote deployment** (`tests/deployment/test_remote_deployment.py:718`)
 
 ```python
 def test_two_params_from_remote_deployment(self):
@@ -447,7 +457,7 @@ def test_two_params_from_remote_deployment(self):
     assert result[1] is SimpleResult
 ```
 
-**Accepts deployment result subclass** (`tests/deployment/test_remote_deployment.py:164`)
+**Accepts deployment result subclass** (`tests/deployment/test_remote_deployment.py:166`)
 
 ```python
 def test_accepts_deployment_result_subclass(self):
@@ -457,7 +467,7 @@ def test_accepts_deployment_result_subclass(self):
     assert Foo.result_type is SimpleResult
 ```
 
-**Accepts flow options subclass** (`tests/deployment/test_remote_deployment.py:144`)
+**Accepts flow options subclass** (`tests/deployment/test_remote_deployment.py:146`)
 
 ```python
 def test_accepts_flow_options_subclass(self):
@@ -470,33 +480,10 @@ def test_accepts_flow_options_subclass(self):
     assert Good.options_type is CustomOpts
 ```
 
-**Auto derived** (`tests/deployment/test_remote_deployment.py:191`)
-
-```python
-def test_auto_derived(self):
-    class AiResearch(RemoteDeployment[FlowOptions, SimpleResult]):
-        pass
-
-    assert AiResearch().deployment_path == "ai-research/ai_research"
-```
-
 
 ## Error Examples
 
-**Deployment requires build flows override** (`tests/deployment/test_deployment_base.py:705`)
-
-```python
-def test_deployment_requires_build_flows_override():
-    with pytest.raises(TypeError, match="build_flows"):
-
-        class MissingFlows(PipelineDeployment[_TestOptions, _TestResult]):
-            @staticmethod
-            def build_result(run_id, documents, options):
-                _ = (run_id, documents, options)
-                return _TestResult(success=True)
-```
-
-**Rejects empty run id** (`tests/deployment/test_remote_deployment.py:480`)
+**Rejects empty run id** (`tests/deployment/test_remote_deployment.py:482`)
 
 ```python
 async def test_rejects_empty_run_id(self):
@@ -508,7 +495,7 @@ async def test_rejects_empty_run_id(self):
             await Foo().run((), FlowOptions())
 ```
 
-**Rejects invalid run id** (`tests/deployment/test_remote_deployment.py:472`)
+**Rejects invalid run id** (`tests/deployment/test_remote_deployment.py:474`)
 
 ```python
 async def test_rejects_invalid_run_id(self):
@@ -520,7 +507,7 @@ async def test_rejects_invalid_run_id(self):
             await Foo().run((), FlowOptions())
 ```
 
-**Rejects no generic params** (`tests/deployment/test_remote_deployment.py:172`)
+**Rejects no generic params** (`tests/deployment/test_remote_deployment.py:174`)
 
 ```python
 def test_rejects_no_generic_params(self):
@@ -530,7 +517,7 @@ def test_rejects_no_generic_params(self):
             pass
 ```
 
-**Rejects non deployment result** (`tests/deployment/test_remote_deployment.py:155`)
+**Rejects non deployment result** (`tests/deployment/test_remote_deployment.py:157`)
 
 ```python
 def test_rejects_non_deployment_result(self):
@@ -543,7 +530,7 @@ def test_rejects_non_deployment_result(self):
             pass
 ```
 
-**Rejects non flow options** (`tests/deployment/test_remote_deployment.py:135`)
+**Rejects non flow options** (`tests/deployment/test_remote_deployment.py:137`)
 
 ```python
 def test_rejects_non_flow_options(self):
@@ -554,4 +541,15 @@ def test_rejects_non_flow_options(self):
 
         class Bad(RemoteDeployment[NotFlowOptions, SimpleResult]):  # type: ignore[type-var]
             pass
+```
+
+**Rejects outside execution context** (`tests/deployment/test_remote_deployment.py:467`)
+
+```python
+async def test_rejects_outside_execution_context(self):
+    class Foo(RemoteDeployment[FlowOptions, SimpleResult]):
+        pass
+
+    with pytest.raises(RuntimeError, match="pipeline_test_context"):
+        await Foo().run((), FlowOptions())
 ```

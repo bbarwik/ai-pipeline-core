@@ -33,6 +33,7 @@ from prefect import task as _prefect_task
 from prefect.cache_policies import NONE as _PREFECT_NO_CACHE
 from prefect.context import FlowRunContext as _FlowRunContext
 
+from ai_pipeline_core._base_exceptions import NonRetriableError
 from ai_pipeline_core._lifecycle_events import DocumentRef, TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent
 from ai_pipeline_core._llm_core import CoreMessage, Role
 from ai_pipeline_core._llm_core import generate as core_generate
@@ -76,6 +77,9 @@ from ai_pipeline_core.settings import settings
 logger = get_pipeline_logger(__name__)
 
 MILLISECONDS_PER_SECOND = 1000
+DEFAULT_TASK_RETRIES = 3
+DEFAULT_TASK_RETRY_DELAY_SECONDS = 30
+MAX_RETRY_DELAY_SECONDS = 300
 
 EVENT_PUBLISH_EXCEPTIONS = (OSError, RuntimeError, ValueError, TypeError)
 SUMMARY_GENERATION_EXCEPTIONS = (Exception,)
@@ -115,8 +119,8 @@ class PipelineTask:
 
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
-    retries: ClassVar[int] = 0
-    retry_delay_seconds: ClassVar[int] = 20
+    retries: ClassVar[int] = DEFAULT_TASK_RETRIES
+    retry_delay_seconds: ClassVar[int] = DEFAULT_TASK_RETRY_DELAY_SECONDS
     timeout_seconds: ClassVar[int | None] = None
     cacheable: ClassVar[bool] = False
     cache_version: ClassVar[int] = 1
@@ -173,6 +177,8 @@ class PipelineTask:
             )
         if cls.retries < 0:
             raise TypeError(f"PipelineTask '{cls.__name__}' has retries={cls.retries}. Use a value >= 0.")
+        if cls.retry_delay_seconds < 0:
+            raise TypeError(f"PipelineTask '{cls.__name__}' has retry_delay_seconds={cls.retry_delay_seconds}. Use a value >= 0.")
         if cls.timeout_seconds is not None and cls.timeout_seconds <= 0:
             raise TypeError(f"PipelineTask '{cls.__name__}' has timeout_seconds={cls.timeout_seconds}. Use a positive integer timeout or None.")
         if cls.cache_version < 1:
@@ -298,7 +304,8 @@ class PipelineTask:
 
         Created at class definition time. Prefect 3.x Task.__init__ is pure Python
         with no server registration — safe at import time.
-        Retries and timeouts are delegated to Prefect's engine.
+        Retries are always owned by the framework (not Prefect). Setting retries=0
+        on the Prefect decorator disables Prefect's retry engine entirely.
         Caching is disabled (handled by the framework's ClickHouse cache).
         """
         task_cls = cls
@@ -309,8 +316,8 @@ class PipelineTask:
         return _prefect_task(
             name=cls.name,
             task_run_name=cls.name,
-            retries=cls.retries,
-            retry_delay_seconds=cls.retry_delay_seconds,
+            retries=0,
+            retry_delay_seconds=0,
             timeout_seconds=cls.timeout_seconds,
             persist_result=False,
             cache_policy=_PREFECT_NO_CACHE,
@@ -337,21 +344,35 @@ class PipelineTask:
     async def _run_with_retries(cls, arguments: Mapping[str, Any]) -> tuple[tuple[Document, ...], int]:
         attempts = cls.retries + 1
         last_error: Exception | None = None
+        use_prefect = _FlowRunContext.get() is not None and cls._prefect_task_fn is not None
 
         for attempt in range(attempts):
-            outcome = (
-                await asyncio.gather(
-                    _maybe_with_timeout(
-                        cls.timeout_seconds,
-                        lambda: cls._run_and_normalize(arguments),
-                    ),
-                    return_exceptions=True,
-                )
-            )[0]
+            if use_prefect:
+                outcome = (await asyncio.gather(cls._prefect_task_fn(dict(arguments)), return_exceptions=True))[0]
+            else:
+                outcome = (
+                    await asyncio.gather(
+                        _maybe_with_timeout(cls.timeout_seconds, lambda: cls._run_and_normalize(arguments)),
+                        return_exceptions=True,
+                    )
+                )[0]
+            if isinstance(outcome, NonRetriableError):
+                raise _attach_task_attempt(outcome, attempt)
             if isinstance(outcome, RETRY_CAPTURE_EXCEPTIONS):
                 last_error = outcome
                 if attempt < attempts - 1:
-                    await asyncio.sleep(cls.retry_delay_seconds)
+                    delay = min(cls.retry_delay_seconds * (2**attempt), MAX_RETRY_DELAY_SECONDS)
+                    record_lifecycle_event(
+                        "task.retry",
+                        f"Task {cls.name} attempt {attempt + 1}/{attempts} failed, retrying in {delay}s",
+                        task_name=cls.name,
+                        task_class=cls.__name__,
+                        attempt=attempt + 1,
+                        max_attempts=attempts,
+                        delay_seconds=delay,
+                        error_type=type(outcome).__name__,
+                    )
+                    await asyncio.sleep(delay)
                 continue
             if isinstance(outcome, BaseException):
                 raise _attach_task_attempt(outcome, attempt)
@@ -681,11 +702,7 @@ class PipelineTask:
             step=flow_step,
         )
         try:
-            if _FlowRunContext.get() is not None and cls._prefect_task_fn is not None:
-                documents = await cls._prefect_task_fn(dict(arguments))
-                attempt = 0
-            else:
-                documents, attempt = await cls._run_with_retries(arguments)
+            documents, attempt = await cls._run_with_retries(arguments)
 
             await cls._generate_summaries(documents)
             persisted_docs = await cls._persist_documents(documents)

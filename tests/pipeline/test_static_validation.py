@@ -54,6 +54,30 @@ class DeltaDocument(Document):
     pass
 
 
+class _SVAbstractInputDocument(Document):
+    pass
+
+
+class _SVAbstractOutputDocument(Document):
+    pass
+
+
+class _SVMultiLevelInputDocument(Document):
+    pass
+
+
+class _SVMultiLevelOutputDocument(Document):
+    pass
+
+
+class _SVUniqueNameOneDocument(Document):
+    pass
+
+
+class _SVUniqueNameTwoDocument(Document):
+    pass
+
+
 class InputMode:
     """Fake enum-like for test only; not used in validation."""
 
@@ -78,6 +102,32 @@ class Opts(FlowOptions):
 
 class SampleResult(DeploymentResult):
     """Result for deployment testing."""
+
+
+class _SVAbstractParentTask(PipelineTask):
+    _abstract_task = True
+
+
+class _SVAbstractConcreteTask(_SVAbstractParentTask):
+    @classmethod
+    async def run(cls, documents: tuple[_SVAbstractInputDocument, ...]) -> tuple[_SVAbstractOutputDocument, ...]:
+        _ = (cls, documents)
+        return ()
+
+
+class _SVMultiLevelLevelOneTask(PipelineTask):
+    _abstract_task = True
+
+
+class _SVMultiLevelLevelTwoTask(_SVMultiLevelLevelOneTask):
+    _abstract_task = True
+
+
+class _SVMultiLevelConcreteTask(_SVMultiLevelLevelTwoTask):
+    @classmethod
+    async def run(cls, documents: tuple[_SVMultiLevelInputDocument, ...]) -> tuple[_SVMultiLevelOutputDocument, ...]:
+        _ = (cls, documents)
+        return ()
 
 
 # --- PipelineFlow subclasses for deployment chain testing ---
@@ -439,14 +489,7 @@ class TestClassNameCollision:
 
     def test_different_class_names_ok(self):
         """Classes with different names register without error."""
-
-        class UniqueNameOneDocument(Document):
-            pass
-
-        class UniqueNameTwoDocument(Document):
-            pass
-
-        assert UniqueNameOneDocument.__name__ != UniqueNameTwoDocument.__name__
+        assert _SVUniqueNameOneDocument.__name__ != _SVUniqueNameTwoDocument.__name__
 
     def test_registry_stores_classes(self):
         """The registry is a dict mapping class names to Document subclasses."""
@@ -856,6 +899,8 @@ class TestDeploymentBuildResultRequired:
         with pytest.raises(TypeError, match=r"must implement.*build_result"):
 
             class NoBuild(PipelineDeployment[FlowOptions, SampleResult]):
+                flow_retries = 0
+
                 def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
                     return [AlphaToBetaFlow()]
 
@@ -864,6 +909,8 @@ class TestDeploymentBuildResultRequired:
         with pytest.raises(TypeError, match="must implement build_flows"):
 
             class NoFlows(PipelineDeployment[FlowOptions, SampleResult]):
+                flow_retries = 0
+
                 @staticmethod
                 def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> SampleResult:
                     return SampleResult(success=True)
@@ -872,6 +919,8 @@ class TestDeploymentBuildResultRequired:
         """Inheriting build_result from a concrete parent deployment is allowed."""
 
         class ParentDeploy(PipelineDeployment[FlowOptions, SampleResult]):
+            flow_retries = 0
+
             def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
                 return [AlphaToBetaFlow()]
 
@@ -889,6 +938,8 @@ class TestDeploymentBuildResultRequired:
         """Valid deployment with build_result and build_flows passes."""
 
         class ValidDeploy(PipelineDeployment[FlowOptions, SampleResult]):
+            flow_retries = 0
+
             def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
                 return [AlphaToBetaFlow()]
 
@@ -955,24 +1006,9 @@ def test_abstract_task_subclass_must_define_run() -> None:
 
 
 def test_abstract_task_subclass_with_run_validates_normally() -> None:
-    class AbstractInputDocument(Document):
-        pass
-
-    class AbstractOutputDocument(Document):
-        pass
-
-    class AbstractParentTask(PipelineTask):
-        _abstract_task = True
-
-    class ConcreteTask(AbstractParentTask):
-        @classmethod
-        async def run(cls, documents: tuple[AbstractInputDocument, ...]) -> tuple[AbstractOutputDocument, ...]:
-            _ = (cls, documents)
-            return ()
-
-    assert ConcreteTask._run_spec is not None
-    assert ConcreteTask.input_document_types == [AbstractInputDocument]
-    assert ConcreteTask.output_document_types == [AbstractOutputDocument]
+    assert _SVAbstractConcreteTask._run_spec is not None
+    assert _SVAbstractConcreteTask.input_document_types == [_SVAbstractInputDocument]
+    assert _SVAbstractConcreteTask.output_document_types == [_SVAbstractOutputDocument]
 
 
 def test_abstract_task_flag_does_not_inherit() -> None:
@@ -994,29 +1030,11 @@ def test_abstract_task_has_no_document_types() -> None:
 
 
 def test_multi_level_abstract_task_chain() -> None:
-    class MultiLevelInputDocument(Document):
-        pass
-
-    class MultiLevelOutputDocument(Document):
-        pass
-
-    class LevelOneTask(PipelineTask):
-        _abstract_task = True
-
-    class LevelTwoTask(LevelOneTask):
-        _abstract_task = True
-
-    class ConcreteTask(LevelTwoTask):
-        @classmethod
-        async def run(cls, documents: tuple[MultiLevelInputDocument, ...]) -> tuple[MultiLevelOutputDocument, ...]:
-            _ = (cls, documents)
-            return ()
-
-    assert ConcreteTask._run_spec is not None
-    assert ConcreteTask.input_document_types == [MultiLevelInputDocument]
-    assert ConcreteTask.output_document_types == [MultiLevelOutputDocument]
+    assert _SVMultiLevelConcreteTask._run_spec is not None
+    assert _SVMultiLevelConcreteTask.input_document_types == [_SVMultiLevelInputDocument]
+    assert _SVMultiLevelConcreteTask.output_document_types == [_SVMultiLevelOutputDocument]
 
     with pytest.raises(TypeError, match="must define"):
 
-        class BadConcreteTask(LevelTwoTask):
+        class BadConcreteTask(_SVMultiLevelLevelTwoTask):
             pass

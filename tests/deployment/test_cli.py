@@ -10,7 +10,7 @@ import pytest
 
 from ai_pipeline_core.deployment._types import ErrorCode, _NoopPublisher
 from ai_pipeline_core.deployment._helpers import _classify_error, _create_publisher
-from ai_pipeline_core.deployment.base import _validate_flow_chain
+from ai_pipeline_core.deployment.base import DeploymentResult, PipelineDeployment, _validate_flow_chain
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.pipeline import PipelineFlow
 from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
@@ -135,8 +135,29 @@ class FlowOutputDoc2(Document):
     pass
 
 
+class _DbFallbackInputDoc(Document):
+    pass
+
+
+class _DbFallbackOutputDoc(Document):
+    pass
+
+
+class _CliInputDoc(Document):
+    pass
+
+
+class _CliOutputDoc(Document):
+    pass
+
+
 class _UnrelatedInputDoc(Document):
     pass
+
+
+class _DbFallbackFlow(PipelineFlow):
+    async def run(self, documents: tuple[_DbFallbackInputDoc, ...], options: FlowOptions) -> tuple[_DbFallbackOutputDoc, ...]:
+        return ()
 
 
 class _Flow1(PipelineFlow):
@@ -154,6 +175,45 @@ class _Flow2Bad(PipelineFlow):
 
     async def run(self, documents: tuple[_UnrelatedInputDoc, ...], options: FlowOptions) -> tuple[FlowOutputDoc2, ...]:
         return ()
+
+
+class _DbFallbackResult(DeploymentResult):
+    pass
+
+
+class _DbFallbackDeployment(PipelineDeployment[FlowOptions, _DbFallbackResult]):
+    flow_retries = 0
+    name = "test-cli-db"
+    options_type = FlowOptions
+    result_type = _DbFallbackResult
+
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [_DbFallbackFlow()]
+
+    def build_result(self, options, documents, run_id, **kwargs) -> _DbFallbackResult:
+        return _DbFallbackResult(success=True)
+
+
+class _CliFlow(PipelineFlow):
+    async def run(self, documents: tuple[_CliInputDoc, ...], options: FlowOptions) -> tuple[_CliOutputDoc, ...]:
+        return ()
+
+
+class _CliResult(DeploymentResult):
+    pass
+
+
+class _CliDeployment(PipelineDeployment[FlowOptions, _CliResult]):
+    flow_retries = 0
+    name = "test-cli-order"
+    options_type = FlowOptions
+    result_type = _CliResult
+
+    def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
+        return [_CliFlow()]
+
+    def build_result(self, options, documents, run_id, **kwargs) -> _CliResult:
+        return _CliResult(success=True)
 
 
 class TestValidateFlowChain:
@@ -216,31 +276,6 @@ class TestCliDatabaseFallback:
         """run_cli_for_deployment must pass base_path=wd so FilesystemDatabase is used."""
         from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
         from ai_pipeline_core.deployment._cli import run_cli_for_deployment
-        from ai_pipeline_core.deployment.base import DeploymentResult, PipelineDeployment
-
-        class _DbFallbackInputDoc(Document):
-            pass
-
-        class _DbFallbackOutputDoc(Document):
-            pass
-
-        class _DbFallbackFlow(PipelineFlow):
-            async def run(self, documents: tuple[_DbFallbackInputDoc, ...], options: FlowOptions) -> tuple[_DbFallbackOutputDoc, ...]:
-                return ()
-
-        class _DbFallbackResult(DeploymentResult):
-            pass
-
-        class _DbFallbackDeployment(PipelineDeployment[FlowOptions, _DbFallbackResult]):
-            name = "test-cli-db"
-            options_type = FlowOptions
-            result_type = _DbFallbackResult
-
-            def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
-                return [_DbFallbackFlow()]
-
-            def build_result(self, options, documents, run_id, **kwargs) -> _DbFallbackResult:
-                return _DbFallbackResult(success=True)
 
         captured_database = None
 
@@ -268,31 +303,6 @@ class TestCliDatabaseFallback:
 
     def test_cli_generates_artifacts_before_database_shutdown(self, tmp_path: Path) -> None:
         from ai_pipeline_core.deployment._cli import run_cli_for_deployment
-        from ai_pipeline_core.deployment.base import DeploymentResult, PipelineDeployment
-
-        class _CliInputDoc(Document):
-            pass
-
-        class _CliOutputDoc(Document):
-            pass
-
-        class _CliFlow(PipelineFlow):
-            async def run(self, documents: tuple[_CliInputDoc, ...], options: FlowOptions) -> tuple[_CliOutputDoc, ...]:
-                return ()
-
-        class _CliResult(DeploymentResult):
-            pass
-
-        class _CliDeployment(PipelineDeployment[FlowOptions, _CliResult]):
-            name = "test-cli-order"
-            options_type = FlowOptions
-            result_type = _CliResult
-
-            def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
-                return [_CliFlow()]
-
-            def build_result(self, options, documents, run_id, **kwargs) -> _CliResult:
-                return _CliResult(success=True)
 
         database = MagicMock()
         events: list[str] = []

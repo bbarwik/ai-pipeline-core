@@ -165,6 +165,8 @@ class _SerializationFlow(PipelineFlow):
 class _SerializationDeployment(PipelineDeployment[FlowOptions, _SerializationResult]):
     """Deployment returning a result with non-primitive types."""
 
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [_SerializationFlow()]
 

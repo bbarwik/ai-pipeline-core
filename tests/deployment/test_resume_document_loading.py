@@ -43,6 +43,8 @@ class _SimpleResult(DeploymentResult):
 
 
 class LoadingDeployment(PipelineDeployment[_TestOptions, _TestResult]):
+    flow_retries = 0
+
     def build_flows(self, options: _TestOptions):
         _ = options
         return [StageOne(), StageTwo()]
@@ -87,6 +89,8 @@ class _ZombieFlow1(PipelineFlow):
 class _ZombieFlow2(PipelineFlow):
     """Flow 2: saves internal progress doc, then crashes (if flag set)."""
 
+    retries = 0
+
     async def run(self, documents: tuple[_PlanDoc, ...], options: FlowOptions) -> tuple[_AnalysisDoc, ...]:
         _zombie_flow2_received.extend(documents)
         await _SaveProgressTask.run(documents)
@@ -97,6 +101,8 @@ class _ZombieFlow2(PipelineFlow):
 
 class _ZombieBugDeployment(PipelineDeployment[FlowOptions, _SimpleResult]):
     """Two-flow pipeline for zombie document bug reproduction."""
+
+    flow_retries = 0
 
     def build_flows(self, options):
         return [_ZombieFlow1(), _ZombieFlow2()]
@@ -183,6 +189,8 @@ class _Bug2Flow2(PipelineFlow):
 class _Bug2Deployment(PipelineDeployment[FlowOptions, _SimpleResult]):
     """Two-flow pipeline where both flows output ReportDoc."""
 
+    flow_retries = 0
+
     def build_flows(self, options):
         return [_Bug2Flow1(), _Bug2Flow2()]
 
@@ -264,6 +272,8 @@ class _CapturingPublisher:
 
 class _Bug3Deployment(PipelineDeployment[FlowOptions, _SimpleResult]):
     """Same flow chain as Bug 2 — both flows output ReportDoc."""
+
+    flow_retries = 0
 
     def build_flows(self, options):
         return [_Bug2Flow1(), _Bug2Flow2()]

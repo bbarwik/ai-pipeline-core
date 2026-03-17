@@ -576,10 +576,11 @@ The `Conversation` class automatically splits oversized images when documents ar
 The framework re-exports key exceptions at the top level for convenient catching:
 
 ```python
-from ai_pipeline_core import PipelineCoreError, LLMError, EmptyResponseError, DocumentValidationError, DocumentSizeError, DocumentNameError
+from ai_pipeline_core import PipelineCoreError, NonRetriableError, LLMError, EmptyResponseError, DocumentValidationError, DocumentSizeError, DocumentNameError
 ```
 
 - `PipelineCoreError` — Base for all framework exceptions
+- `NonRetriableError` — Signals that an operation must not be retried (stops task/flow retry loops immediately)
 - `LLMError` — LLM generation failures (retries exhausted, timeouts, degeneration)
 - `EmptyResponseError` — Blank/empty LLM response (subclass of `LLMError`, triggers retry with cache disabled)
 - `DocumentValidationError` — Document validation failures
@@ -639,8 +640,8 @@ result = await handle.result()
 ```
 
 **ClassVar configuration:**
-- `retries`: Retry attempts on failure (default `0`)
-- `retry_delay_seconds`: Delay between retries (default `20`)
+- `retries`: Retry attempts on failure (default `3`, exponential backoff)
+- `retry_delay_seconds`: Base delay between retries (default `30`, doubles each attempt, capped at 300s)
 - `timeout_seconds`: Task execution timeout (default `None`)
 - `estimated_minutes`: Duration estimate for progress tracking (default `1`, must be >= 1)
 - `expected_cost`: Expected cost budget for cost tracking
@@ -691,6 +692,13 @@ class ConfigurableFlow(PipelineFlow):
 flow = ConfigurableFlow(model="gemini-3-pro", temperature=0.7)
 flow.get_params()  # {"model": "gemini-3-pro", "temperature": 0.7}
 ```
+
+**Flow ClassVar configuration:**
+- `retries`: Per-flow retry override (default `0` — uses deployment's `flow_retries` when run inside a deployment)
+- `retry_delay_seconds`: Per-flow delay override (default `30`)
+- `estimated_minutes`: Duration estimate for progress tracking (default `1`, must be >= 1)
+
+Flow retries are controlled by the deployment (see `flow_retries` on `PipelineDeployment`). A flow can override with an explicit `retries = N` in its class body. Raise `NonRetriableError` to stop retries immediately.
 
 **FlowOptions** is a frozen `BaseModel` for pipeline configuration. Subclass it to add flow-specific parameters:
 
@@ -762,6 +770,7 @@ prefect_flow = pipeline.as_prefect_flow()
 - **Type chain validation**: At runtime, validates that at least one of each flow's declared input types is producible by preceding flows (union semantics)
 - **Event publishing**: 12 lifecycle events (run started/completed/failed, flow started/completed/failed/skipped, task started/completed/failed, heartbeat, progress) via Pub/Sub. Task events include `step`, `task_invocation_id` for correlation. `actual_cost` is aggregated from recorded conversation nodes. Enabled by setting `pubsub_service_type` ClassVar. Requires `PUBSUB_PROJECT_ID` and `PUBSUB_TOPIC_ID` env vars
 - **Dynamic flow control**: `plan_next_flow()` returns `FlowDirective` to skip or continue flows based on runtime state
+- **Flow retries**: Configurable via `flow_retries` (default `3`) and `flow_retry_delay_seconds` (default `30`) ClassVars on the deployment. Exponential backoff, capped at 300s. Individual flows can override with explicit `retries = N`
 - **Concurrency limits**: Cross-run enforcement via Prefect global concurrency limits
 - **CLI mode**: `--start N` / `--end N` for step control with the configured database backend
 

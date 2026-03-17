@@ -51,6 +51,8 @@ class _WiringFlow(PipelineFlow):
 class _WiringDeployment(PipelineDeployment[FlowOptions, _WiringResult]):
     """Deployment for wiring tests."""
 
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [_WiringFlow()]
 
@@ -62,12 +64,16 @@ class _WiringDeployment(PipelineDeployment[FlowOptions, _WiringResult]):
 class _FailingFlow(PipelineFlow):
     """Flow that always raises."""
 
+    retries = 0
+
     async def run(self, documents: tuple[_WiringInputDoc, ...], options: FlowOptions) -> tuple[_WiringOutputDoc, ...]:
         raise RuntimeError("deliberate failure")
 
 
 class _FailingDeployment(PipelineDeployment[FlowOptions, _WiringResult]):
     """Deployment that always fails."""
+
+    flow_retries = 0
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [_FailingFlow()]
@@ -86,6 +92,8 @@ class _CancellingFlow(PipelineFlow):
 
 class _CancelDeployment(PipelineDeployment[FlowOptions, _WiringResult]):
     """Deployment where the flow raises CancelledError."""
+
+    flow_retries = 0
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [_CancellingFlow()]

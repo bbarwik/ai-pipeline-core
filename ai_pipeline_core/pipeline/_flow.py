@@ -18,6 +18,8 @@ from ai_pipeline_core.pipeline.options import FlowOptions
 
 logger = get_pipeline_logger(__name__)
 
+DEFAULT_FLOW_RETRY_DELAY_SECONDS = 30
+
 __all__ = [
     "PipelineFlow",
 ]
@@ -115,6 +117,8 @@ class PipelineFlow:
 
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
+    retries: ClassVar[int] = 0
+    retry_delay_seconds: ClassVar[int] = DEFAULT_FLOW_RETRY_DELAY_SECONDS
     BASE_COST_USD: ClassVar[float] = 0.0
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
@@ -153,6 +157,10 @@ class PipelineFlow:
             cls.name = cls.__name__
         if cls.estimated_minutes < 1:
             raise TypeError(f"PipelineFlow '{cls.__name__}' has estimated_minutes={cls.estimated_minutes}. Use a value >= 1.")
+        if cls.retries < 0:
+            raise TypeError(f"PipelineFlow '{cls.__name__}' has retries={cls.retries}. Use a value >= 0.")
+        if cls.retry_delay_seconds < 0:
+            raise TypeError(f"PipelineFlow '{cls.__name__}' has retry_delay_seconds={cls.retry_delay_seconds}. Use a value >= 0.")
         if not math.isfinite(cls.BASE_COST_USD) or cls.BASE_COST_USD < 0:
             raise TypeError(
                 f"PipelineFlow '{cls.__name__}' has BASE_COST_USD={cls.BASE_COST_USD}. "
@@ -265,6 +273,8 @@ class PipelineFlow:
         return _prefect_flow(
             name=cls.name,
             flow_run_name=cls.name,
+            retries=0,
+            retry_delay_seconds=0,
             validate_parameters=False,
             persist_result=False,
             log_prints=False,

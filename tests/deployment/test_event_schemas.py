@@ -42,6 +42,7 @@ class _GapFlow(PipelineFlow):
 
 class _FailingGapFlow(PipelineFlow):
     name = "failing-gap-flow"
+    retries = 0
 
     async def run(self, documents: tuple[_GapInputDoc, ...], options: FlowOptions) -> tuple[_GapOutputDoc, ...]:
         _ = (documents, options)
@@ -65,6 +66,8 @@ class _WrongItemGapFlow(PipelineFlow):
 
 
 class _GapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         _ = options
         return [_GapFlow()]
@@ -76,6 +79,8 @@ class _GapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
 
 
 class _FailingGapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         _ = options
         return [_FailingGapFlow()]
@@ -87,6 +92,8 @@ class _FailingGapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
 
 
 class _WrongShapeGapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         _ = options
         return [_WrongShapeGapFlow()]
@@ -98,6 +105,8 @@ class _WrongShapeGapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
 
 
 class _WrongItemGapDeployment(PipelineDeployment[FlowOptions, _GapResult]):
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         _ = options
         return [_WrongItemGapFlow()]

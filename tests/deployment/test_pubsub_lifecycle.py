@@ -54,6 +54,8 @@ class CancellingPubsubFlow(PipelineFlow):
 class CancellingDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
     """Deployment where the first flow raises CancelledError."""
 
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [CancellingPubsubFlow()]
 
@@ -64,6 +66,8 @@ class CancellingDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
 
 class BuildResultFailingDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
     """Deployment where build_result raises ValueError after all flows succeed."""
+
+    flow_retries = 0
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [InputToMiddleFlow(), MiddleToOutputFlow()]
@@ -81,6 +85,8 @@ class _OversizedResult(DeploymentResult):
 
 class OversizedResultDeployment(PipelineDeployment[FlowOptions, _OversizedResult]):
     """Deployment whose build_result returns an oversized result."""
+
+    flow_retries = 0
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [InputToMiddleFlow(), MiddleToOutputFlow()]

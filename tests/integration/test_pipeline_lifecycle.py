@@ -83,6 +83,7 @@ class LifecycleResult(DeploymentResult):
 class LifecycleDeployment(PipelineDeployment[FlowOptions, LifecycleResult]):
     """Deployment used to validate the full span-based lifecycle."""
 
+    flow_retries = 0
     cache_ttl = None
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:

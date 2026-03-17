@@ -144,15 +144,17 @@ class TestPrefectTaskConfig:
     def test_inherited_task_has_own_prefect_task(self) -> None:
         assert _InheritedRetryTask._prefect_task_fn is not _BaseRetryTask._prefect_task_fn
 
-    def test_inherited_task_prefect_retries_match_override(self) -> None:
+    def test_prefect_task_always_has_zero_retries(self) -> None:
+        """Framework owns retries, Prefect decorator always gets retries=0."""
         assert _BaseRetryTask._prefect_task_fn.retries == 0
-        assert _InheritedRetryTask._prefect_task_fn.retries == 3
+        assert _InheritedRetryTask._prefect_task_fn.retries == 0
 
     def test_inherited_task_prefect_name_matches_subclass(self) -> None:
         assert _InheritedRetryTask._prefect_task_fn.name == "_InheritedRetryTask"
 
     def test_direct_retry_task_prefect_config(self) -> None:
-        assert _DirectRetryTask._prefect_task_fn.retries == 2
+        """Framework owns retries, Prefect decorator always gets retries=0."""
+        assert _DirectRetryTask._prefect_task_fn.retries == 0
         assert _DirectRetryTask._prefect_task_fn.retry_delay_seconds == 0
 
 

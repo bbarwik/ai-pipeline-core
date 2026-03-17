@@ -75,6 +75,8 @@ class _ToOutputTask(PipelineTask):
 class _FailingTask(PipelineTask):
     """Task that always raises."""
 
+    retries = 0
+
     @classmethod
     async def run(cls, documents: tuple[_EventInput, ...]) -> tuple[_EventOutput, ...]:
         raise RuntimeError("deliberate task failure")
@@ -109,6 +111,8 @@ class _FailingTaskFlow(PipelineFlow):
 class _DirectFailingFlow(PipelineFlow):
     """Flow that raises directly (no tasks)."""
 
+    retries = 0
+
     async def run(self, documents: tuple[_EventInput, ...], options: FlowOptions) -> tuple[_EventOutput, ...]:
         raise RuntimeError("deliberate flow failure")
 
@@ -136,6 +140,7 @@ class _SlowFlow(PipelineFlow):
 class _TwoFlowDeployment(PipelineDeployment[FlowOptions, _EventResult]):
     """Deployment with two sequential flows that use tasks."""
 
+    flow_retries = 0
     cache_ttl = None
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
@@ -149,6 +154,7 @@ class _TwoFlowDeployment(PipelineDeployment[FlowOptions, _EventResult]):
 class _OneFlowDeployment(PipelineDeployment[FlowOptions, _EventResult]):
     """Deployment with a single flow using a task."""
 
+    flow_retries = 0
     cache_ttl = None
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
@@ -162,6 +168,7 @@ class _OneFlowDeployment(PipelineDeployment[FlowOptions, _EventResult]):
 class _FailingTaskDeployment(PipelineDeployment[FlowOptions, _EventResult]):
     """Deployment with a flow that has a failing task."""
 
+    flow_retries = 0
     cache_ttl = None
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
@@ -175,6 +182,7 @@ class _FailingTaskDeployment(PipelineDeployment[FlowOptions, _EventResult]):
 class _DirectFailingDeployment(PipelineDeployment[FlowOptions, _EventResult]):
     """Deployment with a flow that raises directly (no tasks)."""
 
+    flow_retries = 0
     cache_ttl = None
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
@@ -188,6 +196,7 @@ class _DirectFailingDeployment(PipelineDeployment[FlowOptions, _EventResult]):
 class _NoTaskDeployment(PipelineDeployment[FlowOptions, _EventResult]):
     """Deployment with a flow that uses no tasks."""
 
+    flow_retries = 0
     cache_ttl = None
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
@@ -201,6 +210,7 @@ class _NoTaskDeployment(PipelineDeployment[FlowOptions, _EventResult]):
 class _SlowDeployment(PipelineDeployment[FlowOptions, _EventResult]):
     """Deployment with a slow flow for heartbeat testing."""
 
+    flow_retries = 0
     cache_ttl = None
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
@@ -537,6 +547,7 @@ class TestMinor1CachedFlowReason:
         db = _MemoryDatabase()
 
         class _CachingDeployment(PipelineDeployment[FlowOptions, _EventResult]):
+            flow_retries = 0
             cache_ttl = timedelta(hours=1)
 
             def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:

@@ -85,6 +85,7 @@ class SnapshotResult(DeploymentResult):
 
 
 class SnapshotDeployment(PipelineDeployment[FlowOptions, SnapshotResult]):
+    flow_retries = 0
     cache_ttl = None
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
@@ -130,6 +131,7 @@ class HistoryResult(DeploymentResult):
 
 
 class HistoryDeployment(PipelineDeployment[FlowOptions, HistoryResult]):
+    flow_retries = 0
     cache_ttl = None
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:

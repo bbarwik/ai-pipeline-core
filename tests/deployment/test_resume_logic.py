@@ -16,6 +16,8 @@ from .conftest import OutputDoc, StageOne, StageTwo, _TestOptions, _TestResult
 
 
 class ResumeDeployment(PipelineDeployment[_TestOptions, _TestResult]):
+    flow_retries = 0
+
     def build_flows(self, options: _TestOptions):
         _ = options
         return [StageOne(), StageTwo()]
@@ -80,6 +82,8 @@ class SucceedTask(PipelineTask):
 class CrashTask(PipelineTask):
     """Task 2: crashes before returning, so its docs are never saved."""
 
+    retries = 0
+
     @classmethod
     async def run(cls, docs: tuple[ResumeOutputDoc, ...]) -> tuple[ResumeOutputDoc, ...]:
         if _should_crash:
@@ -129,6 +133,8 @@ class Resume_TestResult(DeploymentResult):
 class CrashingDeployment(PipelineDeployment[Resume_TestOptions, Resume_TestResult]):
     """Deployment with a single two-task flow that can crash."""
 
+    flow_retries = 0
+
     def build_flows(self, options):
         return [CrashingFlow()]
 
@@ -139,6 +145,8 @@ class CrashingDeployment(PipelineDeployment[Resume_TestOptions, Resume_TestResul
 
 class NormalDeployment(PipelineDeployment[Resume_TestOptions, Resume_TestResult]):
     """Deployment with a single flow that always succeeds."""
+
+    flow_retries = 0
 
     def build_flows(self, options):
         return [NormalFlow()]
@@ -219,6 +227,8 @@ class _OptionedResult(DeploymentResult):
 
 
 class _OptionedDeployment(PipelineDeployment[_OptionedOptions, _OptionedResult]):
+    flow_retries = 0
+
     def build_flows(self, options):
         return [NormalFlow()]
 

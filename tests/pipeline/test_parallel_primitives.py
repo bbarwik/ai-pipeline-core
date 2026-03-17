@@ -28,6 +28,8 @@ class _SlowTask(PipelineTask):
 
 
 class _FailTask(PipelineTask):
+    retries = 0
+
     @classmethod
     async def run(cls, documents: tuple[_PDoc, ...]) -> tuple[_PDoc, ...]:
         raise ValueError("run fail")

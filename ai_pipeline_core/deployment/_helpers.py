@@ -14,7 +14,7 @@ from typing import Any
 from ai_pipeline_core.database import LogRecord
 from ai_pipeline_core.database._factory import Database, create_database_from_settings
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.exceptions import LLMError, PipelineCoreError
+from ai_pipeline_core.exceptions import LLMError, NonRetriableError, PipelineCoreError
 from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.logger._buffer import MAX_PENDING_EXECUTION_LOGS, ExecutionLogBuffer
 from ai_pipeline_core.logger._handler import ExecutionLogHandler
@@ -112,16 +112,21 @@ def extract_generic_params(cls: type, base_class: type) -> tuple[Any, ...]:
 
 
 def _classify_error(exc: BaseException) -> ErrorCode:
-    """Map exception to ErrorCode enum value."""
-    if isinstance(exc, LLMError):
+    """Map exception to ErrorCode enum value.
+
+    Unwraps NonRetriableError to classify the underlying cause so that
+    e.g. NonRetriableError wrapping LLMError still produces PROVIDER_ERROR.
+    """
+    target = exc.__cause__ if isinstance(exc, NonRetriableError) and exc.__cause__ is not None else exc
+    if isinstance(target, LLMError):
         return ErrorCode.PROVIDER_ERROR
-    if isinstance(exc, asyncio.CancelledError):
+    if isinstance(target, asyncio.CancelledError):
         return ErrorCode.CANCELLED
-    if isinstance(exc, TimeoutError):
+    if isinstance(target, TimeoutError):
         return ErrorCode.DURATION_EXCEEDED
-    if isinstance(exc, (ValueError, TypeError)):
+    if isinstance(target, (ValueError, TypeError)):
         return ErrorCode.INVALID_INPUT
-    if isinstance(exc, PipelineCoreError):
+    if isinstance(target, PipelineCoreError):
         return ErrorCode.PIPELINE_ERROR
     return ErrorCode.UNKNOWN
 

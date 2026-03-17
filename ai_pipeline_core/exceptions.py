@@ -4,7 +4,7 @@ This module defines the exception hierarchy used throughout the AI Pipeline Core
 All exceptions inherit from PipelineCoreError, providing a consistent error handling interface.
 """
 
-from ai_pipeline_core._base_exceptions import PipelineCoreError
+from ai_pipeline_core._base_exceptions import NonRetriableError, PipelineCoreError
 from ai_pipeline_core.documents.exceptions import DocumentNameError, DocumentSizeError, DocumentValidationError
 
 __all__ = [
@@ -13,6 +13,7 @@ __all__ = [
     "DocumentValidationError",
     "EmptyResponseError",
     "LLMError",
+    "NonRetriableError",
     "OutputDegenerationError",
     "PipelineCoreError",
 ]

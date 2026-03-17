@@ -38,6 +38,7 @@ from .exceptions import (
     DocumentSizeError,
     DocumentValidationError,
     LLMError,
+    NonRetriableError,
     OutputDegenerationError,
     PipelineCoreError,
 )
@@ -104,6 +105,7 @@ __all__ = [
     "ModelName",
     "ModelOptions",
     "MultiLineField",
+    "NonRetriableError",
     "OutputDegenerationError",
     "OutputRule",
     "OutputT",

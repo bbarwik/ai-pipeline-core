@@ -182,6 +182,8 @@ class TestPipelineDeploymentValidation:
         class MyDeployment(PipelineDeployment[FlowOptions, ValidResult]):
             """Valid deployment."""
 
+            flow_retries = 0
+
             def build_flows(self, options):
                 return [ValidFlow()]
 
@@ -200,6 +202,7 @@ class TestPipelineDeploymentValidation:
         class WithServiceType(PipelineDeployment[FlowOptions, ValidResult]):
             """Deployment with pubsub_service_type."""
 
+            flow_retries = 0
             pubsub_service_type = "research"
 
             def build_flows(self, options):
@@ -217,6 +220,8 @@ class TestPipelineDeploymentValidation:
 
             class TestDeployment(PipelineDeployment[FlowOptions, ValidResult]):
                 """Invalid name."""
+
+                flow_retries = 0
 
                 def build_flows(self, options):
                     return [ValidFlow()]
@@ -250,6 +255,8 @@ class TestAbstractSubclass:
             class PartialDeployment(PipelineDeployment[FlowOptions, ValidResult]):
                 """Intermediate class without build_flows."""
 
+                flow_retries = 0
+
                 @staticmethod
                 def build_result(run_id: str, documents: tuple[Document, ...], options: FlowOptions) -> ValidResult:
                     return ValidResult(success=True)
@@ -257,6 +264,8 @@ class TestAbstractSubclass:
 
 class ValidDeployment(PipelineDeployment[FlowOptions, ValidResult]):
     """Deployment for testing."""
+
+    flow_retries = 0
 
     def build_flows(self, options):
         return [ValidFlow()]
@@ -277,6 +286,8 @@ class TestAllDocumentTypes:
 
         class MultiFlowDeployment(PipelineDeployment[FlowOptions, ValidResult]):
             """Multi-flow deployment."""
+
+            flow_retries = 0
 
             def build_flows(self, options):
                 return [FlowA(), FlowB()]
@@ -395,6 +406,8 @@ class _SchemaTestFlow(PipelineFlow):
 
 
 class _SchemaTestDeployment(PipelineDeployment[_Schema_TestOptions, _Schema_TestResult]):
+    flow_retries = 0
+
     def build_flows(self, options):
         return [_SchemaTestFlow()]
 
@@ -508,6 +521,8 @@ class TestRunPassesOptionsObject:
                 return (OutputDoc.derive(derived_from=(documents[0],), name="out.txt", content="ok"),)
 
         class CapturingDeployment(PipelineDeployment[FlowOptions, ValidResult]):
+            flow_retries = 0
+
             def build_flows(self, options):
                 return [CapturingFlow()]
 
@@ -541,6 +556,8 @@ class TestRunContextIncludesExecutionId:
                 return (OutputDoc.derive(derived_from=(documents[0],), name="out.txt", content="ok"),)
 
         class CtxDeployment(PipelineDeployment[FlowOptions, ValidResult]):
+            flow_retries = 0
+
             def build_flows(self, options):
                 return [CtxFlow()]
 
@@ -612,6 +629,8 @@ class TestAsPrefectFlowParentParams:
 
 
 class ExampleDeployment(PipelineDeployment[_TestOptions, _TestResult]):
+    flow_retries = 0
+
     def build_flows(self, options: _TestOptions):
         _ = options
         return [StageOne(), StageTwo()]
@@ -706,6 +725,8 @@ def test_deployment_requires_build_flows_override():
     with pytest.raises(TypeError, match="build_flows"):
 
         class MissingFlows(PipelineDeployment[_TestOptions, _TestResult]):
+            flow_retries = 0
+
             @staticmethod
             def build_result(run_id, documents, options):
                 _ = (run_id, documents, options)

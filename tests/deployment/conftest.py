@@ -157,6 +157,7 @@ class FailingMiddleToOutputFlow(PipelineFlow):
     """Flow: PubsubMiddleDoc -> raises RuntimeError."""
 
     name = "failing_middle_to_output"
+    retries = 0
 
     async def run(self, documents: tuple[PubsubMiddleDoc, ...], options: FlowOptions) -> tuple[PubsubOutputDoc, ...]:
         _flow_executions.append("failing_flow_2")
@@ -209,6 +210,8 @@ class DirectInputToOutputFlow(PipelineFlow):
 class TwoStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
     """Two-flow deployment for pubsub tests."""
 
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [InputToMiddleFlow(), MiddleToOutputFlow()]
 
@@ -219,6 +222,8 @@ class TwoStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
 
 class ThreeStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
     """Three-flow deployment for pubsub tests."""
+
+    flow_retries = 0
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [ChainInputToMiddleFlow(), ChainMiddleToOutputFlow(), ChainOutputToFinalFlow()]
@@ -231,6 +236,8 @@ class ThreeStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
 class SingleStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
     """Single-flow deployment for pubsub tests."""
 
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [DirectInputToOutputFlow()]
 
@@ -241,6 +248,8 @@ class SingleStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
 
 class FailingSecondStageDeployment(PipelineDeployment[FlowOptions, PubsubResult]):
     """Two-flow deployment where second flow raises RuntimeError."""
+
+    flow_retries = 0
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [InputToMiddleFlow(), FailingMiddleToOutputFlow()]

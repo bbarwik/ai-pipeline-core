@@ -83,6 +83,8 @@ class ConsumerFlow(PipelineFlow):
 class _SkipWhenEmptyDeployment(PipelineDeployment[FlowOptions, PlanResult]):
     """Skips consumer flow when producer outputs zero documents."""
 
+    flow_retries = 0
+
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [EmptyProducerFlow(), ConsumerFlow()]
 
@@ -103,6 +105,8 @@ class _SkipWhenEmptyDeployment(PipelineDeployment[FlowOptions, PlanResult]):
 
 class _ContinueWhenDocsExist(PipelineDeployment[FlowOptions, PlanResult]):
     """Continues consumer flow when producer produces documents."""
+
+    flow_retries = 0
 
     def build_flows(self, options: FlowOptions) -> list[PipelineFlow]:
         return [ProducerFlow(), ConsumerFlow()]

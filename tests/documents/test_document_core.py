@@ -24,6 +24,20 @@ class ConcreteTestTaskDoc(Document):
         return "test_task"
 
 
+class _ConcreteFlowDoc(Document):
+    """Concrete Document subclass for concrete instantiation tests."""
+
+    def get_type(self) -> str:
+        return "concrete_flow"
+
+
+class _ConcreteTaskDoc(Document):
+    """Concrete Document subclass for concrete instantiation tests."""
+
+    def get_type(self) -> str:
+        return "concrete_task"
+
+
 class AllowedDocumentNames(StrEnum):
     ALLOWED_FILE_1 = "allowed1.txt"
     ALLOWED_FILE_2 = "allowed2.json"
@@ -133,24 +147,40 @@ class TestAbstractInstantiation:
 
     def test_can_instantiate_concrete_subclasses(self):
         """Test that concrete subclasses can be instantiated."""
-
-        # Concrete Document subclass
-        class ConcreteFlowDoc(Document):
-            def get_type(self) -> str:
-                return "concrete_flow"
-
-        doc = ConcreteFlowDoc(name="test.txt", content=b"test")
+        doc = _ConcreteFlowDoc(name="test.txt", content=b"test")
         assert doc.name == "test.txt"
         assert doc.content == b"test"
 
-        # Concrete Document subclass
-        class ConcreteTaskDoc(Document):
-            def get_type(self) -> str:
-                return "concrete_task"
-
-        doc = ConcreteTaskDoc(name="test.txt", content=b"test")
+        doc = _ConcreteTaskDoc(name="test.txt", content=b"test")
         assert doc.name == "test.txt"
         assert doc.content == b"test"
+
+
+class _VisibleTestDoc(Document):
+    """Document subclass used to test public visibility overrides."""
+
+    publicly_visible = True
+
+
+class _DerivedTestDoc(ConcreteTestDocument):
+    """Document subclass used to test visibility inheritance."""
+
+
+class TestPubliclyVisibleClassVar:
+    def test_default_is_false(self):
+        assert ConcreteTestDocument.publicly_visible is False
+
+    def test_subclass_override_to_true(self):
+        assert _VisibleTestDoc.publicly_visible is True
+        # Base class unaffected
+        assert ConcreteTestDocument.publicly_visible is False
+
+    def test_inherited_default(self):
+        assert _DerivedTestDoc.publicly_visible is False
+
+    def test_not_a_model_field(self):
+        """publicly_visible is a ClassVar, not a Pydantic field."""
+        assert "publicly_visible" not in ConcreteTestDocument.model_fields
 
 
 class TestDocumentProperties:
@@ -1042,26 +1072,3 @@ class TestDocumentTotalSizeValidation:
         """Document names ending with .meta.json are rejected (reserved for store)."""
         with pytest.raises(DocumentNameError, match=r"\.meta\.json"):
             ConcreteTestDocument(name="data.meta.json", content=b"test")
-
-
-class TestPubliclyVisibleClassVar:
-    def test_default_is_false(self):
-        assert ConcreteTestDocument.publicly_visible is False
-
-    def test_subclass_override_to_true(self):
-        class VisibleDoc(Document):
-            publicly_visible = True
-
-        assert VisibleDoc.publicly_visible is True
-        # Base class unaffected
-        assert ConcreteTestDocument.publicly_visible is False
-
-    def test_inherited_default(self):
-        class DerivedDoc(ConcreteTestDocument):
-            """Inherits publicly_visible from parent."""
-
-        assert DerivedDoc.publicly_visible is False
-
-    def test_not_a_model_field(self):
-        """publicly_visible is a ClassVar, not a Pydantic field."""
-        assert "publicly_visible" not in ConcreteTestDocument.model_fields
