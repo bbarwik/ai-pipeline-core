@@ -46,10 +46,11 @@ _SPAN_KIND_PRIORITY: dict[str, int] = {
     SpanKind.DEPLOYMENT: 0,
     SpanKind.FLOW: 1,
     SpanKind.TASK: 2,
-    SpanKind.OPERATION: 3,
-    SpanKind.CONVERSATION: 4,
-    SpanKind.LLM_ROUND: 5,
-    SpanKind.TOOL_CALL: 6,
+    SpanKind.ATTEMPT: 3,
+    SpanKind.OPERATION: 4,
+    SpanKind.CONVERSATION: 5,
+    SpanKind.LLM_ROUND: 6,
+    SpanKind.TOOL_CALL: 7,
 }
 
 
@@ -322,7 +323,7 @@ def _round_label(span: SpanRecord, meta: dict[str, Any]) -> str:
 
 
 def _span_local_filename(span: SpanRecord, view: SpanTreeView) -> str | None:
-    if span.kind in {SpanKind.LLM_ROUND, SpanKind.TOOL_CALL}:
+    if span.kind in {SpanKind.LLM_ROUND, SpanKind.TOOL_CALL, SpanKind.ATTEMPT}:
         return None
     if span.kind == SpanKind.DEPLOYMENT and span.parent_span_id is None:
         return "deployment.json"
@@ -331,10 +332,22 @@ def _span_local_filename(span: SpanRecord, view: SpanTreeView) -> str | None:
     siblings = [
         sibling_id
         for sibling_id in view.children_map.get(span.parent_span_id, [])
-        if view.spans_by_id[sibling_id].kind not in {SpanKind.LLM_ROUND, SpanKind.TOOL_CALL}
+        if view.spans_by_id[sibling_id].kind not in {SpanKind.LLM_ROUND, SpanKind.TOOL_CALL, SpanKind.ATTEMPT}
     ]
     sibling_index = siblings.index(span.span_id) + 1
     return span_filename(span.kind, span.name, span.span_id, sibling_index)
+
+
+def _format_attempt_line(span: SpanRecord, meta: dict[str, Any], view: SpanTreeView, *, indent: str, status: str, duration: str) -> str:
+    context = f"Span {span.span_id}"
+    attempt_num = _detail_int(meta, "attempt", context=context, field_name="meta_json")
+    max_attempts = _detail_int(meta, "max_attempts", context=context, field_name="meta_json")
+    label = f"{attempt_num}/{max_attempts}" if max_attempts > 0 else str(attempt_num)
+    rendered = f"{indent}attempt: {label} {status} {duration}"
+    cost = span.cost_usd + view.descendant_costs.get(span.span_id, 0.0)
+    if cost > 0:
+        rendered += f" ${cost:.4f}"
+    return rendered
 
 
 def _format_tree_line(span: SpanRecord, view: SpanTreeView, *, depth: int, include_filenames: bool) -> str:
@@ -381,6 +394,9 @@ def _format_tree_line(span: SpanRecord, view: SpanTreeView, *, depth: int, inclu
         filename = _span_local_filename(span, view) if include_filenames else None
         return f"{rendered}  -> {filename}" if filename is not None else rendered
 
+    if span.kind == SpanKind.ATTEMPT:
+        return _format_attempt_line(span, meta, view, indent=indent, status=status, duration=duration)
+
     rendered = f"{indent}{span.kind}: {span.name} {status} {duration}{cache_suffix}"
     filename = _span_local_filename(span, view) if include_filenames else None
     return f"{rendered}  -> {filename}" if filename is not None else rendered
@@ -401,6 +417,17 @@ def format_span_tree_lines(view: SpanTreeView, *, include_filenames: bool = Fals
 
         visited.add(span_id)
         span = view.spans_by_id[span_id]
+
+        if span.kind == SpanKind.ATTEMPT:
+            attempt_siblings = [c for c in view.children_map.get(span.parent_span_id, []) if view.spans_by_id[c].kind == SpanKind.ATTEMPT]
+            if len(attempt_siblings) == 1 and span.status != SpanStatus.FAILED:
+                # Single non-failed attempt — skip the ATTEMPT wrapper line and render children at same depth.
+                # Failed attempts are always shown so timing and error context remain visible for debugging.
+                for child_id in view.children_map.get(span_id, []):
+                    append_tree_lines(child_id, depth)
+                visited.remove(span_id)
+                return
+
         lines.append(_format_tree_line(span, view, depth=depth, include_filenames=include_filenames))
         for child_id in view.children_map.get(span_id, []):
             append_tree_lines(child_id, depth + 1)
@@ -422,6 +449,7 @@ def format_span_overview_lines(view: SpanTreeView) -> list[str]:
         (
             f"Flows: {view.counts_by_kind.get(SpanKind.FLOW, 0)}  "
             f"Tasks: {view.counts_by_kind.get(SpanKind.TASK, 0)}  "
+            f"Attempts: {view.counts_by_kind.get(SpanKind.ATTEMPT, 0)}  "
             f"Operations: {view.counts_by_kind.get(SpanKind.OPERATION, 0)}  "
             f"Conversations: {view.counts_by_kind.get(SpanKind.CONVERSATION, 0)}  "
             f"LLM Rounds: {view.counts_by_kind.get(SpanKind.LLM_ROUND, 0)}  "
@@ -433,7 +461,7 @@ def format_span_overview_lines(view: SpanTreeView) -> list[str]:
 
 def _build_failures_lines(view: SpanTreeView) -> list[str]:
     failed_spans = sorted(
-        (span for span in view.spans_by_id.values() if span.status == SpanStatus.FAILED),
+        (span for span in view.spans_by_id.values() if span.status == SpanStatus.FAILED and span.kind != SpanKind.ATTEMPT),
         key=lambda span: (span.started_at, span.sequence_no, str(span.span_id)),
     )
     if not failed_spans:
@@ -542,6 +570,7 @@ def generate_summary_from_tree(tree: list[SpanRecord], root_deployment_id: UUID)
         (
             f"**Flows**: {view.counts_by_kind.get(SpanKind.FLOW, 0)} | "
             f"**Tasks**: {view.counts_by_kind.get(SpanKind.TASK, 0)} | "
+            f"**Attempts**: {view.counts_by_kind.get(SpanKind.ATTEMPT, 0)} | "
             f"**Operations**: {view.counts_by_kind.get(SpanKind.OPERATION, 0)} | "
             f"**Conversations**: {view.counts_by_kind.get(SpanKind.CONVERSATION, 0)} | "
             f"**LLM Rounds**: {view.counts_by_kind.get(SpanKind.LLM_ROUND, 0)} | "

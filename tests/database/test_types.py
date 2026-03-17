@@ -23,6 +23,7 @@ def test_span_kind_members() -> None:
         "deployment",
         "flow",
         "task",
+        "attempt",
         "operation",
         "conversation",
         "llm_round",

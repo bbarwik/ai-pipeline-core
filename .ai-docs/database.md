@@ -2,7 +2,7 @@
 # CLASSES: DatabaseReader, SpanKind, SpanStatus, SpanRecord, DocumentRecord, CostTotals, HydratedDocument
 # DEPENDS: Protocol, StrEnum
 # PURPOSE: Unified database module for the span-based schema.
-# VERSION: 0.17.1
+# VERSION: 0.18.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -171,6 +171,7 @@ class SpanKind(StrEnum):
     DEPLOYMENT = "deployment"
     FLOW = "flow"
     TASK = "task"
+    ATTEMPT = "attempt"
     OPERATION = "operation"
     CONVERSATION = "conversation"
     LLM_ROUND = "llm_round"
@@ -330,7 +331,7 @@ def test_memory_database_conforms_to_protocols() -> None:
     assert database.supports_remote is False
 ```
 
-**Span status members** (`tests/database/test_types.py:33`)
+**Span status members** (`tests/database/test_types.py:34`)
 
 ```python
 def test_span_status_members() -> None:
@@ -447,7 +448,7 @@ def test_attachment_contents_raises_on_missing_blobs() -> None:
         _attachment_contents_for_record(record, blobs)
 ```
 
-**Blob record defaults and immutability** (`tests/database/test_types.py:124`)
+**Blob record defaults and immutability** (`tests/database/test_types.py:125`)
 
 ```python
 def test_blob_record_defaults_and_immutability() -> None:
@@ -459,7 +460,7 @@ def test_blob_record_defaults_and_immutability() -> None:
         blob.content = b"changed"  # type: ignore[misc]
 ```
 
-**Document record rejects mismatched attachment lengths** (`tests/database/test_types.py:109`)
+**Document record rejects mismatched attachment lengths** (`tests/database/test_types.py:110`)
 
 ```python
 def test_document_record_rejects_mismatched_attachment_lengths() -> None:

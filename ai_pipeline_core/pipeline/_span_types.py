@@ -1,5 +1,6 @@
 """Span transport types shared across pipeline execution modules."""
 
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -77,6 +78,7 @@ class SpanContext:
         self._output_value: Any = None
         self._has_output_value = False
         self._status: str | None = None
+        self._retry_errors: list[dict[str, Any]] = []
 
     @property
     def input_preview(self) -> Any | None:
@@ -112,6 +114,28 @@ class SpanContext:
 
     def set_status(self, status: str) -> None:
         self._status = status
+
+    def record_retry_failure(
+        self,
+        *,
+        exc: BaseException,
+        attempt: int,
+        max_attempts: int,
+        attempt_span_id: str = "",
+        will_retry: bool,
+        delay_seconds: float = 0.0,
+    ) -> None:
+        """Record a failed retry attempt on this span. Use empty attempt_span_id for leaf retries (no child spans)."""
+        self._retry_errors.append({
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "attempt_span_id": attempt_span_id,
+            "will_retry": will_retry,
+            "delay_seconds": delay_seconds,
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        })
 
     def _build_metrics(self, *, ended_at: datetime, started_at: datetime, log_summary: dict[str, Any]) -> SpanMetrics:
         metrics_data = dict(self._metrics_updates)

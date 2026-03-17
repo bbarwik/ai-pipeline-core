@@ -150,6 +150,9 @@ class RemoteDeployment(Generic[TOptions, TResult]):
         if database is not None and not database.supports_remote:
             use_inline = True
             inline_reason = "the active database backend does not support remote execution"
+        if self.deployment_class:
+            use_inline = True
+            inline_reason = "deployment_class is set (inline execution configured)"
 
         publisher = exec_ctx.publisher if exec_ctx else None
         flow_frame = exec_ctx.flow_frame if exec_ctx else None

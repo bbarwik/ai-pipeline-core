@@ -2,7 +2,7 @@
 # CLASSES: DeploymentResult, FlowAction, FlowDirective, PipelineDeployment, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.17.1
+# VERSION: 0.18.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -260,6 +260,9 @@ Set ``deployment_class`` to enable inline mode (test/local):
         if database is not None and not database.supports_remote:
             use_inline = True
             inline_reason = "the active database backend does not support remote execution"
+        if self.deployment_class:
+            use_inline = True
+            inline_reason = "deployment_class is set (inline execution configured)"
 
         publisher = exec_ctx.publisher if exec_ctx else None
         flow_frame = exec_ctx.flow_frame if exec_ctx else None
@@ -387,7 +390,7 @@ Set ``deployment_class`` to enable inline mode (test/local):
 
 ## Examples
 
-**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:818`)
+**Format starts with base run id** (`tests/deployment/test_remote_deployment.py:851`)
 
 ```python
 class AlphaDoc(Document):
@@ -444,7 +447,7 @@ def test_two_args_returned_by_helper(self):
     assert args[1] is SimpleResult
 ```
 
-**Two params from remote deployment** (`tests/deployment/test_remote_deployment.py:765`)
+**Two params from remote deployment** (`tests/deployment/test_remote_deployment.py:798`)
 
 ```python
 def test_two_params_from_remote_deployment(self):
@@ -483,7 +486,7 @@ def test_accepts_flow_options_subclass(self):
 
 ## Error Examples
 
-**Rejects empty run id** (`tests/deployment/test_remote_deployment.py:482`)
+**Rejects empty run id** (`tests/deployment/test_remote_deployment.py:515`)
 
 ```python
 async def test_rejects_empty_run_id(self):
@@ -495,7 +498,7 @@ async def test_rejects_empty_run_id(self):
             await Foo().run((), FlowOptions())
 ```
 
-**Rejects invalid run id** (`tests/deployment/test_remote_deployment.py:474`)
+**Rejects invalid run id** (`tests/deployment/test_remote_deployment.py:507`)
 
 ```python
 async def test_rejects_invalid_run_id(self):
@@ -543,7 +546,7 @@ def test_rejects_non_flow_options(self):
             pass
 ```
 
-**Rejects outside execution context** (`tests/deployment/test_remote_deployment.py:467`)
+**Rejects outside execution context** (`tests/deployment/test_remote_deployment.py:500`)
 
 ```python
 async def test_rejects_outside_execution_context(self):

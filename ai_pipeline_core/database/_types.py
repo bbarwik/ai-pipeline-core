@@ -95,6 +95,7 @@ class SpanKind(StrEnum):
     DEPLOYMENT = "deployment"
     FLOW = "flow"
     TASK = "task"
+    ATTEMPT = "attempt"
     OPERATION = "operation"
     CONVERSATION = "conversation"
     LLM_ROUND = "llm_round"

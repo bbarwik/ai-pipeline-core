@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from ai_pipeline_core.database._json_helpers import parse_json_object
 from ai_pipeline_core.database._protocol import DatabaseReader, DatabaseWriter
-from ai_pipeline_core.database._types import SpanRecord
+from ai_pipeline_core.database._types import SpanKind, SpanRecord
 from ai_pipeline_core.llm.tools import Tool
 from ai_pipeline_core.pipeline import safe_gather_indexed
 
@@ -222,6 +222,8 @@ async def find_experiment_span_ids(
     spans = await database.get_deployment_tree(deployment_id)
     matched: list[UUID] = []
     for span in sorted(spans, key=lambda item: (item.started_at, item.sequence_no, str(item.span_id))):
+        if span.kind == SpanKind.ATTEMPT:
+            continue  # structural grouping, not directly replayable
         if kind is not None and span.kind != kind:
             continue
         meta = parse_json_object(span.meta_json, context=f"Span {span.span_id}", field_name="meta_json")

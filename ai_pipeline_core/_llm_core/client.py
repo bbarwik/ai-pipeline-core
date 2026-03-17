@@ -470,19 +470,19 @@ async def _generate_impl(
 
                 return model_response
 
-        except TimeoutError:
-            logger.warning("LLM generation timeout (attempt %d/%d)", attempt + 1, total_attempts)
+        except TimeoutError as timeout_exc:
+            logger.warning("LLM generation timeout (attempt %d/%d)", attempt + 1, total_attempts, exc_info=timeout_exc)
             if attempt == total_attempts - 1:
-                raise LLMError("Exhausted all retry attempts for LLM generation.") from None
+                raise LLMError("Exhausted all retry attempts for LLM generation.") from timeout_exc
         except Exception as e:
             if isinstance(e, ValidationError):
-                logger.warning("Structured output validation failed (attempt %d/%d): %s", attempt + 1, total_attempts, e)
+                logger.warning("Structured output validation failed (attempt %d/%d): %s", attempt + 1, total_attempts, e, exc_info=e)
                 final_error_msg = f"Structured output validation failed after {total_attempts} attempts"
             elif isinstance(e, EmptyResponseError):
-                logger.warning("Empty LLM response (attempt %d/%d, retrying with cache disabled): %s", attempt + 1, total_attempts, e)
+                logger.warning("Empty LLM response (attempt %d/%d, retrying with cache disabled): %s", attempt + 1, total_attempts, e, exc_info=e)
                 final_error_msg = f"Empty response content after {total_attempts} attempts."
             else:
-                logger.warning("LLM generation failed (attempt %d/%d): %s", attempt + 1, total_attempts, e)
+                logger.warning("LLM generation failed (attempt %d/%d): %s", attempt + 1, total_attempts, e, exc_info=e)
                 final_error_msg = "Exhausted all retry attempts for LLM generation."
 
             completion_kwargs.setdefault("extra_body", {})

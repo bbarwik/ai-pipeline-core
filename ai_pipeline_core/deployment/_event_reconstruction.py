@@ -341,7 +341,8 @@ def _reconstruct_task_events(
     flow_name = flow_span.name if flow_span else ""
     step = flow_meta.get("step", 0) if flow_meta else 0
     total_steps = flow_meta.get("total_steps", 0) if flow_meta else 0
-    parent_span_id = str(span.parent_span_id) if span.parent_span_id else ""
+    # Point to the logical FLOW span, not an ATTEMPT span (R2: task events reference flow hierarchy)
+    parent_span_id = str(flow_span.span_id) if flow_span else (str(span.parent_span_id) if span.parent_span_id else "")
 
     is_cached = span.status == SpanStatus.CACHED
 
@@ -451,7 +452,8 @@ async def _reconstruct_lifecycle_events(
     if all_doc_shas:
         doc_map = await reader.get_documents_batch(sorted(all_doc_shas))
 
-    span_by_id: dict[UUID, SpanRecord] = {s.span_id: s for s in lifecycle_spans}
+    # Lookup for ALL spans — needed to walk through ATTEMPT parents to find FLOW context
+    all_span_by_id: dict[UUID, SpanRecord] = {s.span_id: s for s in all_spans}
     meta_by_id: dict[UUID, dict[str, Any]] = {s.span_id: _parse_meta(s) for s in lifecycle_spans}
 
     deployment_span: SpanRecord | None = None
@@ -478,8 +480,12 @@ async def _reconstruct_lifecycle_events(
             events.extend(_reconstruct_flow_events(span, meta, parent_task_id_str, deployment_span_id_str, doc_map))
 
         elif span.kind == SpanKind.TASK:
-            flow_span = span_by_id.get(span.parent_span_id) if span.parent_span_id else None
-            flow_meta = meta_by_id.get(span.parent_span_id, {}) if span.parent_span_id else {}
+            # Walk up through ATTEMPT spans to find the enclosing FLOW span
+            parent = all_span_by_id.get(span.parent_span_id) if span.parent_span_id else None
+            while parent is not None and parent.kind == SpanKind.ATTEMPT:
+                parent = all_span_by_id.get(parent.parent_span_id) if parent.parent_span_id else None
+            flow_span = parent if (parent is not None and parent.kind == SpanKind.FLOW) else None
+            flow_meta = meta_by_id.get(flow_span.span_id, {}) if flow_span else {}
             events.extend(_reconstruct_task_events(span, meta, parent_task_id_str, flow_span=flow_span, flow_meta=flow_meta, doc_map=doc_map))
 
     events.sort(key=_sort_key)

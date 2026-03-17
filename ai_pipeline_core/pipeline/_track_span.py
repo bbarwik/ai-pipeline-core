@@ -158,6 +158,9 @@ async def track_span(
             )
 
             meta = dict(context._meta)
+            if context._retry_errors:
+                meta["retry_count"] = len(context._retry_errors)
+                meta["retry_errors"] = context._retry_errors
             if context._status is not None:
                 meta["_span_status"] = context._status
 

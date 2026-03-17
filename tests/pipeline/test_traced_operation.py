@@ -179,11 +179,13 @@ async def test_traced_operation_inside_task_records_conversation_children(monkey
         await _TaskWithTracedOperation.run((_make_input(),))
 
     task_span = next(span for span in database._spans.values() if span.kind == SpanKind.TASK)
+    attempt_span = next(span for span in database._spans.values() if span.kind == SpanKind.ATTEMPT)
     operation_span = next(span for span in database._spans.values() if span.kind == SpanKind.OPERATION)
     conversation_span = next(span for span in database._spans.values() if span.kind == SpanKind.CONVERSATION)
     llm_round_span = next(span for span in database._spans.values() if span.kind == SpanKind.LLM_ROUND)
 
-    assert operation_span.parent_span_id == task_span.span_id
+    assert attempt_span.parent_span_id == task_span.span_id
+    assert operation_span.parent_span_id == attempt_span.span_id
     assert conversation_span.parent_span_id == operation_span.span_id
     assert llm_round_span.parent_span_id == conversation_span.span_id
     assert llm_round_span.cost_usd == 0.5

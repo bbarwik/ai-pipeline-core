@@ -218,7 +218,9 @@ async def test_nested_tasks_form_parent_child_task_span_hierarchy() -> None:
     )
     assert len(task_spans) == 2
     parent_span, child_span = task_spans
-    assert child_span.parent_span_id == parent_span.span_id
+    # Child task parents to the ATTEMPT span wrapping the parent task's execution
+    attempt_span = next(span for span in database._spans.values() if span.kind == SpanKind.ATTEMPT and span.parent_span_id == parent_span.span_id)
+    assert child_span.parent_span_id == attempt_span.span_id
 
 
 @pytest.mark.asyncio

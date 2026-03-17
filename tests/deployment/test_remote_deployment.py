@@ -326,6 +326,39 @@ class TestInlineModeDetection:
         mock_inline.assert_awaited_once()
         mock_remote.assert_not_awaited()
 
+    async def test_deployment_class_forces_inline_even_with_remote_database(self):
+        """When deployment_class is set, inline mode must be used regardless of database capability."""
+
+        class FooWithClass(RemoteDeployment[FlowOptions, SimpleResult]):
+            deployment_class = "some.module:SomeDeployment"
+
+        class RemoteCapableDatabase:
+            supports_remote = True
+
+            async def insert_span(self, _span):
+                return None
+
+        mock_ctx = MagicMock()
+        mock_ctx.database = RemoteCapableDatabase()
+        mock_ctx.deployment_id = uuid4()
+        mock_ctx.root_deployment_id = uuid4()
+        mock_ctx.current_span_id = uuid4()
+        mock_ctx.deployment_name = "test"
+        mock_ctx.next_child_sequence.return_value = 0
+
+        foo = FooWithClass()
+        with (
+            patch(_EXEC_CTX_PATH, return_value=mock_ctx),
+            patch.object(FooWithClass, "_run_inline", new_callable=AsyncMock) as mock_inline,
+            patch.object(FooWithClass, "_run_remote", new_callable=AsyncMock) as mock_remote,
+        ):
+            mock_inline.return_value = SimpleResult(success=True)
+            with pipeline_test_context(run_id="project"):
+                await foo.run((), FlowOptions())
+
+        mock_inline.assert_awaited_once()
+        mock_remote.assert_not_awaited()
+
     async def test_remote_mode_with_remote_capable_database(self):
         """Backends advertising supports_remote=True use Prefect remote execution."""
 

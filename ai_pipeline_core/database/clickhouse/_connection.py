@@ -147,7 +147,7 @@ async def _create_client(active_settings: Settings) -> AsyncClient:
                 connect_timeout=active_settings.clickhouse_connect_timeout,
                 send_receive_timeout=active_settings.clickhouse_send_receive_timeout,
             )
-        except _RETRYABLE_EXCEPTIONS:
+        except _RETRYABLE_EXCEPTIONS as exc:
             if attempt >= max_attempts:
                 raise
             delay = backoff_sec * attempt
@@ -156,6 +156,7 @@ async def _create_client(active_settings: Settings) -> AsyncClient:
                 attempt,
                 max_attempts,
                 delay,
+                exc_info=exc,
             )
             await asyncio.sleep(delay)
 

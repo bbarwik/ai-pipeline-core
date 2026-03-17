@@ -1,7 +1,7 @@
 # MODULE: replay
 # CLASSES: ExperimentResult, ExperimentOverrides
 # PURPOSE: Generic replay and experimentation entry points.
-# VERSION: 0.17.1
+# VERSION: 0.18.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -196,6 +196,8 @@ async def find_experiment_span_ids(
     spans = await database.get_deployment_tree(deployment_id)
     matched: list[UUID] = []
     for span in sorted(spans, key=lambda item: (item.started_at, item.sequence_no, str(item.span_id))):
+        if span.kind == SpanKind.ATTEMPT:
+            continue  # structural grouping, not directly replayable
         if kind is not None and span.kind != kind:
             continue
         meta = parse_json_object(span.meta_json, context=f"Span {span.span_id}", field_name="meta_json")

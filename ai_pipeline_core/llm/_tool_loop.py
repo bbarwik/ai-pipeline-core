@@ -265,13 +265,14 @@ async def execute_tool_loop(
             round_index=round_num + 1,
             tool_schemas=[],
         )
-    except Exception:
+    except Exception as forced_exc:
         logger.warning(
             "Forced final response failed after max_tool_rounds=%d (consecutive_unknown_rounds=%d). "
             "Returning accumulated tool results (%d records) without final synthesis.",
             max_tool_rounds,
             consecutive_unknown_rounds,
             len(all_records),
+            exc_info=forced_exc,
         )
         response = ModelResponse[Any](
             content="[Final synthesis failed after max tool rounds. Tool results are preserved in tool_call_records.]",

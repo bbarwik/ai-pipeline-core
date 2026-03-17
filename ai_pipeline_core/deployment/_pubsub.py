@@ -89,9 +89,9 @@ class PubSubPublisher:
             except Exception as e:
                 last_error = e
                 delay = BACKOFF_BASE_SECONDS * (2**attempt)
-                logger.warning("Pub/Sub publish attempt %d failed: %s (retry in %ds)", attempt + 1, e, delay)
+                logger.warning("Pub/Sub publish attempt %d failed: %s (retry in %ds)", attempt + 1, e, delay, exc_info=e)
                 await asyncio.sleep(delay)
-        logger.warning("Pub/Sub publish failed after %d attempts: %s", MAX_RETRIES, last_error)
+        logger.warning("Pub/Sub publish failed after %d attempts: %s", MAX_RETRIES, last_error, exc_info=last_error)
 
     def _make_attributes(self, event_type: EventType, run_id: str) -> dict[str, str]:
         """Build Pub/Sub message attributes."""

@@ -235,14 +235,20 @@ async def test_full_deployment_lifecycle_records_complete_span_tree(monkeypatch:
         SpanKind.DEPLOYMENT,
         SpanKind.FLOW,
         SpanKind.TASK,
+        SpanKind.ATTEMPT,
         SpanKind.OPERATION,
         SpanKind.CONVERSATION,
         SpanKind.LLM_ROUND,
         SpanKind.TOOL_CALL,
     }
+    attempt_spans = [span for span in tree if span.kind == SpanKind.ATTEMPT]
+    # Always-emit: both the FLOW and the TASK are wrapped in ATTEMPT spans
+    flow_attempt_span = next(s for s in attempt_spans if s.parent_span_id == flow_span.span_id)
+    task_attempt_span = next(s for s in attempt_spans if s.parent_span_id == task_span.span_id)
     assert flow_span.parent_span_id == deployment_span.span_id
-    assert task_span.parent_span_id == flow_span.span_id
-    assert operation_span.parent_span_id == task_span.span_id
+    # Tasks inside the flow parent to the flow's ATTEMPT span, not directly to the FLOW
+    assert task_span.parent_span_id == flow_attempt_span.span_id
+    assert operation_span.parent_span_id == task_attempt_span.span_id
     assert conversation_span.parent_span_id == operation_span.span_id
     assert [span.parent_span_id for span in llm_round_spans] == [conversation_span.span_id, conversation_span.span_id]
     assert tool_call_span.parent_span_id == conversation_span.span_id

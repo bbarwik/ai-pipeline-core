@@ -2,7 +2,7 @@
 # CLASSES: Citation, TokenUsage, ModelOptions, Conversation, ToolOutput, Tool, ToolCallRecord
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.17.1
+# VERSION: 0.18.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -558,13 +558,16 @@ class Tool:
         for attempt in range(self.retries + 1):
             try:
                 result = await asyncio.wait_for(self.run(input), timeout=self.timeout_seconds)
-            except TimeoutError:
+            except TimeoutError as timeout_exc:
                 if attempt < self.retries:
+                    logger.warning("Tool '%s' timed out (attempt %d/%d), retrying", self.name, attempt + 1, self.retries + 1, exc_info=timeout_exc)
                     await asyncio.sleep(self.retry_delay_seconds)
                     continue
+                logger.warning("Tool '%s' timed out after %d attempts", self.name, self.retries + 1, exc_info=timeout_exc)
                 return ToolOutput(content=f"Error: Tool '{self.name}' timed out after {self.timeout_seconds}s ({self.retries + 1} attempts).")
             except self.handled_exceptions as error:
                 if self._is_retryable(error) and attempt < self.retries:
+                    logger.warning("Tool '%s' failed (attempt %d/%d), retrying", self.name, attempt + 1, self.retries + 1, exc_info=error)
                     await asyncio.sleep(self.retry_delay_seconds)
                     continue
                 try:

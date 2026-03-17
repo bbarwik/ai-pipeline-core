@@ -6,7 +6,7 @@ import time
 from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid7
 
 from prefect.context import FlowRunContext as _FlowRunContext
 
@@ -24,6 +24,7 @@ from ai_pipeline_core.pipeline._execution_context import (
     set_task_context,
 )
 from ai_pipeline_core.pipeline._flow import PipelineFlow
+from ai_pipeline_core.pipeline._span_types import SpanContext
 from ai_pipeline_core.pipeline._track_span import track_span
 from ai_pipeline_core.pipeline.options import FlowOptions
 
@@ -33,6 +34,7 @@ from ._types import DocumentRef, FlowCompletedEvent, FlowFailedEvent, FlowStarte
 __all__ = [
     "_deduplicate_documents_by_sha256",
     "_execute_flow_with_context",
+    "_execute_single_flow_attempt",
     "_first_declaring_class",
     "_flow_class_path",
     "_reuse_cached_flow_output",
@@ -100,6 +102,35 @@ def _resolve_flow_retry_delay(flow_class: type[PipelineFlow], deployment_flow_re
     return deployment_flow_retry_delay_seconds
 
 
+async def _execute_single_flow_attempt(
+    flow_class: type[PipelineFlow],
+    flow_instance: PipelineFlow,
+    current_docs: list[Document],
+    options: FlowOptions,
+) -> tuple[Document, ...]:
+    """Run the flow once and validate the return value. Raises TypeError on bad return type."""
+    prefect_flow_fn = flow_class._prefect_flow_fn
+    if _FlowRunContext.get() is not None and prefect_flow_fn is not None:
+        raw_flow_result = cast(object, await prefect_flow_fn(flow_instance, tuple(current_docs), options))
+    else:
+        raw_flow_result = cast(object, await flow_instance.run(tuple(current_docs), options))
+    if not isinstance(raw_flow_result, tuple):
+        raise TypeError(
+            f"PipelineFlow '{flow_class.__name__}' returned {type(raw_flow_result).__name__}. "
+            "run() must return tuple[Document, ...]. "
+            "Hint: for single-document returns use (doc,) with trailing comma, "
+            "or wrap a list: return tuple(results)"
+        )
+    raw_result_docs = cast(tuple[object, ...], raw_flow_result)
+    if not raw_result_docs:
+        raise TypeError(
+            f"PipelineFlow '{flow_class.__name__}' returned an empty tuple. run() must return at least one Document. Every flow must produce output documents."
+        )
+    if any(not isinstance(document, Document) for document in raw_result_docs):
+        raise TypeError(f"PipelineFlow '{flow_class.__name__}' returned non-Document items. run() must return tuple[Document, ...].")
+    return cast(tuple[Document, ...], raw_flow_result)
+
+
 async def _run_flow_with_retries(
     *,
     flow_instance: PipelineFlow,
@@ -113,50 +144,57 @@ async def _run_flow_with_retries(
     total_steps: int,
     deployment_flow_retries: int = 0,
     deployment_flow_retry_delay_seconds: int = 30,
+    parent_span_ctx: SpanContext,
 ) -> tuple[Document, ...]:
     """Execute a flow's run() with retries, exponential backoff, and NonRetriableError handling.
 
-    Retry count resolution: if the flow class explicitly sets ``retries`` in its own
-    class body, that value is used. Otherwise the deployment's ``flow_retries`` applies.
+    Every executed body — including retries=0 — is wrapped in an ATTEMPT span so the span
+    tree is FLOW → ATTEMPT → children. Retry count resolution: if the flow class explicitly
+    sets ``retries`` in its own class body, that value is used. Otherwise the deployment's
+    ``flow_retries`` applies.
     """
     retries = _resolve_flow_retries(flow_class, deployment_flow_retries)
     retry_delay = _resolve_flow_retry_delay(flow_class, deployment_flow_retry_delay_seconds)
     flow_attempts = retries + 1
 
     for flow_attempt in range(flow_attempts):
+        attempt_span_id = uuid7()
         try:
-            prefect_flow_fn = flow_class._prefect_flow_fn
-            if _FlowRunContext.get() is not None and prefect_flow_fn is not None:
-                raw_flow_result = cast(object, await prefect_flow_fn(flow_instance, tuple(current_docs), options))
-            else:
-                raw_flow_result = cast(object, await flow_instance.run(tuple(current_docs), options))
-            # Result validation — TypeError is a programming bug, never retry
-            if not isinstance(raw_flow_result, tuple):
-                raise TypeError(
-                    f"PipelineFlow '{flow_class.__name__}' returned {type(raw_flow_result).__name__}. "
-                    "run() must return tuple[Document, ...]. "
-                    "Hint: for single-document returns use (doc,) with trailing comma, "
-                    "or wrap a list: return tuple(results)"
-                )
-            raw_result_docs = cast(tuple[object, ...], raw_flow_result)
-            if not raw_result_docs:
-                raise TypeError(
-                    f"PipelineFlow '{flow_class.__name__}' returned an empty tuple. "
-                    "run() must return at least one Document. Every flow must produce output documents."
-                )
-            if any(not isinstance(document, Document) for document in raw_result_docs):
-                raise TypeError(f"PipelineFlow '{flow_class.__name__}' returned non-Document items. run() must return tuple[Document, ...].")
-            return cast(tuple[Document, ...], raw_flow_result)
-
+            async with track_span(
+                SpanKind.ATTEMPT,
+                f"attempt-{flow_attempt}",
+                "",
+                sinks=get_sinks(),
+                span_id=attempt_span_id,
+            ) as attempt_ctx:
+                attempt_ctx.set_meta(attempt=flow_attempt, max_attempts=flow_attempts)
+                return await _execute_single_flow_attempt(flow_class, flow_instance, current_docs, options)
         except NonRetriableError, TypeError, asyncio.CancelledError:
-            raise  # Never retry these
-
+            raise
         except Exception as attempt_exc:
             if current_exec_ctx is not None:
                 await _cancel_dispatched_handles(current_exec_ctx.active_task_handles, baseline_handles=active_handles_before)
-            if flow_attempt >= flow_attempts - 1:
-                raise  # Final attempt — propagate
-            delay = min(retry_delay * (2**flow_attempt), MAX_RETRY_DELAY_SECONDS)
+            will_retry = flow_attempt < flow_attempts - 1
+            delay = min(retry_delay * (2**flow_attempt), MAX_RETRY_DELAY_SECONDS) if will_retry else 0
+            if flow_attempts > 1:
+                parent_span_ctx.record_retry_failure(
+                    exc=attempt_exc,
+                    attempt=flow_attempt,
+                    max_attempts=flow_attempts,
+                    attempt_span_id=str(attempt_span_id),
+                    will_retry=will_retry,
+                    delay_seconds=delay,
+                )
+            if not will_retry:
+                raise
+            logger.warning(
+                "Flow %s attempt %d/%d failed, retrying in %ds",
+                flow_name,
+                flow_attempt + 1,
+                flow_attempts,
+                delay,
+                exc_info=attempt_exc,
+            )
             record_lifecycle_event(
                 "flow.retry",
                 f"Flow {flow_name} attempt {flow_attempt + 1}/{flow_attempts} failed, retrying in {delay}s",
@@ -239,6 +277,8 @@ async def _execute_flow_with_context(
                 expected_tasks=expected_tasks,
                 cache_hit=False,
                 cache_key=flow_cache_key,
+                flow_retries=_resolve_flow_retries(flow_class, deployment_flow_retries),
+                flow_retry_delay_seconds=_resolve_flow_retry_delay(flow_class, deployment_flow_retry_delay_seconds),
             )
             await publisher.publish_flow_started(
                 FlowStartedEvent(
@@ -278,6 +318,7 @@ async def _execute_flow_with_context(
                     total_steps=total_steps,
                     deployment_flow_retries=deployment_flow_retries,
                     deployment_flow_retry_delay_seconds=deployment_flow_retry_delay_seconds,
+                    parent_span_ctx=span_ctx,
                 )
             except (Exception, asyncio.CancelledError) as flow_exc:
                 record_lifecycle_event(
@@ -313,10 +354,6 @@ async def _execute_flow_with_context(
                     logger.warning("Failed to publish flow.failed event: %s", publish_error)
                 raise
 
-            span_ctx.set_meta(
-                flow_retries=_resolve_flow_retries(flow_class, deployment_flow_retries),
-                flow_retry_delay_seconds=_resolve_flow_retry_delay(flow_class, deployment_flow_retry_delay_seconds),
-            )
             flow_duration_ms = int((time.monotonic() - flow_started_at) * 1000)
             record_lifecycle_event(
                 "flow.completed",

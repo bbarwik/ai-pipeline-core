@@ -244,6 +244,7 @@ async def _flush_logs_once(
             "Execution log flush failed. The framework will retry on the next flush cycle. Error: %s",
             exc,
             extra={SKIP_EXECUTION_LOG_ATTR: True},
+            exc_info=exc,
         )
         return pending_logs
     if log_buffer is not None:

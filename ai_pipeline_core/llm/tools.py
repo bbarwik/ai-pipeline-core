@@ -17,7 +17,11 @@ from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict
 
+from ai_pipeline_core.logger import get_pipeline_logger
+
 __all__ = ["Tool", "ToolCallRecord", "ToolOutput", "generate_tool_schema", "to_snake_case"]
+
+logger = get_pipeline_logger(__name__)
 
 _SNAKE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
@@ -102,13 +106,16 @@ class Tool:
         for attempt in range(self.retries + 1):
             try:
                 result = await asyncio.wait_for(self.run(input), timeout=self.timeout_seconds)
-            except TimeoutError:
+            except TimeoutError as timeout_exc:
                 if attempt < self.retries:
+                    logger.warning("Tool '%s' timed out (attempt %d/%d), retrying", self.name, attempt + 1, self.retries + 1, exc_info=timeout_exc)
                     await asyncio.sleep(self.retry_delay_seconds)
                     continue
+                logger.warning("Tool '%s' timed out after %d attempts", self.name, self.retries + 1, exc_info=timeout_exc)
                 return ToolOutput(content=f"Error: Tool '{self.name}' timed out after {self.timeout_seconds}s ({self.retries + 1} attempts).")
             except self.handled_exceptions as error:
                 if self._is_retryable(error) and attempt < self.retries:
+                    logger.warning("Tool '%s' failed (attempt %d/%d), retrying", self.name, attempt + 1, self.retries + 1, exc_info=error)
                     await asyncio.sleep(self.retry_delay_seconds)
                     continue
                 try:

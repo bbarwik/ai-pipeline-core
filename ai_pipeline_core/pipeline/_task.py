@@ -54,6 +54,7 @@ from ai_pipeline_core.pipeline._execution_context import (
     set_task_context,
 )
 from ai_pipeline_core.pipeline._parallel import TaskHandle
+from ai_pipeline_core.pipeline._span_types import SpanContext
 from ai_pipeline_core.pipeline._task_cache import build_task_cache_key, build_task_description
 from ai_pipeline_core.pipeline._task_runtime import (
     _attach_task_attempt,
@@ -341,46 +342,79 @@ class PipelineTask:
         return tuple(deduped)
 
     @classmethod
-    async def _run_with_retries(cls, arguments: Mapping[str, Any]) -> tuple[tuple[Document, ...], int]:
+    async def _run_with_retries(
+        cls,
+        arguments: Mapping[str, Any],
+        *,
+        parent_span_ctx: SpanContext,
+    ) -> tuple[tuple[Document, ...], int]:
+        """Execute the task body, always wrapped in an ATTEMPT span.
+
+        Every executed body — even with retries=0 — emits one ATTEMPT span so the span tree
+        is TASK → ATTEMPT → children. Exception: cache hits emit only a TASK span with
+        CACHED status and no ATTEMPT. When retries=0 and the task fails, the ATTEMPT span
+        captures error_json but the parent TASK span does NOT accumulate retry_errors
+        (retry metadata is only meaningful when retries > 0).
+        """
         attempts = cls.retries + 1
-        last_error: Exception | None = None
         use_prefect = _FlowRunContext.get() is not None and cls._prefect_task_fn is not None
 
         for attempt in range(attempts):
-            if use_prefect:
-                outcome = (await asyncio.gather(cls._prefect_task_fn(dict(arguments)), return_exceptions=True))[0]
-            else:
-                outcome = (
-                    await asyncio.gather(
-                        _maybe_with_timeout(cls.timeout_seconds, lambda: cls._run_and_normalize(arguments)),
-                        return_exceptions=True,
-                    )
-                )[0]
-            if isinstance(outcome, NonRetriableError):
-                raise _attach_task_attempt(outcome, attempt)
-            if isinstance(outcome, RETRY_CAPTURE_EXCEPTIONS):
-                last_error = outcome
-                if attempt < attempts - 1:
-                    delay = min(cls.retry_delay_seconds * (2**attempt), MAX_RETRY_DELAY_SECONDS)
-                    record_lifecycle_event(
-                        "task.retry",
-                        f"Task {cls.name} attempt {attempt + 1}/{attempts} failed, retrying in {delay}s",
-                        task_name=cls.name,
-                        task_class=cls.__name__,
-                        attempt=attempt + 1,
+            attempt_span_id = uuid7()
+            try:
+                async with track_span(
+                    SpanKind.ATTEMPT,
+                    f"attempt-{attempt}",
+                    "",
+                    sinks=get_sinks(),
+                    span_id=attempt_span_id,
+                ) as attempt_ctx:
+                    attempt_ctx.set_meta(attempt=attempt, max_attempts=attempts)
+                    if use_prefect:
+                        result = await cls._prefect_task_fn(dict(arguments))
+                    else:
+                        result = await _maybe_with_timeout(cls.timeout_seconds, lambda: cls._run_and_normalize(arguments))
+                    return result, attempt
+            except (NonRetriableError, asyncio.CancelledError) as exc:
+                _attach_task_attempt(exc, attempt)
+                raise
+            except RETRY_CAPTURE_EXCEPTIONS as exc:
+                will_retry = attempt < attempts - 1
+                delay = min(cls.retry_delay_seconds * (2**attempt), MAX_RETRY_DELAY_SECONDS) if will_retry else 0
+                if attempts > 1:
+                    parent_span_ctx.record_retry_failure(
+                        exc=exc,
+                        attempt=attempt,
                         max_attempts=attempts,
+                        attempt_span_id=str(attempt_span_id),
+                        will_retry=will_retry,
                         delay_seconds=delay,
-                        error_type=type(outcome).__name__,
                     )
-                    await asyncio.sleep(delay)
-                continue
-            if isinstance(outcome, BaseException):
-                raise _attach_task_attempt(outcome, attempt)
-            return outcome, attempt
+                if not will_retry:
+                    _attach_task_attempt(exc, attempt)
+                    raise
+                logger.warning(
+                    "Task %s attempt %d/%d failed, retrying in %ds",
+                    cls.name,
+                    attempt + 1,
+                    attempts,
+                    delay,
+                    exc_info=exc,
+                )
+                record_lifecycle_event(
+                    "task.retry",
+                    f"Task {cls.name} attempt {attempt + 1}/{attempts} failed, retrying in {delay}s",
+                    task_name=cls.name,
+                    task_class=cls.__name__,
+                    attempt=attempt + 1,
+                    max_attempts=attempts,
+                    delay_seconds=delay,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+                await asyncio.sleep(delay)
 
-        if last_error is None:
-            raise RuntimeError(f"PipelineTask '{cls.__name__}' failed without raising a concrete exception.")
-        raise _attach_task_attempt(last_error, attempts - 1)
+        raise RuntimeError(f"PipelineTask '{cls.__name__}' exhausted {attempts} retry attempts without raising.")
 
     @classmethod
     async def _run_and_normalize(cls, arguments: Mapping[str, Any]) -> tuple[Document, ...]:
@@ -682,6 +716,7 @@ class PipelineTask:
         flow_step: int,
         start_time: float,
         input_document_sha256s: tuple[str, ...] = (),
+        parent_span_ctx: SpanContext,
     ) -> tuple[tuple[Document, ...], int]:
         """Execute task lifecycle with events and persistence."""
         await cls._emit_task_started(
@@ -702,7 +737,7 @@ class PipelineTask:
             step=flow_step,
         )
         try:
-            documents, attempt = await cls._run_with_retries(arguments)
+            documents, attempt = await cls._run_with_retries(arguments, parent_span_ctx=parent_span_ctx)
 
             await cls._generate_summaries(documents)
             persisted_docs = await cls._persist_documents(documents)
@@ -855,6 +890,7 @@ class PipelineTask:
                         flow_step=flow_frame.step if flow_frame is not None else 0,
                         start_time=start_time,
                         input_document_sha256s=input_sha256s,
+                        parent_span_ctx=span_ctx,
                     )
                 except TASK_EXECUTION_EXCEPTIONS as exc:
                     task_attempt = _get_task_attempt(exc)
