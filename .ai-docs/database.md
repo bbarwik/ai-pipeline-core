@@ -2,7 +2,7 @@
 # CLASSES: DatabaseReader, SpanKind, SpanStatus, SpanRecord, DocumentRecord, CostTotals, HydratedDocument
 # DEPENDS: Protocol, StrEnum
 # PURPOSE: Unified database module for the span-based schema.
-# VERSION: 0.16.2
+# VERSION: 0.16.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -364,7 +364,7 @@ def test_attachment_contents_returns_all_when_present() -> None:
     assert result == {"att_sha1": b"data1"}
 ```
 
-**Blobs and logs ddl match expected shape** (`tests/database/test_clickhouse.py:105`)
+**Blobs and logs ddl match expected shape** (`tests/database/test_clickhouse.py:107`)
 
 ```python
 def test_blobs_and_logs_ddl_match_expected_shape() -> None:
@@ -446,7 +446,7 @@ def test_document_record_rejects_mismatched_attachment_lengths() -> None:
         )
 ```
 
-**Ensure schema raises on newer db** (`tests/database/test_clickhouse.py:199`)
+**Ensure schema raises on newer db** (`tests/database/test_clickhouse.py:201`)
 
 ```python
 @pytest.mark.asyncio
@@ -457,23 +457,12 @@ async def test_ensure_schema_raises_on_newer_db() -> None:
         await _ensure_schema(client, "default")
 ```
 
-**Ensure schema raises on outdated db** (`tests/database/test_clickhouse.py:191`)
+**Ensure schema raises on outdated db** (`tests/database/test_clickhouse.py:193`)
 
 ```python
 @pytest.mark.asyncio
 async def test_ensure_schema_raises_on_outdated_db() -> None:
     client = _mock_client(table_exists=True, db_version=SCHEMA_VERSION - 1)
-
-    with pytest.raises(SchemaVersionError, match="older than the framework expects"):
-        await _ensure_schema(client, "default")
-```
-
-**Ensure schema raises on zero version in existing table** (`tests/database/test_clickhouse.py:219`)
-
-```python
-@pytest.mark.asyncio
-async def test_ensure_schema_raises_on_zero_version_in_existing_table() -> None:
-    client = _mock_client(table_exists=True, db_version=0)
 
     with pytest.raises(SchemaVersionError, match="older than the framework expects"):
         await _ensure_schema(client, "default")
@@ -518,4 +507,27 @@ def test_document_record_defaults_and_attachment_fields() -> None:
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         record.name = "changed"  # type: ignore[misc]
+```
+
+**Filesystem get document with content raises for missing attachment blob** (`tests/database/test_span_filesystem.py:203`)
+
+```python
+@pytest.mark.asyncio
+async def test_filesystem_get_document_with_content_raises_for_missing_attachment_blob(tmp_path: Path) -> None:
+    database = FilesystemDatabase(tmp_path)
+    await database.save_document(
+        _make_document(
+            document_sha256="doc-1",
+            content_sha256="blob-1",
+            attachment_names=("preview.png",),
+            attachment_descriptions=("Preview",),
+            attachment_content_sha256s=("blob-missing",),
+            attachment_mime_types=("image/png",),
+            attachment_size_bytes=(10,),
+        )
+    )
+    await database.save_blob(_make_blob(content_sha256="blob-1", content=b"root"))
+
+    with pytest.raises(ValueError, match="missing from storage"):
+        await database.get_document_with_content("doc-1")
 ```

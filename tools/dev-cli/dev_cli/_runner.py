@@ -64,6 +64,9 @@ def _prune_stale_state_entries(cfg) -> None:
         pass
 
 
+TEST_TIMEOUT_SECONDS = 300  # 5 minutes
+
+
 def run_command(
     cmd: list[str] | tuple[str, ...],
     label: str,

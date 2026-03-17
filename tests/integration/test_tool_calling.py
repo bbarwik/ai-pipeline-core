@@ -8,6 +8,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from ai_pipeline_core import Conversation, ModelOptions, Tool
+from ai_pipeline_core.llm._conversation_messages import UserMessage
 from ai_pipeline_core.settings import settings
 
 HAS_API_KEYS = bool(settings.openai_api_key and settings.openai_base_url)
@@ -257,3 +258,112 @@ async def test_conversation_continues_after_tools() -> None:
     )
 
     assert "France" in conv.content or "france" in conv.content.lower()
+
+
+# ── CounterAdd tool for deterministic max-rounds testing ─────────────────────
+
+
+class CounterAdd(Tool):
+    """Add 1 to the counter and return the new value."""
+
+    class Input(BaseModel):
+        pass
+
+    class Output(BaseModel):
+        value: int = Field(description="Counter value after increment")
+
+    def __init__(self) -> None:
+        self._counter = 0
+
+    async def run(self, input: Input) -> Output:
+        self._counter += 1
+        return self.Output(value=self._counter)
+
+
+# ── Regression: forced final must produce real response ───────────────────────
+
+
+async def test_forced_final_produces_real_response_not_synthetic(model_opts: tuple[str, ModelOptions]) -> None:
+    """When max_tool_rounds is exhausted, the forced final must produce a real LLM
+    response, not the synthetic fallback string.
+
+    Regression test: without the steering USER message, the forced final
+    call with tools=[] caused the model to still generate tool calls, triggering
+    ValueError in client.py → retry loop → LLMError → synthetic fallback.
+
+    Uses tool_choice="required" + max_tool_rounds=1 to guarantee the forced final
+    path is always triggered, regardless of model or streaming mode.
+    """
+    model, opts = model_opts
+    tool = CounterAdd()
+
+    conv = await Conversation(model=model, model_options=opts).send(
+        "Use the counter_add tool to increment the counter. Keep incrementing until the counter value reaches 10.",
+        tools=[tool],
+        tool_choice="required",
+        max_tool_rounds=1,
+        purpose="test_forced_final_real_response",
+    )
+
+    # tool_choice=required guarantees at least one tool call in round 1
+    assert tool._counter >= 1
+    assert len(conv.tool_call_records) >= 1
+    assert conv.content
+    assert "[Final synthesis failed" not in conv.content
+    # Steering message must NOT appear in conversation history
+    # (it only exists in core_messages for the immediate forced final call)
+    steering = [m for m in conv.messages if isinstance(m, UserMessage) and "no more tools" in m.text.lower()]
+    assert len(steering) == 0, "Steering message must not persist in conversation history"
+
+
+async def test_follow_up_tool_call_works_after_forced_final(model_opts: tuple[str, ModelOptions]) -> None:
+    """Follow-up send() with tools works normally after a forced final.
+
+    The steering message ("no more tools...") from the forced final is preserved in
+    conversation history. This test verifies that a subsequent send() with tools is
+    NOT suppressed by that message — the model still calls tools when they are available.
+    """
+    model, opts = model_opts
+
+    # Trigger forced final by exhausting max_tool_rounds
+    conv = await Conversation(model=model, model_options=opts).send(
+        "Use the get_capital tool to look up the capital of France.",
+        tools=[GetCapital()],
+        tool_choice="required",
+        max_tool_rounds=1,
+        purpose="test_follow_up_1",
+    )
+    assert "[Final synthesis failed" not in conv.content
+
+    # Follow-up send with tools — must still work despite steering message in history
+    conv2 = await conv.send(
+        "Now use the get_capital tool to look up the capital of Japan.",
+        tools=[GetCapital()],
+        purpose="test_follow_up_2",
+    )
+
+    assert "Tokyo" in conv2.content
+    assert len(conv2.tool_call_records) >= 1
+
+
+async def test_forced_final_steering_not_in_conversation_history(model_opts: tuple[str, ModelOptions]) -> None:
+    """Steering message must NOT appear in conv.messages.
+
+    Persisting it would suppress valid tool calls in follow-up send() calls
+    (confirmed with grok-4.1-fast). The steering message exists only in
+    core_messages for the immediate forced final LLM call.
+    """
+    model, opts = model_opts
+
+    conv = await Conversation(model=model, model_options=opts).send(
+        "What is the capital of France? Use the get_capital tool.",
+        tools=[GetCapital()],
+        tool_choice="required",
+        max_tool_rounds=1,
+        purpose="test_steering_not_in_history",
+    )
+
+    steering_msgs = [m for m in conv.messages if isinstance(m, UserMessage) and "no more tools" in m.text.lower()]
+    assert len(steering_msgs) == 0, "Steering message must not persist in conversation history"
+    assert conv.content
+    assert "[Final synthesis failed" not in conv.content

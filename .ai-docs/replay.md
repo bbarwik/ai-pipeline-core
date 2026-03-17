@@ -1,7 +1,7 @@
 # MODULE: replay
 # CLASSES: ExperimentResult, ExperimentOverrides
 # PURPOSE: Generic replay and experimentation entry points.
-# VERSION: 0.16.2
+# VERSION: 0.16.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

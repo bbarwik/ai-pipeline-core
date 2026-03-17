@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.16.2"
+version = "0.16.3"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -50,7 +50,6 @@ Issues = "https://github.com/bbarwik/ai-pipeline-core/issues"
 [project.optional-dependencies]
 dev = [
     "basedpyright==1.37.3",
-    "bump2version>=1.0.1",
     "docs-generator",
     "interrogate==1.7.0",
     "pre-commit>=4.3.0",
@@ -58,6 +57,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.14.0",
     "pytest-testmon>=2.2.0",
+    "pytest-timeout>=2.3.0",
     "pytest-xdist>=3.8.0",
     "pytest>=8.4.1",
     "ruff==0.15.6",
@@ -292,17 +292,6 @@ ignore-imports = true
 ignore-comments = true
 ignore-docstrings = true
 ignore-signatures = true
-
-[tool.bumpversion]
-current_version = "0.16.2"
-commit = true
-tag = true
-tag_name = "v{new_version}"
-
-[[tool.bumpversion.files]]
-filename = "pyproject.toml"
-search = 'version = "{current_version}"'
-replace = 'version = "{new_version}"'
 
 [build-system]
 requires = ["hatchling"]

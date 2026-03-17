@@ -1,7 +1,7 @@
 # MODULE: settings
 # CLASSES: Settings
 # DEPENDS: BaseSettings
-# VERSION: 0.16.2
+# VERSION: 0.16.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -42,8 +42,10 @@ class Settings(BaseSettings):
     clickhouse_user: str = "default"
     clickhouse_password: str = ""
     clickhouse_secure: bool = True
-    clickhouse_connect_timeout: int = 10
-    clickhouse_send_receive_timeout: int = 30
+    clickhouse_connect_timeout: int = 30
+    clickhouse_send_receive_timeout: int = 66
+    clickhouse_connect_retries: int = 3
+    clickhouse_retry_backoff_sec: int = 10
     doc_summary_enabled: bool = True
     doc_summary_model: str = "gemini-3.1-flash-lite"
     pubsub_project_id: str = ""

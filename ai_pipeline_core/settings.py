@@ -54,8 +54,10 @@ class Settings(BaseSettings):
     clickhouse_user: str = "default"
     clickhouse_password: str = ""
     clickhouse_secure: bool = True
-    clickhouse_connect_timeout: int = 10
-    clickhouse_send_receive_timeout: int = 30
+    clickhouse_connect_timeout: int = 30
+    clickhouse_send_receive_timeout: int = 66
+    clickhouse_connect_retries: int = 3
+    clickhouse_retry_backoff_sec: int = 10
 
     # Document summary generation (store-level)
     doc_summary_enabled: bool = True

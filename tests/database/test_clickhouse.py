@@ -1,12 +1,14 @@
 """Tests for ClickHouseDatabase DDL, schema versioning, and basic availability checks."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from clickhouse_connect.driver.exceptions import OperationalError as ClickHouseOperationalError
 
-from ai_pipeline_core.database.clickhouse._connection import SchemaVersionError, _ensure_schema, reset_schema_check
+from ai_pipeline_core.database.clickhouse._connection import SchemaVersionError, _create_client, _ensure_schema, reset_schema_check
+from ai_pipeline_core.settings import Settings
 from ai_pipeline_core.database.clickhouse._ddl import (
     BLOBS_DDL,
     DDL_STATEMENTS,
@@ -216,11 +218,17 @@ async def test_ensure_schema_runs_only_once_per_process() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_schema_raises_on_zero_version_in_existing_table() -> None:
+async def test_ensure_schema_recovers_incomplete_bootstrap() -> None:
+    """When schema_meta exists but has no version row (db_version=0), re-run bootstrap."""
     client = _mock_client(table_exists=True, db_version=0)
 
-    with pytest.raises(SchemaVersionError, match="older than the framework expects"):
-        await _ensure_schema(client, "default")
+    await _ensure_schema(client, "default")
+
+    # Should have run CREATE IF NOT EXISTS DDLs + INSERT version stamp
+    assert client.command.call_count == len(DDL_STATEMENTS) + 1
+    last_call_sql = client.command.call_args_list[-1].args[0]
+    assert "INSERT" in last_call_sql
+    assert SCHEMA_META_TABLE in last_call_sql
 
 
 @pytest.mark.asyncio
@@ -234,6 +242,166 @@ async def test_reset_schema_check_allows_recheck() -> None:
     client2 = _mock_client(table_exists=True, db_version=SCHEMA_VERSION)
     await _ensure_schema(client2, "default")
     assert client2.query.call_count == 2  # system.tables + max(version)
+
+
+# ---------------------------------------------------------------------------
+# _create_client retry tests (mocked get_async_client)
+# ---------------------------------------------------------------------------
+
+
+def _retry_settings(*, retries: int = 3, backoff: int = 0) -> Settings:
+    return Settings(
+        clickhouse_host="test-host",
+        clickhouse_connect_retries=retries,
+        clickhouse_retry_backoff_sec=backoff,
+    )
+
+
+@pytest.mark.asyncio
+@patch("ai_pipeline_core.database.clickhouse._connection.get_async_client")
+async def test_create_client_succeeds_on_first_attempt(mock_get_client: AsyncMock) -> None:
+    mock_client = AsyncMock()
+    mock_get_client.return_value = mock_client
+
+    result = await _create_client(_retry_settings())
+
+    assert result is mock_client
+    assert mock_get_client.call_count == 1
+
+
+@pytest.mark.asyncio
+@patch("ai_pipeline_core.database.clickhouse._connection.get_async_client")
+async def test_create_client_retries_on_operational_error(mock_get_client: AsyncMock) -> None:
+    mock_client = AsyncMock()
+    mock_get_client.side_effect = [
+        ClickHouseOperationalError("Read timed out"),
+        mock_client,
+    ]
+
+    result = await _create_client(_retry_settings(retries=3, backoff=0))
+
+    assert result is mock_client
+    assert mock_get_client.call_count == 2
+
+
+@pytest.mark.asyncio
+@patch("ai_pipeline_core.database.clickhouse._connection.get_async_client")
+async def test_create_client_retries_on_os_error(mock_get_client: AsyncMock) -> None:
+    mock_client = AsyncMock()
+    mock_get_client.side_effect = [
+        OSError("Connection refused"),
+        mock_client,
+    ]
+
+    result = await _create_client(_retry_settings(retries=2, backoff=0))
+
+    assert result is mock_client
+    assert mock_get_client.call_count == 2
+
+
+@pytest.mark.asyncio
+@patch("ai_pipeline_core.database.clickhouse._connection.get_async_client")
+async def test_create_client_raises_after_all_retries_exhausted(mock_get_client: AsyncMock) -> None:
+    mock_get_client.side_effect = ClickHouseOperationalError("Read timed out")
+
+    with pytest.raises(ClickHouseOperationalError, match="Read timed out"):
+        await _create_client(_retry_settings(retries=3, backoff=0))
+
+    assert mock_get_client.call_count == 3
+
+
+@pytest.mark.asyncio
+@patch("ai_pipeline_core.database.clickhouse._connection.get_async_client")
+async def test_create_client_succeeds_on_last_attempt(mock_get_client: AsyncMock) -> None:
+    mock_client = AsyncMock()
+    mock_get_client.side_effect = [
+        ClickHouseOperationalError("timeout 1"),
+        OSError("timeout 2"),
+        mock_client,
+    ]
+
+    result = await _create_client(_retry_settings(retries=3, backoff=0))
+
+    assert result is mock_client
+    assert mock_get_client.call_count == 3
+
+
+@pytest.mark.asyncio
+@patch("ai_pipeline_core.database.clickhouse._connection.get_async_client")
+async def test_create_client_no_retry_on_non_retryable_error(mock_get_client: AsyncMock) -> None:
+    mock_get_client.side_effect = ValueError("bad config")
+
+    with pytest.raises(ValueError, match="bad config"):
+        await _create_client(_retry_settings(retries=3, backoff=0))
+
+    assert mock_get_client.call_count == 1
+
+
+@pytest.mark.asyncio
+@patch("ai_pipeline_core.database.clickhouse._connection.asyncio.sleep", new_callable=AsyncMock)
+@patch("ai_pipeline_core.database.clickhouse._connection.get_async_client")
+async def test_create_client_backoff_increases_with_attempt(mock_get_client: AsyncMock, mock_sleep: AsyncMock) -> None:
+    mock_client = AsyncMock()
+    mock_get_client.side_effect = [
+        ClickHouseOperationalError("timeout 1"),
+        ClickHouseOperationalError("timeout 2"),
+        mock_client,
+    ]
+
+    await _create_client(_retry_settings(retries=3, backoff=10))
+
+    assert mock_sleep.call_count == 2
+    mock_sleep.assert_any_call(10)  # attempt 1: 10 * 1
+    mock_sleep.assert_any_call(20)  # attempt 2: 10 * 2
+
+
+@pytest.mark.asyncio
+@patch("ai_pipeline_core.database.clickhouse._connection.get_async_client")
+async def test_create_client_retries_at_least_once_with_zero_retries_setting(mock_get_client: AsyncMock) -> None:
+    """clickhouse_connect_retries=0 should still attempt once (max(0, 1) = 1)."""
+    mock_get_client.side_effect = ClickHouseOperationalError("timeout")
+
+    with pytest.raises(ClickHouseOperationalError):
+        await _create_client(_retry_settings(retries=0, backoff=0))
+
+    assert mock_get_client.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# get_async_clickhouse_client — client lifecycle tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("ai_pipeline_core.database.clickhouse._connection._ensure_schema", new_callable=AsyncMock)
+@patch("ai_pipeline_core.database.clickhouse._connection._create_client", new_callable=AsyncMock)
+async def test_get_async_clickhouse_client_closes_client_on_schema_version_error(mock_create: AsyncMock, mock_schema: AsyncMock) -> None:
+    mock_client = AsyncMock()
+    mock_create.return_value = mock_client
+    mock_schema.side_effect = SchemaVersionError("version mismatch")
+
+    with pytest.raises(SchemaVersionError):
+        from ai_pipeline_core.database.clickhouse._connection import get_async_clickhouse_client
+
+        await get_async_clickhouse_client(_retry_settings())
+
+    mock_client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("ai_pipeline_core.database.clickhouse._connection._ensure_schema", new_callable=AsyncMock)
+@patch("ai_pipeline_core.database.clickhouse._connection._create_client", new_callable=AsyncMock)
+async def test_get_async_clickhouse_client_closes_client_on_os_error(mock_create: AsyncMock, mock_schema: AsyncMock) -> None:
+    mock_client = AsyncMock()
+    mock_create.return_value = mock_client
+    mock_schema.side_effect = OSError("connection lost during schema check")
+
+    with pytest.raises(OSError):
+        from ai_pipeline_core.database.clickhouse._connection import get_async_clickhouse_client
+
+        await get_async_clickhouse_client(_retry_settings())
+
+    mock_client.close.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

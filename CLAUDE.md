@@ -474,6 +474,10 @@ dev status              # Changed files, last run results, suggested next comman
 dev info                # Usage guide + auto-detected config + infrastructure status
 ```
 
+### Timeout
+
+`dev test --full`, `dev test --available`, `dev test --coverage`, and `dev check` can take up to 10 minutes. Use a 10-minute timeout (600s) when running these commands via the Bash tool.
+
 ### Workflow
 
 1. Write code

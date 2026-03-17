@@ -16,7 +16,7 @@ import sys
 import time
 
 from dev_cli._project import load_config
-from dev_cli._runner import format_coverage_summary, print_skip, run_command
+from dev_cli._runner import TEST_TIMEOUT_SECONDS, format_coverage_summary, print_skip, run_command
 from dev_cli._scope import detect_test_scope, get_source_dirs_for_test_dirs, resolve_scope
 from dev_cli._state import check_idempotency, hash_tracked_files, save_run_state
 
@@ -32,6 +32,10 @@ def cmd_test(args: argparse.Namespace) -> int:
 
     # --coverage without scope implies --full
     if args.coverage and not args.scope:
+        args.full = True
+
+    # --available includes infra tests — run in parallel
+    if hasattr(args, "available") and args.available:
         args.full = True
 
     if args.full and not args.scope:
@@ -86,7 +90,7 @@ def cmd_test(args: argparse.Namespace) -> int:
         elif not args.scope and cfg.coverage_fail_under is not None:
             cmd.append(f"--cov-fail-under={cfg.coverage_fail_under}")
 
-    cmd.extend(["--tb=short", "--no-header", "-q"])
+    cmd.extend(["--tb=short", "--no-header", "-q", f"--timeout={TEST_TIMEOUT_SECONDS}"])
     cmd.extend(scope_dirs)
 
     # Include coverage in label and key to differentiate runs

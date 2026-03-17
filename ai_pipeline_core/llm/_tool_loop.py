@@ -25,6 +25,31 @@ __all__: list[str] = []
 
 logger = get_pipeline_logger(__name__)
 
+MAX_CONSECUTIVE_UNKNOWN_TOOL_ROUNDS = 3
+"""Abort the tool loop after this many consecutive rounds where ALL tool calls targeted
+non-existent tools. Prevents burning through max_tool_rounds with zero useful work while
+still allowing the model to recover from occasional hallucinations."""
+
+_FORCED_FINAL_MAX_ROUNDS_MSG = (
+    "You have reached the maximum number of tool-call rounds. "
+    "No more tools are available in this conversation. "
+    "Do not call any tools or functions. "
+    "Use only the information already present in the conversation and the tool results already returned "
+    "to produce the final answer now. "
+    "If a structured response format was requested earlier, follow it exactly. "
+    "If the available information is insufficient, explain the limitation instead of requesting another tool."
+)
+
+_FORCED_FINAL_UNKNOWN_TOOLS_MSG = (
+    "Tool calling has been stopped because your recent requests targeted tools that do not exist. "
+    "No more tools are available in this conversation. "
+    "Do not call any tools or functions. "
+    "Use only the information already present in the conversation and the tool results already returned "
+    "to produce the final answer now. "
+    "If a structured response format was requested earlier, follow it exactly. "
+    "If the available information is insufficient, explain the limitation instead of requesting another tool."
+)
+
 
 async def _execute_single_tool(
     tool: Tool,
@@ -151,6 +176,8 @@ async def execute_tool_loop(
 
     accumulated_messages: list[Any] = []
     all_records: list[ToolCallRecord] = []
+    consecutive_unknown_rounds = 0
+    round_num = 0
 
     for round_num in range(1, max_tool_rounds + 1):
         logger.info("Tool loop round %d/%d (purpose=%s)", round_num, max_tool_rounds, purpose or "unspecified")
@@ -185,8 +212,46 @@ async def execute_tool_loop(
             accumulated_messages.append(build_tool_result_message(tc.id, tc.function_name, output.content))
             core_messages.append(CoreMessage(role=Role.TOOL, content=result_content, tool_call_id=tc.id, name=tc.function_name))
 
-    # max_tool_rounds exhausted — force a final text response without tools
-    logger.warning("Tool loop reached max_tool_rounds=%d. Forcing final response without tools.", max_tool_rounds)
+        # Track consecutive rounds where ALL calls targeted non-existent tools.
+        # Tool results are already appended above so the forced final has full error context.
+        if all(tc.function_name not in tool_lookup for tc in response.tool_calls):
+            consecutive_unknown_rounds += 1
+            logger.warning(
+                "Tool loop round %d: all %d tool call(s) targeted unknown tools (%d/%d consecutive). Available: [%s]. Requested: [%s].",
+                round_num,
+                len(response.tool_calls),
+                consecutive_unknown_rounds,
+                MAX_CONSECUTIVE_UNKNOWN_TOOL_ROUNDS,
+                ", ".join(sorted(tool_lookup.keys())),
+                tool_names,
+            )
+            if consecutive_unknown_rounds >= MAX_CONSECUTIVE_UNKNOWN_TOOL_ROUNDS:
+                logger.warning(
+                    "Tool loop aborting after %d consecutive rounds of unknown tool calls. Forcing final response.",
+                    consecutive_unknown_rounds,
+                )
+                break
+        else:
+            consecutive_unknown_rounds = 0
+
+    # max_tool_rounds exhausted or unknown-tool limit reached — force a final text response.
+    forced_by_unknown_tools = consecutive_unknown_rounds >= MAX_CONSECUTIVE_UNKNOWN_TOOL_ROUNDS
+    steering_msg = _FORCED_FINAL_UNKNOWN_TOOLS_MSG if forced_by_unknown_tools else _FORCED_FINAL_MAX_ROUNDS_MSG
+    logger.warning(
+        "Tool loop forcing final response (reason=%s, max_tool_rounds=%d, consecutive_unknown_rounds=%d).",
+        "unknown_tool_limit" if forced_by_unknown_tools else "max_rounds",
+        max_tool_rounds,
+        consecutive_unknown_rounds,
+    )
+
+    # Inject USER message so the LLM knows tools are no longer available.
+    # Without this, the model generates tool calls against tools=[] causing ValueError
+    # in client.py and burning all retry attempts before the fallback triggers.
+    # Only added to core_messages (for the immediate forced final call), NOT to
+    # accumulated_messages — persisting it in conversation history would suppress
+    # valid tool calls in follow-up send() calls.
+    core_messages.append(CoreMessage(role=Role.USER, content=steering_msg))
+
     try:
         response = await invoke_llm(
             core_messages=core_messages,
@@ -197,13 +262,15 @@ async def execute_tool_loop(
             response_format=response_format,
             purpose=f"{purpose}:forced_final" if purpose else "forced_final",
             expected_cost=expected_cost,
-            round_index=max_tool_rounds + 1,
+            round_index=round_num + 1,
             tool_schemas=[],
         )
     except Exception:
         logger.warning(
-            "Forced final response failed after max_tool_rounds=%d. Returning accumulated tool results (%d records) without final synthesis.",
+            "Forced final response failed after max_tool_rounds=%d (consecutive_unknown_rounds=%d). "
+            "Returning accumulated tool results (%d records) without final synthesis.",
             max_tool_rounds,
+            consecutive_unknown_rounds,
             len(all_records),
         )
         response = ModelResponse[Any](

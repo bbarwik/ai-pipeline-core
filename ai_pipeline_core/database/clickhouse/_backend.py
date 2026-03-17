@@ -182,7 +182,7 @@ class ClickHouseDatabase:
 
     async def get_span(self, span_id: UUID) -> SpanRecord | None:
         result = await self._query(
-            f"SELECT {', '.join(SPAN_COLUMNS)} FROM {SPANS_TABLE} FINAL WHERE span_id = {{span_id:UUID}}",
+            f"SELECT {', '.join(SPAN_COLUMNS)} FROM {SPANS_TABLE} WHERE span_id = {{span_id:UUID}} ORDER BY version DESC LIMIT 1",
             parameters={"span_id": span_id},
         )
         if not result.result_rows:
@@ -191,9 +191,11 @@ class ClickHouseDatabase:
 
     async def get_child_spans(self, parent_span_id: UUID) -> list[SpanRecord]:
         result = await self._query(
-            f"SELECT {', '.join(SPAN_COLUMNS)} FROM {SPANS_TABLE} FINAL "
+            f"SELECT {', '.join(SPAN_COLUMNS)} FROM ("
+            f"SELECT * FROM {SPANS_TABLE} "
             "WHERE parent_span_id = {parent_span_id:UUID} "
-            "ORDER BY sequence_no, started_at, span_id",
+            "ORDER BY span_id, version DESC LIMIT 1 BY span_id"
+            ") ORDER BY sequence_no, started_at, span_id",
             parameters={"parent_span_id": parent_span_id},
         )
         return [row_to_span(tuple(row)) for row in result.result_rows]
@@ -209,9 +211,11 @@ class ClickHouseDatabase:
 
     async def get_deployment_by_run_id(self, run_id: str) -> SpanRecord | None:
         result = await self._query(
-            f"SELECT {', '.join(SPAN_COLUMNS)} FROM {SPANS_TABLE} FINAL "
+            f"SELECT {', '.join(SPAN_COLUMNS)} FROM ("
+            f"SELECT * FROM {SPANS_TABLE} "
             "WHERE run_id = {run_id:String} AND kind = {kind:String} "
-            "ORDER BY started_at DESC, span_id DESC LIMIT 1",
+            "ORDER BY span_id, version DESC LIMIT 1 BY span_id"
+            ") ORDER BY started_at DESC, span_id DESC LIMIT 1",
             parameters={"run_id": run_id, "kind": SpanKind.DEPLOYMENT},
         )
         if not result.result_rows:
@@ -226,14 +230,20 @@ class ClickHouseDatabase:
     ) -> list[SpanRecord]:
         if limit <= 0:
             return []
-        filters = ["kind = {kind:String}"]
         parameters: dict[str, Any] = {"kind": SpanKind.DEPLOYMENT, "limit": limit}
+        # kind is immutable → inner filter; status is mutable → outer filter
+        outer_filters: list[str] = []
         if status is not None:
-            filters.append("status = {status:String}")
+            outer_filters.append("status = {status:String}")
             parameters["status"] = status
+        outer_where = f"WHERE {' AND '.join(outer_filters)} " if outer_filters else ""
         result = await self._query(
-            f"SELECT {', '.join(SPAN_COLUMNS)} FROM {SPANS_TABLE} FINAL "
-            f"WHERE {' AND '.join(filters)} ORDER BY started_at DESC, span_id DESC LIMIT {{limit:UInt64}}",
+            f"SELECT {', '.join(SPAN_COLUMNS)} FROM ("
+            f"SELECT * FROM {SPANS_TABLE} "
+            "WHERE kind = {kind:String} "
+            "ORDER BY span_id, version DESC LIMIT 1 BY span_id"
+            f") {outer_where}"
+            "ORDER BY started_at DESC, span_id DESC LIMIT {limit:UInt64}",
             parameters=parameters,
         )
         return [row_to_span(tuple(row)) for row in result.result_rows]
@@ -244,21 +254,24 @@ class ClickHouseDatabase:
         *,
         max_age: timedelta | None = None,
     ) -> SpanRecord | None:
-        filters = [
-            "cache_key = {cache_key:String}",
-            "status = {status:String}",
-        ]
+        # Mutable fields (status, ended_at) are filtered on the outer query
+        # after deduplication to avoid stale-version matches.
+        outer_filters = ["status = {status:String}"]
         parameters: dict[str, Any] = {
             "cache_key": cache_key,
             "status": SpanStatus.COMPLETED,
         }
         if max_age is not None:
-            filters.append("ended_at IS NOT NULL")
-            filters.append("ended_at >= {min_ended_at:DateTime64(3)}")
+            outer_filters.append("ended_at IS NOT NULL")
+            outer_filters.append("ended_at >= {min_ended_at:DateTime64(3)}")
             parameters["min_ended_at"] = datetime.now(UTC) - max_age
         result = await self._query(
-            f"SELECT {', '.join(SPAN_COLUMNS)} FROM {SPANS_TABLE} FINAL "
-            f"WHERE {' AND '.join(filters)} ORDER BY ended_at DESC, version DESC, span_id DESC LIMIT 1",
+            f"SELECT {', '.join(SPAN_COLUMNS)} FROM ("
+            f"SELECT * FROM {SPANS_TABLE} "
+            "WHERE cache_key = {cache_key:String} "
+            "ORDER BY span_id, version DESC LIMIT 1 BY span_id"
+            f") WHERE {' AND '.join(outer_filters)} "
+            "ORDER BY ended_at DESC, span_id DESC LIMIT 1",
             parameters=parameters,
         )
         if not result.result_rows:
@@ -326,8 +339,11 @@ class ClickHouseDatabase:
             filters.append("kind IN {kinds:Array(String)}")
             parameters["kinds"] = kinds
         result = await self._query(
-            f"SELECT {', '.join(SPAN_COLUMNS)} FROM {SPANS_TABLE} FINAL "
-            f"WHERE {' AND '.join(filters)} ORDER BY started_at, deployment_id, sequence_no, version, span_id",
+            f"SELECT {', '.join(SPAN_COLUMNS)} FROM ("
+            f"SELECT * FROM {SPANS_TABLE} "
+            f"WHERE {' AND '.join(filters)} "
+            "ORDER BY span_id, version DESC LIMIT 1 BY span_id"
+            ") ORDER BY started_at, deployment_id, sequence_no, span_id",
             parameters=parameters,
         )
         return [row_to_span(tuple(row)) for row in result.result_rows]
@@ -398,7 +414,7 @@ class ClickHouseDatabase:
 
     async def get_blob(self, content_sha256: str) -> _BlobRecord | None:
         result = await self._query(
-            f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} FINAL WHERE content_sha256 = {{content_sha256:String}} LIMIT 1",
+            f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} WHERE content_sha256 = {{content_sha256:String}} LIMIT 1",
             parameters={"content_sha256": content_sha256},
         )
         if not result.result_rows:
@@ -410,7 +426,7 @@ class ClickHouseDatabase:
         if not unique_shas:
             return {}
         result = await self._query(
-            f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} FINAL WHERE content_sha256 IN {{content_sha256s:Array(String)}}",
+            f"SELECT {', '.join(BLOB_COLUMNS)} FROM {BLOBS_TABLE} WHERE content_sha256 IN {{content_sha256s:Array(String)}}",
             parameters={"content_sha256s": unique_shas},
         )
         return {blob.content_sha256: blob for blob in (row_to_blob(tuple(row)) for row in result.result_rows)}
@@ -466,7 +482,7 @@ class ClickHouseDatabase:
     ) -> list[LogRecord]:
         if not deployment_ids:
             return []
-        filters = ["toString(deployment_id) IN {deployment_ids:Array(String)}"]
+        filters = ["deployment_id IN {deployment_ids:Array(String)}"]
         parameters: dict[str, Any] = {"deployment_ids": [str(uid) for uid in deployment_ids]}
         if level is not None:
             filters.append("level = {level:String}")
