@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import logging
 import time
 from collections.abc import Sequence
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
@@ -23,7 +24,6 @@ from ai_pipeline_core.deployment._helpers import (
     validate_run_id,
 )
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._execution_context import get_execution_context, get_run_id, get_sinks
 from ai_pipeline_core.pipeline._track_span import track_span
 from ai_pipeline_core.pipeline.options import FlowOptions
@@ -32,7 +32,7 @@ from ai_pipeline_core.settings import settings
 from ._resolve import _DocumentInput
 from .base import DeploymentResult
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "RemoteDeployment",

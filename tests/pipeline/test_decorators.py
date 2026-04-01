@@ -173,8 +173,8 @@ class _NoStoreTask(PipelineTask):
 
 class _SingleTask(PipelineTask):
     @classmethod
-    async def run(cls, source: InputDoc) -> OutputDoc:
-        return OutputDoc.derive(derived_from=(source,), name="single.txt", content="data")
+    async def run(cls, source: InputDoc) -> tuple[OutputDoc, ...]:
+        return (OutputDoc.derive(derived_from=(source,), name="single.txt", content="data"),)
 
 
 class _NoneTask(PipelineTask):

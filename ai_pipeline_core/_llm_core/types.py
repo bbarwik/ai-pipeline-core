@@ -190,8 +190,8 @@ class ModelOptions(BaseModel):
     system_prompt: str | None = None  # Prepended to messages; substitutor instructions appended when active
     search_context_size: Literal["low", "medium", "high"] | None = None
     reasoning_effort: Literal["low", "medium", "high"] | None = None
-    retries: int = 3  # Cache auto-disabled on retry; degeneration detection triggers auto-retry
-    retry_delay_seconds: int = 20  # Fixed delay between retries
+    retries: int | None = None  # None = use Settings.conversation_retries (default 2). Cache auto-disabled on retry.
+    retry_delay_seconds: int | None = None  # None = use Settings.conversation_retry_delay_seconds (default 20)
     timeout: int = 600
     cache_ttl: str | None = "300s"
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
@@ -203,6 +203,8 @@ class ModelOptions(BaseModel):
     user: str | None = None
     metadata: Mapping[str, str] | None = None
     extra_body: Mapping[str, Any] | None = None
+    cache_warmup_max_wait: float | None = None  # Max seconds followers wait for warmup. None = disabled. Recommended: 600.0.
+    cache_warmup_max_qps: int | None = None  # Per-prefix QPS limit. None = no limit. Recommended: 15 for Gemini.
 
     @field_validator("stop", mode="before")
     @classmethod
@@ -238,6 +240,10 @@ class ModelOptions(BaseModel):
             kwargs["web_search_options"] = {"search_context_size": self.search_context_size}
         if self.metadata:
             kwargs["metadata"] = dict(self.metadata)
+        if self.cache_warmup_max_wait is not None:
+            kwargs.setdefault("metadata", {})["cache_warmup_max_wait"] = str(self.cache_warmup_max_wait)
+        if self.cache_warmup_max_qps is not None:
+            kwargs.setdefault("metadata", {})["cache_warmup_max_qps"] = str(self.cache_warmup_max_qps)
         if self.usage_tracking:
             kwargs["extra_body"]["usage"] = {"include": True}
             kwargs["stream_options"] = {"include_usage": True}

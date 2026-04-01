@@ -30,6 +30,14 @@ class _FakeSpan:
             raise RuntimeError("set_attributes failed")
         self._record["attribute_updates"] = attributes
 
+    def set_status(self, status: object, description: str | None = None) -> None:
+        self._record["status"] = status
+        if description is not None:
+            self._record["status_description"] = description
+
+    def record_exception(self, exception: BaseException, **kwargs: object) -> None:
+        self._record["recorded_exception"] = exception
+
     def set_output(self, output: object) -> None:
         if _FakeLaminar.fail_set_output:
             raise RuntimeError("set_output failed")
@@ -301,6 +309,99 @@ async def test_laminar_sink_skips_export_when_process_was_initialized_with_diffe
         }
     ]
     assert len(_FakeLaminar.start_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_laminar_sink_sets_error_status_and_records_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Error spans must set OTel StatusCode.ERROR and record the exception so Laminar shows them as errors."""
+    from opentelemetry.trace import StatusCode
+
+    _install_fake_lmnr(monkeypatch)
+    sink = LaminarSpanSink(Settings(lmnr_project_api_key="secret"))
+    span_id = uuid7()
+
+    await sink.on_span_started(
+        span_id=span_id,
+        parent_span_id=None,
+        kind=SpanKind.TASK,
+        name="failing-task",
+        target="my_module:FailingTask",
+        started_at=None,
+        input_preview="input",
+    )
+
+    error = ValueError("something went wrong")
+    await sink.on_span_finished(
+        span_id=span_id,
+        ended_at=None,
+        output_preview=None,
+        error=error,
+        metrics=SpanMetrics(
+            time_taken_ms=10,
+            log_summary={"total": 1, "warnings": 0, "errors": 1, "last_error": "something went wrong"},
+        ),
+        meta={},
+    )
+
+    record = _FakeLaminar.start_calls[0]
+    assert record["ended"] is True
+
+    status = record["status"]
+    assert status.status_code == StatusCode.ERROR
+    assert "ValueError" in status.description
+    assert "something went wrong" in status.description
+
+    assert record["recorded_exception"] is error
+
+    attrs: dict[str, object] = record["attribute_updates"]  # type: ignore[assignment]
+    assert attrs["ai_pipeline.error_type"] == "ValueError"
+    assert attrs["ai_pipeline.error_message"] == "something went wrong"
+
+
+@pytest.mark.asyncio
+async def test_laminar_sink_no_error_status_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Successful spans must NOT have status or recorded_exception set."""
+    _install_fake_lmnr(monkeypatch)
+    sink = LaminarSpanSink(Settings(lmnr_project_api_key="secret"))
+    span_id = uuid7()
+
+    await sink.on_span_started(
+        span_id=span_id,
+        parent_span_id=None,
+        kind=SpanKind.TASK,
+        name="ok-task",
+        target="my_module:OkTask",
+        started_at=None,
+        input_preview="input",
+    )
+    await sink.on_span_finished(
+        span_id=span_id,
+        ended_at=None,
+        output_preview="result",
+        error=None,
+        metrics=SpanMetrics(
+            time_taken_ms=10,
+            log_summary={"total": 0, "warnings": 0, "errors": 0, "last_error": ""},
+        ),
+        meta={},
+    )
+
+    record = _FakeLaminar.start_calls[0]
+    assert "status" not in record
+    assert "recorded_exception" not in record
+
+
+def test_laminar_init_failure_logs_at_error_level() -> None:
+    """Systemic Laminar failures (init, project switch) must log at ERROR, not WARNING."""
+    import inspect
+
+    source_init = inspect.getsource(LaminarSpanSink._initialize_laminar)
+    assert "logger.error" in source_init, "Init failure must use logger.error"
+    assert "logger.warning" not in source_init, "Init failure must not use logger.warning"
+
+    source_switch = inspect.getsource(LaminarSpanSink._warn_project_switch)
+    assert "logger.error" in source_switch, "Project switch must use logger.error"
+    assert "logger.warning" not in source_switch, "Project switch must not use logger.warning"
 
 
 def test_no_laminar_span_calls_remain() -> None:

@@ -73,12 +73,11 @@ from ai_pipeline_core import (
     PipelineDeployment,
     PipelineFlow,
     PipelineTask,
-    setup_logging,
-    get_pipeline_logger,
 )
 
-setup_logging(level="INFO")
-logger = get_pipeline_logger(__name__)
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # 1. Define document types (subclass Document)
@@ -106,7 +105,7 @@ class AnalyzeDocument(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[AnalysisDocument, ...]:
-        _ = cls
+
         doc = documents[0]
         return (
             AnalysisDocument.derive(
@@ -448,22 +447,22 @@ Documents are automatically persisted by `PipelineTask` to the active database b
 - `as_prefect_flow()`: Auto-selects the configured production backend
 
 **Public API — `DatabaseReader`** (read-only protocol):
+- `get_span(span_id)` — Retrieve a span by its ID
+- `get_child_spans(parent_span_id)` — Retrieve direct child spans ordered by sequence number
 - `get_document(document_sha256)` — Load a document record by SHA256
-- `find_document_by_name(name)` — Find a document by name
-- `get_document_ancestry(sha256)` — Get all source documents for a given document
-- `search_documents(name, document_type, run_scope, limit, offset)` — Search documents by metadata
-- `get_documents_by_deployment(deployment_id)` — Load documents for a deployment chain
-- `get_documents_by_node(node_id)` — Load documents for an execution node
-- `get_deployment_tree(deployment_id)` — Load execution nodes for a deployment
-- `get_deployment_by_run_id(run_id)` — Find a deployment node by run ID
-- `get_node_logs(node_id)` / `get_deployment_logs(deployment_id)` — Load execution logs
-- `list_deployments(limit, status)` — List tracked deployments
-- `list_run_scopes(limit)` — List unique run scopes
-- `get_cached_completion(cache_key, max_age)` — Find a cached task/flow execution node
-- `get_deployment_cost_totals(deployment_id)` — Get aggregated cost for a deployment
+- `get_documents_batch(sha256s)` — Retrieve multiple document records keyed by SHA256
+- `get_document_with_content(document_sha256)` — Load document metadata plus content and attachment blobs
+- `find_documents_by_name(names, document_type)` — Find document records by exact name match (takes `list[str]`)
+- `get_deployment_tree(deployment_id)` — Retrieve every span in a deployment tree as a flat list
+- `get_deployment_by_run_id(run_id)` — Find the newest deployment span for a run ID
+- `get_span_logs(span_id)` / `get_deployment_logs(deployment_id)` — Retrieve execution logs
+- `list_deployments(limit, status)` — List deployment spans ordered by newest first
+- `get_cached_completion(cache_key, max_age)` — Find a cached completed span within the max age window
+- `get_deployment_cost_totals(deployment_id)` — Aggregate cost and token totals for a deployment tree
+- `get_blob(content_sha256)` / `get_blobs_batch(content_sha256s)` — Retrieve blob content by SHA256
 - Replay and download helpers resolve document/blob content through the same interface
 
-Write operations (`insert_node`, `save_document`, `save_blob`, `save_document_batch`, `save_blob_batch`, `save_logs_batch`, `flush`, `shutdown`) are framework-internal — the framework handles persistence automatically. `DatabaseWriter` exposes a `supports_remote` property indicating whether the backend supports Prefect-based remote deployment execution.
+Write operations (`insert_span`, `save_document`, `save_blob`, `save_document_batch`, `save_blob_batch`, `save_logs_batch`, `flush`, `shutdown`) are framework-internal — the framework handles persistence automatically. `DatabaseWriter` exposes a `supports_remote` property indicating whether the backend supports Prefect-based remote deployment execution.
 
 **Document summaries:** Persisted `summary` storage is supported via `Document.create(..., summary=...)` and `update_document_summary()`. Summaries are stored as metadata on document records. Configure via `DOC_SUMMARY_ENABLED` and `DOC_SUMMARY_MODEL`.
 
@@ -542,8 +541,10 @@ print(conv.tool_call_records)  # Records of all tool calls made
 - `system_prompt`: System-level instructions
 - `reasoning_effort`: `"low" | "medium" | "high"` for models with explicit reasoning
 - `search_context_size`: `"low" | "medium" | "high"` for search-enabled models
-- `retries`: Retry attempts (default `3`)
-- `retry_delay_seconds`: Delay between retries (default `20`)
+- `retries`: Retry attempts (default `None` → uses `Settings.conversation_retries`, default `2`)
+- `retry_delay_seconds`: Delay between retries (default `None` → uses `Settings.conversation_retry_delay_seconds`, default `20`)
+- `cache_warmup_max_wait`: Max seconds followers wait for warmup cache (default `None` = disabled, recommended `600.0`)
+- `cache_warmup_max_qps`: Per-prefix QPS limit for warmup (default `None` = no limit, recommended `15` for Gemini)
 - `timeout`: Max wait seconds (default `600`)
 - `service_tier`: `"auto" | "default" | "flex" | "scale" | "priority"` (OpenAI only)
 - `max_completion_tokens`: Max output tokens
@@ -606,7 +607,7 @@ class ProcessChunk(PipelineTask):
 
     @classmethod
     async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[OutputDocument, ...]:
-        _ = cls
+
         doc = documents[0]
         return (
             OutputDocument.derive(
@@ -623,9 +624,7 @@ class ExpensiveTask(PipelineTask):
     estimated_minutes = 5
 
     @classmethod
-    async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[OutputDocument, ...]:
-        _ = cls
-        ...
+    async def run(cls, documents: tuple[InputDocument, ...]) -> tuple[OutputDocument, ...]: ...
 ```
 
 **Invocation patterns:**
@@ -640,8 +639,8 @@ result = await handle.result()
 ```
 
 **ClassVar configuration:**
-- `retries`: Retry attempts on failure (default `3`, exponential backoff)
-- `retry_delay_seconds`: Base delay between retries (default `30`, doubles each attempt, capped at 300s)
+- `retries`: Retry attempts on failure (default `None` → uses `Settings.task_retries`, default `0`; exponential backoff)
+- `retry_delay_seconds`: Base delay between retries (default `None` → uses `Settings.task_retry_delay_seconds`, default `30`; doubles each attempt, capped at 300s)
 - `timeout_seconds`: Task execution timeout (default `None`)
 - `estimated_minutes`: Duration estimate for progress tracking (default `1`, must be >= 1)
 - `expected_cost`: Expected cost budget for cost tracking
@@ -684,6 +683,8 @@ The flow's `documents` parameter annotation determines input types, and the retu
 
 ```python
 class ConfigurableFlow(PipelineFlow):
+    """Flow with per-instance model configuration."""
+
     async def run(self, documents: tuple[InputDoc, ...], options: FlowOptions) -> tuple[OutputDoc, ...]:
         model = self.model  # Access constructor params as attributes
         ...
@@ -694,8 +695,8 @@ flow.get_params()  # {"model": "gemini-3-pro", "temperature": 0.7}
 ```
 
 **Flow ClassVar configuration:**
-- `retries`: Per-flow retry override (default `0` — uses deployment's `flow_retries` when run inside a deployment)
-- `retry_delay_seconds`: Per-flow delay override (default `30`)
+- `retries`: Per-flow retry override (default `None` — defers to deployment's `flow_retries`, then to `Settings.flow_retries`, default `0`)
+- `retry_delay_seconds`: Per-flow delay override (default `None` — defers to deployment, then `Settings.flow_retry_delay_seconds`, default `30`)
 - `estimated_minutes`: Duration estimate for progress tracking (default `1`, must be >= 1)
 
 Flow retries are controlled by the deployment (see `flow_retries` on `PipelineDeployment`). A flow can override with an explicit `retries = N` in its class body. Raise `NonRetriableError` to stop retries immediately.
@@ -768,9 +769,9 @@ prefect_flow = pipeline.as_prefect_flow()
 **Features:**
 - **Per-flow resume**: Skips flows with a cached completed execution node in the database (explicit completion tracking, not document-presence inference). Configurable `cache_ttl` (default 24h)
 - **Type chain validation**: At runtime, validates that at least one of each flow's declared input types is producible by preceding flows (union semantics)
-- **Event publishing**: 12 lifecycle events (run started/completed/failed, flow started/completed/failed/skipped, task started/completed/failed, heartbeat, progress) via Pub/Sub. Task events include `step`, `task_invocation_id` for correlation. `actual_cost` is aggregated from recorded conversation nodes. Enabled by setting `pubsub_service_type` ClassVar. Requires `PUBSUB_PROJECT_ID` and `PUBSUB_TOPIC_ID` env vars
+- **Event publishing**: 11 lifecycle events (run started/completed/failed, flow started/completed/failed/skipped, task started/completed/failed, heartbeat) via Pub/Sub. Enabled by setting `pubsub_service_type` ClassVar. Requires `PUBSUB_PROJECT_ID` and `PUBSUB_TOPIC_ID` env vars
 - **Dynamic flow control**: `plan_next_flow()` returns `FlowDirective` to skip or continue flows based on runtime state
-- **Flow retries**: Configurable via `flow_retries` (default `3`) and `flow_retry_delay_seconds` (default `30`) ClassVars on the deployment. Exponential backoff, capped at 300s. Individual flows can override with explicit `retries = N`
+- **Flow retries**: Configurable via `flow_retries` (default `None` → uses `Settings.flow_retries`, default `0`) and `flow_retry_delay_seconds` (default `None` → uses `Settings.flow_retry_delay_seconds`, default `30`) ClassVars on the deployment. Exponential backoff, capped at 300s. Individual flows can override with explicit `retries = N`
 - **Concurrency limits**: Cross-run enforcement via Prefect global concurrency limits
 - **CLI mode**: `--start N` / `--end N` for step control with the configured database backend
 
@@ -902,7 +903,6 @@ class MyPipeline(RemoteDeployment[FlowOptions, RemoteResult]):
 
 client = MyPipeline()
 result = await client.run(
-    run_id="test",
     documents=input_docs,
     options=FlowOptions(),
 )
@@ -1064,11 +1064,14 @@ The `--import` flag is required when the original script was run as `__main__` �
 
 **Output directory:**
 
-By default, replay writes results to `{replay_file_stem}_replay/` next to the replay file. The output directory contains:
+By default, replay writes results to `{replay_file_stem}_replay/` next to the replay file. The output directory is a full `FilesystemDatabase` snapshot containing:
 
 ```
 conversation_replay/
-    output.yaml     # Execution result (content, usage, cost, timestamp)
+    output.yaml     # Execution result summary (names, SHA256 references)
+    runs/           # Span records
+    documents/      # Document metadata
+    blobs/          # Raw document content (by SHA256)
 ```
 
 Override with `--output-dir`:
@@ -1091,7 +1094,7 @@ ai-replay run --from-db 550e8400-e29b-41d4-a716-446655440000 --db-path ./downloa
 ```python
 from pathlib import Path
 
-from ai_pipeline_core.database._filesystem import FilesystemDatabase
+from ai_pipeline_core.database.filesystem import FilesystemDatabase
 from ai_pipeline_core.replay import execute_span
 
 # Open a downloaded bundle read-only
@@ -1169,13 +1172,23 @@ CLICKHOUSE_DATABASE=default
 CLICKHOUSE_USER=default
 CLICKHOUSE_PASSWORD=your-password
 CLICKHOUSE_SECURE=true
-CLICKHOUSE_CONNECT_TIMEOUT=10
-CLICKHOUSE_SEND_RECEIVE_TIMEOUT=30
-TRACKING_ENABLED=true
+CLICKHOUSE_CONNECT_TIMEOUT=30
+CLICKHOUSE_SEND_RECEIVE_TIMEOUT=66
+
+# Optional: Retry Configuration (override class-level None defaults)
+TASK_RETRIES=0
+TASK_RETRY_DELAY_SECONDS=30
+FLOW_RETRIES=0
+FLOW_RETRY_DELAY_SECONDS=30
+CONVERSATION_RETRIES=2
+CONVERSATION_RETRY_DELAY_SECONDS=20
+
+# Optional: Laminar Tracing
+LMNR_PROJECT_API_KEY=your-laminar-key
 
 # Optional: Document Summaries (store-level, LLM-generated)
 DOC_SUMMARY_ENABLED=true
-DOC_SUMMARY_MODEL=gemini-3-flash
+DOC_SUMMARY_MODEL=gemini-3.1-flash-lite
 
 # Optional: Pub/Sub event delivery (deployment progress/status)
 # Requires pubsub_service_type ClassVar on the PipelineDeployment subclass
@@ -1212,7 +1225,7 @@ print(settings.app_name)
 
 1. **Pipeline classes**: Subclass `PipelineTask` for tasks and `PipelineFlow` for flows. Use `PipelineDeployment.build_flows()` for dynamic flow lists
 2. **Task invocation**: Use `await TaskClass.run(documents)` for sequential execution, `TaskClass.run(documents)` (without await) for parallel TaskHandle
-3. **Logging**: Use `get_pipeline_logger(__name__)` -- never `print()` or `logging` module directly
+3. **Logging**: Use `logging.getLogger(__name__)` -- never `print()`. Logging is auto-configured on import
 4. **LLM calls**: Use `Conversation` for all LLM interactions (multi-turn and single-shot). Use `tools=` for function calling
 5. **Options**: Omit `ModelOptions` unless specifically needed (defaults are production-optimized)
 6. **Documents**: Use `create_root()` for pipeline inputs, `derive()` for content transformations, `create()` for causally triggered documents, `create_external()` for URI provenance. Always subclass `Document`
@@ -1331,7 +1344,7 @@ ai-pipeline-core/
 |   |-- database/          # Execution DAG, documents, blobs, logs, and download helpers
 |   |-- documents/         # Document system (Document base class, attachments, context)
 |   |-- llm/               # Conversation class, Tool base class, tool loop, URLSubstitutor, image processing
-|   |-- logging/           # Logging infrastructure
+|   |-- logger/            # Logging infrastructure
 |   |-- observability/     # Database-backed execution CLI (`ai-trace`)
 |   |-- pipeline/          # PipelineTask, PipelineFlow, parallel primitives, FlowOptions, concurrency limits
 |   |-- prompt_compiler/   # Type-safe prompt specs, rendering, and CLI tool

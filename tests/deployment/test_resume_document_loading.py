@@ -75,8 +75,8 @@ class _SaveProgressTask(PipelineTask):
     """Internal task: creates a progress PlanDoc (persisted by PipelineTask)."""
 
     @classmethod
-    async def run(cls, plans: tuple[_PlanDoc, ...]) -> _PlanDoc:
-        return _PlanDoc.derive(derived_from=(plans[0],), name="progress.md", content="# Progress notes")
+    async def run(cls, plans: tuple[_PlanDoc, ...]) -> tuple[_PlanDoc, ...]:
+        return (_PlanDoc.derive(derived_from=(plans[0],), name="progress.md", content="# Progress notes"),)
 
 
 class _ZombieFlow1(PipelineFlow):

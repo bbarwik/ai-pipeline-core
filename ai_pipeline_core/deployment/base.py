@@ -9,6 +9,7 @@ creating unified, type-safe pipeline deployments with:
 
 import asyncio
 import contextlib
+import logging
 from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -27,7 +28,6 @@ from pydantic import BaseModel, ConfigDict
 from ai_pipeline_core.database import CostTotals, SpanKind, SpanStatus
 from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.logger._buffer import ExecutionLogBuffer
 from ai_pipeline_core.pipeline._execution_context import (
     ExecutionContext,
@@ -72,6 +72,7 @@ from ._helpers import (
     _ensure_execution_log_handler_installed,
     _heartbeat_loop,
     _log_flush_loop,
+    build_auto_run_id,
     class_name_to_deployment_name,
     extract_generic_params,
     validate_run_id,
@@ -86,7 +87,7 @@ from ._types import (
     _NoopPublisher,
 )
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class DeploymentResult(BaseModel):
@@ -236,8 +237,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     # Does not affect topic routing. Requires PUBSUB_PROJECT_ID + PUBSUB_TOPIC_ID. Empty = _NoopPublisher.
     pubsub_service_type: ClassVar[str] = ""
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
-    flow_retries: ClassVar[int] = 3
-    flow_retry_delay_seconds: ClassVar[int] = 30
+    flow_retries: ClassVar[int | None] = None
+    flow_retry_delay_seconds: ClassVar[int | None] = None
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -705,6 +706,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     step=step,
                     flow_params=flow_params,
                 )
+                exec_ctx = get_execution_context()
+                cache_disabled = exec_ctx is not None and exec_ctx.disable_cache
                 cached_result = await _reuse_cached_flow_output(
                     database=database,
                     cache_ttl=self.cache_ttl,
@@ -714,6 +717,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
                     step=step,
                     total_steps=total_steps,
                     accumulated_docs=accumulated_docs,
+                    disable_cache=cache_disabled,
                 )
                 if cached_result is not None:
                     cached_span, previous_output_documents, accumulated_docs = cached_result
@@ -929,7 +933,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     @final
     def run_local(
         self,
-        run_id: str,
+        run_id: str | None,
         documents: Sequence[Document],
         options: TOptions,
         publisher: ResultPublisher | None = None,
@@ -938,7 +942,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         """Run locally with Prefect test harness and in-memory database.
 
         Args:
-            run_id: Pipeline run identifier.
+            run_id: Pipeline run identifier. If None, auto-generated from output_dir + date + input hash.
             documents: Initial input documents.
             options: Flow options.
             publisher: Optional lifecycle event publisher (defaults to _NoopPublisher).
@@ -947,6 +951,10 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         Returns:
             Typed deployment result.
         """
+        if run_id is None:
+            dir_name = output_dir.name if output_dir else "local"
+            run_id = build_auto_run_id(output_dir_name=dir_name, documents=documents, options=options)
+
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
 

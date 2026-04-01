@@ -12,6 +12,7 @@ from ai_pipeline_core.database import SpanKind, SpanRecord
 from ai_pipeline_core.database._memory import _MemoryDatabase
 from ai_pipeline_core.pipeline._execution_context import (
     ExecutionContext,
+    FlowFrame,
     add_cost as add_cost_from_execution_context,
     pipeline_test_context,
     set_execution_context,
@@ -301,6 +302,53 @@ class TestAddCostEndToEnd:
         totals = await db.get_deployment_cost_totals(ctx.root_deployment_id)
         assert totals.cost_usd == pytest.approx(0.15)
         assert totals.tokens_input == 0
+
+
+# --- Real-time cost accumulation on ExecutionContext ---
+
+
+class TestExecutionContextTotalCost:
+    @pytest.mark.asyncio
+    async def test_total_cost_accumulates_across_spans(self) -> None:
+        db = _MemoryDatabase()
+        ctx = _make_execution_context(db)
+        with set_execution_context(ctx):
+            async with track_span(SpanKind.OPERATION, "op-1", "", sinks=ctx.sinks, db=ctx.database):
+                add_cost(0.10)
+            assert ctx.total_cost_usd == pytest.approx(0.10)
+
+            async with track_span(SpanKind.OPERATION, "op-2", "", sinks=ctx.sinks, db=ctx.database):
+                add_cost(0.05)
+            assert ctx.total_cost_usd == pytest.approx(0.15)
+
+    @pytest.mark.asyncio
+    async def test_total_cost_includes_llm_set_metrics(self) -> None:
+        db = _MemoryDatabase()
+        ctx = _make_execution_context(db)
+        with set_execution_context(ctx):
+            async with track_span(SpanKind.LLM_ROUND, "llm-1", "", sinks=ctx.sinks, db=ctx.database) as span_ctx:
+                span_ctx.set_metrics(cost_usd=0.30)
+        assert ctx.total_cost_usd == pytest.approx(0.30)
+
+    @pytest.mark.asyncio
+    async def test_total_cost_zero_when_no_cost(self) -> None:
+        db = _MemoryDatabase()
+        ctx = _make_execution_context(db)
+        with set_execution_context(ctx):
+            async with track_span(SpanKind.OPERATION, "free-op", "", sinks=ctx.sinks, db=ctx.database):
+                pass
+        assert ctx.total_cost_usd == 0.0
+
+    @pytest.mark.asyncio
+    async def test_total_cost_shared_across_derived_contexts(self) -> None:
+        db = _MemoryDatabase()
+        ctx = _make_execution_context(db)
+        derived = ctx.with_flow(FlowFrame(name="f", flow_class_name="F", step=1, total_steps=1, flow_minutes=(1.0,), completed_minutes=0.0, flow_params={}))
+        with set_execution_context(derived):
+            async with track_span(SpanKind.OPERATION, "in-flow", "", sinks=derived.sinks, db=derived.database):
+                add_cost(0.20)
+        assert ctx.total_cost_usd == pytest.approx(0.20)
+        assert derived.total_cost_usd == pytest.approx(0.20)
 
 
 # --- Snapshot rendering with non-LLM costs ---

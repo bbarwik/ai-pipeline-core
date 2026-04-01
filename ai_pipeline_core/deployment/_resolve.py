@@ -6,6 +6,7 @@ _DocumentInput (inline content or URL references) into typed Documents.
 
 import asyncio
 import ipaddress
+import logging
 import re
 import socket
 from typing import Any, ClassVar, Self, cast
@@ -18,10 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents.attachment import Attachment
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.settings import settings
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 _ALLOWED_SCHEMES = re.compile(r"^(https?|gs)://")
 _DOWNLOAD_TIMEOUT = 120
@@ -293,7 +293,7 @@ async def resolve_document_inputs(
                 if not name:
                     raise ValueError(f"Cannot derive document name from URL: {doc_input.url}")
 
-            return doc_type(
+            return doc_type(  # nosemgrep: no-direct-document-init — framework-internal reconstruction from external API input with raw SHA256 provenance
                 name=name,
                 content=content,
                 description=doc_input.description,

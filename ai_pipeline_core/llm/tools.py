@@ -10,6 +10,7 @@ and a framework-owned async execute() method wrapped around user-defined run().
 import asyncio
 import inspect
 import json
+import logging
 import re
 from dataclasses import dataclass
 from textwrap import dedent
@@ -17,11 +18,9 @@ from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from ai_pipeline_core.logger import get_pipeline_logger
-
 __all__ = ["Tool", "ToolCallRecord", "ToolOutput", "generate_tool_schema", "to_snake_case"]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 _SNAKE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 

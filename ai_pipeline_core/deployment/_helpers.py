@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -15,7 +16,6 @@ from ai_pipeline_core.database import LogRecord
 from ai_pipeline_core.database._factory import Database, create_database_from_settings
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.exceptions import LLMError, NonRetriableError, PipelineCoreError
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.logger._buffer import MAX_PENDING_EXECUTION_LOGS, ExecutionLogBuffer
 from ai_pipeline_core.logger._handler import ExecutionLogHandler
 from ai_pipeline_core.pipeline._parallel import TaskHandle
@@ -25,7 +25,7 @@ from ai_pipeline_core.settings import Settings
 from ._pubsub import PubSubPublisher
 from ._types import ErrorCode, ResultPublisher, _NoopPublisher
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 _PUBSUB_DEPENDENCY_AVAILABLE = True
 
 __all__ = [
@@ -87,6 +87,20 @@ def validate_run_id(run_id: str) -> None:
             f"run_id '{run_id}' contains invalid characters. "
             f"Only alphanumeric characters, underscores, and hyphens are allowed (pattern: {_RUN_ID_PATTERN.pattern})."
         )
+
+
+def build_auto_run_id(*, output_dir_name: str, documents: Sequence[Document], options: FlowOptions) -> str:
+    """Generate a deterministic run_id: {sanitized_dir}-{DDMMYY}-{hash8}.
+
+    Same inputs on the same day in the same output directory produce the same run_id,
+    enabling natural resume semantics. Different inputs or dates produce different IDs.
+    """
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "-", output_dir_name).strip("-")[:40]
+    if not sanitized:
+        sanitized = "run"
+    date_part = datetime.now(UTC).strftime("%d%m%y")
+    hash_part = _compute_input_fingerprint(documents, options)[:8]
+    return f"{sanitized}-{date_part}-{hash_part}"
 
 
 def class_name_to_deployment_name(class_name: str) -> str:

@@ -194,34 +194,42 @@ class TestFlowRetryWithinDeployment:
         with pytest.raises(RuntimeError, match="always fails"):
             await _FlowOverrideDeployment().run("override", [_make_input()], FlowOptions(), database=_MemoryDatabase())
 
-    async def test_default_deployment_flow_retries_is_three(self) -> None:
-        assert _DefaultRetryDeployment.flow_retries == 3
+    async def test_default_deployment_flow_retries_is_none(self) -> None:
+        assert _DefaultRetryDeployment.flow_retries is None
 
 
 class TestTaskRetryDefaults:
-    """Verify task retry defaults changed to 3/30."""
+    """Verify task retry defaults are None (use Settings)."""
 
     def test_task_default_retries(self) -> None:
         assert _CountingFailTask.retries == 0  # explicitly set
-        # Check a task that doesn't override retries
-        from ai_pipeline_core.pipeline._task import DEFAULT_TASK_RETRIES, DEFAULT_TASK_RETRY_DELAY_SECONDS
+        from ai_pipeline_core.pipeline._task import PipelineTask
 
-        assert DEFAULT_TASK_RETRIES == 3
-        assert DEFAULT_TASK_RETRY_DELAY_SECONDS == 30
+        assert PipelineTask.retries is None
+        assert PipelineTask.retry_delay_seconds is None
+
+    def test_settings_provides_defaults(self) -> None:
+        from ai_pipeline_core.settings import Settings
+
+        s = Settings()
+        assert s.task_retries == 0
+        assert s.task_retry_delay_seconds == 30
+        assert s.flow_retries == 0
+        assert s.flow_retry_delay_seconds == 30
 
 
 class TestFlowRetryDefaults:
-    """Verify flow retry defaults are 0 (deployment controls retries)."""
+    """Verify flow retry defaults are None (use Settings)."""
 
-    def test_flow_default_retries_is_zero(self) -> None:
-        assert _CountingFailFlow.retries == 0
+    def test_flow_default_retries_is_none(self) -> None:
+        assert _CountingFailFlow.retries is None
 
     def test_flow_explicit_override_preserved(self) -> None:
         assert _ExplicitNoRetryFlow.retries == 0
 
-    def test_deployment_default_flow_retries_is_three(self) -> None:
-        assert PipelineDeployment.flow_retries == 3
-        assert PipelineDeployment.flow_retry_delay_seconds == 30
+    def test_deployment_default_flow_retries_is_none(self) -> None:
+        assert PipelineDeployment.flow_retries is None
+        assert PipelineDeployment.flow_retry_delay_seconds is None
 
 
 class TestNonRetriableErrorClassification:

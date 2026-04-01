@@ -2,7 +2,7 @@
 # CLASSES: Citation, TokenUsage, ModelOptions, Conversation, ToolOutput, Tool, ToolCallRecord
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.18.0
+# VERSION: 0.19.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -80,8 +80,8 @@ class ModelOptions(BaseModel):
     system_prompt: str | None = None  # Prepended to messages; substitutor instructions appended when active
     search_context_size: Literal["low", "medium", "high"] | None = None
     reasoning_effort: Literal["low", "medium", "high"] | None = None
-    retries: int = 3  # Cache auto-disabled on retry; degeneration detection triggers auto-retry
-    retry_delay_seconds: int = 20  # Fixed delay between retries
+    retries: int | None = None  # None = use Settings.conversation_retries (default 2). Cache auto-disabled on retry.
+    retry_delay_seconds: int | None = None  # None = use Settings.conversation_retry_delay_seconds (default 20)
     timeout: int = 600
     cache_ttl: str | None = "300s"
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
@@ -93,6 +93,8 @@ class ModelOptions(BaseModel):
     user: str | None = None
     metadata: Mapping[str, str] | None = None
     extra_body: Mapping[str, Any] | None = None
+    cache_warmup_max_wait: float | None = None  # Max seconds followers wait for warmup. None = disabled. Recommended: 600.0.
+    cache_warmup_max_qps: int | None = None  # Per-prefix QPS limit. None = no limit. Recommended: 15 for Gemini.
 
     def to_openai_completion_kwargs(self) -> dict[str, Any]:
         """Convert options to OpenAI API completion parameters.
@@ -117,6 +119,10 @@ class ModelOptions(BaseModel):
             kwargs["web_search_options"] = {"search_context_size": self.search_context_size}
         if self.metadata:
             kwargs["metadata"] = dict(self.metadata)
+        if self.cache_warmup_max_wait is not None:
+            kwargs.setdefault("metadata", {})["cache_warmup_max_wait"] = str(self.cache_warmup_max_wait)
+        if self.cache_warmup_max_qps is not None:
+            kwargs.setdefault("metadata", {})["cache_warmup_max_qps"] = str(self.cache_warmup_max_qps)
         if self.usage_tracking:
             kwargs["extra_body"]["usage"] = {"include": True}
             kwargs["stream_options"] = {"include_usage": True}
@@ -210,15 +216,17 @@ class Conversation(BaseModel, Generic[T]):
         return r.cost if (r := self._last_response) else None
 
     @property
-    def parsed(self) -> T | None:
+    def parsed(self) -> T:
         """Parsed result from last send() call.
 
-        For Conversation[str]: returns the content string (or None if no response yet).
-        For Conversation[SomeModel]: returns the typed model instance (or None if no response yet).
+        For Conversation[str]: returns the content string.
+        For Conversation[SomeModel]: returns the typed model instance.
+        Raises ValueError if no send() has been called yet.
         """
-        if r := self._last_response:
-            return r.parsed  # type: ignore[return-value]
-        return None
+        r = self._last_response
+        if r is None:
+            raise ValueError("Cannot access .parsed on a Conversation that has not been sent yet. Call send(), send_structured(), or send_spec() first.")
+        return r.parsed  # type: ignore[return-value] — ModelResponse stored as ModelResponse[Any] in heterogeneous messages tuple loses generic T
 
     @property
     def reasoning_content(self) -> str:

@@ -2,7 +2,7 @@
 # CLASSES: Attachment, Document, DocumentValidationError, DocumentSizeError, DocumentNameError
 # DEPENDS: BaseModel, Exception
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.18.0
+# VERSION: 0.19.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -25,6 +25,14 @@ from ai_pipeline_core import (
 ## Types & Constants
 
 ```python
+MAX_EXTERNAL_SOURCE_URI_BYTES = 8 * 1024
+
+MAX_DESCRIPTION_BYTES = 50 * 1024
+
+MAX_SUMMARY_BYTES = 1024
+
+MAX_TOTAL_DERIVED_FROM_BYTES = 200 * 1024
+
 DocumentSha256 = NewType("DocumentSha256", str)
 ```
 
@@ -82,15 +90,32 @@ class Document(BaseModel):
     Content is stored as bytes. Use `create()` for automatic conversion from str/dict/list/BaseModel.
     Use `parse()` to reverse the conversion. Serialization is extension-driven (.json → JSON, .yaml → YAML).
 
+    Constructor selection:
+        - ``create_root()``: genuine pipeline inputs with no prior pipeline provenance
+        - ``derive()``: content transformations where this content was produced from other documents
+        - ``create()``: new content caused by another document, but not derived from its content
+        - ``create_external()``: content fetched from external URIs; use triggered_by when another
+          document caused the fetch
+
     Provenance:
-        - `derived_from`: content sources (document SHA256 hashes or external URLs)
-        - `triggered_by`: causal provenance (document SHA256 hashes only)
-        - `create()` requires at least one provenance field. Use `create_root()` for pipeline inputs.
+        - ``derived_from``: content sources (document SHA256 hashes or external URLs)
+        - ``triggered_by``: causal provenance (document SHA256 hashes only)
+        - ``create()`` requires at least one provenance field. Use ``create_root()`` for pipeline inputs.
+
+    Identity (sha256):
+        The document hash includes: name, description, content, derived_from, triggered_by, attachments.
+        ``description`` is part of document identity — changing it changes sha256.
+        ``summary`` is NOT part of document identity — it can be updated without changing the hash.
+
+    Size limits:
+        - External source URIs in derived_from: 8 KB per URI
+        - description: 50 KB (identity-bearing, keep concise)
+        - summary: 1 KB (short synopsis only)
 
     Attachments:
-        Secondary content bundled with the primary document. The primary content lives in `content`,
-        while `attachments` carries supplementary material of the same logical document — e.g. a webpage
-        stored as HTML in `content` with its screenshot in an attachment, or a report with embedded images.
+        Secondary content bundled with the primary document. The primary content lives in ``content``,
+        while ``attachments`` carries supplementary material of the same logical document — e.g. a webpage
+        stored as HTML in ``content`` with its screenshot in an attachment, or a report with embedded images.
         Attachments affect the document SHA256 hash."""
 
     MAX_CONTENT_SIZE: ClassVar[int] = 25 * 1024 * 1024  # Maximum allowed total size in bytes (default 25MB).
@@ -215,7 +240,11 @@ class Document(BaseModel):
     @final
     @cached_property
     def sha256(self) -> DocumentSha256:
-        """Full SHA256 identity hash (name + description + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
+        """Full identity hash (name + description + content + derived_from + triggered_by + attachments).
+
+        Includes description — changing description changes sha256.
+        Does not include summary — summary updates do not change identity. BASE32 encoded, cached.
+        """
         return compute_document_sha256(self)
 
     @final

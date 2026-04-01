@@ -1,5 +1,6 @@
 """ClickHouse backend for the redesigned span/document/blob/log schema."""
 
+import logging
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -45,14 +46,13 @@ from ai_pipeline_core.database.clickhouse._rows import (
     row_to_document,
     span_to_row,
 )
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.settings import Settings
 
 __all__ = [
     "ClickHouseDatabase",
 ]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 _FAILURE_THRESHOLD = 3
 _RECONNECT_INTERVAL_SEC = 60

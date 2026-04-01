@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -44,11 +45,10 @@ from ai_pipeline_core.database._types import (
     get_token_count,
 )
 from ai_pipeline_core.database.filesystem._paths import run_directory_name, span_filename
-from ai_pipeline_core.logger import get_pipeline_logger
 
 __all__ = ["FilesystemDatabase"]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 

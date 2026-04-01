@@ -1,5 +1,6 @@
 """Prefect flow construction for PipelineDeployment."""
 
+import logging
 from collections.abc import Sequence
 from typing import Any, cast
 from uuid import UUID
@@ -7,7 +8,6 @@ from uuid import UUID
 from prefect import flow
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline import PipelineFlow
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
@@ -20,7 +20,7 @@ __all__ = [
     "build_prefect_flow",
 ]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def build_integration_meta(deployment: Any) -> dict[str, Any]:

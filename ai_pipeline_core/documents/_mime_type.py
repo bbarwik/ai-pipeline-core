@@ -6,11 +6,11 @@ extension-based detection for known formats and content analysis via
 python-magic for unknown files.
 """
 
+import logging
+
 import magic
 
-from ai_pipeline_core.logger import get_pipeline_logger
-
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 # Extension to MIME type mapping for common formats

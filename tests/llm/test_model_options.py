@@ -15,8 +15,8 @@ class TestModelOptions:
         assert options.system_prompt is None
         assert options.search_context_size is None
         assert options.reasoning_effort is None
-        assert options.retries == 3
-        assert options.retry_delay_seconds == 20
+        assert options.retries is None
+        assert options.retry_delay_seconds is None
         assert options.timeout == 600
         assert options.cache_ttl == "300s"
         assert options.max_completion_tokens is None
@@ -26,6 +26,8 @@ class TestModelOptions:
         assert options.user is None
         assert options.metadata is None
         assert options.extra_body is None
+        assert options.cache_warmup_max_wait is None
+        assert options.cache_warmup_max_qps is None
 
     def test_to_openai_kwargs_defaults(self):
         """Test conversion to OpenAI kwargs with defaults."""
@@ -226,3 +228,35 @@ class TestModelOptions:
         options = ModelOptions(user=long_user_id)
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["user"] == long_user_id
+
+
+class TestRetryDefaults:
+    """Verify None vs explicit 0 semantics for retries/retry_delay_seconds."""
+
+    def test_retries_none_by_default(self):
+        options = ModelOptions()
+        assert options.retries is None
+        assert options.retry_delay_seconds is None
+
+    def test_retries_explicit_zero(self):
+        options = ModelOptions(retries=0, retry_delay_seconds=0)
+        assert options.retries == 0
+        assert options.retry_delay_seconds == 0
+
+    def test_retries_explicit_value(self):
+        options = ModelOptions(retries=5, retry_delay_seconds=10)
+        assert options.retries == 5
+        assert options.retry_delay_seconds == 10
+
+    def test_retries_not_in_openai_kwargs(self):
+        options = ModelOptions(retries=3, retry_delay_seconds=15)
+        kwargs = options.to_openai_completion_kwargs()
+        assert "retries" not in kwargs
+        assert "retry_delay_seconds" not in kwargs
+
+    def test_settings_conversation_retries_defaults(self):
+        from ai_pipeline_core.settings import Settings
+
+        s = Settings()
+        assert s.conversation_retries == 2
+        assert s.conversation_retry_delay_seconds == 20

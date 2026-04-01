@@ -4,14 +4,13 @@ Validates image, PDF, and text content before sending to LLM.
 Single source of truth for all content validation across _llm_core and llm layers.
 """
 
+import logging
 from io import BytesIO
 
 from PIL import Image
 from pypdf import PdfReader
 
-from ai_pipeline_core.logger import get_pipeline_logger
-
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def validate_image_content(data: bytes, name: str = "image") -> str | None:

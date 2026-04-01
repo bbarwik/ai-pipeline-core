@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -13,7 +14,6 @@ from ai_pipeline_core.database._documents import document_to_blobs, document_to_
 from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._context import DocumentSha256
-from ai_pipeline_core.logger import get_pipeline_logger
 
 __all__ = [
     "_TaskRunSpec",
@@ -28,7 +28,7 @@ __all__ = [
     "_persist_documents_to_database",
 ]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 _DATABASE_EXCEPTIONS = (Exception,)
 _TASK_ATTEMPT_ATTRIBUTE = "_pipeline_task_attempt"

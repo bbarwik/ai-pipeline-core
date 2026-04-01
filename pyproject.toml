@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.18.0"
+version = "0.19.0"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -170,7 +170,7 @@ max-public-methods = 30
 "ai_pipeline_core/__init__.py" = ["RUF067", "TID251"]
 "ai_pipeline_core/testing.py" = ["TID251"]
 "ai_pipeline_core/deployment/_cli.py" = ["TID251", "PLR0912", "PLR0914", "PLR0915", "UP047"]
-"ai_pipeline_core/deployment/_helpers.py" = ["PLC0415", "BLE001", "TID251"]
+"ai_pipeline_core/deployment/_helpers.py" = ["PLC0415", "BLE001"]
 "ai_pipeline_core/prompt_compiler/cli.py" = ["T201", "C901", "PLR0912", "PLR0915", "TID251"]
 "ai_pipeline_core/deployment/base.py" = ["T20", "C901", "PLR0912", "PLR0914", "PLR0915", "PLR0917", "PLR6301", "PLC0415", "UP046", "BLE001", "TID251", "ARG001"]
 "ai_pipeline_core/deployment/_prefect.py" = ["TID251", "BLE001", "PLR0917"]
@@ -207,9 +207,6 @@ max-public-methods = 30
 "ai_pipeline_core/replay/_execute.py" = ["PLC0415"]
 "ai_pipeline_core/replay/cli.py" = ["T201", "BLE001"]
 "ai_pipeline_core/observability/cli.py" = ["T201", "BLE001", "PLC0415", "PLR0914"]
-"ai_pipeline_core/logger/_buffer.py" = ["TID251"]
-"ai_pipeline_core/logger/_handler.py" = ["TID251"]
-"ai_pipeline_core/logger/logging_config.py" = ["TID251"]
 ".claude/**/*.py" = ["T20", "D", "DOC", "TID251", "S"]
 "tools/dev-cli/**/*.py" = ["T20", "D", "DOC", "TID251", "S", "ARG", "PLW", "PLR", "PLC0415", "PERF", "RUF059", "C901", "E741", "PIE"]
 "tools/docs-generator/**/*.py" = ["T20", "TID251"]
@@ -224,8 +221,7 @@ quote-style = "double"
 ban-relative-imports = "parents"
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"logging".msg = "Use from ai_pipeline_core.logger import get_pipeline_logger instead of import logging"
-"warnings".msg = "Use from ai_pipeline_core.logger import get_pipeline_logger for warnings instead of import warnings"
+"warnings".msg = "Use logging.getLogger(__name__).warning() instead of import warnings"
 "prefect".msg = "Do not import Prefect directly. Use ai_pipeline_core.pipeline and ai_pipeline_core.deployment instead."
 "prefect.testing.utilities.prefect_test_harness".msg = "Do not use prefect_test_harness in tests — it is already provided as a session-scoped fixture in tests/conftest.py. Each call starts a new Prefect server (~4s). Use the session fixture instead."
 

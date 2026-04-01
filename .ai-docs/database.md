@@ -2,7 +2,7 @@
 # CLASSES: DatabaseReader, SpanKind, SpanStatus, SpanRecord, DocumentRecord, CostTotals, HydratedDocument
 # DEPENDS: Protocol, StrEnum
 # PURPOSE: Unified database module for the span-based schema.
-# VERSION: 0.18.0
+# VERSION: 0.19.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -300,6 +300,44 @@ class HydratedDocument:
         _validate_bytes_mapping("attachment_contents", self.attachment_contents)
 ```
 
+## Functions
+
+```python
+def create_debug_sink(
+    output_dir: Path,
+    *,
+    parent: FilesystemDatabase | None = None,
+) -> FilesystemDatabase:
+    """Create a writable FilesystemDatabase at output_dir for replay/debug output.
+
+    When parent is provided, writes overlay_meta.json recording the parent
+    snapshot path so the relationship can be reopened later by tooling.
+
+    Raises FileExistsError if the directory already contains database artifact directories.
+    """
+    if output_dir.exists():
+        existing = {d.name for d in output_dir.iterdir() if d.is_dir()} & _DB_ARTIFACT_DIRS
+        if existing:
+            raise FileExistsError(
+                f"Output directory {output_dir} already contains database artifacts ({', '.join(sorted(existing))}). "
+                "Use a fresh directory for replay/debug output, or remove the existing artifacts first."
+            )
+
+    db = FilesystemDatabase(output_dir)
+
+    if parent is not None:
+        meta = {
+            "parent_path": str(parent.base_path.resolve()),
+            "created_at": datetime.now(UTC).isoformat(),
+            "type": "overlay",
+        }
+        meta_path = output_dir / "overlay_meta.json"
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    return db
+```
+
 ## Examples
 
 **Database reader is runtime checkable** (`tests/database/test_protocol.py:93`)
@@ -309,6 +347,33 @@ def test_database_reader_is_runtime_checkable() -> None:
     assert getattr(DatabaseReader, "_is_runtime_protocol", False) is True
     assert isinstance(_make_reader_stub(), DatabaseReader)
     assert not isinstance(object(), DatabaseReader)
+```
+
+**Allows empty existing dir** (`tests/database/test_filesystem_overlay.py:45`)
+
+```python
+def test_allows_empty_existing_dir(self, tmp_path) -> None:
+    output = tmp_path / "exists"
+    output.mkdir()
+    (output / "notes.txt").write_text("hello")
+    db = create_debug_sink(output)
+    assert isinstance(db, FilesystemDatabase)
+```
+
+**Allows nonexistent dir** (`tests/database/test_filesystem_overlay.py:52`)
+
+```python
+def test_allows_nonexistent_dir(self, tmp_path) -> None:
+    db = create_debug_sink(tmp_path / "new" / "deep" / "out")
+    assert isinstance(db, FilesystemDatabase)
+```
+
+**Creates database** (`tests/database/test_filesystem_overlay.py:12`)
+
+```python
+def test_creates_database(self, tmp_path) -> None:
+    db = create_debug_sink(tmp_path / "out")
+    assert isinstance(db, FilesystemDatabase)
 ```
 
 **Database writer method signatures** (`tests/database/test_protocol.py:168`)
@@ -331,6 +396,14 @@ def test_memory_database_conforms_to_protocols() -> None:
     assert database.supports_remote is False
 ```
 
+**No parent no meta** (`tests/database/test_filesystem_overlay.py:29`)
+
+```python
+def test_no_parent_no_meta(self, tmp_path) -> None:
+    create_debug_sink(tmp_path / "out")
+    assert not (tmp_path / "out" / "overlay_meta.json").exists()
+```
+
 **Span status members** (`tests/database/test_types.py:34`)
 
 ```python
@@ -344,64 +417,28 @@ def test_span_status_members() -> None:
     )
 ```
 
-**All byte values blob roundtrip** (`tests/database/test_bugs_sha256_roundtrip.py:494`)
-
-```python
-async def test_all_byte_values_blob_roundtrip(self, ch_database) -> None:
-    """Blob with every byte value 0x00-0xFF — maximally adversarial for encoding."""
-    sha = compute_content_sha256(ALL_BYTES)
-    await ch_database.save_blob(_BlobRecord(content_sha256=sha, content=ALL_BYTES))
-    loaded = await ch_database.get_blob(sha)
-    assert loaded is not None
-    assert loaded.content == ALL_BYTES, f"All-bytes blob corrupted: original 256 bytes, loaded {len(loaded.content)} bytes"
-```
-
-**All byte values hex decoded** (`tests/database/test_bugs_sha256_roundtrip.py:197`)
-
-```python
-def test_all_byte_values_hex_decoded(self) -> None:
-    """Every possible byte value survives hex encode → decode."""
-    hex_str = ALL_BYTES.hex()
-    blob = row_to_blob(("sha_test", hex_str))
-    assert blob.content == ALL_BYTES
-    assert len(blob.content) == 256
-```
-
-**Attachment contents returns all when present** (`tests/database/test_bugs_documents.py:85`)
-
-```python
-def test_attachment_contents_returns_all_when_present() -> None:
-    """All blobs present — returns complete dict."""
-    record = DocumentRecord(
-        document_sha256="doc_sha",
-        content_sha256="content_sha",
-        document_type="SampleDoc",
-        name="test",
-        attachment_names=("att1.txt",),
-        attachment_descriptions=("",),
-        attachment_content_sha256s=("att_sha1",),
-        attachment_mime_types=("text/plain",),
-        attachment_size_bytes=(10,),
-    )
-    blobs = {"att_sha1": _BlobRecord(content_sha256="att_sha1", content=b"data1")}
-    result = _attachment_contents_for_record(record, blobs)
-    assert result == {"att_sha1": b"data1"}
-```
-
-**Binary attachment** (`tests/database/test_bugs_sha256_roundtrip.py:391`)
-
-```python
-async def test_binary_attachment(self, tmp_path: Path) -> None:
-    """Binary attachment (PNG) survives filesystem round-trip."""
-    att = Attachment(name="screenshot.png", content=MINIMAL_PNG)
-    doc = RoundTripDoc(name="report.md", content=b"# Report", attachments=(att,))
-    loaded = await _roundtrip_filesystem(doc, tmp_path)
-    assert loaded.sha256 == doc.sha256
-    assert loaded.attachments[0].content == MINIMAL_PNG
-```
-
 
 ## Error Examples
+
+**Rejects existing documents dir** (`tests/database/test_filesystem_overlay.py:39`)
+
+```python
+def test_rejects_existing_documents_dir(self, tmp_path) -> None:
+    output = tmp_path / "exists"
+    (output / "documents").mkdir(parents=True)
+    with pytest.raises(FileExistsError, match="already contains database artifacts"):
+        create_debug_sink(output)
+```
+
+**Rejects existing spans dir** (`tests/database/test_filesystem_overlay.py:33`)
+
+```python
+def test_rejects_existing_spans_dir(self, tmp_path) -> None:
+    output = tmp_path / "exists"
+    (output / "spans").mkdir(parents=True)
+    with pytest.raises(FileExistsError, match="already contains database artifacts"):
+        create_debug_sink(output)
+```
 
 **Tampered content raises** (`tests/database/test_bugs_sha256_roundtrip.py:245`)
 
@@ -487,29 +524,4 @@ async def test_ensure_schema_raises_on_newer_db() -> None:
 
     with pytest.raises(SchemaVersionError, match="newer than the framework supports"):
         await _ensure_schema(client, "default")
-```
-
-**Ensure schema raises on outdated db** (`tests/database/test_clickhouse.py:193`)
-
-```python
-@pytest.mark.asyncio
-async def test_ensure_schema_raises_on_outdated_db() -> None:
-    client = _mock_client(table_exists=True, db_version=SCHEMA_VERSION - 1)
-
-    with pytest.raises(SchemaVersionError, match="older than the framework expects"):
-        await _ensure_schema(client, "default")
-```
-
-**Filesystem read only rejects writes** (`tests/database/test_span_filesystem.py:223`)
-
-```python
-@pytest.mark.asyncio
-async def test_filesystem_read_only_rejects_writes(tmp_path: Path) -> None:
-    database, _ = await _seed_database(tmp_path)
-    await database.shutdown()
-
-    read_only = FilesystemDatabase(tmp_path, read_only=True)
-
-    with pytest.raises(PermissionError, match="read-only"):
-        await read_only.save_document(_make_document())
 ```

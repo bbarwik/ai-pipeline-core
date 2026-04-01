@@ -2,7 +2,7 @@
 
 from typing import Self
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = [
@@ -69,6 +69,28 @@ class Settings(BaseSettings):
 
     # Laminar tracing (set LMNR_PROJECT_API_KEY to enable)
     lmnr_project_api_key: str = ""
+
+    # Retry defaults (used when class-level retries/retry_delay_seconds is None)
+    task_retries: int = 0
+    task_retry_delay_seconds: int = 30
+    flow_retries: int = 0
+    flow_retry_delay_seconds: int = 30
+    conversation_retries: int = 2
+    conversation_retry_delay_seconds: int = 20
+
+    @field_validator(
+        "task_retries",
+        "flow_retries",
+        "conversation_retries",
+        "task_retry_delay_seconds",
+        "flow_retry_delay_seconds",
+        "conversation_retry_delay_seconds",
+    )
+    @classmethod
+    def _validate_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(f"Must be >= 0, got {v}")
+        return v
 
     @model_validator(mode="after")
     def _disable_summary_without_llm(self) -> Self:

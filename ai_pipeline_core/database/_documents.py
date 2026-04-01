@@ -1,12 +1,13 @@
 """Document reconstruction and serialization for span-era database records."""
 
+import logging
+
 from ai_pipeline_core.database._hydrate import hydrate_document
 from ai_pipeline_core.database._protocol import DatabaseReader, DatabaseWriter
 from ai_pipeline_core.database._types import DocumentRecord, HydratedDocument, _BlobRecord
 from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.documents.document import Document, _class_name_registry
-from ai_pipeline_core.logger import get_pipeline_logger
 
 __all__ = [
     "document_to_blobs",
@@ -15,7 +16,7 @@ __all__ = [
     "store_document",
 ]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def document_to_record(document: Document) -> DocumentRecord:

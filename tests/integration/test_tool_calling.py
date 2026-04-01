@@ -203,7 +203,6 @@ async def test_structured_output_with_tools(model_opts: tuple[str, ModelOptions]
         purpose="test_structured_with_tools",
     )
 
-    assert conv.parsed is not None
     result = conv.parsed
     assert isinstance(result, CityInfo)
     assert result.city.lower() == "paris"

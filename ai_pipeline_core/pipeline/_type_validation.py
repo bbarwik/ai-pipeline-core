@@ -322,17 +322,21 @@ def _task_return_annotation_error(annotation: Any) -> str | None:
     unwrapped = _unwrap_annotated(annotation)
     if error := _common_task_annotation_error(unwrapped, context="output"):
         return error
-    if _is_none_type(unwrapped) or _is_document_subclass(unwrapped):
+    if _is_none_type(unwrapped):
         return None
+    if _is_document_subclass(unwrapped):
+        return (
+            f"must not use bare '{unwrapped.__name__}' as return type — the framework normalizes all returns to "
+            f"tuple[Document, ...]. Use 'tuple[{unwrapped.__name__}, ...]' to match the actual runtime return type."
+        )
     if _is_union_annotation(unwrapped):
         return _union_annotation_error(unwrapped, _task_return_annotation_error)
 
     origin = get_origin(unwrapped)
-    if origin is list:
-        return _return_list_annotation_error(unwrapped)
-    if origin is tuple:
-        return _return_tuple_annotation_error(unwrapped)
-    return "must return Document, None, list[Document], tuple[Document, ...], or unions of those shapes."
+    handler = {list: _return_list_annotation_error, tuple: _return_tuple_annotation_error}.get(origin)
+    if handler is not None:
+        return handler(unwrapped)
+    return "must return None, list[Document], tuple[Document, ...], or unions of those shapes."
 
 
 def validate_task_return_annotation(annotation: Any, *, task_name: str) -> list[type[Document]]:
@@ -341,7 +345,7 @@ def validate_task_return_annotation(annotation: Any, *, task_name: str) -> list[
         raise TypeError(f"PipelineTask '{task_name}'.run {error}")
     output_types = collect_document_types(annotation)
     if not output_types and _unwrap_annotated(annotation) is not type(None):
-        raise TypeError(f"PipelineTask '{task_name}'.run must return Document, None, list[Document], tuple[Document, ...], or unions of those shapes.")
+        raise TypeError(f"PipelineTask '{task_name}'.run must return None, list[Document], tuple[Document, ...], or unions of those shapes.")
     return output_types
 
 

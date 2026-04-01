@@ -10,15 +10,14 @@ because it matches standard truncation in block explorers and documentation.
 Round-trip: prepare() → substitute() → LLM → restore().
 """
 
+import logging
 import math
 import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from ai_pipeline_core.logger import get_pipeline_logger
-
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # ── Zero-width / invisible characters ──────────────────────────────────────────
 _INVISIBLE_CHARS = frozenset("\u200b\u200c\u200d\ufeff\u2060\u180e")

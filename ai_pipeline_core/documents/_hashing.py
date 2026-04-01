@@ -25,13 +25,15 @@ class _Hashable(Protocol):
 def compute_document_sha256(doc: _Hashable) -> DocumentSha256:
     """Compute the document identity hash including provenance.
 
-    Fields included: name, description, content, derived_from, triggered_by,
-    attachments (name, description, content).
+    Included (identity-bearing): name, description, content, derived_from, triggered_by,
+    attachments (name, description, content). Changing any of these changes the hash.
+
+    Excluded (non-identity): summary, mime_type, class_name.
+    Summary can be updated without changing document identity.
+
     Uses length-prefixed fields with null-byte separators for collision resistance.
     Groups (derived_from, triggered_by, attachments) are count-prefixed for unambiguous boundaries.
     Result is BASE32 encoded (uppercase, no padding), consistent with Document.sha256.
-
-    Excluded from hash: summary, mime_type, class_name.
     """
     h = hashlib.sha256()
 

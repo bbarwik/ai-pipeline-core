@@ -5,12 +5,11 @@ parallel operations (LLM calls, document processing, etc.).
 """
 
 import asyncio
+import logging
 from collections.abc import Coroutine
 from typing import Any
 
-from ai_pipeline_core.logger import get_pipeline_logger
-
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "safe_gather",

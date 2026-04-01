@@ -58,7 +58,6 @@ class TestLLMIntegration:
             response_format=SimpleResponse,
         )
 
-        assert conv.parsed is not None
         assert conv.parsed.greeting == "Hello"
         assert conv.parsed.number == 42
 
@@ -329,7 +328,6 @@ class TestLLMIntegration:
         )
 
         assert conv.enable_substitutor is True
-        assert conv.parsed is not None
         assert len(conv.parsed.items) >= 3, f"Expected at least 3 items, got {len(conv.parsed.items)}"
 
         # Parsed items are eagerly restored — original URLs should appear directly

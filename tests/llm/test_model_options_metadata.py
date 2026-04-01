@@ -22,21 +22,21 @@ class TestModelOptionsMetadata:
     def test_metadata_in_completion_kwargs(self):
         """Test that metadata is included in completion kwargs."""
         metadata = {"experiment": "test", "feature": "search"}
-        options = ModelOptions(metadata=metadata)
+        options = ModelOptions(metadata=metadata, cache_warmup_max_wait=None)
         kwargs = options.to_openai_completion_kwargs()
         assert "metadata" in kwargs
         assert kwargs["metadata"] == metadata
 
     def test_metadata_not_in_kwargs_when_none(self):
         """Test that metadata is not in kwargs when None."""
-        options = ModelOptions(metadata=None)
+        options = ModelOptions(metadata=None, cache_warmup_max_wait=None)
         kwargs = options.to_openai_completion_kwargs()
         assert "metadata" not in kwargs
 
     def test_metadata_with_single_tag(self):
         """Test metadata with single tag."""
         metadata = {"version": "1.0"}
-        options = ModelOptions(metadata=metadata)
+        options = ModelOptions(metadata=metadata, cache_warmup_max_wait=None)
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["metadata"] == {"version": "1.0"}
 
@@ -48,13 +48,13 @@ class TestModelOptionsMetadata:
             "feature": "caching",
             "environment": "production",
         }
-        options = ModelOptions(metadata=metadata)
+        options = ModelOptions(metadata=metadata, cache_warmup_max_wait=None)
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["metadata"] == metadata
 
     def test_metadata_with_empty_dict(self):
         """Test metadata with empty dictionary."""
-        options = ModelOptions(metadata={})
+        options = ModelOptions(metadata={}, cache_warmup_max_wait=None)
         kwargs = options.to_openai_completion_kwargs()
         # Empty dict is falsy, so not included
         assert "metadata" not in kwargs
@@ -72,7 +72,7 @@ class TestModelOptionsMetadata:
             "feature": "cache_optimization",
             "version": "v2.0.1",
         }
-        options = ModelOptions(metadata=metadata)
+        options = ModelOptions(metadata=metadata, cache_warmup_max_wait=None)
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["metadata"] == metadata
 
@@ -84,6 +84,7 @@ class TestModelOptionsMetadata:
             temperature=0.7,
             max_completion_tokens=1000,
             user="user_123",
+            cache_warmup_max_wait=None,
         )
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["metadata"] == metadata
@@ -95,7 +96,7 @@ class TestModelOptionsMetadata:
         """Test that metadata is separate from extra_body."""
         metadata = {"experiment": "test"}
         extra_body = {"custom_param": "value"}
-        options = ModelOptions(metadata=metadata, extra_body=extra_body, usage_tracking=True)
+        options = ModelOptions(metadata=metadata, extra_body=extra_body, usage_tracking=True, cache_warmup_max_wait=None)
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["metadata"] == metadata
         # extra_body gets merged with usage tracking
@@ -106,7 +107,7 @@ class TestModelOptionsMetadata:
     def test_metadata_with_usage_tracking(self):
         """Test metadata with usage tracking enabled."""
         metadata = {"experiment": "test"}
-        options = ModelOptions(metadata=metadata, usage_tracking=True)
+        options = ModelOptions(metadata=metadata, usage_tracking=True, cache_warmup_max_wait=None)
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["metadata"] == metadata
         assert kwargs["extra_body"]["usage"] == {"include": True}
@@ -118,7 +119,7 @@ class TestModelOptionsMetadata:
             "ver": "2.0",
             "feat": "test",
         }
-        options = ModelOptions(metadata=original_metadata)
+        options = ModelOptions(metadata=original_metadata, cache_warmup_max_wait=None)
         kwargs = options.to_openai_completion_kwargs()
         # Should be the exact same dict
         assert kwargs["metadata"] is not original_metadata  # New dict in kwargs
@@ -138,6 +139,7 @@ class TestModelOptionsMetadata:
             temperature=0.8,
             max_completion_tokens=2000,
             cache_ttl="10m",
+            cache_warmup_max_wait=None,
         )
         kwargs = options.to_openai_completion_kwargs()
         assert kwargs["metadata"] == metadata

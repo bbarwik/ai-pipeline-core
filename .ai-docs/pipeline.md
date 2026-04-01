@@ -1,8 +1,8 @@
 # MODULE: pipeline
-# CLASSES: LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
+# CLASSES: DebugRunResult, LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
 # DEPENDS: BaseModel, StrEnum
 # PURPOSE: Pipeline framework primitives.
-# VERSION: 0.18.0
+# VERSION: 0.19.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -27,11 +27,22 @@ from ai_pipeline_core import (
     safe_gather_indexed,
     traced_operation,
 )
+from ai_pipeline_core.pipeline import DebugRunResult, run_flow_debug, run_task_debug
 ```
 
 ## Public API
 
 ```python
+@dataclass(frozen=True, slots=True)
+class DebugRunResult:
+    """Result from a debug execution with metadata for post-run inspection."""
+
+    output_documents: tuple[Document, ...]
+    output_dir: Path
+    run_id: str
+    root_deployment_id: UUID
+
+
 # Enum
 class LimitKind(StrEnum):
     """Kind of concurrency/rate limit.
@@ -106,8 +117,8 @@ class PipelineFlow:
 
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
-    retries: ClassVar[int] = 0
-    retry_delay_seconds: ClassVar[int] = DEFAULT_FLOW_RETRY_DELAY_SECONDS
+    retries: ClassVar[int | None] = None
+    retry_delay_seconds: ClassVar[int | None] = None  # None = use Settings.flow_retry_delay_seconds
     BASE_COST_USD: ClassVar[float] = 0.0
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
@@ -141,6 +152,18 @@ class PipelineFlow:
         super().__init_subclass__(**kwargs)
         if cls is PipelineFlow:
             return
+        if cls.__dict__.get("_abstract_flow", False) is True:
+            return
+
+        from ai_pipeline_core.pipeline._file_rules import (  # noqa: PLC0415  # deferred: avoid import-order issues during package init
+            is_exempt,
+            register_flow,
+            require_docstring,
+        )
+
+        exempt = is_exempt(cls)
+        if not exempt:
+            require_docstring(cls, kind="PipelineFlow")
 
         cls._validate_class_config()
         run_fn, hints, params = cls._validate_run_signature()
@@ -149,6 +172,10 @@ class PipelineFlow:
         cls.output_document_types = output_types
         cls.task_graph = cls._parse_task_graph(run_fn)
         cls._prefect_flow_fn = cls._build_prefect_flow()
+
+        # Register after all validation passes to avoid poisoning the registry on failure
+        if not exempt:
+            register_flow(cls)
 
     def get_params(self) -> dict[str, Any]:
         """Return constructor params for flow plan serialization."""
@@ -222,8 +249,8 @@ class PipelineTask:
 
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
-    retries: ClassVar[int] = DEFAULT_TASK_RETRIES
-    retry_delay_seconds: ClassVar[int] = DEFAULT_TASK_RETRY_DELAY_SECONDS
+    retries: ClassVar[int | None] = None  # None = use Settings.task_retries
+    retry_delay_seconds: ClassVar[int | None] = None  # None = use Settings.task_retry_delay_seconds
     timeout_seconds: ClassVar[int | None] = None
     cacheable: ClassVar[bool] = False
     cache_version: ClassVar[int] = 1
@@ -240,6 +267,16 @@ class PipelineTask:
         if cls.__dict__.get("_abstract_task", False) is True:
             return
 
+        from ai_pipeline_core.pipeline._file_rules import (  # noqa: PLC0415  # deferred: avoid import-order issues during package init
+            is_exempt,
+            register_task,
+            require_docstring,
+        )
+
+        exempt = is_exempt(cls)
+        if not exempt:
+            require_docstring(cls, kind="PipelineTask")
+
         cls._validate_class_config()
 
         own_run = cls.__dict__.get("run")
@@ -250,19 +287,142 @@ class PipelineTask:
             cls.input_document_types = list(inherited_spec.input_document_types)
             cls.output_document_types = list(inherited_spec.output_document_types)
             cls._prefect_task_fn = cls._build_prefect_task()
-            return
+        else:
+            spec = cls._validate_run_signature(own_run)
+            cls._run_spec = spec
+            cls.input_document_types = list(spec.input_document_types)
+            cls.output_document_types = list(spec.output_document_types)
+            cls.run = classmethod(cls._build_run_wrapper(spec))
+            cls._prefect_task_fn = cls._build_prefect_task()
 
-        spec = cls._validate_run_signature(own_run)
-        cls._run_spec = spec
-        cls.input_document_types = list(spec.input_document_types)
-        cls.output_document_types = list(spec.output_document_types)
-        cls.run = classmethod(cls._build_run_wrapper(spec))
-        cls._prefect_task_fn = cls._build_prefect_task()
+        # Register after all validation passes to avoid poisoning the registry on failure
+        if not exempt:
+            register_task(cls)
 ```
 
 ## Functions
 
 ```python
+async def run_task_debug(
+    task_cls: type[PipelineTask],
+    /,
+    *task_args: Any,
+    output_dir: Path,
+    run_id: str | None = None,
+    database: FilesystemDatabase | None = None,
+    **task_kwargs: Any,
+) -> DebugRunResult:
+    """Execute a single PipelineTask into a filesystem-backed debug context.
+
+    Creates a full ExecutionContext with database, sinks, and span tracking.
+    Results (spans, documents, blobs, logs) are persisted to output_dir.
+
+    Call using the same arguments as the task's ``run()`` method (minus ``cls``)::
+
+        result = await run_task_debug(MyTask, (doc,), output_dir=Path("debug_out"))
+    """
+    owns_db = database is None
+    if owns_db:
+        database = create_debug_sink(output_dir)
+    assert database is not None
+
+    deployment_id = uuid7()
+    resolved_run_id = run_id or _make_debug_run_id(task_cls.name)
+    effective_output_dir = output_dir if owns_db else database.base_path
+
+    try:
+        result = await _run_debug(
+            database=database,
+            deployment_id=deployment_id,
+            run_id=resolved_run_id,
+            name=f"debug-{task_cls.name}",
+            execute_fn=lambda: task_cls.run(*task_args, **task_kwargs),
+        )
+        return DebugRunResult(output_documents=result, output_dir=effective_output_dir, run_id=resolved_run_id, root_deployment_id=deployment_id)
+    finally:
+        if owns_db:
+            await _safe_shutdown(database)
+
+
+async def run_flow_debug(
+    flow: PipelineFlow,
+    *,
+    documents: Sequence[Document],
+    options: FlowOptions,
+    output_dir: Path,
+    run_id: str | None = None,
+    database: FilesystemDatabase | None = None,
+) -> DebugRunResult:
+    """Execute a single PipelineFlow into a filesystem-backed debug context.
+
+    Creates a full ExecutionContext with deployment and flow span tracking.
+    Results (spans, documents, blobs, logs) are persisted to output_dir.
+    """
+    owns_db = database is None
+    if owns_db:
+        database = create_debug_sink(output_dir)
+    assert database is not None
+
+    deployment_id = uuid7()
+    flow_cls = type(flow)
+    resolved_run_id = run_id or _make_debug_run_id(flow.name)
+    effective_output_dir = output_dir if owns_db else database.base_path
+
+    async def _execute() -> tuple[Document, ...]:
+        from ai_pipeline_core.deployment._deployment_runtime import _execute_flow_with_context  # noqa: PLC0415 — deferred to avoid circular import
+
+        ctx = get_execution_context()
+        assert ctx is not None
+        flow_span_id = uuid7()
+        flow_frame = FlowFrame(
+            name=flow.name,
+            flow_class_name=flow_cls.__name__,
+            step=1,
+            total_steps=1,
+            flow_minutes=(flow_cls.estimated_minutes,),
+            completed_minutes=0.0,
+            flow_params=flow.get_params(),
+        )
+        flow_ctx = ctx.with_flow(flow_frame).with_span(flow_span_id, parent_span_id=deployment_id)
+        active_handles_before: set[object] = set(ctx.active_task_handles)
+
+        return await _execute_flow_with_context(
+            flow_instance=flow,
+            flow_class=flow_cls,
+            flow_name=flow.name,
+            current_docs=list(documents),
+            options=options,
+            flow_exec_ctx=flow_ctx,
+            current_exec_ctx=ctx,
+            active_handles_before=active_handles_before,
+            database=database,
+            publisher=_NoopPublisher(),
+            deployment_span_id=deployment_id,
+            run_id=resolved_run_id,
+            flow_span_id=flow_span_id,
+            flow_cache_key="",
+            flow_options_payload=options.model_dump(mode="json", exclude_none=True),
+            expected_tasks=flow_cls.expected_tasks(),
+            step=1,
+            total_steps=1,
+            root_id_str=str(deployment_id),
+            parent_task_id_str=None,
+        )
+
+    try:
+        result = await _run_debug(
+            database=database,
+            deployment_id=deployment_id,
+            run_id=resolved_run_id,
+            name=f"debug-{flow.name}",
+            execute_fn=_execute,
+        )
+        return DebugRunResult(output_documents=result, output_dir=effective_output_dir, run_id=resolved_run_id, root_deployment_id=deployment_id)
+    finally:
+        if owns_db:
+            await _safe_shutdown(database)
+
+
 async def safe_gather[T](
     *coroutines: Coroutine[Any, Any, T],
     label: str = "",
@@ -545,7 +705,7 @@ def test_name_with_dashes_and_underscores(self):
     assert "my-limit_v2" in result
 ```
 
-**Add cost after span exits targets parent** (`tests/pipeline/test_add_cost.py:120`)
+**Add cost after span exits targets parent** (`tests/pipeline/test_add_cost.py:121`)
 
 ```python
 @pytest.mark.asyncio
@@ -558,7 +718,7 @@ async def test_add_cost_after_span_exits_targets_parent(self) -> None:
             assert parent._added_cost_usd == pytest.approx(0.01)
 ```
 
-**Add cost reaches span context** (`tests/pipeline/test_add_cost.py:102`)
+**Add cost reaches span context** (`tests/pipeline/test_add_cost.py:103`)
 
 ```python
 @pytest.mark.asyncio
@@ -616,7 +776,7 @@ def test_pipeline_test_context_sets_and_restores() -> None:
     assert get_execution_context() is before
 ```
 
-**Add cost persists to span record** (`tests/pipeline/test_add_cost.py:264`)
+**Add cost persists to span record** (`tests/pipeline/test_add_cost.py:265`)
 
 ```python
 @pytest.mark.asyncio
@@ -679,6 +839,14 @@ def test_base_flow_options_rejects_extra(self):
         FlowOptions(unknown_field="value")
 ```
 
+**Error message includes kind name** (`tests/pipeline/test_file_rules.py:181`)
+
+```python
+def test_error_message_includes_kind_name(self):
+    with pytest.raises(TypeError, match="PipelineFlow"):
+        require_docstring(_make_cls("X", doc=None), kind="PipelineFlow")
+```
+
 **Flow options is frozen** (`tests/pipeline/test_options.py:34`)
 
 ```python
@@ -693,7 +861,7 @@ def test_flow_options_is_frozen(self):
         options.core_model = "new-model"
 ```
 
-**Inf raises** (`tests/pipeline/test_add_cost.py:201`)
+**Inf raises** (`tests/pipeline/test_add_cost.py:202`)
 
 ```python
 def test_inf_raises(self) -> None:
@@ -703,7 +871,7 @@ def test_inf_raises(self) -> None:
         type("InfCostTask", (PipelineTask,), {"name": "InfCostTask", "BASE_COST_USD": float("inf"), "estimated_minutes": 1.0})
 ```
 
-**Inf raises** (`tests/pipeline/test_add_cost.py:226`)
+**Inf raises** (`tests/pipeline/test_add_cost.py:227`)
 
 ```python
 def test_inf_raises(self) -> None:
@@ -711,18 +879,4 @@ def test_inf_raises(self) -> None:
 
     with pytest.raises(TypeError, match="BASE_COST_USD"):
         type("InfCostFlow", (PipelineFlow,), {"name": "InfCostFlow", "BASE_COST_USD": float("inf"), "estimated_minutes": 1.0})
-```
-
-**Inherited flow options maintains frozen** (`tests/pipeline/test_options.py:111`)
-
-```python
-def test_inherited_flow_options_maintains_frozen(self):
-    """Test that inherited classes maintain frozen configuration."""
-
-    class CustomFlowOptions(FlowOptions):
-        custom_field: str = "default"
-
-    options = CustomFlowOptions()
-    with pytest.raises(ValidationError):
-        options.custom_field = "new_value"
 ```

@@ -7,6 +7,7 @@ such as task handles and child-sequence counters across derived contexts.
 
 import importlib
 import json
+import logging
 import math
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
@@ -28,7 +29,6 @@ from ai_pipeline_core.documents import Document, DocumentSha256
 from ai_pipeline_core.documents.utils import is_document_sha256
 from ai_pipeline_core.logger._buffer import ExecutionLogBuffer
 from ai_pipeline_core.logger._handler import LogContext, reset_log_context, set_log_context
-from ai_pipeline_core.logger.logging_config import get_pipeline_logger
 from ai_pipeline_core.pipeline._span_types import SpanSink
 from ai_pipeline_core.pipeline.limits import PipelineLimit, _SharedStatus
 
@@ -52,7 +52,7 @@ __all__ = [
     "set_task_context",
 ]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # --- Run-level context ---
 
@@ -176,6 +176,7 @@ class _RecordingState:
     replay_root_span_id: UUID | None = None
     persisted_document_shas: set[str] = field(default_factory=set)
     persisted_blob_shas: set[str] = field(default_factory=set)
+    total_cost_usd: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +280,11 @@ class ExecutionContext:
     @replay_root_span_id.setter
     def replay_root_span_id(self, value: UUID | None) -> None:
         self._recording_state.replay_root_span_id = value
+
+    @property
+    def total_cost_usd(self) -> float:
+        """Running total of all costs incurred during this execution. Updated when each span finishes."""
+        return self._recording_state.total_cost_usd
 
 
 @dataclass(slots=True)

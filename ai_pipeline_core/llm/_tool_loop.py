@@ -6,6 +6,7 @@ re-sends results until the LLM produces a final answer or max rounds is reached.
 
 import asyncio
 import json
+import logging
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -14,7 +15,6 @@ from pydantic import BaseModel, ValidationError
 from ai_pipeline_core._llm_core.model_response import ModelResponse
 from ai_pipeline_core._llm_core.types import CoreMessage, ModelOptions, RawToolCall, Role, TokenUsage
 from ai_pipeline_core.database import SpanKind
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._execution_context import get_execution_context, get_sinks
 from ai_pipeline_core.pipeline._track_span import track_span
 
@@ -23,7 +23,7 @@ from .tools import Tool, ToolCallRecord, ToolOutput
 
 __all__: list[str] = []
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 MAX_CONSECUTIVE_UNKNOWN_TOOL_ROUNDS = 3
 """Abort the tool loop after this many consecutive rounds where ALL tool calls targeted

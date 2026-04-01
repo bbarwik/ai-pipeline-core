@@ -320,7 +320,7 @@ def test_pipeline_task_rejects_non_frozen_basemodel_input() -> None:
 
 
 def test_pipeline_task_rejects_invalid_return_annotation() -> None:
-    with pytest.raises(TypeError, match="must return Document, None, list\\[Document\\], tuple\\[Document, \\.\\.\\.\\]"):
+    with pytest.raises(TypeError, match="must return None, list\\[Document\\], tuple\\[Document, \\.\\.\\.\\]"):
 
         class BadTask(PipelineTask):
             @classmethod
@@ -641,11 +641,13 @@ class TestTaskReturnTypeValidation:
 
     # --- Accepted types ---
 
-    def test_accepts_single_document(self):
-        class AcceptTask(PipelineTask):
-            @classmethod
-            async def run(cls) -> AlphaDocument:
-                return AlphaDocument(name="a.txt", content=b"a")
+    def test_rejects_single_document(self):
+        with pytest.raises(TypeError, match="must not use bare"):
+
+            class AcceptTask(PipelineTask):
+                @classmethod
+                async def run(cls) -> AlphaDocument:
+                    return AlphaDocument(name="a.txt", content=b"a")
 
     def test_accepts_list_document(self):
         class AcceptTask(PipelineTask):
@@ -684,16 +686,18 @@ class TestTaskReturnTypeValidation:
             async def run(cls) -> None:
                 pass
 
-    def test_accepts_document_or_none(self):
-        class AcceptTask(PipelineTask):
-            @classmethod
-            async def run(cls) -> AlphaDocument | None:
-                return None
+    def test_rejects_document_or_none(self):
+        with pytest.raises(TypeError, match="must not use bare"):
+
+            class AcceptTask(PipelineTask):
+                @classmethod
+                async def run(cls) -> AlphaDocument | None:
+                    return None
 
     # --- Rejected types ---
 
     def test_rejects_int(self):
-        with pytest.raises(TypeError, match="must return Document"):
+        with pytest.raises(TypeError, match="must return"):
 
             class BadTask(PipelineTask):
                 @classmethod
@@ -701,7 +705,7 @@ class TestTaskReturnTypeValidation:
                     return 0
 
     def test_rejects_str(self):
-        with pytest.raises(TypeError, match="must return Document"):
+        with pytest.raises(TypeError, match="must return"):
 
             class BadTask(PipelineTask):
                 @classmethod
@@ -709,7 +713,7 @@ class TestTaskReturnTypeValidation:
                     return ""
 
     def test_rejects_bool(self):
-        with pytest.raises(TypeError, match="must return Document"):
+        with pytest.raises(TypeError, match="must return"):
 
             class BadTask(PipelineTask):
                 @classmethod
@@ -717,7 +721,7 @@ class TestTaskReturnTypeValidation:
                     return True
 
     def test_rejects_dict(self):
-        with pytest.raises(TypeError, match="must return Document"):
+        with pytest.raises(TypeError, match="must return"):
 
             class BadTask(PipelineTask):
                 @classmethod
@@ -756,7 +760,7 @@ class TestTaskReturnTypeValidation:
                     return None
 
     def test_rejects_object(self):
-        with pytest.raises(TypeError, match="must return Document"):
+        with pytest.raises(TypeError, match="must return"):
 
             class BadTask(PipelineTask):
                 @classmethod
@@ -855,10 +859,12 @@ class TestBareDocumentRejection:
             async def run(self, documents: tuple[AlphaDocument, ...], options: FlowOptions) -> tuple[BetaDocument, ...]:
                 return ()
 
-    def test_task_accepts_concrete_subclass(self):
-        class GoodTask(PipelineTask):
-            @classmethod
-            async def run(cls) -> AlphaDocument: ...
+    def test_task_rejects_bare_concrete_subclass(self):
+        with pytest.raises(TypeError, match="must not use bare"):
+
+            class BadTask(PipelineTask):
+                @classmethod
+                async def run(cls) -> AlphaDocument: ...
 
     def test_task_accepts_concrete_list(self):
         class GoodTask(PipelineTask):
@@ -866,16 +872,20 @@ class TestBareDocumentRejection:
             async def run(cls) -> list[AlphaDocument]:
                 return []
 
-    def test_task_accepts_concrete_union(self):
-        class GoodTask(PipelineTask):
-            @classmethod
-            async def run(cls) -> AlphaDocument | BetaDocument: ...
+    def test_task_rejects_bare_concrete_union(self):
+        with pytest.raises(TypeError, match="must not use bare"):
 
-    def test_task_accepts_concrete_or_none(self):
-        class GoodTask(PipelineTask):
-            @classmethod
-            async def run(cls) -> AlphaDocument | None:
-                return None
+            class BadTask(PipelineTask):
+                @classmethod
+                async def run(cls) -> AlphaDocument | BetaDocument: ...
+
+    def test_task_rejects_bare_concrete_or_none(self):
+        with pytest.raises(TypeError, match="must not use bare"):
+
+            class BadTask(PipelineTask):
+                @classmethod
+                async def run(cls) -> AlphaDocument | None:
+                    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -997,22 +1007,22 @@ class TestNewTypeInputValidation:
 
             class BadTask(PipelineTask):
                 @classmethod
-                async def run(cls, value: DocumentSha256) -> AlphaDocument:
-                    return AlphaDocument(name="a.txt", content=b"a")
+                async def run(cls, value: DocumentSha256) -> tuple[AlphaDocument, ...]:
+                    return (AlphaDocument(name="a.txt", content=b"a"),)
 
     def test_str_accepted_directly(self):
         class GoodTask(PipelineTask):
             @classmethod
-            async def run(cls, value: str) -> AlphaDocument:
-                return AlphaDocument(name="a.txt", content=b"a")
+            async def run(cls, value: str) -> tuple[AlphaDocument, ...]:
+                return (AlphaDocument(name="a.txt", content=b"a"),)
 
     def test_bytes_input_rejected(self):
         with pytest.raises(TypeError, match="unsupported input annotation"):
 
             class BadBytesTask(PipelineTask):
                 @classmethod
-                async def run(cls, payload: bytes) -> AlphaDocument:
-                    return AlphaDocument(name="a.txt", content=b"a")
+                async def run(cls, payload: bytes) -> tuple[AlphaDocument, ...]:
+                    return (AlphaDocument(name="a.txt", content=b"a"),)
 
 
 def test_abstract_task_can_be_defined_without_run() -> None:

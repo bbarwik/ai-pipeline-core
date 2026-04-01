@@ -483,16 +483,16 @@ async def test_conversation_detail_records_base_and_effective_model_options(monk
 
     assert conversation_meta["model_options"]["reasoning_effort"] == "medium"
     assert conversation_meta["model_options"]["timeout"] == 600
-    assert conversation_meta["model_options"]["retries"] == 3
+    assert conversation_meta["model_options"]["retries"] is None
     assert conversation_meta["model_options"]["cache_ttl"] == "300s"
     assert conversation_meta["effective_model_options"]["reasoning_effort"] == "medium"
     assert conversation_meta["effective_model_options"]["timeout"] == 600
-    assert conversation_meta["effective_model_options"]["retries"] == 3
+    assert conversation_meta["effective_model_options"]["retries"] is None
     assert conversation_meta["effective_model_options"]["cache_ttl"] == "300s"
     assert llm_model_options["$type"] == "pydantic"
     assert llm_model_options["data"]["reasoning_effort"] == "medium"
     assert llm_model_options["data"]["timeout"] == 600
-    assert llm_model_options["data"]["retries"] == 3
+    assert llm_model_options["data"]["retries"] is None
     assert llm_model_options["data"]["cache_ttl"] == "300s"
 
 

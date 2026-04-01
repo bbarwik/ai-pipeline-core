@@ -21,6 +21,7 @@ rules:
     languages: [python]
     paths:
       include: ["ai_pipeline_core/"]
+      exclude: ["**/ai_pipeline_core/pipeline/_file_rules.py"]
 
   - id: no-conditional-imports
     patterns:
@@ -53,6 +54,9 @@ rules:
     message: "Runtime pytest.skip() is forbidden — use @pytest.mark.skip or @pytest.mark.skipif decorators instead"
     severity: ERROR
     languages: [python]
+    paths:
+      exclude:
+        - "conftest.py"  # Fixtures legitimately need pytest.skip() — decorators don't work inside fixtures
 
   - id: no-document-subclass-in-framework
     pattern-either:

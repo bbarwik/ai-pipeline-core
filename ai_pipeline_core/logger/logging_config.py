@@ -14,7 +14,6 @@ import yaml
 
 __all__ = [
     "LoggingConfig",
-    "get_pipeline_logger",
     "setup_logging",
 ]
 
@@ -160,8 +159,8 @@ def setup_logging(config_path: Path | None = None, level: str | None = None) -> 
     """Setup logging for the AI Pipeline Core library.
 
     Initializes logging configuration for the pipeline system.
-    Call once at your application entry point. If not called explicitly,
-    ``get_pipeline_logger()`` will auto-initialize with defaults on first use.
+    Called automatically at package import time (``ai_pipeline_core/__init__.py``).
+    Can also be called explicitly to override configuration.
 
     Args:
         config_path: Optional path to YAML logging configuration file.
@@ -183,19 +182,3 @@ def setup_logging(config_path: Path | None = None, level: str | None = None) -> 
 
             # Also set for Prefect
             os.environ["PREFECT_LOGGING_LEVEL"] = level
-
-
-def get_pipeline_logger(name: str) -> logging.Logger:
-    """Get a logger for pipeline components.
-
-    Args:
-        name: Logger name, typically __name__.
-
-    Returns:
-        Configured stdlib logger instance.
-
-    """
-    if _logging_config is None:
-        setup_logging()
-
-    return logging.getLogger(name)

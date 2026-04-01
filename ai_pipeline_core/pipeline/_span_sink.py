@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -10,7 +11,6 @@ from uuid import UUID
 from ai_pipeline_core.database import SpanKind, SpanRecord, SpanStatus
 from ai_pipeline_core.database._json_helpers import json_dumps
 from ai_pipeline_core.database._protocol import DatabaseWriter
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._execution_context import get_execution_context
 from ai_pipeline_core.pipeline._span_types import SpanContext, SpanMetrics, SpanSink
 from ai_pipeline_core.pipeline._task_runtime import _next_span_version
@@ -22,7 +22,7 @@ __all__ = [
     "SpanSink",
 ]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 EMPTY_LOG_SUMMARY = {
     "total": 0,
     "warnings": 0,

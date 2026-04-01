@@ -1,7 +1,7 @@
 # MODULE: settings
 # CLASSES: Settings
 # DEPENDS: BaseSettings
-# VERSION: 0.18.0
+# VERSION: 0.19.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     pubsub_project_id: str = ""
     pubsub_topic_id: str = ""
     lmnr_project_api_key: str = ""
+    task_retries: int = 0
+    task_retry_delay_seconds: int = 30
+    flow_retries: int = 0
+    flow_retry_delay_seconds: int = 30
+    conversation_retries: int = 2
+    conversation_retry_delay_seconds: int = 20
 ```
 
 ## Examples

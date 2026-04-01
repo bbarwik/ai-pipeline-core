@@ -2,7 +2,7 @@
 # CLASSES: DeploymentResult, FlowAction, FlowDirective, PipelineDeployment, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.18.0
+# VERSION: 0.19.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -47,8 +47,8 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     result_type: ClassVar[type[DeploymentResult]]
     pubsub_service_type: ClassVar[str] = ''
     cache_ttl: ClassVar[timedelta | None] = timedelta(hours=24)
-    flow_retries: ClassVar[int] = 3
-    flow_retry_delay_seconds: ClassVar[int] = 30
+    flow_retries: ClassVar[int | None] = None
+    flow_retry_delay_seconds: ClassVar[int | None] = None
     concurrency_limits: ClassVar[Mapping[str, PipelineLimit]] = MappingProxyType({})
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -156,7 +156,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     @final
     def run_local(
         self,
-        run_id: str,
+        run_id: str | None,
         documents: Sequence[Document],
         options: TOptions,
         publisher: ResultPublisher | None = None,
@@ -165,7 +165,7 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         """Run locally with Prefect test harness and in-memory database.
 
         Args:
-            run_id: Pipeline run identifier.
+            run_id: Pipeline run identifier. If None, auto-generated from output_dir + date + input hash.
             documents: Initial input documents.
             options: Flow options.
             publisher: Optional lifecycle event publisher (defaults to _NoopPublisher).
@@ -174,6 +174,10 @@ class PipelineDeployment(Generic[TOptions, TResult]):
         Returns:
             Typed deployment result.
         """
+        if run_id is None:
+            dir_name = output_dir.name if output_dir else "local"
+            run_id = build_auto_run_id(output_dir_name=dir_name, documents=documents, options=options)
+
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -404,12 +408,12 @@ def test_format_starts_with_base_run_id(self):
     assert derived.startswith("my-project-")
 ```
 
-**Deployment default flow retries is three** (`tests/deployment/test_flow_retries.py:222`)
+**Deployment default flow retries is none** (`tests/deployment/test_flow_retries.py:230`)
 
 ```python
-def test_deployment_default_flow_retries_is_three(self) -> None:
-    assert PipelineDeployment.flow_retries == 3
-    assert PipelineDeployment.flow_retry_delay_seconds == 30
+def test_deployment_default_flow_retries_is_none(self) -> None:
+    assert PipelineDeployment.flow_retries is None
+    assert PipelineDeployment.flow_retry_delay_seconds is None
 ```
 
 **Deployment result data** (`tests/deployment/test_deployment_base.py:161`)

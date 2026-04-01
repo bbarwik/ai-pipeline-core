@@ -1,6 +1,7 @@
 """Laminar span sink integration."""
 
 import json
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -8,15 +9,15 @@ from uuid import UUID
 
 from lmnr import Laminar
 from lmnr.opentelemetry_lib.tracing.instruments import Instruments
+from opentelemetry.trace import Status, StatusCode
 
 from ai_pipeline_core.database import SpanKind
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._span_sink import SpanMetrics
 from ai_pipeline_core.settings import Settings
 
 __all__ = ["LaminarSpanSink", "_reset_for_testing"]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 LaminarSpanType = Literal["DEFAULT", "LLM", "TOOL"]
 _LAMINAR_DEFAULT_SPAN_TYPE: LaminarSpanType = "DEFAULT"
 _LAMINAR_LLM_SPAN_TYPE: LaminarSpanType = "LLM"
@@ -133,6 +134,14 @@ class LaminarSpanSink:
         if error is not None:
             attributes["ai_pipeline.error_type"] = type(error).__name__
             attributes["ai_pipeline.error_message"] = str(error)
+            try:
+                open_span.span.set_status(Status(StatusCode.ERROR, description=f"{type(error).__name__}: {error}"))
+            except _LAMINAR_EXCEPTIONS as exc:
+                logger.warning("Laminar span status update failed for span %s: %s", span_id, exc)
+            try:
+                open_span.span.record_exception(error)
+            except _LAMINAR_EXCEPTIONS as exc:
+                logger.warning("Laminar exception recording failed for span %s: %s", span_id, exc)
 
         if attributes:
             try:
@@ -159,25 +168,29 @@ class LaminarSpanSink:
             return False
         if type(self)._initialization_failed:
             if type(self)._initialized_project_api_key not in {None, configured_api_key}:
-                logger.warning(
+                logger.error(
                     "Laminar initialization previously failed for a different LMNR_PROJECT_API_KEY. This execution will skip Laminar export for key isolation."
                 )
             return False
         return None
 
     def _initialize_laminar(self, configured_api_key: str) -> bool:
+        init_error: str | None = None
         try:
             Laminar.initialize(
                 project_api_key=configured_api_key,
                 disabled_instruments={Instruments.OPENAI, Instruments.LITELLM},
             )
         except _LAMINAR_EXCEPTIONS as exc:
-            logger.warning(
-                "Laminar initialization failed. Span export is disabled for this process. Unset LMNR_PROJECT_API_KEY to disable Laminar cleanly: %s",
-                exc,
-            )
+            init_error = str(exc)
             type(self)._initialization_failed = True
             type(self)._initialized_project_api_key = configured_api_key
+
+        if init_error is not None:
+            logger.error(
+                "Laminar initialization failed. Span export is disabled for this process. Unset LMNR_PROJECT_API_KEY to disable Laminar cleanly: %s",
+                init_error,
+            )
             return False
 
         type(self)._initialized = True
@@ -186,7 +199,7 @@ class LaminarSpanSink:
 
     @staticmethod
     def _warn_project_switch() -> None:
-        logger.warning(
+        logger.error(
             "Laminar was already initialized for a different LMNR_PROJECT_API_KEY. "
             "Laminar projects cannot be switched after process initialization. "
             "This execution will skip Laminar export instead of sending spans to the wrong project."

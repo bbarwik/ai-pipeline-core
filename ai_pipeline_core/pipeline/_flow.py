@@ -3,6 +3,7 @@
 import annotationlib
 import ast
 import inspect
+import logging
 import math
 import textwrap
 from collections.abc import Callable
@@ -11,14 +12,11 @@ from typing import Any, ClassVar, cast, get_origin
 from prefect import flow as _prefect_flow
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._task import PipelineTask
 from ai_pipeline_core.pipeline._type_validation import collect_document_types, contains_bare_document, resolve_type_hints
 from ai_pipeline_core.pipeline.options import FlowOptions
 
-logger = get_pipeline_logger(__name__)
-
-DEFAULT_FLOW_RETRY_DELAY_SECONDS = 30
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "PipelineFlow",
@@ -119,9 +117,10 @@ class PipelineFlow:
 
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
-    retries: ClassVar[int] = 0
-    retry_delay_seconds: ClassVar[int] = DEFAULT_FLOW_RETRY_DELAY_SECONDS
+    retries: ClassVar[int | None] = None
+    retry_delay_seconds: ClassVar[int | None] = None  # None = use Settings.flow_retry_delay_seconds
     BASE_COST_USD: ClassVar[float] = 0.0
+    _abstract_flow: ClassVar[bool] = False
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
     task_graph: ClassVar[list[tuple[str, str, float]]] = []
@@ -140,6 +139,18 @@ class PipelineFlow:
         super().__init_subclass__(**kwargs)
         if cls is PipelineFlow:
             return
+        if cls.__dict__.get("_abstract_flow", False) is True:
+            return
+
+        from ai_pipeline_core.pipeline._file_rules import (  # noqa: PLC0415  # deferred: avoid import-order issues during package init
+            is_exempt,
+            register_flow,
+            require_docstring,
+        )
+
+        exempt = is_exempt(cls)
+        if not exempt:
+            require_docstring(cls, kind="PipelineFlow")
 
         cls._validate_class_config()
         run_fn, hints, params = cls._validate_run_signature()
@@ -148,6 +159,10 @@ class PipelineFlow:
         cls.output_document_types = output_types
         cls.task_graph = cls._parse_task_graph(run_fn)
         cls._prefect_flow_fn = cls._build_prefect_flow()
+
+        # Register after all validation passes to avoid poisoning the registry on failure
+        if not exempt:
+            register_flow(cls)
 
     @classmethod
     def _validate_class_config(cls) -> None:
@@ -159,9 +174,9 @@ class PipelineFlow:
             cls.name = cls.__name__
         if cls.estimated_minutes < 1:
             raise TypeError(f"PipelineFlow '{cls.__name__}' has estimated_minutes={cls.estimated_minutes}. Use a value >= 1.")
-        if cls.retries < 0:
+        if cls.retries is not None and cls.retries < 0:
             raise TypeError(f"PipelineFlow '{cls.__name__}' has retries={cls.retries}. Use a value >= 0.")
-        if cls.retry_delay_seconds < 0:
+        if cls.retry_delay_seconds is not None and cls.retry_delay_seconds < 0:
             raise TypeError(f"PipelineFlow '{cls.__name__}' has retry_delay_seconds={cls.retry_delay_seconds}. Use a value >= 0.")
         if not math.isfinite(cls.BASE_COST_USD) or cls.BASE_COST_USD < 0:
             raise TypeError(

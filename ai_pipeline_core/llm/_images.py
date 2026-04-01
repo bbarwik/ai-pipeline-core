@@ -6,6 +6,7 @@ Includes bridge functions for converting images to LLM ContentParts.
 """
 
 import base64
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from io import BytesIO
@@ -19,9 +20,8 @@ from ai_pipeline_core._llm_core._validation import validate_image_content as _va
 from ai_pipeline_core._llm_core._validation import validate_pdf as _validate_pdf
 from ai_pipeline_core._llm_core.model_config import get_image_preset as _get_image_preset_name
 from ai_pipeline_core._llm_core.types import ContentPart, ImageContent, PDFContent, TextContent
-from ai_pipeline_core.logger import get_pipeline_logger
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "ImagePart",

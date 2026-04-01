@@ -40,6 +40,22 @@ def _make_response(
     return SimpleNamespace(id="resp-1", choices=[choice], usage=usage)
 
 
+def test_null_choices_raises_empty_response_error() -> None:
+    """response.choices=None should raise EmptyResponseError, not TypeError."""
+    resp = _make_response()
+    resp.choices = None
+    with pytest.raises(EmptyResponseError, match=r"no choices.*None"):
+        _build_model_response(resp, {}, None, "test-model", None)
+
+
+def test_empty_choices_raises_empty_response_error() -> None:
+    """response.choices=[] should raise EmptyResponseError."""
+    resp = _make_response()
+    resp.choices = []
+    with pytest.raises(EmptyResponseError, match=r"no choices.*empty"):
+        _build_model_response(resp, {}, None, "test-model", None)
+
+
 @patch("ai_pipeline_core._llm_core.client.settings")
 @patch("ai_pipeline_core._llm_core.client.AsyncOpenAI")
 async def test_empty_response_retried_with_cache_disabled(mock_aoai: Any, mock_settings: Any) -> None:

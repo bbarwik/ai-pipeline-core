@@ -1,5 +1,6 @@
 """Tests for logging configuration."""
 
+import logging
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -7,7 +8,7 @@ from unittest.mock import MagicMock, Mock, patch
 from uuid import uuid4
 
 from ai_pipeline_core.database import LogRecord
-from ai_pipeline_core.logger import get_pipeline_logger, setup_logging
+from ai_pipeline_core.logger import setup_logging
 from ai_pipeline_core.logger._buffer import ExecutionLogBuffer
 from ai_pipeline_core.logger._handler import ExecutionLogHandler
 from ai_pipeline_core.logger.logging_config import LoggingConfig
@@ -138,46 +139,19 @@ class TestSetupLogging:
         mock_instance.apply.assert_called_once()
 
 
-class TestGetPipelineLogger:
-    """Test get_pipeline_logger function."""
+class TestImportTimeSetup:
+    """Verify that importing ai_pipeline_core configures logging."""
 
-    @patch("ai_pipeline_core.logger.logging_config.setup_logging")
-    @patch("ai_pipeline_core.logger.logging_config.logging.getLogger")
-    def test_get_pipeline_logger_ensures_setup(self, mock_get_logger: Mock, mock_setup: Mock) -> None:
-        """Test that get_pipeline_logger ensures logging is setup."""
-        mock_logger = MagicMock()
-        mock_get_logger.return_value = mock_logger
+    def test_import_triggers_setup(self) -> None:
+        """setup_logging() is called during package import."""
+        import ai_pipeline_core.logger.logging_config as cfg
 
-        # Reset global state
-        import ai_pipeline_core.logger.logging_config
+        assert cfg._logging_config is not None
 
-        ai_pipeline_core.logger.logging_config._logging_config = None  # type: ignore[attr-defined]
-
-        logger = get_pipeline_logger("test.module")
-
-        mock_setup.assert_called_once()
-        mock_get_logger.assert_called_with("test.module")
-        assert logger == mock_logger
-
-    @patch("ai_pipeline_core.logger.logging_config.logging.getLogger")
-    def test_get_pipeline_logger_reuses_config(self, mock_get_logger: Mock) -> None:
-        """Test that subsequent calls don't re-setup logging."""
-        mock_logger = MagicMock()
-        mock_get_logger.return_value = mock_logger
-
-        # Simulate already configured
-        import ai_pipeline_core.logger.logging_config
-
-        ai_pipeline_core.logger.logging_config._logging_config = MagicMock()  # type: ignore[attr-defined]
-
-        with patch("ai_pipeline_core.logger.logging_config.setup_logging") as mock_setup:
-            get_pipeline_logger("module1")
-            get_pipeline_logger("module2")
-
-            # Should not call setup_logging
-            mock_setup.assert_not_called()
-
-            assert mock_get_logger.call_count == 2
+    def test_dependency_loggers_suppressed_after_import(self) -> None:
+        """httpx and httpcore loggers are set to WARNING+ after import."""
+        assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+        assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
 
 
 def test_logging_module_exports_handler_and_buffer_for_logrecord_runtime() -> None:

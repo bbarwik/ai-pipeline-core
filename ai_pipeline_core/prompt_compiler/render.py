@@ -1,6 +1,7 @@
 """Rendering logic for prompt specifications."""
 
 import json
+import logging
 import re
 from collections.abc import Sequence
 from typing import Any
@@ -8,11 +9,10 @@ from typing import Any
 from pydantic import BaseModel
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logger import get_pipeline_logger
 
 from .spec import PromptSpec, _is_list_field, _is_multi_line_field, _is_previous_message_field, _is_structured_field
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 _VOWELS = frozenset("aeiouAEIOU")
 

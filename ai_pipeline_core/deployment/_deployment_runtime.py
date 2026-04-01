@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import Sequence
 from datetime import timedelta
@@ -14,7 +15,6 @@ from ai_pipeline_core._base_exceptions import NonRetriableError
 from ai_pipeline_core.database import SpanKind, SpanRecord, SpanStatus
 from ai_pipeline_core.database._documents import load_documents_from_database
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._execution_context import (
     ExecutionContext,
     TaskContext,
@@ -27,6 +27,7 @@ from ai_pipeline_core.pipeline._flow import PipelineFlow
 from ai_pipeline_core.pipeline._span_types import SpanContext
 from ai_pipeline_core.pipeline._track_span import track_span
 from ai_pipeline_core.pipeline.options import FlowOptions
+from ai_pipeline_core.settings import settings
 
 from ._helpers import _cancel_dispatched_handles
 from ._types import DocumentRef, FlowCompletedEvent, FlowFailedEvent, FlowStartedEvent, ResultPublisher
@@ -43,7 +44,7 @@ __all__ = [
     "_validate_flow_chain",
 ]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 _PUBLISH_EXCEPTIONS = (OSError, RuntimeError, TypeError, ValueError)
 MAX_RETRY_DELAY_SECONDS = 300
 
@@ -63,9 +64,10 @@ async def _reuse_cached_flow_output(
     step: int,
     total_steps: int,
     accumulated_docs: list[Document],
+    disable_cache: bool = False,
 ) -> tuple[SpanRecord, tuple[Document, ...], list[Document]] | None:
     """Reuse cached flow outputs and return the cached span plus hydrated documents."""
-    if database is None or cache_ttl is None:
+    if database is None or cache_ttl is None or disable_cache:
         return None
 
     cached_span = await database.get_cached_completion(flow_cache_key, max_age=cache_ttl)
@@ -88,18 +90,22 @@ async def _reuse_cached_flow_output(
     return cached_span, previous_output_documents, updated_docs
 
 
-def _resolve_flow_retries(flow_class: type[PipelineFlow], deployment_flow_retries: int) -> int:
-    """Resolve effective retry count: flow explicit override > deployment default."""
-    if "retries" in flow_class.__dict__:
+def _resolve_flow_retries(flow_class: type[PipelineFlow], deployment_flow_retries: int | None) -> int:
+    """Resolve effective retry count: flow explicit override > deployment > Settings."""
+    if "retries" in flow_class.__dict__ and flow_class.retries is not None:
         return flow_class.retries
-    return deployment_flow_retries
+    if deployment_flow_retries is not None:
+        return deployment_flow_retries
+    return settings.flow_retries
 
 
-def _resolve_flow_retry_delay(flow_class: type[PipelineFlow], deployment_flow_retry_delay_seconds: int) -> int:
-    """Resolve effective retry delay: flow explicit override > deployment default."""
-    if "retry_delay_seconds" in flow_class.__dict__:
+def _resolve_flow_retry_delay(flow_class: type[PipelineFlow], deployment_flow_retry_delay_seconds: int | None) -> int:
+    """Resolve effective retry delay: flow explicit override > deployment > Settings."""
+    if "retry_delay_seconds" in flow_class.__dict__ and flow_class.retry_delay_seconds is not None:
         return flow_class.retry_delay_seconds
-    return deployment_flow_retry_delay_seconds
+    if deployment_flow_retry_delay_seconds is not None:
+        return deployment_flow_retry_delay_seconds
+    return settings.flow_retry_delay_seconds
 
 
 async def _execute_single_flow_attempt(
@@ -142,16 +148,15 @@ async def _run_flow_with_retries(
     active_handles_before: set[object],
     step: int,
     total_steps: int,
-    deployment_flow_retries: int = 0,
-    deployment_flow_retry_delay_seconds: int = 30,
+    deployment_flow_retries: int | None = None,
+    deployment_flow_retry_delay_seconds: int | None = None,
     parent_span_ctx: SpanContext,
 ) -> tuple[Document, ...]:
     """Execute a flow's run() with retries, exponential backoff, and NonRetriableError handling.
 
     Every executed body — including retries=0 — is wrapped in an ATTEMPT span so the span
-    tree is FLOW → ATTEMPT → children. Retry count resolution: if the flow class explicitly
-    sets ``retries`` in its own class body, that value is used. Otherwise the deployment's
-    ``flow_retries`` applies.
+    tree is FLOW → ATTEMPT → children. Retry count resolution: flow class override >
+    deployment ``flow_retries`` > ``Settings.flow_retries``.
     """
     retries = _resolve_flow_retries(flow_class, deployment_flow_retries)
     retry_delay = _resolve_flow_retry_delay(flow_class, deployment_flow_retry_delay_seconds)
@@ -235,8 +240,8 @@ async def _execute_flow_with_context(
     total_steps: int,
     root_id_str: str,
     parent_task_id_str: str | None,
-    deployment_flow_retries: int = 0,
-    deployment_flow_retry_delay_seconds: int = 30,
+    deployment_flow_retries: int | None = None,
+    deployment_flow_retry_delay_seconds: int | None = None,
 ) -> tuple[Document, ...]:
     """Execute one flow under flow/task context and record failure state on exceptions."""
     with contextlib.ExitStack() as flow_scope:

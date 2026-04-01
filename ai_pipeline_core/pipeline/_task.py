@@ -20,6 +20,7 @@ Runtime behavior:
 import asyncio
 import contextlib
 import inspect
+import logging
 import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -40,7 +41,6 @@ from ai_pipeline_core._llm_core import generate as core_generate
 from ai_pipeline_core.database import SpanKind, SpanRecord, SpanStatus
 from ai_pipeline_core.database._documents import load_documents_from_database
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._execution_context import (
     ExecutionContext,
     FlowFrame,
@@ -75,11 +75,9 @@ from ai_pipeline_core.pipeline._type_validation import (
 )
 from ai_pipeline_core.settings import settings
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 MILLISECONDS_PER_SECOND = 1000
-DEFAULT_TASK_RETRIES = 3
-DEFAULT_TASK_RETRY_DELAY_SECONDS = 30
 MAX_RETRY_DELAY_SECONDS = 300
 
 EVENT_PUBLISH_EXCEPTIONS = (OSError, RuntimeError, ValueError, TypeError)
@@ -120,8 +118,8 @@ class PipelineTask:
 
     name: ClassVar[str]
     estimated_minutes: ClassVar[float] = 1.0
-    retries: ClassVar[int] = DEFAULT_TASK_RETRIES
-    retry_delay_seconds: ClassVar[int] = DEFAULT_TASK_RETRY_DELAY_SECONDS
+    retries: ClassVar[int | None] = None  # None = use Settings.task_retries
+    retry_delay_seconds: ClassVar[int | None] = None  # None = use Settings.task_retry_delay_seconds
     timeout_seconds: ClassVar[int | None] = None
     cacheable: ClassVar[bool] = False
     cache_version: ClassVar[int] = 1
@@ -142,6 +140,16 @@ class PipelineTask:
         if cls.__dict__.get("_abstract_task", False) is True:
             return
 
+        from ai_pipeline_core.pipeline._file_rules import (  # noqa: PLC0415  # deferred: avoid import-order issues during package init
+            is_exempt,
+            register_task,
+            require_docstring,
+        )
+
+        exempt = is_exempt(cls)
+        if not exempt:
+            require_docstring(cls, kind="PipelineTask")
+
         cls._validate_class_config()
 
         own_run = cls.__dict__.get("run")
@@ -152,14 +160,17 @@ class PipelineTask:
             cls.input_document_types = list(inherited_spec.input_document_types)
             cls.output_document_types = list(inherited_spec.output_document_types)
             cls._prefect_task_fn = cls._build_prefect_task()
-            return
+        else:
+            spec = cls._validate_run_signature(own_run)
+            cls._run_spec = spec
+            cls.input_document_types = list(spec.input_document_types)
+            cls.output_document_types = list(spec.output_document_types)
+            cls.run = classmethod(cls._build_run_wrapper(spec))
+            cls._prefect_task_fn = cls._build_prefect_task()
 
-        spec = cls._validate_run_signature(own_run)
-        cls._run_spec = spec
-        cls.input_document_types = list(spec.input_document_types)
-        cls.output_document_types = list(spec.output_document_types)
-        cls.run = classmethod(cls._build_run_wrapper(spec))
-        cls._prefect_task_fn = cls._build_prefect_task()
+        # Register after all validation passes to avoid poisoning the registry on failure
+        if not exempt:
+            register_task(cls)
 
     @classmethod
     def _validate_class_config(cls) -> None:
@@ -176,9 +187,9 @@ class PipelineTask:
                 f"PipelineTask '{cls.__name__}' has BASE_COST_USD={cls.BASE_COST_USD}. "
                 "Use a finite float >= 0 representing the minimum cost in USD per execution."
             )
-        if cls.retries < 0:
+        if cls.retries is not None and cls.retries < 0:
             raise TypeError(f"PipelineTask '{cls.__name__}' has retries={cls.retries}. Use a value >= 0.")
-        if cls.retry_delay_seconds < 0:
+        if cls.retry_delay_seconds is not None and cls.retry_delay_seconds < 0:
             raise TypeError(f"PipelineTask '{cls.__name__}' has retry_delay_seconds={cls.retry_delay_seconds}. Use a value >= 0.")
         if cls.timeout_seconds is not None and cls.timeout_seconds <= 0:
             raise TypeError(f"PipelineTask '{cls.__name__}' has timeout_seconds={cls.timeout_seconds}. Use a positive integer timeout or None.")
@@ -356,7 +367,9 @@ class PipelineTask:
         captures error_json but the parent TASK span does NOT accumulate retry_errors
         (retry metadata is only meaningful when retries > 0).
         """
-        attempts = cls.retries + 1
+        retries = cls.retries if cls.retries is not None else settings.task_retries
+        retry_delay = cls.retry_delay_seconds if cls.retry_delay_seconds is not None else settings.task_retry_delay_seconds
+        attempts = retries + 1
         use_prefect = _FlowRunContext.get() is not None and cls._prefect_task_fn is not None
 
         for attempt in range(attempts):
@@ -380,7 +393,7 @@ class PipelineTask:
                 raise
             except RETRY_CAPTURE_EXCEPTIONS as exc:
                 will_retry = attempt < attempts - 1
-                delay = min(cls.retry_delay_seconds * (2**attempt), MAX_RETRY_DELAY_SECONDS) if will_retry else 0
+                delay = min(retry_delay * (2**attempt), MAX_RETRY_DELAY_SECONDS) if will_retry else 0
                 if attempts > 1:
                     parent_span_ctx.record_retry_failure(
                         exc=exc,

@@ -6,6 +6,7 @@ SHA256 hashing, and serialization. All documents must be concrete subclasses of 
 
 import base64
 import json
+import logging
 from collections.abc import Sequence
 from contextvars import ContextVar
 from enum import StrEnum
@@ -39,7 +40,6 @@ from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
 from ai_pipeline_core.documents.exceptions import DocumentNameError, DocumentSizeError
 from ai_pipeline_core.documents.utils import _DATA_URI_PATTERN, is_document_sha256
-from ai_pipeline_core.logger import get_pipeline_logger
 
 from ._mime_type import (
     detect_mime_type,
@@ -54,11 +54,23 @@ __all__ = [
     "Document",
 ]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 TModel = TypeVar("TModel", bound=BaseModel)
 
 _STRUCTURED_EXTENSIONS: frozenset[str] = frozenset({".json", ".yaml", ".yml"})
+
+MAX_EXTERNAL_SOURCE_URI_BYTES = 8 * 1024
+"""Maximum size for a single external source URI in derived_from (8 KB)."""
+
+MAX_DESCRIPTION_BYTES = 50 * 1024
+"""Maximum size for the description field (50 KB). Description is part of document identity (sha256)."""
+
+MAX_SUMMARY_BYTES = 1024
+"""Maximum size for the summary field (1 KB). Summary is NOT part of document identity."""
+
+MAX_TOTAL_DERIVED_FROM_BYTES = 200 * 1024
+"""Maximum combined size of all derived_from entries (200 KB)."""
 
 # Registry of class __name__ -> Document subclass for collision detection.
 # Only non-test classes are registered. Test modules (tests.*, conftest, etc.) are skipped.
@@ -183,15 +195,32 @@ class Document[TContent: BaseModel = Any](BaseModel):
     Content is stored as bytes. Use `create()` for automatic conversion from str/dict/list/BaseModel.
     Use `parse()` to reverse the conversion. Serialization is extension-driven (.json → JSON, .yaml → YAML).
 
+    Constructor selection:
+        - ``create_root()``: genuine pipeline inputs with no prior pipeline provenance
+        - ``derive()``: content transformations where this content was produced from other documents
+        - ``create()``: new content caused by another document, but not derived from its content
+        - ``create_external()``: content fetched from external URIs; use triggered_by when another
+          document caused the fetch
+
     Provenance:
-        - `derived_from`: content sources (document SHA256 hashes or external URLs)
-        - `triggered_by`: causal provenance (document SHA256 hashes only)
-        - `create()` requires at least one provenance field. Use `create_root()` for pipeline inputs.
+        - ``derived_from``: content sources (document SHA256 hashes or external URLs)
+        - ``triggered_by``: causal provenance (document SHA256 hashes only)
+        - ``create()`` requires at least one provenance field. Use ``create_root()`` for pipeline inputs.
+
+    Identity (sha256):
+        The document hash includes: name, description, content, derived_from, triggered_by, attachments.
+        ``description`` is part of document identity — changing it changes sha256.
+        ``summary`` is NOT part of document identity — it can be updated without changing the hash.
+
+    Size limits:
+        - External source URIs in derived_from: 8 KB per URI
+        - description: 50 KB (identity-bearing, keep concise)
+        - summary: 1 KB (short synopsis only)
 
     Attachments:
-        Secondary content bundled with the primary document. The primary content lives in `content`,
-        while `attachments` carries supplementary material of the same logical document — e.g. a webpage
-        stored as HTML in `content` with its screenshot in an attachment, or a report with embedded images.
+        Secondary content bundled with the primary document. The primary content lives in ``content``,
+        while ``attachments`` carries supplementary material of the same logical document — e.g. a webpage
+        stored as HTML in ``content`` with its screenshot in an attachment, or a report with embedded images.
         Attachments affect the document SHA256 hash.
     """
 
@@ -516,9 +545,26 @@ class Document[TContent: BaseModel = Any](BaseModel):
     @field_validator("description", mode="before")
     @classmethod
     def _normalize_description(cls, v: str | None) -> str:
-        """Normalize None to empty string. description is always str, never None."""
+        """Normalize None to empty string and enforce size limit. description is always str, never None."""
         if v is None:
             return ""
+        byte_len = len(v.encode("utf-8"))
+        if byte_len > MAX_DESCRIPTION_BYTES:
+            raise ValueError(
+                f"Document description is {byte_len} bytes, exceeds {MAX_DESCRIPTION_BYTES}-byte limit. "
+                f"Move large explanatory content into 'content' or an attachment."
+            )
+        return v
+
+    @field_validator("summary")
+    @classmethod
+    def _validate_summary_length(cls, v: str) -> str:
+        """Enforce size limit on summary. Summary is a short synopsis, not full content."""
+        byte_len = len(v.encode("utf-8"))
+        if byte_len > MAX_SUMMARY_BYTES:
+            raise ValueError(
+                f"Document summary is {byte_len} bytes, exceeds {MAX_SUMMARY_BYTES}-byte limit. Summaries are short overviews, not full document content."
+            )
         return v
 
     @field_validator("name")
@@ -578,10 +624,24 @@ class Document[TContent: BaseModel = Any](BaseModel):
     @field_validator("derived_from")
     @classmethod
     def _validate_derived_from(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        """derived_from must be document SHA256 hashes or URLs."""
+        """derived_from must be document SHA256 hashes or URLs. URIs are size-capped."""
         for src in v:
-            if not is_document_sha256(src) and "://" not in src:
+            if is_document_sha256(src):
+                continue
+            if "://" not in src:
                 raise ValueError(f"derived_from entry must be a document SHA256 hash or a URL (containing '://'), got: {src!r}")
+            byte_len = len(src.encode("utf-8"))
+            if byte_len > MAX_EXTERNAL_SOURCE_URI_BYTES:
+                raise ValueError(
+                    f"External source URI is {byte_len} bytes, exceeds {MAX_EXTERNAL_SOURCE_URI_BYTES}-byte limit. "
+                    f"Store content in 'content' and keep from_sources for identifiers/URLs only."
+                )
+        total_bytes = sum(len(src.encode("utf-8")) for src in v)
+        if total_bytes > MAX_TOTAL_DERIVED_FROM_BYTES:
+            raise ValueError(
+                f"Total derived_from size is {total_bytes} bytes, exceeds {MAX_TOTAL_DERIVED_FROM_BYTES}-byte limit. "
+                f"Reduce the number or size of provenance entries."
+            )
         return v
 
     @field_validator("triggered_by")
@@ -634,7 +694,11 @@ class Document[TContent: BaseModel = Any](BaseModel):
     @final
     @cached_property
     def sha256(self) -> DocumentSha256:
-        """Full SHA256 identity hash (name + description + content + derived_from + triggered_by + attachments). BASE32 encoded, cached."""
+        """Full identity hash (name + description + content + derived_from + triggered_by + attachments).
+
+        Includes description — changing description changes sha256.
+        Does not include summary — summary updates do not change identity. BASE32 encoded, cached.
+        """
         return compute_document_sha256(self)
 
     @final

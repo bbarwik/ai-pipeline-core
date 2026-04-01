@@ -53,7 +53,6 @@ from .llm import (
 )
 from .logger import (
     LoggingConfig,
-    get_pipeline_logger,
     setup_logging,
 )
 from .pipeline import (
@@ -79,6 +78,8 @@ from .prompt_compiler import Guide, ListField, MultiLineField, OutputRule, Outpu
 from .replay import ExperimentOverrides, ExperimentResult, execute_span, experiment_batch, experiment_span
 from .settings import Settings
 from .testing import disable_run_logger, prefect_test_harness
+
+setup_logging()
 
 __version__ = importlib.metadata.version("ai-pipeline-core")
 
@@ -137,7 +138,6 @@ __all__ = [
     "find_all",
     "find_document",
     "find_latest",
-    "get_pipeline_logger",
     "get_run_id",
     "is_document_sha256",
     "llm",

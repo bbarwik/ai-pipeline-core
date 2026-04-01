@@ -1,6 +1,6 @@
 # MODULE: observability
 # PURPOSE: Observability system for AI pipelines.
-# VERSION: 0.18.0
+# VERSION: 0.19.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Types & Constants
@@ -114,7 +114,7 @@ async def test_show_deployment_renders_nested_operation_round_and_tool_call(self
     assert "tool_call[1]: web_search completed 1.0s" in output
 ```
 
-**No laminar span calls remain** (`tests/observability/test_laminar_sink.py:306`)
+**No laminar span calls remain** (`tests/observability/test_laminar_sink.py:407`)
 
 ```python
 def test_no_laminar_span_calls_remain() -> None:
@@ -130,7 +130,7 @@ def test_no_laminar_span_calls_remain() -> None:
     assert hits == []
 ```
 
-**Build runtime sinks includes laminar sink when key is set** (`tests/observability/test_laminar_sink.py:123`)
+**Build runtime sinks includes laminar sink when key is set** (`tests/observability/test_laminar_sink.py:131`)
 
 ```python
 def test_build_runtime_sinks_includes_laminar_sink_when_key_is_set() -> None:
@@ -152,37 +152,19 @@ def test_db_path_returns_span_filesystem_database(self, tmp_path: Path) -> None:
     assert isinstance(database, FilesystemDatabase)
 ```
 
-**Span uuid resolves root deployment id** (`tests/observability/test_trace_cli_spans.py:231`)
+**Different key after failure uses error level** (`tests/observability/test_laminar_log_levels.py:28`)
 
 ```python
-def test_span_uuid_resolves_root_deployment_id(self, tmp_path: Path) -> None:
-    database, deployment_id, conversation_id = asyncio.run(_seed_span_snapshot(tmp_path))
-
-    resolved = _resolve_identifier(str(conversation_id), database)
-
-    assert resolved == (deployment_id, "span-run")
+def test_different_key_after_failure_uses_error_level(self) -> None:
+    source = inspect.getsource(LaminarSpanSink._initialization_state_allows_export)
+    assert "logger.error" in source
 ```
 
-**Laminar sink ends span when context capture fails** (`tests/observability/test_laminar_sink.py:250`)
+**Initialization failure uses error level** (`tests/observability/test_laminar_log_levels.py:18`)
 
 ```python
-@pytest.mark.asyncio
-async def test_laminar_sink_ends_span_when_context_capture_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_fake_lmnr(monkeypatch)
-    sink = LaminarSpanSink(Settings(lmnr_project_api_key="secret"))
-    span_id = uuid7()
-
-    _FakeLaminar.fail_get_context = True
-    await sink.on_span_started(
-        span_id=span_id,
-        parent_span_id=None,
-        kind=SpanKind.LLM_ROUND,
-        name="round-1",
-        target="",
-        started_at=None,
-        input_preview="input",
-    )
-
-    assert sink._open_spans == {}
-    assert _FakeLaminar.start_calls[0]["ended"] is True
+def test_initialization_failure_uses_error_level(self) -> None:
+    source = inspect.getsource(LaminarSpanSink._initialize_laminar)
+    assert "logger.error" in source
+    assert "logger.warning" not in source
 ```

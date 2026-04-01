@@ -5,11 +5,13 @@ from ai_pipeline_core.pipeline._flow import PipelineFlow
 from ai_pipeline_core.pipeline._parallel import TaskBatch, TaskHandle, as_task_completed, collect_tasks, run_tasks_until
 from ai_pipeline_core.pipeline._task import PipelineTask
 from ai_pipeline_core.pipeline._traced import traced_operation
+from ai_pipeline_core.pipeline.debug import DebugRunResult, run_flow_debug, run_task_debug
 from ai_pipeline_core.pipeline.gather import safe_gather, safe_gather_indexed
 from ai_pipeline_core.pipeline.limits import LimitKind, PipelineLimit, pipeline_concurrency
 from ai_pipeline_core.pipeline.options import FlowOptions
 
 __all__ = [
+    "DebugRunResult",
     "FlowOptions",
     "LimitKind",
     "PipelineFlow",
@@ -23,6 +25,8 @@ __all__ = [
     "get_run_id",
     "pipeline_concurrency",
     "pipeline_test_context",
+    "run_flow_debug",
+    "run_task_debug",
     "run_tasks_until",
     "safe_gather",
     "safe_gather_indexed",

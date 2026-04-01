@@ -6,19 +6,23 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 
-from clickhouse_connect import get_async_client
-from clickhouse_connect.driver.asyncclient import AsyncClient
-from clickhouse_connect.driver.exceptions import OperationalError as ClickHouseOperationalError
-
-from ai_pipeline_core.database.clickhouse._ddl import DDL_STATEMENTS, SCHEMA_META_TABLE, SCHEMA_VERSION
-from ai_pipeline_core.logger import get_pipeline_logger
-from ai_pipeline_core.settings import Settings
-
-logger = get_pipeline_logger(__name__)
-
 # clickhouse-connect 0.14+ warns that the thread-pool async wrapper will be replaced
-# by a native async client in 1.0. Suppress globally until we migrate.
+# by a native async client in 1.0. Suppress before importing the library so the filter
+# is active even if the warning fires at import time. Two filters for robustness:
+# module-based catches the normal emission path, message-based catches stacklevel shifts.
 warnings.filterwarnings("ignore", category=FutureWarning, module=r"clickhouse_connect")
+warnings.filterwarnings("ignore", category=FutureWarning, message=r".*async.*client.*")
+
+import logging  # noqa: E402
+
+from clickhouse_connect import get_async_client  # noqa: E402
+from clickhouse_connect.driver.asyncclient import AsyncClient  # noqa: E402
+from clickhouse_connect.driver.exceptions import OperationalError as ClickHouseOperationalError  # noqa: E402
+
+from ai_pipeline_core.database.clickhouse._ddl import DDL_STATEMENTS, SCHEMA_META_TABLE, SCHEMA_VERSION  # noqa: E402
+from ai_pipeline_core.settings import Settings  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "SchemaVersionError",

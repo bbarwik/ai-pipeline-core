@@ -1,6 +1,7 @@
 """PromptSpec base class with import-time validation."""
 
 import annotationlib
+import logging
 import re
 import typing
 from collections.abc import Mapping
@@ -12,11 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.fields import FieldInfo
 
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logger import get_pipeline_logger
 
 from .components import Guide, OutputRule, Role, Rule
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 OutputT = TypeVar("OutputT", default=str)
 
@@ -201,14 +201,26 @@ def _warn_large_task(name: str, task: str) -> None:
 
 def _validate_prompt_spec(cls: type, name: str, follows: type[PromptSpec] | None) -> None:  # noqa: C901, PLR0912, PLR0915
     """Validate a PromptSpec subclass at definition time."""
+    # File-level structural rules — import and check exemption early, but defer
+    # register_spec() to the end to avoid poisoning the registry if later validation fails.
+    from ai_pipeline_core.pipeline._file_rules import (  # noqa: PLC0415  # deferred: avoid import-order issues during package init
+        is_exempt,
+        register_spec,
+        require_docstring,
+    )
+
+    exempt = is_exempt(cls)
+
     # Block inheritance chains — must inherit directly from PromptSpec (or PromptSpec[T]).
     # Pydantic creates concrete classes for PromptSpec[T] with names like "PromptSpec[MyModel]".
     non_spec = [b.__name__ for b in cls.__bases__ if not (b is PromptSpec or (issubclass(b, PromptSpec) and "[" in b.__name__))]
     if non_spec or len(cls.__bases__) != 1:
         raise TypeError(f"PromptSpec '{name}' must inherit directly from PromptSpec, not from {', '.join(non_spec) or 'multiple bases'}")
 
-    # Docstring required
-    if cls.__doc__ is None or not cls.__doc__.strip():
+    # Docstring required (with actionable error message for non-exempt application code)
+    if not exempt:
+        require_docstring(cls, kind="PromptSpec")
+    elif cls.__doc__ is None or not cls.__doc__.strip():
         raise TypeError(f"PromptSpec '{name}' must define a non-empty docstring")
 
     # Detect 'follows' declared as a class body attribute (must use keyword syntax)
@@ -332,6 +344,10 @@ def _validate_prompt_spec(cls: type, name: str, follows: type[PromptSpec] | None
 
     # Detect unknown class attributes (typos)
     _check_unknown_attrs(cls, name)
+
+    # Register after all validation passes to avoid poisoning the registry on failure
+    if not exempt:
+        register_spec(cls, follows)
 
 
 class PromptSpec[OutputT = str](BaseModel):

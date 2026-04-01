@@ -1,6 +1,7 @@
 """Private message and content helpers for Conversation."""
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -14,7 +15,6 @@ from ai_pipeline_core._llm_core.types import ContentPart, ImageContent, PDFConte
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.llm._images import validated_binary_parts
-from ai_pipeline_core.logger import get_pipeline_logger
 
 from .tools import Tool
 
@@ -40,7 +40,7 @@ __all__ = [
     "_serialize_tool_config",
 ]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 ConversationContent = str | Document | list[Document]
 

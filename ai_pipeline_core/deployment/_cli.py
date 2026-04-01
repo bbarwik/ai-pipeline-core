@@ -4,6 +4,7 @@ Handles argument parsing and the Prefect test harness for local execution.
 """
 
 import asyncio
+import logging
 import os
 import sys
 from collections.abc import Callable
@@ -19,13 +20,12 @@ from ai_pipeline_core.database._factory import Database
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.database.snapshot._download import generate_run_artifacts
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.logger import get_pipeline_logger, setup_logging
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
 
-from ._helpers import _create_publisher, _create_span_database_from_settings, validate_run_id
+from ._helpers import _create_publisher, _create_span_database_from_settings, build_auto_run_id, validate_run_id
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 async def _generate_run_artifacts(database: Database, output_dir: Path) -> None:
@@ -59,8 +59,6 @@ def run_cli_for_deployment(
     """Execute pipeline from CLI arguments with --start/--end step control."""
     if len(sys.argv) == 1:
         sys.argv.append("--help")
-
-    setup_logging()
 
     options_base = deployment.options_type
     if cli_mixin is not None:
@@ -110,9 +108,12 @@ def run_cli_for_deployment(
     initial_documents: tuple[Document, ...] = ()
     if initializer:
         init_name, initial_documents = initializer(opts)
-        run_id = cast(str | None, cli_opts.run_id) or init_name or wd.name
+        run_id = cast(str | None, cli_opts.run_id) or init_name
     else:
-        run_id = cast(str, cli_opts.run_id or wd.name)
+        run_id = cast(str | None, cli_opts.run_id)
+
+    if not run_id:
+        run_id = build_auto_run_id(output_dir_name=wd.name, documents=initial_documents, options=opts)
 
     validate_run_id(run_id)
 

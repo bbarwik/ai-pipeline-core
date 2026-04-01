@@ -14,6 +14,7 @@ Inspect the stored execution with::
     ai-replay run --from-db <node-id> --db-path ./output
 """
 
+import logging
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
@@ -31,9 +32,8 @@ from ai_pipeline_core import (
     find_document,
     get_run_id,
 )
-from ai_pipeline_core.logger import get_pipeline_logger
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class InputDocument(Document):

@@ -1,6 +1,7 @@
 """Unified async context manager for tracked execution spans."""
 
 import asyncio
+import logging
 import traceback
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager
@@ -21,7 +22,6 @@ from ai_pipeline_core.database._protocol import DatabaseWriter
 from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._execution_context import (
     ExecutionContext,
     get_execution_context,
@@ -37,7 +37,7 @@ from ai_pipeline_core.pipeline._span_sink import (
 
 __all__ = ["get_current_span_context", "track_span"]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 _UNSET = object()
 _current_span_context: ContextVar[SpanContext | None] = ContextVar("_current_span_context", default=None)
 
@@ -145,6 +145,8 @@ async def track_span(
             ended_at = datetime.now(UTC)
             log_summary = _consume_log_summary(span_execution_ctx or execution_ctx, span_id)
             metrics = context._build_metrics(ended_at=ended_at, started_at=started_at, log_summary=log_summary)
+            if metrics.cost_usd and execution_ctx is not None:
+                execution_ctx._recording_state.total_cost_usd += metrics.cost_usd
             finish_payload = await _prepare_finish_payload(
                 codec=codec,
                 output_value=context._output_value,

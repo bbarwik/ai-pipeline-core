@@ -11,6 +11,7 @@ Supports three limit kinds:
 When Prefect is unavailable, all limits proceed unthrottled with a warning.
 """
 
+import logging
 import re
 import time
 from collections.abc import AsyncGenerator, Mapping
@@ -28,9 +29,7 @@ from prefect.concurrency.asyncio import (
     rate_limit,
 )
 
-from ai_pipeline_core.logger import get_pipeline_logger
-
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600

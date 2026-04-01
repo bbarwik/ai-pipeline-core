@@ -1,0 +1,138 @@
+rules:
+  # ── One PipelineFlow per file ─────────────────────────────────────
+  - id: one-flow-per-file
+    patterns:
+      - pattern: |
+          class $A(PipelineFlow):
+              ...
+      - pattern: |
+          class $B(PipelineFlow):
+              ...
+      - metavariable-comparison:
+          metavariable: $A
+          comparison: str($A) != str($B)
+    paths:
+      exclude:
+        - ai_pipeline_core/
+        - tests/
+        - examples/
+        - conftest.py
+    message: >
+      This file defines multiple PipelineFlow subclasses ($A and $B).
+      Each PipelineFlow must be in its own file: flows/<flow_name>/<flow_name>.py.
+      Move one of them to a separate file.
+    languages: [python]
+    severity: ERROR
+
+  # ── One PipelineTask per file ─────────────────────────────────────
+  - id: one-task-per-file
+    patterns:
+      - pattern: |
+          class $A(PipelineTask):
+              ...
+      - pattern: |
+          class $B(PipelineTask):
+              ...
+      - metavariable-comparison:
+          metavariable: $A
+          comparison: str($A) != str($B)
+    paths:
+      exclude:
+        - ai_pipeline_core/
+        - tests/
+        - examples/
+        - conftest.py
+    message: >
+      This file defines multiple PipelineTask subclasses ($A and $B).
+      Each PipelineTask must be in its own file:
+      flows/<flow_name>/tasks/<task_name>/<task_name>.py.
+      Move one of them to a separate file.
+    languages: [python]
+    severity: ERROR
+
+  # ── No flow + task in same file ───────────────────────────────────
+  - id: no-flow-task-mixing
+    patterns:
+      - pattern: |
+          class $FLOW(PipelineFlow):
+              ...
+      - pattern: |
+          class $TASK(PipelineTask):
+              ...
+    paths:
+      exclude:
+        - ai_pipeline_core/
+        - tests/
+        - examples/
+        - conftest.py
+    message: >
+      This file defines both PipelineFlow '$FLOW' and PipelineTask '$TASK'.
+      Flows and tasks must be in separate files.
+      Keep the flow in flows/<flow_name>/<flow_name>.py
+      and the task in flows/<flow_name>/tasks/<task_name>/<task_name>.py.
+    languages: [python]
+    severity: ERROR
+
+  # ── No flow + spec in same file ───────────────────────────────────
+  - id: no-flow-spec-mixing
+    patterns:
+      - pattern: |
+          class $FLOW(PipelineFlow):
+              ...
+      - pattern-either:
+          - pattern: |
+              class $SPEC(PromptSpec):
+                  ...
+          - pattern: |
+              class $SPEC(PromptSpec[$T]):
+                  ...
+          - pattern: |
+              class $SPEC(PromptSpec, follows=$P):
+                  ...
+          - pattern: |
+              class $SPEC(PromptSpec[$T], follows=$P):
+                  ...
+    paths:
+      exclude:
+        - ai_pipeline_core/
+        - tests/
+        - examples/
+        - conftest.py
+    message: >
+      This file defines PipelineFlow '$FLOW' and PromptSpec '$SPEC'.
+      Flows and specs must be in separate files.
+      Move specs to flows/<flow_name>/tasks/<task_name>/specs/<category>.py.
+    languages: [python]
+    severity: ERROR
+
+  # ── No task + spec in same file ───────────────────────────────────
+  - id: no-task-spec-mixing
+    patterns:
+      - pattern: |
+          class $TASK(PipelineTask):
+              ...
+      - pattern-either:
+          - pattern: |
+              class $SPEC(PromptSpec):
+                  ...
+          - pattern: |
+              class $SPEC(PromptSpec[$T]):
+                  ...
+          - pattern: |
+              class $SPEC(PromptSpec, follows=$P):
+                  ...
+          - pattern: |
+              class $SPEC(PromptSpec[$T], follows=$P):
+                  ...
+    paths:
+      exclude:
+        - ai_pipeline_core/
+        - tests/
+        - examples/
+        - conftest.py
+    message: >
+      This file defines PipelineTask '$TASK' and PromptSpec '$SPEC'.
+      Tasks and specs must be in separate files.
+      Move specs to flows/<flow_name>/tasks/<task_name>/specs/<category>.py.
+    languages: [python]
+    severity: ERROR

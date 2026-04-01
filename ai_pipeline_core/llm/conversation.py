@@ -6,6 +6,7 @@ instances with response properties derived from the last ModelResponse.
 """
 
 import asyncio
+import logging
 from collections.abc import Mapping, Sequence
 from datetime import date
 from itertools import chain
@@ -29,7 +30,6 @@ from ai_pipeline_core.database import SpanKind
 from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.pipeline._execution_context import get_execution_context, get_sinks
 from ai_pipeline_core.pipeline._track_span import track_span
 from ai_pipeline_core.prompt_compiler.render import RESULT_CLOSE, _extract_result, render_multi_line_messages, render_text
@@ -75,7 +75,7 @@ _SUBSTITUTOR_INSTRUCTION = (
     "Never create shortened content yourself, you can only reuse existing one."
 )
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 _escape_xml_content = _message_helpers._escape_xml_content
 _escape_xml_metadata = _message_helpers._escape_xml_metadata
 
@@ -86,7 +86,7 @@ _CHARS_PER_TOKEN = 4
 MAX_TOOL_ROUNDS_DEFAULT = 10
 _LLM_ROUND_REPLAY_TARGET = f"function:{__name__}:_replay_llm_round"
 
-T = TypeVar("T", default=str)
+T = TypeVar("T", default=str, bound=str | BaseModel)
 U = TypeVar("U", bound=BaseModel)
 
 
@@ -239,15 +239,17 @@ class Conversation(BaseModel, Generic[T]):
         return r.cost if (r := self._last_response) else None
 
     @property
-    def parsed(self) -> T | None:
+    def parsed(self) -> T:
         """Parsed result from last send() call.
 
-        For Conversation[str]: returns the content string (or None if no response yet).
-        For Conversation[SomeModel]: returns the typed model instance (or None if no response yet).
+        For Conversation[str]: returns the content string.
+        For Conversation[SomeModel]: returns the typed model instance.
+        Raises ValueError if no send() has been called yet.
         """
-        if r := self._last_response:
-            return r.parsed  # type: ignore[return-value]
-        return None
+        r = self._last_response
+        if r is None:
+            raise ValueError("Cannot access .parsed on a Conversation that has not been sent yet. Call send(), send_structured(), or send_spec() first.")
+        return r.parsed  # type: ignore[return-value] — ModelResponse stored as ModelResponse[Any] in heterogeneous messages tuple loses generic T
 
     @property
     def citations(self) -> tuple[Citation, ...]:

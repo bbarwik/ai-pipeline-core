@@ -11,6 +11,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import logging
 import time
 from typing import Any, TypeVar
 
@@ -21,7 +22,6 @@ from pydantic import BaseModel, ValidationError
 
 from ai_pipeline_core._token_estimates import estimate_image_tokens, estimate_message_text_tokens, estimate_pdf_tokens
 from ai_pipeline_core.exceptions import EmptyResponseError, LLMError, OutputDegenerationError
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.settings import settings
 
 from ._degeneration import detect_output_degeneration
@@ -40,7 +40,7 @@ from .types import (
     TokenUsage,
 )
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -304,6 +304,8 @@ def _build_model_response(
     response_format: type[BaseModel] | None,
 ) -> ModelResponse[Any]:
     """Build ModelResponse from raw API response. Raises ValueError/ValidationError on failure."""
+    if not response.choices:
+        raise EmptyResponseError(f"LLM provider returned no choices for model={model} — response.choices is {'None' if response.choices is None else 'empty'}.")
     # Normalize response to fix provider bugs
     for choice in response.choices:
         if hasattr(choice.message, "role") and choice.message.role != "assistant":
@@ -438,7 +440,9 @@ async def _generate_impl(
     if cache_ttl and effective_context_count > 0:
         completion_kwargs["prompt_cache_key"] = _compute_cache_key(api_messages[:effective_context_count], model_options.system_prompt)
 
-    total_attempts = 1 + model_options.retries
+    retries = model_options.retries if model_options.retries is not None else settings.conversation_retries
+    retry_delay = model_options.retry_delay_seconds if model_options.retry_delay_seconds is not None else settings.conversation_retry_delay_seconds
+    total_attempts = 1 + retries
     for attempt in range(total_attempts):
         try:
             async with AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url) as client:
@@ -462,8 +466,8 @@ async def _generate_impl(
                         "Model returned tool calls even though no tools were provided. Pass tools=[...] to Conversation.send() only when tool use is allowed."
                     )
 
-                # Detect output degeneration (token repetition loops) — skip for tool call responses
-                if not model_response.has_tool_calls and (explanation := detect_output_degeneration(model_response.content)):
+                # Detect output degeneration (token repetition loops) — skip for tool calls and structured output
+                if not model_response.has_tool_calls and response_format is None and (explanation := detect_output_degeneration(model_response.content)):
                     raise OutputDegenerationError(
                         f"model={model}, tokens={model_response.usage.completion_tokens}, content_length={len(model_response.content)}: {explanation}"
                     )
@@ -493,7 +497,7 @@ async def _generate_impl(
             if attempt == total_attempts - 1:
                 raise LLMError(final_error_msg) from e
 
-        await asyncio.sleep(model_options.retry_delay_seconds)
+        await asyncio.sleep(retry_delay)
 
     raise LLMError("Unknown error occurred during LLM generation.")
 

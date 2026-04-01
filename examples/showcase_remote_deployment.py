@@ -37,6 +37,7 @@ Inspect the execution tree::
     ai-replay show --from-db <span-id> --db-path ./output
 """
 
+import logging
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
@@ -57,9 +58,8 @@ from ai_pipeline_core import (
     safe_gather,
     traced_operation,
 )
-from ai_pipeline_core.logger import get_pipeline_logger
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================

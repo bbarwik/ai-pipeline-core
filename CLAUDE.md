@@ -43,12 +43,12 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 
 ### 1.2 Immutability & Safety
 
-- No mutable global variables (constants or initialized-once immutable globals only)
+- No mutable global variables (constants or initialized-once immutable globals only). Exception: import-time registries (e.g., `_file_rules.py` class registries) are allowed with `# nosemgrep` + justification comment and a `reset_registries()` function for test isolation
 - Default timeouts on all operations — nothing hangs indefinitely
 - Strict type checking throughout
 - Pydantic models use `frozen=True` where possible
 - Dataclasses use `frozen=True` and `slots=True`
-- **Module-scoped replayable classes** — `BaseModel`, `BaseSettings`, `Document`, `Tool`, `PipelineTask`, `PipelineFlow`, `PipelineDeployment`, `FlowOptions`, `DeploymentResult`, and `response_format` models must be defined at module scope. Function-local classes get `<locals>` in their `__qualname__`, breaking codec/replay. Enforced via semgrep
+- **Module-scoped replayable classes** — `BaseModel`, `BaseSettings`, `Document`, `Tool`, `Conversation`, `PipelineTask`, `PipelineFlow`, `PipelineDeployment`, `FlowOptions`, `DeploymentResult`, and `response_format` models must be defined at module scope. Function-local classes get `<locals>` in their `__qualname__`, breaking codec/replay. Enforced via semgrep
 
 ### 1.3 Module System
 
@@ -63,6 +63,7 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 - Module-level overrides when needed
 - No config duplication — define once, reuse everywhere
 - Model configuration includes model name AND model-specific options (e.g., `reasoning_effort`)
+- **Retry resolution hierarchy** — Retries on tasks, flows, and conversations default to `None` at the class level. At runtime they resolve via: class-level override → deployment-level override → `Settings` fallback (env-configurable: `TASK_RETRIES`, `FLOW_RETRIES`, `CONVERSATION_RETRIES` and corresponding `*_DELAY_SECONDS`). Settings defaults: task/flow retries `0`, conversation retries `2`
 
 ---
 
@@ -230,8 +231,8 @@ When a bug is found or reported, do not jump to fixing it. Follow this order:
 
 This is the purpose of the framework's extensive tooling (ruff, basedpyright, semgrep, vulture, interrogate, definition-time validation): prevent bugs from happening, or detect them before runtime. Every bug that reaches production is a signal that the prevention layer has a gap — close the gap, not just the bug.
 
-**No Suppression of Tooling Warnings:**
-When linters, type checkers, semgrep, tests, or CI/CD checks report an issue, investigate it fully and fix the root cause. Never use shortcuts: no `# noqa`, `# type: ignore`, `# nosemgrep`, `pytest.skip()`, `xfail` (except for TDD bug proving above), disabling rules, commenting out code, deleting the check, or any other form of suppression. These tools detect real coding problems — silencing them hides bugs instead of fixing them. If a warning is genuinely a false positive, document why in a comment next to the narrowest possible suppression (single line, specific rule code).
+**No Blind Suppression of Tooling Warnings:**
+When linters, type checkers, semgrep, tests, or CI/CD checks report an issue, investigate it fully and fix the root cause. Do not suppress warnings without justification — no bare `# noqa`, `# type: ignore`, `# nosemgrep`, `pytest.skip()`, `xfail` (except for TDD bug proving above), disabling rules, commenting out code, deleting the check, or any other form of suppression. These tools detect real coding problems — silencing them hides bugs instead of fixing them. If a warning is genuinely a false positive or structurally unavoidable (e.g., imports after `warnings.filterwarnings`), add the narrowest possible suppression (single line, specific rule code) with a comment explaining why.
 
 ### 3.3 AI-Focused Documentation
 
@@ -370,7 +371,21 @@ Four factory methods, each with strict provenance semantics:
 
 All constructors accepting document provenance take `Sequence[Document]` objects (not SHA256 strings). Direct `Document(...)` construction is forbidden outside framework internals and tests (enforced via semgrep).
 
-### 4.11 Actionable Error and Warning Messages
+### 4.11 File-Level Isolation (Application Code)
+
+Enforced at import time via `__init_subclass__` in `_file_rules.py`. Framework internals, tests, and examples are exempt.
+
+- **One `PipelineFlow` per file** — no mixing with tasks or specs
+- **One `PipelineTask` per file** — no mixing with flows or specs
+- **`PromptSpec` co-location** — at most one standalone spec per file; follow-up specs (`follows=`) targeting the same file are allowed; cross-file follow-ups must be alone in their file
+- **Mandatory docstrings** — application flows, tasks, and specs must have non-empty docstrings
+- **`_abstract_task = True` / `_abstract_flow = True`** — set on intermediate base classes to skip `run()` validation. Concrete subclasses are validated normally
+
+### 4.12 Task Return Annotations
+
+`PipelineTask.run()` return type must be `tuple[DocumentSubclass, ...]`, `None`, `list[DocumentSubclass]`, or unions thereof. Bare `-> MyDocument` (single document) is rejected at import time — use `-> tuple[MyDocument, ...]` instead. Enforced in `_type_validation.py`.
+
+### 4.13 Actionable Error and Warning Messages
 
 Warning and error messages must include not only what went wrong, but also how to fix it and how to do it correctly. The reader (often an AI coding agent) should be able to resolve the issue from the message alone without consulting documentation.
 

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import importlib
 import json
+import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,11 +17,11 @@ from pydantic import BaseModel
 from ai_pipeline_core._codec import import_by_path
 from ai_pipeline_core.database._factory import Database, create_database_from_settings
 from ai_pipeline_core.database._json_helpers import parse_json_object
-from ai_pipeline_core.database._protocol import DatabaseReader
+from ai_pipeline_core.database._protocol import DatabaseReader, DatabaseWriter
 from ai_pipeline_core.database._types import SpanRecord
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
+from ai_pipeline_core.database.filesystem.overlay import create_debug_sink
 from ai_pipeline_core.documents.document import Document
-from ai_pipeline_core.logger import get_pipeline_logger
 from ai_pipeline_core.settings import settings
 
 from ._execute import execute_span
@@ -28,7 +29,7 @@ from ._experiment import ExperimentOverrides, experiment_batch, experiment_span,
 
 __all__ = ["main"]
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 _CONTENT_PREVIEW_LENGTH = 200
 
 
@@ -210,8 +211,9 @@ async def _run_span(
     *,
     span_id: UUID,
     database: DatabaseReader,
+    sink_db: DatabaseWriter | None = None,
 ) -> Any:
-    return await execute_span(span_id, source_db=database)
+    return await execute_span(span_id, source_db=database, sink_db=sink_db)
 
 
 async def _run_experiment_span(
@@ -219,11 +221,13 @@ async def _run_experiment_span(
     span_id: UUID,
     database: DatabaseReader,
     overrides: ExperimentOverrides,
+    sink_db: DatabaseWriter | None = None,
 ) -> Any:
     result = await experiment_span(
         span_id,
         source_db=database,
         overrides=overrides,
+        sink_db=sink_db,
     )
     return result.result
 
@@ -232,6 +236,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     imported_modules: list[str] = args.modules or []
     replay_file = Path(args.replay_file).resolve() if args.replay_file else None
     database: Database | None = None
+    sink_db: FilesystemDatabase | None = None
     try:
         _import_modules(imported_modules)
         overrides = _build_overrides(args)
@@ -246,25 +251,40 @@ def _cmd_run(args: argparse.Namespace) -> int:
             database, database_label = _resolve_database_for_file(replay_file, args.db_path)
             source_label = replay_file.name
             span = asyncio.run(_load_span_from_file_path(replay_file, database))
+
+        output_dir = Path(args.output_dir).resolve() if args.output_dir else _default_output_dir(replay_file, args.from_db)
+        parent = database if isinstance(database, FilesystemDatabase) else None
+        sink_db = create_debug_sink(output_dir, parent=parent)
+
         print(f"Replaying {span.kind} span from {source_label}")
         print(f"  span_id: {span.span_id}")
-        print(f"  database: {database_label}\n")
+        print(f"  database: {database_label}")
+        print(f"  replay output: {output_dir}\n")
+
         if overrides is None:
-            result = asyncio.run(_run_span(span_id=span.span_id, database=database))
+            result = asyncio.run(_run_span(span_id=span.span_id, database=database, sink_db=sink_db))
         else:
-            result = asyncio.run(_run_experiment_span(span_id=span.span_id, database=database, overrides=overrides))
+            result = asyncio.run(_run_experiment_span(span_id=span.span_id, database=database, overrides=overrides, sink_db=sink_db))
         print(_format_result(result))
-        output_dir = Path(args.output_dir).resolve() if args.output_dir else _default_output_dir(replay_file, args.from_db)
         _write_output(output_dir, result)
-        print(f"\n[output: {output_dir}]")
+        print(f"\n[replay database: {output_dir}]")
         return 0
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         logger.debug("Replay run failed", exc_info=True)
         return 1
     finally:
+        if sink_db is not None:
+            try:
+                asyncio.run(sink_db.flush())
+                asyncio.run(sink_db.shutdown())
+            except (OSError, RuntimeError, ValueError) as flush_exc:
+                logger.warning("Replay sink shutdown failed: %s", flush_exc)
         if database is not None:
-            asyncio.run(database.shutdown())
+            try:
+                asyncio.run(database.shutdown())
+            except (OSError, RuntimeError, ValueError) as db_exc:
+                logger.warning("Source database shutdown failed: %s", db_exc)
 
 
 def _cmd_show(args: argparse.Namespace) -> int:

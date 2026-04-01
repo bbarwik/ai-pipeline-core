@@ -7,6 +7,7 @@ fire-and-forget on final failure.
 
 import asyncio
 import json
+import logging
 from concurrent.futures import Future
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -16,7 +17,6 @@ from uuid import uuid7
 from google.cloud.pubsub_v1 import PublisherClient  # pyright: ignore[reportMissingTypeStubs]
 
 from ai_pipeline_core.exceptions import PipelineCoreError
-from ai_pipeline_core.logger import get_pipeline_logger
 
 from ._types import (
     DocumentRef,
@@ -33,7 +33,7 @@ from ._types import (
     TaskStartedEvent,
 )
 
-logger = get_pipeline_logger(__name__)
+logger = logging.getLogger(__name__)
 
 MAX_PUBSUB_MESSAGE_BYTES = 8_388_608
 PUBLISH_TIMEOUT_SECONDS = 10
