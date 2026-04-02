@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from ai_pipeline_core._codec import UniversalCodec
 from ai_pipeline_core.documents import Document
+from ai_pipeline_core.pipeline._conversation import is_conversation_instance
 
 __all__ = [
     "build_task_cache_key",
@@ -19,8 +20,6 @@ MAX_DESCRIPTION_PARTS = 4
 MAX_DESCRIPTION_VALUE_CHARS = 80
 MAX_DESCRIPTION_TOTAL_CHARS = 240
 TASK_CACHE_FINGERPRINT_LENGTH = 16
-_CONVERSATION_MODULE = "ai_pipeline_core.llm.conversation"
-_CONVERSATION_CLASS = "Conversation"
 
 
 def _trim_value(value: str) -> str:
@@ -54,7 +53,7 @@ def _describe_value(value: Any) -> str | None:
     result: str | None = None
     if isinstance(value, Document):
         result = value.name
-    elif _is_conversation_like(value):
+    elif is_conversation_instance(value):
         result = f"Conversation(model={value.model})"
     elif isinstance(value, str):
         result = _trim_value(value) if value else None
@@ -67,11 +66,6 @@ def _describe_value(value: Any) -> str | None:
     elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
         result = _describe_sequence_value(value)
     return result
-
-
-def _is_conversation_like(value: Any) -> bool:
-    value_type = type(value)
-    return value_type.__module__ == _CONVERSATION_MODULE and value_type.__name__ == _CONVERSATION_CLASS and isinstance(getattr(value, "model", None), str)
 
 
 def build_task_description(arguments: Mapping[str, Any]) -> str:

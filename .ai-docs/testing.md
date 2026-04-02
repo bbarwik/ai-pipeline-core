@@ -1,36 +1,10 @@
-"""Test utilities for applications built on ai-pipeline-core.
+# MODULE: testing
+# VERSION: 0.19.1
+# AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
-Re-exports Prefect testing helpers and provides integration test utilities
-for running tasks, flows, and conversations against real LLMs with filesystem
-persistence for inspection.
-"""
+## Functions
 
-import tempfile
-from collections.abc import AsyncGenerator, Sequence
-from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any
-
-from prefect.logging import disable_run_logger
-from prefect.testing.utilities import prefect_test_harness
-from pydantic import BaseModel
-
-from ai_pipeline_core.documents import Document
-from ai_pipeline_core.pipeline._debug import DebugSession
-
-__all__ = [
-    "assert_contains",
-    "assert_contains_all",
-    "assert_contains_any",
-    "assert_cost_under",
-    "assert_output_types",
-    "assert_valid_parsed",
-    "disable_run_logger",
-    "llm_test_context",
-    "prefect_test_harness",
-]
-
-
+```python
 @asynccontextmanager
 async def llm_test_context(
     *,
@@ -107,3 +81,8 @@ def assert_cost_under(conversation: Any, ceiling_usd: float) -> None:
         f"No cost information found on {type(conversation).__name__}. Pass a Conversation object that has completed at least one send() call."
     )
     assert cost <= ceiling_usd, f"Cost ${cost:.4f} exceeds ceiling ${ceiling_usd:.4f}"
+```
+
+## Examples
+
+No test examples available.

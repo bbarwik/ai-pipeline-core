@@ -14,6 +14,7 @@ from ai_pipeline_core.database._documents import document_to_blobs, document_to_
 from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._context import DocumentSha256
+from ai_pipeline_core.pipeline._conversation import is_conversation_instance
 
 __all__ = [
     "_TaskRunSpec",
@@ -32,8 +33,6 @@ logger = logging.getLogger(__name__)
 
 _DATABASE_EXCEPTIONS = (Exception,)
 _TASK_ATTEMPT_ATTRIBUTE = "_pipeline_task_attempt"
-_CONVERSATION_MODULE = "ai_pipeline_core.llm.conversation"
-_CONVERSATION_CLASS = "Conversation"
 
 
 def _next_span_version(previous_version: int | None = None) -> int:
@@ -116,7 +115,7 @@ def _collect_documents(value: Any, collected_docs: list[Document]) -> None:
     if isinstance(value, Document):
         collected_docs.append(cast(Document[Any], value))
         return
-    if _is_conversation_like(value):
+    if is_conversation_instance(value):
         for document in value.context:
             _collect_documents(document, collected_docs)
         for message in value.messages:
@@ -133,16 +132,6 @@ def _collect_documents(value: Any, collected_docs: list[Document]) -> None:
     if isinstance(value, BaseModel):
         for field_name in type(value).model_fields:
             _collect_documents(getattr(value, field_name), collected_docs)
-
-
-def _is_conversation_like(value: Any) -> bool:
-    value_type = type(value)
-    return (
-        value_type.__module__ == _CONVERSATION_MODULE
-        and value_type.__name__ == _CONVERSATION_CLASS
-        and hasattr(value, "context")
-        and hasattr(value, "messages")
-    )
 
 
 def _input_documents(arguments: Mapping[str, Any]) -> tuple[Document, ...]:

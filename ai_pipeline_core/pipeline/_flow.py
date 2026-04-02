@@ -121,6 +121,7 @@ class PipelineFlow:
     retry_delay_seconds: ClassVar[int | None] = None  # None = use Settings.flow_retry_delay_seconds
     BASE_COST_USD: ClassVar[float] = 0.0
     _abstract_flow: ClassVar[bool] = False
+    _stub: ClassVar[bool] = False
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
     task_graph: ClassVar[list[tuple[str, str, float]]] = []
@@ -135,16 +136,26 @@ class PipelineFlow:
         """
         raise NotImplementedError
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
+    def __init_subclass__(cls, *, stub: bool = False, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
+        cls._stub = stub
         if cls is PipelineFlow:
             return
         if cls.__dict__.get("_abstract_flow", False) is True:
+            if stub:
+                raise TypeError(
+                    f"PipelineFlow '{cls.__name__}' cannot use both stub=True and _abstract_flow = True. "
+                    "Use stub=True for placeholder classes awaiting implementation. "
+                    "Use _abstract_flow for intermediate base classes meant for override."
+                )
             return
+
+        is_stub = stub
 
         from ai_pipeline_core.pipeline._file_rules import (  # noqa: PLC0415  # deferred: avoid import-order issues during package init
             is_exempt,
             register_flow,
+            register_stub,
             require_docstring,
         )
 
@@ -163,6 +174,8 @@ class PipelineFlow:
         # Register after all validation passes to avoid poisoning the registry on failure
         if not exempt:
             register_flow(cls)
+            if is_stub:
+                register_stub(cls, kind="PipelineFlow")
 
     @classmethod
     def _validate_class_config(cls) -> None:

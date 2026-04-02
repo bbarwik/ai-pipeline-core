@@ -1,11 +1,13 @@
 """Data models for the span-based database schema."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from ai_pipeline_core.database._json_helpers import parse_json_object
 from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.logger._types import LogRecord
 
@@ -22,6 +24,7 @@ __all__ = [
     "SpanRecord",
     "SpanStatus",
     "_BlobRecord",
+    "aggregate_cost_totals",
     "get_token_count",
 ]
 
@@ -34,6 +37,8 @@ TOKENS_REASONING_KEY = "tokens_reasoning"
 def get_token_count(metrics: dict[str, Any], key: str) -> int:
     """Extract an integer token count from a metrics dict, tolerating float/string values."""
     value = metrics.get(key, 0)
+    if isinstance(value, bool):
+        return 0
     if isinstance(value, int):
         return value
     if isinstance(value, float):
@@ -230,3 +235,27 @@ class HydratedDocument:
 
     def __post_init__(self) -> None:
         _validate_bytes_mapping("attachment_contents", self.attachment_contents)
+
+
+def aggregate_cost_totals(items: Iterable[tuple[str, float, str, str]]) -> CostTotals:
+    cost_usd = 0.0
+    tokens_input = 0
+    tokens_output = 0
+    tokens_cache_read = 0
+    tokens_reasoning = 0
+    for kind, span_cost_usd, metrics_json, context in items:
+        cost_usd += float(span_cost_usd)
+        if kind != SpanKind.LLM_ROUND:
+            continue
+        metrics = parse_json_object(metrics_json, context=context, field_name="metrics_json")
+        tokens_input += get_token_count(metrics, TOKENS_INPUT_KEY)
+        tokens_output += get_token_count(metrics, TOKENS_OUTPUT_KEY)
+        tokens_cache_read += get_token_count(metrics, TOKENS_CACHE_READ_KEY)
+        tokens_reasoning += get_token_count(metrics, TOKENS_REASONING_KEY)
+    return CostTotals(
+        cost_usd=cost_usd,
+        tokens_input=tokens_input,
+        tokens_output=tokens_output,
+        tokens_cache_read=tokens_cache_read,
+        tokens_reasoning=tokens_reasoning,
+    )

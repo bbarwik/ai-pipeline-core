@@ -11,7 +11,7 @@ from uuid import UUID, uuid7
 
 from prefect.context import FlowRunContext as _FlowRunContext
 
-from ai_pipeline_core._base_exceptions import NonRetriableError
+from ai_pipeline_core._base_exceptions import NonRetriableError, StubNotImplementedError
 from ai_pipeline_core.database import SpanKind, SpanRecord, SpanStatus
 from ai_pipeline_core.database._documents import load_documents_from_database
 from ai_pipeline_core.documents import Document
@@ -79,13 +79,26 @@ async def _reuse_cached_flow_output(
     previous_output_documents: tuple[Document, ...] = ()
     updated_docs = list(accumulated_docs)
     if cached_span.output_document_shas:
+        expected_output_shas = tuple(cached_span.output_document_shas)
         resumed_docs = await load_documents_from_database(
             database,
-            set(cached_span.output_document_shas),
+            set(expected_output_shas),
             filter_types=flow_class.output_document_types or None,
         )
-        updated_docs = list(_deduplicate_documents_by_sha256([*accumulated_docs, *resumed_docs]))
-        previous_output_documents = _deduplicate_documents_by_sha256(resumed_docs)
+        resumed_docs_by_sha = {doc.sha256: doc for doc in resumed_docs}
+        if len(resumed_docs_by_sha) != len(expected_output_shas) or any(sha not in resumed_docs_by_sha for sha in expected_output_shas):
+            logger.warning(
+                "[%d/%d] Resume: ignoring cached %s output because hydration was incomplete. "
+                "Expected %d documents, hydrated %d. Re-running the flow to restore missing outputs.",
+                step,
+                total_steps,
+                flow_name,
+                len(expected_output_shas),
+                len(resumed_docs_by_sha),
+            )
+            return None
+        previous_output_documents = tuple(resumed_docs_by_sha[sha] for sha in expected_output_shas)
+        updated_docs = list(_deduplicate_documents_by_sha256([*accumulated_docs, *previous_output_documents]))
 
     return cached_span, previous_output_documents, updated_docs
 
@@ -115,6 +128,11 @@ async def _execute_single_flow_attempt(
     options: FlowOptions,
 ) -> tuple[Document, ...]:
     """Run the flow once and validate the return value. Raises TypeError on bad return type."""
+    if flow_class._stub:
+        raise StubNotImplementedError(
+            f"PipelineFlow '{flow_class.__name__}' is a stub (_stub = True) and cannot be executed. "
+            f"Implement the run() body and remove 'stub=True' from the class declaration to enable execution."
+        )
     prefect_flow_fn = flow_class._prefect_flow_fn
     if _FlowRunContext.get() is not None and prefect_flow_fn is not None:
         raw_flow_result = cast(object, await prefect_flow_fn(flow_instance, tuple(current_docs), options))

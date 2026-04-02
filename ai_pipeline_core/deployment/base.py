@@ -77,7 +77,7 @@ from ._helpers import (
     extract_generic_params,
     validate_run_id,
 )
-from ._prefect import build_integration_meta, build_prefect_flow
+from ._prefect import build_prefect_flow
 from ._types import (
     FlowSkippedEvent,
     ResultPublisher,
@@ -974,10 +974,6 @@ class PipelineDeployment(Generic[TOptions, TResult]):
     ) -> None:
         """Execute pipeline from CLI with positional working_directory and --start/--end flags."""
         run_cli_for_deployment(self, initializer, cli_mixin)
-
-    def _build_integration_meta(self) -> dict[str, Any]:
-        """Build deploy-time schema metadata for the Prefect wrapper."""
-        return build_integration_meta(self)
 
     @final
     def as_prefect_flow(self) -> Callable[..., Any]:

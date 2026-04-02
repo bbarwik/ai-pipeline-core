@@ -42,6 +42,8 @@ TOptions = TypeVar("TOptions", bound=FlowOptions, default=FlowOptions)
 TResult = TypeVar("TResult", bound=DeploymentResult, default=DeploymentResult)
 
 _POLL_INTERVAL = 5.0
+_MAX_POLL_SECONDS = 7_200.0
+_MAX_CONSECUTIVE_POLL_ERRORS = 10
 _REMOTE_RUN_ID_FINGERPRINT_LENGTH = 8
 
 
@@ -390,16 +392,33 @@ async def _poll_remote_flow_run(
     flow_run_id: UUID,
     *,
     poll_interval: float = _POLL_INTERVAL,
+    max_poll_seconds: float = _MAX_POLL_SECONDS,
 ) -> Any:
     """Poll a remote flow run until final state."""
+    started_at = time.monotonic()
+    consecutive_errors = 0
     while True:
+        if time.monotonic() - started_at >= max_poll_seconds:
+            raise TimeoutError(
+                f"Polling remote flow run {flow_run_id} exceeded {max_poll_seconds:.1f}s. "
+                "Increase max_poll_seconds only if the remote deployment is expected to run longer."
+            )
         try:
             flow_run = await client.read_flow_run(flow_run_id)
+        except asyncio.CancelledError:
+            raise
         except Exception:
+            consecutive_errors += 1
+            if consecutive_errors >= _MAX_CONSECUTIVE_POLL_ERRORS:
+                raise RuntimeError(
+                    f"Polling remote flow run {flow_run_id} failed {_MAX_CONSECUTIVE_POLL_ERRORS} times in a row. "
+                    "Check Prefect availability, credentials, and remote worker health."
+                ) from None
             logger.warning("Failed to poll remote flow run %s", flow_run_id, exc_info=True)
             await asyncio.sleep(poll_interval)
             continue
 
+        consecutive_errors = 0
         state = flow_run.state
         if state is not None and state.is_final():
             return await state.result()

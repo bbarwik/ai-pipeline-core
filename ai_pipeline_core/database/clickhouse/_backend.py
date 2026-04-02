@@ -9,7 +9,7 @@ from uuid import UUID
 from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.exceptions import DatabaseError as ClickHouseDatabaseError
 
-from ai_pipeline_core.database._json_helpers import parse_json_object
+from ai_pipeline_core.database._documents import _attachment_contents_for_record
 from ai_pipeline_core.database._serialization import (
     LOG_COLUMNS,
     SPAN_COLUMNS,
@@ -19,10 +19,6 @@ from ai_pipeline_core.database._serialization import (
     string_tuple,
 )
 from ai_pipeline_core.database._types import (
-    TOKENS_CACHE_READ_KEY,
-    TOKENS_INPUT_KEY,
-    TOKENS_OUTPUT_KEY,
-    TOKENS_REASONING_KEY,
     CostTotals,
     DocumentRecord,
     HydratedDocument,
@@ -31,7 +27,7 @@ from ai_pipeline_core.database._types import (
     SpanRecord,
     SpanStatus,
     _BlobRecord,
-    get_token_count,
+    aggregate_cost_totals,
 )
 from ai_pipeline_core.database.clickhouse._connection import get_async_clickhouse_client
 from ai_pipeline_core.database.clickhouse._ddl import BLOBS_TABLE, DOCUMENTS_TABLE, LOGS_TABLE, SPANS_TABLE
@@ -284,21 +280,10 @@ class ClickHouseDatabase:
             f"SELECT kind, cost_usd, metrics_json FROM {SPANS_TABLE} FINAL WHERE root_deployment_id = {{root_deployment_id:UUID}}",
             parameters={"root_deployment_id": root_deployment_id},
         )
-        cost_usd = 0.0
-        ti, to, tc, tr = 0, 0, 0, 0
-        for kind, span_cost_usd, metrics_json in result.result_rows:
-            cost_usd += float(span_cost_usd)
-            if decode_text(kind) == SpanKind.LLM_ROUND:
-                metrics = parse_json_object(
-                    decode_text(metrics_json),
-                    context=f"Span tree {root_deployment_id}",
-                    field_name="metrics_json",
-                )
-                ti += get_token_count(metrics, TOKENS_INPUT_KEY)
-                to += get_token_count(metrics, TOKENS_OUTPUT_KEY)
-                tc += get_token_count(metrics, TOKENS_CACHE_READ_KEY)
-                tr += get_token_count(metrics, TOKENS_REASONING_KEY)
-        return CostTotals(cost_usd=cost_usd, tokens_input=ti, tokens_output=to, tokens_cache_read=tc, tokens_reasoning=tr)
+        return aggregate_cost_totals(
+            (decode_text(kind), float(span_cost_usd), decode_text(metrics_json), f"Span tree {root_deployment_id}")
+            for kind, span_cost_usd, metrics_json in result.result_rows
+        )
 
     async def get_deployment_span_count(
         self,
@@ -380,22 +365,7 @@ class ClickHouseDatabase:
         if primary_blob is None:
             return None
 
-        attachment_contents: dict[str, bytes] = {}
-        missing_attachment_shas: list[str] = []
-        for att_sha in record.attachment_content_sha256s:
-            att_blob = blobs.get(att_sha)
-            if att_blob is None:
-                missing_attachment_shas.append(att_sha)
-            else:
-                attachment_contents[att_sha] = att_blob.content
-
-        if missing_attachment_shas:
-            missing_list = ", ".join(sorted(missing_attachment_shas))
-            raise ValueError(
-                f"Document {record.document_sha256} references attachment blobs that are missing from storage: {missing_list}. "
-                "Persist every attachment blob before reading the document."
-            )
-
+        attachment_contents = _attachment_contents_for_record(record, blobs)
         return HydratedDocument(
             record=record,
             content=primary_blob.content,

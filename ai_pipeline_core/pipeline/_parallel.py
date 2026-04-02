@@ -146,5 +146,15 @@ async def run_tasks_until(
     deadline_seconds: float | None = None,
 ) -> TaskBatch:
     """Launch ``task_cls.run(*args, **kwargs)`` for each argument group and collect the handles."""
-    handles = [task_cls.run(*args, **kwargs) for args, kwargs in argument_groups]
+    handles: list[TaskAwaitable] = []
+    try:
+        for args, kwargs in argument_groups:
+            handles.append(task_cls.run(*args, **kwargs))
+    except Exception:
+        normalized_handles = _normalize_handles(tuple(handles))
+        for handle in normalized_handles:
+            handle.cancel()
+        if normalized_handles:
+            await asyncio.gather(*(handle.result() for handle in normalized_handles), return_exceptions=True)
+        raise
     return await collect_tasks(handles, deadline_seconds=deadline_seconds)

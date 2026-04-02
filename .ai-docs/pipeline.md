@@ -1,8 +1,8 @@
 # MODULE: pipeline
-# CLASSES: DebugRunResult, LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
+# CLASSES: LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
 # DEPENDS: BaseModel, StrEnum
 # PURPOSE: Pipeline framework primitives.
-# VERSION: 0.19.0
+# VERSION: 0.19.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -27,22 +27,11 @@ from ai_pipeline_core import (
     safe_gather_indexed,
     traced_operation,
 )
-from ai_pipeline_core.pipeline import DebugRunResult, run_flow_debug, run_task_debug
 ```
 
 ## Public API
 
 ```python
-@dataclass(frozen=True, slots=True)
-class DebugRunResult:
-    """Result from a debug execution with metadata for post-run inspection."""
-
-    output_documents: tuple[Document, ...]
-    output_dir: Path
-    run_id: str
-    root_deployment_id: UUID
-
-
 # Enum
 class LimitKind(StrEnum):
     """Kind of concurrency/rate limit.
@@ -148,16 +137,26 @@ class PipelineFlow:
         """Return expected task metadata extracted from run() AST."""
         return [{"name": name, "estimated_minutes": minutes} for name, _mode, minutes in cls.task_graph]
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
+    def __init_subclass__(cls, *, stub: bool = False, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
+        cls._stub = stub
         if cls is PipelineFlow:
             return
         if cls.__dict__.get("_abstract_flow", False) is True:
+            if stub:
+                raise TypeError(
+                    f"PipelineFlow '{cls.__name__}' cannot use both stub=True and _abstract_flow = True. "
+                    "Use stub=True for placeholder classes awaiting implementation. "
+                    "Use _abstract_flow for intermediate base classes meant for override."
+                )
             return
+
+        is_stub = stub
 
         from ai_pipeline_core.pipeline._file_rules import (  # noqa: PLC0415  # deferred: avoid import-order issues during package init
             is_exempt,
             register_flow,
+            register_stub,
             require_docstring,
         )
 
@@ -176,6 +175,8 @@ class PipelineFlow:
         # Register after all validation passes to avoid poisoning the registry on failure
         if not exempt:
             register_flow(cls)
+            if is_stub:
+                register_stub(cls, kind="PipelineFlow")
 
     def get_params(self) -> dict[str, Any]:
         """Return constructor params for flow plan serialization."""
@@ -260,15 +261,25 @@ class PipelineTask:
     input_document_types: ClassVar[list[type[Document]]] = []
     output_document_types: ClassVar[list[type[Document]]] = []
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
+    def __init_subclass__(cls, *, stub: bool = False, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
+        cls._stub = stub
         if cls is PipelineTask:
             return
         if cls.__dict__.get("_abstract_task", False) is True:
+            if stub:
+                raise TypeError(
+                    f"PipelineTask '{cls.__name__}' cannot use both stub=True and _abstract_task = True. "
+                    "Use stub=True for placeholder classes awaiting implementation. "
+                    "Use _abstract_task for intermediate base classes meant for override."
+                )
             return
+
+        is_stub = stub
 
         from ai_pipeline_core.pipeline._file_rules import (  # noqa: PLC0415  # deferred: avoid import-order issues during package init
             is_exempt,
+            register_stub,
             register_task,
             require_docstring,
         )
@@ -298,131 +309,13 @@ class PipelineTask:
         # Register after all validation passes to avoid poisoning the registry on failure
         if not exempt:
             register_task(cls)
+            if is_stub:
+                register_stub(cls, kind="PipelineTask")
 ```
 
 ## Functions
 
 ```python
-async def run_task_debug(
-    task_cls: type[PipelineTask],
-    /,
-    *task_args: Any,
-    output_dir: Path,
-    run_id: str | None = None,
-    database: FilesystemDatabase | None = None,
-    **task_kwargs: Any,
-) -> DebugRunResult:
-    """Execute a single PipelineTask into a filesystem-backed debug context.
-
-    Creates a full ExecutionContext with database, sinks, and span tracking.
-    Results (spans, documents, blobs, logs) are persisted to output_dir.
-
-    Call using the same arguments as the task's ``run()`` method (minus ``cls``)::
-
-        result = await run_task_debug(MyTask, (doc,), output_dir=Path("debug_out"))
-    """
-    owns_db = database is None
-    if owns_db:
-        database = create_debug_sink(output_dir)
-    assert database is not None
-
-    deployment_id = uuid7()
-    resolved_run_id = run_id or _make_debug_run_id(task_cls.name)
-    effective_output_dir = output_dir if owns_db else database.base_path
-
-    try:
-        result = await _run_debug(
-            database=database,
-            deployment_id=deployment_id,
-            run_id=resolved_run_id,
-            name=f"debug-{task_cls.name}",
-            execute_fn=lambda: task_cls.run(*task_args, **task_kwargs),
-        )
-        return DebugRunResult(output_documents=result, output_dir=effective_output_dir, run_id=resolved_run_id, root_deployment_id=deployment_id)
-    finally:
-        if owns_db:
-            await _safe_shutdown(database)
-
-
-async def run_flow_debug(
-    flow: PipelineFlow,
-    *,
-    documents: Sequence[Document],
-    options: FlowOptions,
-    output_dir: Path,
-    run_id: str | None = None,
-    database: FilesystemDatabase | None = None,
-) -> DebugRunResult:
-    """Execute a single PipelineFlow into a filesystem-backed debug context.
-
-    Creates a full ExecutionContext with deployment and flow span tracking.
-    Results (spans, documents, blobs, logs) are persisted to output_dir.
-    """
-    owns_db = database is None
-    if owns_db:
-        database = create_debug_sink(output_dir)
-    assert database is not None
-
-    deployment_id = uuid7()
-    flow_cls = type(flow)
-    resolved_run_id = run_id or _make_debug_run_id(flow.name)
-    effective_output_dir = output_dir if owns_db else database.base_path
-
-    async def _execute() -> tuple[Document, ...]:
-        from ai_pipeline_core.deployment._deployment_runtime import _execute_flow_with_context  # noqa: PLC0415 — deferred to avoid circular import
-
-        ctx = get_execution_context()
-        assert ctx is not None
-        flow_span_id = uuid7()
-        flow_frame = FlowFrame(
-            name=flow.name,
-            flow_class_name=flow_cls.__name__,
-            step=1,
-            total_steps=1,
-            flow_minutes=(flow_cls.estimated_minutes,),
-            completed_minutes=0.0,
-            flow_params=flow.get_params(),
-        )
-        flow_ctx = ctx.with_flow(flow_frame).with_span(flow_span_id, parent_span_id=deployment_id)
-        active_handles_before: set[object] = set(ctx.active_task_handles)
-
-        return await _execute_flow_with_context(
-            flow_instance=flow,
-            flow_class=flow_cls,
-            flow_name=flow.name,
-            current_docs=list(documents),
-            options=options,
-            flow_exec_ctx=flow_ctx,
-            current_exec_ctx=ctx,
-            active_handles_before=active_handles_before,
-            database=database,
-            publisher=_NoopPublisher(),
-            deployment_span_id=deployment_id,
-            run_id=resolved_run_id,
-            flow_span_id=flow_span_id,
-            flow_cache_key="",
-            flow_options_payload=options.model_dump(mode="json", exclude_none=True),
-            expected_tasks=flow_cls.expected_tasks(),
-            step=1,
-            total_steps=1,
-            root_id_str=str(deployment_id),
-            parent_task_id_str=None,
-        )
-
-    try:
-        result = await _run_debug(
-            database=database,
-            deployment_id=deployment_id,
-            run_id=resolved_run_id,
-            name=f"debug-{flow.name}",
-            execute_fn=_execute,
-        )
-        return DebugRunResult(output_documents=result, output_dir=effective_output_dir, run_id=resolved_run_id, root_deployment_id=deployment_id)
-    finally:
-        if owns_db:
-            await _safe_shutdown(database)
-
-
 async def safe_gather[T](
     *coroutines: Coroutine[Any, Any, T],
     label: str = "",
@@ -655,7 +548,17 @@ async def run_tasks_until(
     deadline_seconds: float | None = None,
 ) -> TaskBatch:
     """Launch ``task_cls.run(*args, **kwargs)`` for each argument group and collect the handles."""
-    handles = [task_cls.run(*args, **kwargs) for args, kwargs in argument_groups]
+    handles: list[TaskAwaitable] = []
+    try:
+        for args, kwargs in argument_groups:
+            handles.append(task_cls.run(*args, **kwargs))
+    except Exception:
+        normalized_handles = _normalize_handles(tuple(handles))
+        for handle in normalized_handles:
+            handle.cancel()
+        if normalized_handles:
+            await asyncio.gather(*(handle.result() for handle in normalized_handles), return_exceptions=True)
+        raise
     return await collect_tasks(handles, deadline_seconds=deadline_seconds)
 
 
@@ -830,6 +733,40 @@ async def test_traced_operation_marks_failed_span_and_reraises() -> None:
     assert operation_span.error_message == "boom"
 ```
 
+**Run tasks until cancels started tasks on bind failure** (`tests/pipeline/test_verified_parallel_regressions.py:33`)
+
+```python
+@pytest.mark.asyncio
+async def test_run_tasks_until_cancels_started_tasks_on_bind_failure() -> None:
+    class _SlowTask(PipelineTask):
+        """Task that blocks until cancellation."""
+
+        @classmethod
+        async def run(
+            cls,
+            documents: tuple[_ParallelInputDoc, ...],
+        ) -> tuple[_ParallelOutputDoc, ...]:
+            await asyncio.sleep(10)
+            return ()
+
+    doc = _ParallelInputDoc.create_root(name="in.txt", content="x", reason="test")
+
+    with pipeline_test_context():
+        with pytest.raises(TypeError):
+            await run_tasks_until(
+                _SlowTask,
+                [
+                    (((doc,),), {}),
+                    (((doc,),), {}),
+                    (("not-a-document",), {}),
+                ],
+            )
+
+    await asyncio.sleep(0.05)
+    lingering_tasks = [task for task in asyncio.all_tasks() if "_SlowTask.run" in repr(task.get_coro()) and not task.done()]
+    assert lingering_tasks == []
+```
+
 **Base flow options rejects extra** (`tests/pipeline/test_options.py:29`)
 
 ```python
@@ -869,14 +806,4 @@ def test_inf_raises(self) -> None:
 
     with pytest.raises(TypeError, match="BASE_COST_USD"):
         type("InfCostTask", (PipelineTask,), {"name": "InfCostTask", "BASE_COST_USD": float("inf"), "estimated_minutes": 1.0})
-```
-
-**Inf raises** (`tests/pipeline/test_add_cost.py:227`)
-
-```python
-def test_inf_raises(self) -> None:
-    from ai_pipeline_core.pipeline._flow import PipelineFlow
-
-    with pytest.raises(TypeError, match="BASE_COST_USD"):
-        type("InfCostFlow", (PipelineFlow,), {"name": "InfCostFlow", "BASE_COST_USD": float("inf"), "estimated_minutes": 1.0})
 ```

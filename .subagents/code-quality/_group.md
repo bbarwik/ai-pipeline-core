@@ -1,7 +1,7 @@
 ---
 description: >
   Audit Python source code quality using 5 specialized agents.
-  Pass source files via context, e.g. context=["ai_pipeline_core/pipeline/*.py"].
+  Pass source files via context, e.g. context=["README.md", "CLAUDE.md", "ai_pipeline_core/**/*.py"].
   At least one Python source file must be provided.
 no_tools: True
 ---

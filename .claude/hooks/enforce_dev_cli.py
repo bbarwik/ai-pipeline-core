@@ -25,6 +25,7 @@ _PYTEST_BLOCKED = (
 
 RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # dev CLI piping — output is already captured to .tmp/dev-runs/
+    # Matches both `dev test | grep` and `dev test 2>&1 | grep`
     (
         re.compile(r"\bdev\s+\S+.*\|\s*(?:grep|head|tail|less|more)\b"),
         "BLOCKED: Do not pipe dev output — it's already captured to .tmp/dev-runs/.\n"

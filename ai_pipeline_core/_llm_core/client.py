@@ -365,7 +365,7 @@ def _build_model_response(
         parsed = response_format.model_validate_json(content)
 
     citations: tuple[Citation, ...] = ()
-    if annotations := response.choices[0].message.annotations:
+    if annotations := getattr(response.choices[0].message, "annotations", None):
         url_citations = [a for a in annotations if getattr(a, "type", None) == "url_citation" and a.url_citation]
         citations = tuple(
             Citation(title=a.url_citation.title, url=a.url_citation.url, start_index=a.url_citation.start_index, end_index=a.url_citation.end_index)

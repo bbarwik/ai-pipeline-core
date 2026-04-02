@@ -8,7 +8,7 @@ from uuid import UUID
 
 from ai_pipeline_core.database._factory import Database
 from ai_pipeline_core.database._protocol import DatabaseReader
-from ai_pipeline_core.database._types import SpanRecord
+from ai_pipeline_core.database._types import SpanKind, SpanRecord
 from ai_pipeline_core.database.clickhouse._backend import ClickHouseDatabase
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.database.snapshot._download import download_deployment
@@ -167,24 +167,117 @@ async def _download_deployment_async(
     return 0
 
 
+async def _show_llm_calls_async(database: TraceDatabase, identifier: str) -> int:
+    """Show all LLM calls in a deployment."""
+    import json
+
+    try:
+        deployment_id, _run_id = await _resolve_identifier_async(identifier, database)
+        tree = await database.get_deployment_tree(deployment_id)
+    finally:
+        await database.shutdown()
+
+    llm_spans = [s for s in tree if s.kind == SpanKind.LLM_ROUND]
+    if not llm_spans:
+        print("No LLM calls found.")
+        return 0
+
+    for i, span in enumerate(llm_spans, 1):
+        meta = json.loads(span.meta_json) if span.meta_json else {}
+        metrics = json.loads(span.metrics_json) if span.metrics_json else {}
+        model = meta.get("model", "unknown")
+        purpose = meta.get("purpose", "")
+        tokens_in = metrics.get("tokens_input", 0)
+        tokens_out = metrics.get("tokens_output", 0)
+        cost = span.cost_usd
+        duration = ""
+        if span.started_at and span.ended_at:
+            duration = f" ({(span.ended_at - span.started_at).total_seconds():.1f}s)"
+
+        print(f"[{i}] {model}  tokens={tokens_in}→{tokens_out}  cost=${cost:.4f}{duration}")
+        if purpose:
+            print(f"    purpose: {purpose}")
+        print()
+    return 0
+
+
+async def _show_docs_async(database: TraceDatabase, identifier: str) -> int:
+    """List all documents in a deployment."""
+    try:
+        deployment_id, _run_id = await _resolve_identifier_async(identifier, database)
+        doc_shas = await database.get_all_document_shas_for_tree(deployment_id)
+        documents = await database.get_documents_batch(sorted(doc_shas))
+    finally:
+        await database.shutdown()
+
+    if not documents:
+        print("No documents found.")
+        return 0
+
+    print(f"{'Type':<35} {'Name':<30} {'Size':>8}  SHA256")
+    print("-" * 100)
+    for sha, doc in sorted(documents.items(), key=lambda kv: kv[1].document_type):
+        print(f"{doc.document_type:<35} {doc.name:<30} {doc.size_bytes:>8}  {sha}")
+    return 0
+
+
+async def _show_doc_async(database: TraceDatabase, sha256: str) -> int:
+    """Show a single document by SHA256."""
+    try:
+        hydrated = await database.get_document_with_content(sha256)
+    finally:
+        await database.shutdown()
+
+    if hydrated is None:
+        print(f"Document {sha256!r} not found.", file=sys.stderr)
+        return 1
+
+    print(f"Type: {hydrated.record.document_type}")
+    print(f"Name: {hydrated.record.name}")
+    print(f"Size: {hydrated.record.size_bytes} bytes")
+    print(f"MIME: {hydrated.record.mime_type}")
+    if hydrated.record.derived_from:
+        print(f"Derived from: {', '.join(hydrated.record.derived_from)}")
+    if hydrated.record.triggered_by:
+        print(f"Triggered by: {', '.join(hydrated.record.triggered_by)}")
+    print()
+    if hydrated.content is not None:
+        try:
+            text = hydrated.content.decode("utf-8")
+        except UnicodeDecodeError:
+            print(f"[Binary content, {hydrated.record.size_bytes} bytes]")
+        else:
+            print(text)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the ai-trace CLI."""
+    db_parent = argparse.ArgumentParser(add_help=False)
+    db_parent.add_argument("--db-path", type=str, default=None, help="Use a FilesystemDatabase snapshot instead of ClickHouse")
+
     parser = argparse.ArgumentParser(prog="ai-trace", description="Inspect deployment execution trees")
     subparsers = parser.add_subparsers(dest="command")
 
-    list_parser = subparsers.add_parser("list", help="List recent deployments")
+    list_parser = subparsers.add_parser("list", parents=[db_parent], help="List recent deployments")
     list_parser.add_argument("--limit", type=int, default=20, help="Maximum number of deployments to show")
     list_parser.add_argument("--status", type=str, default=None, help="Filter deployments by status")
-    list_parser.add_argument("--db-path", type=str, default=None, help="Use a FilesystemDatabase snapshot instead of ClickHouse")
 
-    show_parser = subparsers.add_parser("show", help="Show deployment summary and logs")
+    show_parser = subparsers.add_parser("show", parents=[db_parent], help="Show deployment summary and logs")
     show_parser.add_argument("identifier", help="Deployment/span UUID or deployment run_id")
-    show_parser.add_argument("--db-path", type=str, default=None, help="Use a FilesystemDatabase snapshot instead of ClickHouse")
 
-    download_parser = subparsers.add_parser("download", help="Download a deployment as a FilesystemDatabase snapshot")
+    download_parser = subparsers.add_parser("download", parents=[db_parent], help="Download a deployment as a FilesystemDatabase snapshot")
     download_parser.add_argument("identifier", help="Deployment/span UUID or deployment run_id")
     download_parser.add_argument("-o", "--output-dir", type=str, required=True, help="Output directory for the snapshot")
-    download_parser.add_argument("--db-path", type=str, default=None, help="Use a FilesystemDatabase snapshot instead of ClickHouse")
+
+    llm_parser = subparsers.add_parser("llm", parents=[db_parent], help="Show all LLM calls for a deployment")
+    llm_parser.add_argument("identifier", help="Deployment/span UUID or deployment run_id")
+
+    docs_parser = subparsers.add_parser("docs", parents=[db_parent], help="List all documents in a deployment")
+    docs_parser.add_argument("identifier", help="Deployment/span UUID or deployment run_id")
+
+    doc_parser = subparsers.add_parser("doc", parents=[db_parent], help="Show a single document by SHA256")
+    doc_parser.add_argument("sha256", help="Document SHA256 identifier")
 
     args = parser.parse_args(argv)
     if args.command is None:
@@ -199,6 +292,12 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_show_deployment_async(database, args.identifier))
         if args.command == "download":
             return asyncio.run(_download_deployment_async(database, args.identifier, Path(args.output_dir).resolve()))
+        if args.command == "llm":
+            return asyncio.run(_show_llm_calls_async(database, args.identifier))
+        if args.command == "docs":
+            return asyncio.run(_show_docs_async(database, args.identifier))
+        if args.command == "doc":
+            return asyncio.run(_show_doc_async(database, args.sha256))
     except SystemExit:
         raise
     except Exception as exc:

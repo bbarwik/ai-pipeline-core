@@ -2,7 +2,7 @@
 # CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
 # DEPENDS: BaseModel, Role
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.19.0
+# VERSION: 0.19.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -175,7 +175,7 @@ class PromptSpec(BaseModel):
     output_rules: ClassVar[tuple[type[OutputRule], ...]]
     output_structure: ClassVar[str | None]
 
-    def __init_subclass__(cls, *, follows: type[PromptSpec] | None = None, **kwargs: Any) -> None:
+    def __init_subclass__(cls, *, follows: type[PromptSpec] | None = None, stub: bool = False, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
         # Pydantic creates concrete subclasses for parameterized generics (e.g. PromptSpec[str]).
@@ -183,6 +183,7 @@ class PromptSpec(BaseModel):
         if "[" in cls.__name__:
             return
 
+        cls._stub = stub
         _validate_prompt_spec(cls, cls.__name__, follows)
 ```
 

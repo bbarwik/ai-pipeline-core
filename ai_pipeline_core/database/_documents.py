@@ -131,7 +131,8 @@ def _attachment_contents_for_record(
     if missing:
         missing_list = ", ".join(sorted(missing))
         raise ValueError(
-            f"Document '{record.name}' ({record.document_sha256}) has missing attachment blob(s): {missing_list}. "
+            f"Document '{record.name}' ({record.document_sha256}) references missing attachment blob(s): {missing_list}. "
+            "These blobs are missing from storage. "
             "Persist every attachment blob before reading the document."
         )
     return contents
@@ -151,11 +152,16 @@ def _reconstruct_documents(
                 record.content_sha256[:12],
             )
             continue
-        document = _reconstruct_document(
-            record,
-            blob.content,
-            _attachment_contents_for_record(record, blobs),
-        )
+        try:
+            attachment_contents = _attachment_contents_for_record(record, blobs)
+        except ValueError:
+            logger.warning(
+                "Skipping document '%s' (%s...) because one or more attachment blobs are missing.",
+                record.name,
+                record.document_sha256[:12],
+            )
+            continue
+        document = _reconstruct_document(record, blob.content, attachment_contents)
         if document is not None:
             result.append(document)
     return result

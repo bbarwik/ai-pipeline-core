@@ -39,7 +39,7 @@ from ai_pipeline_core._token_estimates import estimate_binary_tokens, estimate_i
 from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
 from ai_pipeline_core.documents.exceptions import DocumentNameError, DocumentSizeError
-from ai_pipeline_core.documents.utils import _DATA_URI_PATTERN, is_document_sha256
+from ai_pipeline_core.documents.utils import _DATA_URI_PATTERN, _serialize_content_bytes, is_document_sha256
 
 from ._mime_type import (
     detect_mime_type,
@@ -679,11 +679,7 @@ class Document[TContent: BaseModel = Any](BaseModel):
     @field_serializer("content")
     def _serialize_content(self, v: bytes) -> str:
         """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
-        try:
-            return v.decode("utf-8")
-        except UnicodeDecodeError:
-            b64 = base64.b64encode(v).decode("ascii")
-            return f"data:{self.mime_type};base64,{b64}"
+        return _serialize_content_bytes(v, self.mime_type)
 
     @final
     @property

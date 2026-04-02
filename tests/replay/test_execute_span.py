@@ -130,7 +130,7 @@ async def test_execute_span_installs_replay_execution_context(memory_database) -
     result = await execute_span(span.span_id, source_db=memory_database)
 
     assert result == "function:context"
-    assert _SEEN_CONTEXT["run_id"].startswith(f"replay:{str(span.span_id)[:8]}:")
+    assert _SEEN_CONTEXT["run_id"].startswith(f"replay-{str(span.span_id)[:8]}-")
     assert _SEEN_CONTEXT["publisher_type"] is _NoopPublisher
     assert _SEEN_CONTEXT["disable_cache"] is True
 

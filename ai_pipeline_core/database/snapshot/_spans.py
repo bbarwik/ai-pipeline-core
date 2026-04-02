@@ -16,6 +16,7 @@ from ai_pipeline_core.database._types import (
     SpanKind,
     SpanRecord,
     SpanStatus,
+    aggregate_cost_totals,
 )
 from ai_pipeline_core.database.filesystem._paths import run_directory_name, span_filename
 
@@ -184,19 +185,8 @@ def _compute_descendant_costs(
     return descendant_costs, descendant_tokens
 
 
-def _sum_span_totals(tree: list[SpanRecord], metrics_by_id: dict[UUID, dict[str, Any]]) -> CostTotals:
-    cost_usd = 0.0
-    ti, to, tc, tr = 0, 0, 0, 0
-    for span in tree:
-        cost_usd += span.cost_usd
-        if span.kind == SpanKind.LLM_ROUND:
-            metrics = metrics_by_id[span.span_id]
-            context = f"Span {span.span_id}"
-            ti += _detail_int(metrics, TOKENS_INPUT_KEY, context=context, field_name="metrics_json")
-            to += _detail_int(metrics, TOKENS_OUTPUT_KEY, context=context, field_name="metrics_json")
-            tc += _detail_int(metrics, TOKENS_CACHE_READ_KEY, context=context, field_name="metrics_json")
-            tr += _detail_int(metrics, TOKENS_REASONING_KEY, context=context, field_name="metrics_json")
-    return CostTotals(cost_usd=cost_usd, tokens_input=ti, tokens_output=to, tokens_cache_read=tc, tokens_reasoning=tr)
+def _sum_span_totals(tree: list[SpanRecord]) -> CostTotals:
+    return aggregate_cost_totals((span.kind, span.cost_usd, span.metrics_json, f"Span {span.span_id}") for span in tree)
 
 
 def _collect_document_shas(tree: list[SpanRecord]) -> set[str]:
@@ -235,7 +225,7 @@ def build_span_tree_view(tree: list[SpanRecord], root_deployment_id: UUID) -> Sp
         document_shas=_collect_document_shas(tree),
         descendant_costs=descendant_costs,
         descendant_tokens=descendant_tokens,
-        totals=_sum_span_totals(tree, metrics_by_id),
+        totals=_sum_span_totals(tree),
     )
 
 

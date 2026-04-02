@@ -77,7 +77,7 @@ async def test_experiment_span_extracts_original_output_and_applies_overrides(
     assert seen_kwargs["model"] == "override-model"
     assert seen_kwargs["model_options"].temperature == 0.2
     assert seen_kwargs["model_options"].reasoning_effort == "high"
-    assert result.replay_run_id.startswith(f"replay:{str(span.span_id)[:8]}:")
+    assert result.replay_run_id.startswith(f"replay-{str(span.span_id)[:8]}-")
 
 
 @pytest.mark.asyncio

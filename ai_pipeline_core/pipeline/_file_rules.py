@@ -16,9 +16,11 @@ Framework-internal code, tests, and examples are exempt.
 import re
 
 __all__ = [
+    "get_stubs",
     "is_exempt",
     "register_flow",
     "register_spec",
+    "register_stub",
     "register_task",
     "require_docstring",
     "reset_registries",
@@ -31,6 +33,8 @@ _tasks: dict[str, str] = {}  # nosemgrep: no-mutable-module-globals — import-t
 _specs: dict[str, list[tuple[str, str | None]]] = {}  # nosemgrep: no-mutable-module-globals — import-time registry, reset via reset_registries()
 # module_name -> class_name for specs that follow a spec from a different module
 _cross_file_follows: dict[str, str] = {}  # nosemgrep: no-mutable-module-globals — import-time registry, reset via reset_registries()
+# qualname -> (class, kind) for stub classes
+_stubs: dict[str, tuple[type, str]] = {}  # nosemgrep: no-mutable-module-globals — import-time registry, reset via reset_registries()
 
 _SNAKE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
@@ -227,9 +231,21 @@ def register_spec(cls: type, follows: type | None) -> None:
         _cross_file_follows[module] = cls.__name__
 
 
+def register_stub(cls: type, *, kind: str) -> None:
+    """Register a stub class for deployment-time blocking."""
+    qualname = f"{cls.__module__}:{cls.__qualname__}"
+    _stubs[qualname] = (cls, kind)
+
+
+def get_stubs() -> dict[str, tuple[type, str]]:
+    """Return all registered stub classes. Used by deploy.py to block deployment."""
+    return dict(_stubs)
+
+
 def reset_registries() -> None:
     """Clear all registries. For framework tests only."""
     _flows.clear()
     _tasks.clear()
     _specs.clear()
     _cross_file_follows.clear()
+    _stubs.clear()

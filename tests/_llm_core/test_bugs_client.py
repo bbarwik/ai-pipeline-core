@@ -115,3 +115,22 @@ def test_empty_content_with_provider_fields_logs_warning(caplog: Any) -> None:
     assert any("provider_specific_fields" in record.message for record in caplog.records), (
         "Should log available provider_specific_fields keys when content is empty"
     )
+
+
+def test_missing_annotations_attribute_does_not_crash() -> None:
+    """Providers omitting message.annotations must not raise AttributeError."""
+    message = SimpleNamespace(content="ok", role="assistant")
+    choice = SimpleNamespace(message=message, finish_reason="stop")
+    usage = SimpleNamespace(
+        prompt_tokens=1,
+        completion_tokens=1,
+        total_tokens=2,
+        prompt_tokens_details=None,
+        completion_tokens_details=None,
+    )
+    response = SimpleNamespace(id="resp-1", choices=[choice], usage=usage)
+
+    model_response = _build_model_response(response, {}, None, "test-model", None)
+
+    assert model_response.content == "ok"
+    assert model_response.citations == ()

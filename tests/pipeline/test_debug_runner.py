@@ -6,7 +6,7 @@ import pytest
 
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.pipeline.debug import DebugRunResult, run_flow_debug, run_task_debug
+from ai_pipeline_core.pipeline._debug import DebugRunResult, run_flow_debug, run_task_debug
 from ai_pipeline_core.pipeline._flow import PipelineFlow
 from ai_pipeline_core.pipeline._task import PipelineTask
 from ai_pipeline_core.pipeline.options import FlowOptions

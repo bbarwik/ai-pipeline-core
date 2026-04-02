@@ -27,9 +27,7 @@ from ai_pipeline_core._token_estimates import (
     estimate_text_tokens,
 )
 from ai_pipeline_core.database import SpanKind
-from ai_pipeline_core.database._types import _BlobRecord
 from ai_pipeline_core.documents import Document
-from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.pipeline._execution_context import get_execution_context, get_sinks
 from ai_pipeline_core.pipeline._track_span import track_span
 from ai_pipeline_core.prompt_compiler.render import RESULT_CLOSE, _extract_result, render_multi_line_messages, render_text
@@ -393,25 +391,6 @@ class Conversation(BaseModel, Generic[T]):
             return float(raw_value)
         except TypeError, ValueError:
             return 0.0
-
-    @staticmethod
-    def _collect_multimodal_blobs(core_messages: Sequence[CoreMessage]) -> list[Any]:
-        """Collect unique image/PDF blobs referenced by multimodal request messages."""
-        seen_content_shas: set[str] = set()
-        blobs: list[_BlobRecord] = []
-        for message in core_messages:
-            if not isinstance(message.content, tuple):
-                continue
-            for part in message.content:
-                if isinstance(part, TextContent):
-                    continue
-                content_bytes = bytes(part.data)
-                content_sha256 = compute_content_sha256(content_bytes)
-                if content_sha256 in seen_content_shas:
-                    continue
-                seen_content_shas.add(content_sha256)
-                blobs.append(_BlobRecord(content_sha256=content_sha256, content=content_bytes))
-        return blobs
 
     # --- Send methods ---
 

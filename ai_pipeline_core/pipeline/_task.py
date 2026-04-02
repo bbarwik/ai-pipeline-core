@@ -34,7 +34,7 @@ from prefect import task as _prefect_task
 from prefect.cache_policies import NONE as _PREFECT_NO_CACHE
 from prefect.context import FlowRunContext as _FlowRunContext
 
-from ai_pipeline_core._base_exceptions import NonRetriableError
+from ai_pipeline_core._base_exceptions import NonRetriableError, StubNotImplementedError
 from ai_pipeline_core._lifecycle_events import DocumentRef, TaskCompletedEvent, TaskFailedEvent, TaskStartedEvent
 from ai_pipeline_core._llm_core import CoreMessage, Role
 from ai_pipeline_core._llm_core import generate as core_generate
@@ -86,7 +86,6 @@ TASK_EXECUTION_EXCEPTIONS = (Exception, asyncio.CancelledError)
 RETRY_CAPTURE_EXCEPTIONS = (Exception,)
 SUMMARY_EXCERPT_MAX_CHARS = 6000
 _SUMMARY_PROMPT = "Write a concise 1-2 sentence summary of document '{name}'. Focus on the main topic and purpose.\n\nExcerpt:\n{excerpt}"
-DEFAULT_TASK_LOG_SUMMARY = {"total": 0, "warnings": 0, "errors": 0, "last_error": ""}
 
 __all__ = ["PipelineTask"]
 
@@ -125,6 +124,7 @@ class PipelineTask:
     cache_version: ClassVar[int] = 1
     cache_ttl_seconds: ClassVar[int | None] = None
     _abstract_task: ClassVar[bool] = False
+    _stub: ClassVar[bool] = False
     BASE_COST_USD: ClassVar[float] = 0.0
     expected_cost: ClassVar[float | None] = None
 
@@ -133,15 +133,25 @@ class PipelineTask:
     _run_spec: ClassVar[_TaskRunSpec]
     _prefect_task_fn: ClassVar[Any] = None
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
+    def __init_subclass__(cls, *, stub: bool = False, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
+        cls._stub = stub
         if cls is PipelineTask:
             return
         if cls.__dict__.get("_abstract_task", False) is True:
+            if stub:
+                raise TypeError(
+                    f"PipelineTask '{cls.__name__}' cannot use both stub=True and _abstract_task = True. "
+                    "Use stub=True for placeholder classes awaiting implementation. "
+                    "Use _abstract_task for intermediate base classes meant for override."
+                )
             return
+
+        is_stub = stub
 
         from ai_pipeline_core.pipeline._file_rules import (  # noqa: PLC0415  # deferred: avoid import-order issues during package init
             is_exempt,
+            register_stub,
             register_task,
             require_docstring,
         )
@@ -171,6 +181,8 @@ class PipelineTask:
         # Register after all validation passes to avoid poisoning the registry on failure
         if not exempt:
             register_task(cls)
+            if is_stub:
+                register_stub(cls, kind="PipelineTask")
 
     @classmethod
     def _validate_class_config(cls) -> None:
@@ -279,6 +291,11 @@ class PipelineTask:
     @classmethod
     def _build_run_wrapper(cls, spec: _TaskRunSpec) -> Callable[..., TaskHandle[tuple[Document[Any], ...]]]:
         def wrapped(task_cls: type[PipelineTask], *args: Any, **kwargs: Any) -> TaskHandle[tuple[Document[Any], ...]]:
+            if task_cls._stub:
+                raise StubNotImplementedError(
+                    f"PipelineTask '{task_cls.__name__}' is a stub (_stub = True) and cannot be executed. "
+                    f"Implement the run() body and remove 'stub=True' from the class declaration to enable execution."
+                )
             arguments = task_cls._bind_run_arguments(args, kwargs)
             try:
                 asyncio.get_running_loop()
@@ -342,15 +359,15 @@ class PipelineTask:
         documents: tuple[Document, ...],
     ) -> tuple[Document, ...]:
         """Deduplicate and persist documents to the database."""
-        deduped = _TaskDocumentContext.deduplicate(list(documents))
-        if not deduped:
+        if not documents:
             return ()
 
+        deduped = _TaskDocumentContext.deduplicate(list(documents))
         execution_ctx = get_execution_context()
         if execution_ctx is not None:
             await _persist_documents_to_database(deduped, execution_ctx.database)
 
-        return tuple(deduped)
+        return documents
 
     @classmethod
     async def _run_with_retries(

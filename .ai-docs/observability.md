@@ -1,6 +1,6 @@
 # MODULE: observability
 # PURPOSE: Observability system for AI pipelines.
-# VERSION: 0.19.0
+# VERSION: 0.19.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Types & Constants
@@ -19,22 +19,31 @@ async def show_deployment(reader: DatabaseReader, deployment_id: UUID) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the ai-trace CLI."""
+    db_parent = argparse.ArgumentParser(add_help=False)
+    db_parent.add_argument("--db-path", type=str, default=None, help="Use a FilesystemDatabase snapshot instead of ClickHouse")
+
     parser = argparse.ArgumentParser(prog="ai-trace", description="Inspect deployment execution trees")
     subparsers = parser.add_subparsers(dest="command")
 
-    list_parser = subparsers.add_parser("list", help="List recent deployments")
+    list_parser = subparsers.add_parser("list", parents=[db_parent], help="List recent deployments")
     list_parser.add_argument("--limit", type=int, default=20, help="Maximum number of deployments to show")
     list_parser.add_argument("--status", type=str, default=None, help="Filter deployments by status")
-    list_parser.add_argument("--db-path", type=str, default=None, help="Use a FilesystemDatabase snapshot instead of ClickHouse")
 
-    show_parser = subparsers.add_parser("show", help="Show deployment summary and logs")
+    show_parser = subparsers.add_parser("show", parents=[db_parent], help="Show deployment summary and logs")
     show_parser.add_argument("identifier", help="Deployment/span UUID or deployment run_id")
-    show_parser.add_argument("--db-path", type=str, default=None, help="Use a FilesystemDatabase snapshot instead of ClickHouse")
 
-    download_parser = subparsers.add_parser("download", help="Download a deployment as a FilesystemDatabase snapshot")
+    download_parser = subparsers.add_parser("download", parents=[db_parent], help="Download a deployment as a FilesystemDatabase snapshot")
     download_parser.add_argument("identifier", help="Deployment/span UUID or deployment run_id")
     download_parser.add_argument("-o", "--output-dir", type=str, required=True, help="Output directory for the snapshot")
-    download_parser.add_argument("--db-path", type=str, default=None, help="Use a FilesystemDatabase snapshot instead of ClickHouse")
+
+    llm_parser = subparsers.add_parser("llm", parents=[db_parent], help="Show all LLM calls for a deployment")
+    llm_parser.add_argument("identifier", help="Deployment/span UUID or deployment run_id")
+
+    docs_parser = subparsers.add_parser("docs", parents=[db_parent], help="List all documents in a deployment")
+    docs_parser.add_argument("identifier", help="Deployment/span UUID or deployment run_id")
+
+    doc_parser = subparsers.add_parser("doc", parents=[db_parent], help="Show a single document by SHA256")
+    doc_parser.add_argument("sha256", help="Document SHA256 identifier")
 
     args = parser.parse_args(argv)
     if args.command is None:
@@ -49,6 +58,12 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_show_deployment_async(database, args.identifier))
         if args.command == "download":
             return asyncio.run(_download_deployment_async(database, args.identifier, Path(args.output_dir).resolve()))
+        if args.command == "llm":
+            return asyncio.run(_show_llm_calls_async(database, args.identifier))
+        if args.command == "docs":
+            return asyncio.run(_show_docs_async(database, args.identifier))
+        if args.command == "doc":
+            return asyncio.run(_show_doc_async(database, args.sha256))
     except SystemExit:
         raise
     except Exception as exc:

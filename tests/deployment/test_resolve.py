@@ -260,7 +260,7 @@ class TestIsPrivateIpAsync:
         from ai_pipeline_core.deployment._resolve import _is_private_ip
 
         result = await _is_private_ip("nonexistent.invalid")
-        assert result is False
+        assert result is True
 
 
 # ---------------------------------------------------------------------------

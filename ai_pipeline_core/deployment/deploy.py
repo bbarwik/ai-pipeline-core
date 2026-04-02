@@ -122,6 +122,21 @@ class _Deployer:
             "vendor_packages": vendor_packages,
         }
 
+    def _check_stubs(self) -> None:
+        """Block deployment if any imported classes are stubs (stub=True)."""
+        from ai_pipeline_core.pipeline._file_rules import get_stubs
+
+        stubs = get_stubs()
+        if not stubs:
+            return
+        lines = [f"  - {kind} '{cls.__name__}' ({qualname})" for qualname, (cls, kind) in sorted(stubs.items())]
+        self._die(
+            f"Cannot deploy: {len(stubs)} stub class(es) found with stub=True.\n"
+            f"Stub classes are placeholders awaiting implementation:\n"
+            + "\n".join(lines)
+            + "\n\nImplement these classes and remove 'stub=True' before deploying."
+        )
+
     def _validate_prefect_settings(self) -> None:
         """Validate that required Prefect settings are configured."""
         self.api_url = settings.prefect_api_url
@@ -278,6 +293,7 @@ class _Deployer:
         try:
             flow = load_flow_from_entrypoint(entrypoint)
             self._success(f"Loaded flow: {flow.name}")
+            self._check_stubs()
         except ImportError as e:
             self._die(
                 f"Failed to import flow: {e}\n\n"

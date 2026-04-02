@@ -302,7 +302,7 @@ class ReplayExecutionContext(ExecutionContext):
     ) -> ReplayExecutionContext:
         root_deployment_id = uuid4()
         return cls(
-            run_id=f"replay:{str(source_span_id)[:8]}:{uuid4()}",
+            run_id=f"replay-{str(source_span_id)[:8]}-{uuid4()}",
             execution_id=None,
             publisher=publisher,
             limits=MappingProxyType({}),

@@ -813,6 +813,52 @@ async def fetch_data(url: str) -> Data:
 - When Prefect is unavailable, limits proceed unthrottled (logged as warning)
 - Limit names are validated at class definition time (alphanumeric, dashes, underscores)
 
+#### Stub Classes for Incremental Development
+
+Use `stub=True` to define placeholder classes with correct type signatures that pass all validation but block deployment. This enables multi-agent development where an architect defines the pipeline structure and individual agents implement pieces incrementally:
+
+```python
+from ai_pipeline_core import PipelineTask, PipelineFlow, PromptSpec, FlowOptions
+
+
+# Stub task — type contract defined, implementation pending
+class AnalyzeDataTask(PipelineTask, stub=True):
+    """Analyze cleaned data and produce structured findings.
+
+    Input: CleanedDataDoc with normalized content.
+    Output: AnalysisResultDoc with analysis findings.
+    """
+
+    @classmethod
+    async def run(cls, documents: tuple[CleanedDataDoc, ...]) -> tuple[AnalysisResultDoc, ...]: ...
+
+
+# Stub flow — same pattern
+class AnalysisFlow(PipelineFlow, stub=True):
+    """Run analysis pipeline."""
+
+    async def run(self, documents: tuple[CleanedDataDoc, ...], options: FlowOptions) -> tuple[AnalysisResultDoc, ...]: ...
+
+
+# Stub PromptSpec — uses keyword arg syntax
+class AnalysisSpec(PromptSpec, stub=True):
+    """Analyze data for themes and anomalies."""
+
+    role = AnalystRole
+    input_documents = (CleanedDataDoc,)
+    task = "Analyze the provided data for key themes and anomalies."
+```
+
+**Behavior:**
+- Stubs pass all definition-time validation (ruff, basedpyright, semgrep, import-time checks)
+- Type contracts are fully preserved — `input_document_types` and `output_document_types` are extracted from annotations
+- `_validate_flow_chain` works normally with stub flows (type chain is verified)
+- Executing a stub raises `StubNotImplementedError` (subclass of `NonRetriableError` — no retries)
+- `deploy.py` blocks deployment if any stubs exist in the import graph
+- To implement: fill in the `run()` body and remove `stub=True` from the class declaration
+
+See `examples/showcase_stubs.py` for a complete working example.
+
 #### Parallel Execution
 
 **Task dispatch** for parallel task execution within flows:
@@ -1318,6 +1364,7 @@ The `examples/` directory contains:
 - **`showcase_database.py`** -- Database usage: run a real deployment into `MemoryDatabase`, inspect a recorded task span target plus parsed `meta_json` / `metrics_json`, and inspect output document ancestry
 - **`showcase_replay.py`** -- Replay system: record a real task span through `PipelineDeployment.run(...)`, then replay that stored span with `execute_span()`
 - **`showcase_prompt_compiler.py`** -- Prompt compiler features: Role, Rule, OutputRule, Guide, PromptSpec, rendering, `Conversation.send_spec()` usage patterns, follow-up specs, definition-time validation
+- **`showcase_stubs.py`** -- Stub classes for incremental development: `stub=True` on PipelineTask, PipelineFlow, PromptSpec with preserved type contracts, runtime guards, and deployment blocking
 
 Run examples:
 ```bash

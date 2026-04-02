@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from ai_pipeline_core.database._json_helpers import parse_json_object
+from ai_pipeline_core.database._documents import _attachment_contents_for_record
 from ai_pipeline_core.database._sorting import (
     child_span_sort_key,
     deployment_sort_key,
@@ -12,10 +12,6 @@ from ai_pipeline_core.database._sorting import (
     span_sort_key,
 )
 from ai_pipeline_core.database._types import (
-    TOKENS_CACHE_READ_KEY,
-    TOKENS_INPUT_KEY,
-    TOKENS_OUTPUT_KEY,
-    TOKENS_REASONING_KEY,
     CostTotals,
     DocumentRecord,
     HydratedDocument,
@@ -24,7 +20,7 @@ from ai_pipeline_core.database._types import (
     SpanRecord,
     SpanStatus,
     _BlobRecord,
-    get_token_count,
+    aggregate_cost_totals,
 )
 
 __all__ = ["_MemoryDatabase"]
@@ -126,19 +122,11 @@ class _MemoryDatabase:
         return max(matches, key=lambda span: (span.ended_at or span.started_at, span.version, str(span.span_id)))
 
     async def get_deployment_cost_totals(self, root_deployment_id: UUID) -> CostTotals:
-        cost_usd = 0.0
-        ti, to, tc, tr = 0, 0, 0, 0
-        for span in self._spans.values():
-            if span.root_deployment_id != root_deployment_id:
-                continue
-            cost_usd += span.cost_usd
-            if span.kind == SpanKind.LLM_ROUND:
-                metrics = parse_json_object(span.metrics_json, context=f"Span {span.span_id}", field_name="metrics_json")
-                ti += get_token_count(metrics, TOKENS_INPUT_KEY)
-                to += get_token_count(metrics, TOKENS_OUTPUT_KEY)
-                tc += get_token_count(metrics, TOKENS_CACHE_READ_KEY)
-                tr += get_token_count(metrics, TOKENS_REASONING_KEY)
-        return CostTotals(cost_usd=cost_usd, tokens_input=ti, tokens_output=to, tokens_cache_read=tc, tokens_reasoning=tr)
+        return aggregate_cost_totals(
+            (span.kind, span.cost_usd, span.metrics_json, f"Span {span.span_id}")
+            for span in self._spans.values()
+            if span.root_deployment_id == root_deployment_id
+        )
 
     async def get_deployment_span_count(
         self,
@@ -182,23 +170,7 @@ class _MemoryDatabase:
         blob = self._blobs.get(record.content_sha256)
         if blob is None:
             return None
-
-        attachment_contents: dict[str, bytes] = {}
-        missing_attachment_shas: list[str] = []
-        for attachment_sha in record.attachment_content_sha256s:
-            attachment_blob = self._blobs.get(attachment_sha)
-            if attachment_blob is None:
-                missing_attachment_shas.append(attachment_sha)
-                continue
-            attachment_contents[attachment_sha] = attachment_blob.content
-
-        if missing_attachment_shas:
-            missing_list = ", ".join(sorted(missing_attachment_shas))
-            raise ValueError(
-                f"Document {record.document_sha256} references attachment blobs that are missing from storage: {missing_list}. "
-                "Persist every attachment blob before reading the document."
-            )
-
+        attachment_contents = _attachment_contents_for_record(record, self._blobs)
         return HydratedDocument(record=record, content=blob.content, attachment_contents=attachment_contents)
 
     async def get_all_document_shas_for_tree(self, root_deployment_id: UUID) -> set[str]:

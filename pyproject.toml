@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.19.0"
+version = "0.19.1"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -206,7 +206,7 @@ max-public-methods = 30
 "ai_pipeline_core/replay/types.py" = ["PLC0415"]
 "ai_pipeline_core/replay/_execute.py" = ["PLC0415"]
 "ai_pipeline_core/replay/cli.py" = ["T201", "BLE001"]
-"ai_pipeline_core/observability/cli.py" = ["T201", "BLE001", "PLC0415", "PLR0914"]
+"ai_pipeline_core/observability/cli.py" = ["T201", "BLE001", "PLC0415", "PLR0911", "PLR0914"]
 ".claude/**/*.py" = ["T20", "D", "DOC", "TID251", "S"]
 "tools/dev-cli/**/*.py" = ["T20", "D", "DOC", "TID251", "S", "ARG", "PLW", "PLR", "PLC0415", "PERF", "RUF059", "C901", "E741", "PIE"]
 "tools/docs-generator/**/*.py" = ["T20", "TID251"]

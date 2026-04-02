@@ -135,7 +135,7 @@ async def _is_private_ip(hostname: str) -> bool:
         resolved = await asyncio.to_thread(socket.getaddrinfo, hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
         return any(_is_ip_private(ipaddress.ip_address(addr[4][0])) for addr in resolved)
     except socket.gaierror, ValueError, OSError:
-        return False
+        return True
 
 
 async def _validate_url(url: str) -> None:

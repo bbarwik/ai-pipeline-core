@@ -4,8 +4,10 @@ Provides helper functions for URL sanitization, naming conventions,
 hash validation, and shared constants used throughout the document system.
 """
 
+import base64
 import re
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,6 +25,15 @@ __all__ = [
 
 # Regex for detecting data URIs (RFC 2397): data:<mime>;base64,<payload>
 _DATA_URI_PATTERN = re.compile(r"^data:[a-zA-Z0-9.+/-]+;base64,")
+
+
+def _serialize_content_bytes(content: bytes, mime_type: str) -> str:  # pyright: ignore[reportUnusedFunction]  # used by document.py and attachment.py
+    """Serialize bytes as UTF-8 text when possible, otherwise as a data URI."""
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        encoded = base64.b64encode(content).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
 
 
 def sanitize_url(url: str) -> str:
@@ -127,3 +138,13 @@ def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
             return doc
     available = sorted({type(d).__name__ for d in documents})
     raise DocumentValidationError(f"No document of type '{doc_type.__name__}' found. Available types: {', '.join(available) or 'none'}")
+
+
+def load_document_from_file[D](doc_type: type[D], file_path: Path, *, reason: str = "loaded from file") -> D:
+    """Load a local file from disk and wrap it as a typed root Document."""
+    content_bytes = file_path.read_bytes()
+    try:
+        content: str | bytes = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        content = content_bytes
+    return doc_type.create_root(name=file_path.name, content=content, reason=reason)  # type: ignore[return-value]

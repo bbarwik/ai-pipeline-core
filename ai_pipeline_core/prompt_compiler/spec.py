@@ -206,9 +206,11 @@ def _validate_prompt_spec(cls: type, name: str, follows: type[PromptSpec] | None
     from ai_pipeline_core.pipeline._file_rules import (  # noqa: PLC0415  # deferred: avoid import-order issues during package init
         is_exempt,
         register_spec,
+        register_stub,
         require_docstring,
     )
 
+    is_stub = getattr(cls, "_stub", False) is True  # set by __init_subclass__ keyword arg
     exempt = is_exempt(cls)
 
     # Block inheritance chains — must inherit directly from PromptSpec (or PromptSpec[T]).
@@ -348,6 +350,8 @@ def _validate_prompt_spec(cls: type, name: str, follows: type[PromptSpec] | None
     # Register after all validation passes to avoid poisoning the registry on failure
     if not exempt:
         register_spec(cls, follows)
+        if is_stub:
+            register_stub(cls, kind="PromptSpec")
 
 
 class PromptSpec[OutputT = str](BaseModel):
@@ -421,6 +425,7 @@ class PromptSpec[OutputT = str](BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     _follows: ClassVar[type[PromptSpec] | None]
+    _stub: ClassVar[bool] = False
     input_documents: ClassVar[tuple[type[Document], ...]]
     role: ClassVar[type[Role] | None]
     task: ClassVar[str]
@@ -430,7 +435,7 @@ class PromptSpec[OutputT = str](BaseModel):
     _output_type: ClassVar[type[str] | type[BaseModel]]
     output_structure: ClassVar[str | None]
 
-    def __init_subclass__(cls, *, follows: type[PromptSpec] | None = None, **kwargs: Any) -> None:
+    def __init_subclass__(cls, *, follows: type[PromptSpec] | None = None, stub: bool = False, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
         # Pydantic creates concrete subclasses for parameterized generics (e.g. PromptSpec[str]).
@@ -438,6 +443,7 @@ class PromptSpec[OutputT = str](BaseModel):
         if "[" in cls.__name__:
             return
 
+        cls._stub = stub
         _validate_prompt_spec(cls, cls.__name__, follows)
 
 

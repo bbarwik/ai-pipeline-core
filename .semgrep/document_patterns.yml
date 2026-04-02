@@ -95,6 +95,26 @@ rules:
     severity: ERROR
     languages: [python]
 
+  - id: no-bare-document-factory-calls
+    pattern-either:
+      - pattern: Document.create_root(...)
+      - pattern: Document.derive(...)
+      - pattern: Document.create(...)
+      - pattern: Document.create_external(...)
+      - pattern: Document.from_dict(...)
+    message: >
+      Cannot call factory methods on bare Document — use a concrete Document subclass.
+      Document is abstract and cannot be instantiated. Define a subclass first:
+        class MyDoc(Document): ...
+      Then call: MyDoc.create_root(...)
+    severity: ERROR
+    languages: [python]
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/test_*"
+        - "**/ai_pipeline_core/documents/document.py"
+
   - id: no-direct-document-init
     patterns:
       - pattern: $CLASS(name=..., content=..., derived_from=..., ...)

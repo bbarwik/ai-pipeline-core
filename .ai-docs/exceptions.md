@@ -1,13 +1,13 @@
 # MODULE: exceptions
-# CLASSES: LLMError, OutputDegenerationError, EmptyResponseError, PipelineCoreError, NonRetriableError
+# CLASSES: LLMError, OutputDegenerationError, EmptyResponseError, PipelineCoreError, NonRetriableError, StubNotImplementedError
 # DEPENDS: Exception
-# VERSION: 0.19.0
+# VERSION: 0.19.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import LLMError, NonRetriableError, OutputDegenerationError, PipelineCoreError
+from ai_pipeline_core import LLMError, NonRetriableError, OutputDegenerationError, PipelineCoreError, StubNotImplementedError
 ```
 
 ## Public API
@@ -38,6 +38,17 @@ class NonRetriableError(PipelineCoreError):
     Can wrap another exception to preserve the original cause::
 
         raise NonRetriableError("invalid API key") from original_exc"""
+
+
+class StubNotImplementedError(NonRetriableError):
+    """Raised when a stub class (``_stub = True``) is executed at runtime.
+
+    Stubs are placeholder classes with correct type signatures but no implementation.
+    They pass all definition-time validation and type checking, but must not be
+    executed. Subclasses ``NonRetriableError`` to prevent retry loops from retrying
+    the stub.
+
+    To fix: implement the ``run()`` body and remove ``_stub = True``."""
 ```
 
 ## Examples

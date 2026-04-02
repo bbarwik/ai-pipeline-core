@@ -14,7 +14,7 @@ from ._mime_type import (
     is_pdf_mime_type,
     is_text_mime_type,
 )
-from .utils import _DATA_URI_PATTERN
+from .utils import _DATA_URI_PATTERN, _serialize_content_bytes
 
 __all__ = [
     "Attachment",
@@ -94,11 +94,7 @@ class Attachment(BaseModel):
     @field_serializer("content")
     def _serialize_content(self, v: bytes) -> str:
         """Serialize content: plain string for text, data URI (RFC 2397) for binary."""
-        try:
-            return v.decode("utf-8")
-        except UnicodeDecodeError:
-            b64 = base64.b64encode(v).decode("ascii")
-            return f"data:{self.mime_type};base64,{b64}"
+        return _serialize_content_bytes(v, self.mime_type)
 
     @cached_property
     def mime_type(self) -> str:

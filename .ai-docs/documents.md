@@ -2,7 +2,7 @@
 # CLASSES: Attachment, Document, DocumentValidationError, DocumentSizeError, DocumentNameError
 # DEPENDS: BaseModel, Exception
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.19.0
+# VERSION: 0.19.1
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -757,6 +757,16 @@ def find_document[T](documents: Sequence[Any], doc_type: type[T]) -> T:
             return doc
     available = sorted({type(d).__name__ for d in documents})
     raise DocumentValidationError(f"No document of type '{doc_type.__name__}' found. Available types: {', '.join(available) or 'none'}")
+
+
+def load_document_from_file[D](doc_type: type[D], file_path: Path, *, reason: str = "loaded from file") -> D:
+    """Load a local file from disk and wrap it as a typed root Document."""
+    content_bytes = file_path.read_bytes()
+    try:
+        content: str | bytes = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        content = content_bytes
+    return doc_type.create_root(name=file_path.name, content=content, reason=reason)  # type: ignore[return-value]
 ```
 
 ## Examples

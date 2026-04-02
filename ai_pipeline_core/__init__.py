@@ -41,6 +41,7 @@ from .exceptions import (
     NonRetriableError,
     OutputDegenerationError,
     PipelineCoreError,
+    StubNotImplementedError,
 )
 from .llm import (
     Citation,
@@ -77,7 +78,6 @@ from .pipeline import (
 from .prompt_compiler import Guide, ListField, MultiLineField, OutputRule, OutputT, PromptSpec, Role, Rule, StructuredField, render_preview, render_text
 from .replay import ExperimentOverrides, ExperimentResult, execute_span, experiment_batch, experiment_span
 from .settings import Settings
-from .testing import disable_run_logger, prefect_test_harness
 
 setup_logging()
 
@@ -121,6 +121,7 @@ __all__ = [
     "Rule",
     "Settings",
     "StructuredField",
+    "StubNotImplementedError",
     "TaskBatch",
     "TaskHandle",
     "TokenUsage",
@@ -130,7 +131,6 @@ __all__ = [
     "add_cost",
     "as_task_completed",
     "collect_tasks",
-    "disable_run_logger",
     "ensure_extension",
     "execute_span",
     "experiment_batch",
@@ -143,7 +143,6 @@ __all__ = [
     "llm",
     "pipeline_concurrency",
     "pipeline_test_context",
-    "prefect_test_harness",
     "render_preview",
     "render_text",
     "replace_extension",
