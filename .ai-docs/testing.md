@@ -1,5 +1,5 @@
 # MODULE: testing
-# VERSION: 0.19.1
+# VERSION: 0.19.2
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Functions
