@@ -12,9 +12,9 @@ from ai_pipeline_core.database._types import SpanKind, SpanRecord
 from ai_pipeline_core.database.clickhouse._backend import ClickHouseDatabase
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.database.snapshot._download import download_deployment
-from ai_pipeline_core.database.snapshot._spans import build_span_tree_view, format_span_overview_lines, format_span_tree_lines
-from ai_pipeline_core.database.snapshot._summary import generate_summary
+from ai_pipeline_core.database.snapshot._spans import build_span_tree_view
 from ai_pipeline_core.logger._types import LogRecord
+from ai_pipeline_core.observability._tree_render import format_span_overview_lines, format_span_tree_lines
 from ai_pipeline_core.settings import settings
 
 __all__ = [
@@ -22,7 +22,6 @@ __all__ = [
     "_resolve_connection",
     "_resolve_identifier",
     "main",
-    "show_deployment",
 ]
 
 TraceDatabase = Database | FilesystemDatabase | ClickHouseDatabase
@@ -102,11 +101,6 @@ def _print_logs(logs: list[LogRecord]) -> None:
 
 async def _get_tree_logs(database: DatabaseReader, deployment_ids: list[UUID]) -> list[LogRecord]:
     return await database.get_deployment_logs_batch(deployment_ids)
-
-
-async def show_deployment(reader: DatabaseReader, deployment_id: UUID) -> str:
-    """Render a deployment summary for ai-trace show."""
-    return await generate_summary(reader, deployment_id)
 
 
 def _render_deployment_v2(tree: list[SpanRecord], root_deployment_id: UUID) -> str:

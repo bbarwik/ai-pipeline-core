@@ -17,7 +17,6 @@ from ai_pipeline_core.observability.cli import (
     _resolve_connection,
     _resolve_identifier,
     main,
-    show_deployment,
 )
 
 
@@ -237,19 +236,6 @@ class TestSpanResolveIdentifier:
 
 
 class TestSpanShowDeployment:
-    @pytest.mark.asyncio
-    async def test_show_deployment_renders_nested_operation_round_and_tool_call(self, tmp_path: Path) -> None:
-        database, deployment_id, _conversation_id = await _seed_span_snapshot(tmp_path)
-
-        output = await show_deployment(database, deployment_id)
-
-        assert "# span-cli-pipeline / span-run" in output
-        assert "Tree" in output
-        assert "operation: collect_context completed 9.0s" in output
-        assert "conversation: analyze_document 5.0s gpt-5.1 2K in / 2K cache / 180 out / 25 reasoning $0.4200" in output
-        assert "llm_round[1]: gpt-5.1 2.0s 2K in / 2K cache / 180 out / 25 reasoning $0.4200" in output
-        assert "tool_call[1]: web_search completed 1.0s" in output
-
     def test_main_show_command_reads_span_snapshot(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         asyncio.run(_seed_span_snapshot(tmp_path))
 
@@ -275,6 +261,4 @@ class TestSpanShowDeployment:
 
         assert result == 0
         assert "Downloaded deployment" in capsys.readouterr().out
-        assert (output_dir / "summary.md").exists()
-        assert (output_dir / "costs.md").exists()
         assert (output_dir / "logs.jsonl").exists()

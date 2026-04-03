@@ -17,8 +17,6 @@ from prefect.testing.utilities import prefect_test_harness
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
 from ai_pipeline_core.database._factory import Database
-from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
-from ai_pipeline_core.database.snapshot._download import generate_run_artifacts
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.pipeline.options import FlowOptions
 from ai_pipeline_core.settings import settings
@@ -28,19 +26,8 @@ from ._helpers import _create_publisher, _create_span_database_from_settings, bu
 logger = logging.getLogger(__name__)
 
 
-async def _generate_run_artifacts(database: Database, output_dir: Path) -> None:
-    """Generate summary.md, costs.md, llm_calls.jsonl, errors.md, documents.md after a CLI run."""
-    if not isinstance(database, FilesystemDatabase):
-        return
-    deployments = await database.list_deployments(limit=1, status=None)
-    if not deployments:
-        return
-    await generate_run_artifacts(database, deployments[0].root_deployment_id, output_dir)
-    logger.info("Run artifacts saved to %s", output_dir)
-
-
 async def _shutdown_database(database: Database) -> None:
-    """Flush and shut down the CLI database after artifact generation completes."""
+    """Flush and shut down the CLI database."""
     try:
         await database.flush()
     except (OSError, RuntimeError, ValueError) as exc:
@@ -147,6 +134,5 @@ def run_cli_for_deployment(
         result_file.write_text(result.model_dump_json(indent=2))
         logger.info("Result saved to %s", result_file)
 
-        asyncio.run(_generate_run_artifacts(database, wd))
     finally:
         asyncio.run(_shutdown_database(database))

@@ -578,7 +578,8 @@ class TestSnapshotRendering:
         return [deployment, flow, task, attempt_0, attempt_1, op_failed, op_ok], deployment_id
 
     def test_attempt_spans_render_in_tree(self) -> None:
-        from ai_pipeline_core.database.snapshot._spans import build_span_tree_view, format_span_tree_lines
+        from ai_pipeline_core.database.snapshot._spans import build_span_tree_view
+        from ai_pipeline_core.observability._tree_render import format_span_tree_lines
 
         tree, deployment_id = self._build_retry_tree()
         view = build_span_tree_view(tree, deployment_id)
@@ -592,7 +593,8 @@ class TestSnapshotRendering:
         assert "do_work" in text
 
     def test_single_attempt_collapsed_in_tree(self) -> None:
-        from ai_pipeline_core.database.snapshot._spans import build_span_tree_view, format_span_tree_lines
+        from ai_pipeline_core.database.snapshot._spans import build_span_tree_view
+        from ai_pipeline_core.observability._tree_render import format_span_tree_lines
 
         deployment_id = uuid4()
         t0 = datetime(2026, 3, 17, 12, 0, tzinfo=UTC)
@@ -647,7 +649,8 @@ class TestSnapshotRendering:
 
     def test_failed_single_attempt_shown_in_tree(self) -> None:
         """A failed single ATTEMPT must not be collapsed — its timing and error must be visible."""
-        from ai_pipeline_core.database.snapshot._spans import build_span_tree_view, format_span_tree_lines
+        from ai_pipeline_core.database.snapshot._spans import build_span_tree_view
+        from ai_pipeline_core.observability._tree_render import format_span_tree_lines
 
         deployment_id = uuid4()
         t0 = datetime(2026, 3, 17, 12, 0, tzinfo=UTC)
@@ -695,7 +698,8 @@ class TestSnapshotRendering:
         assert "failed" in text
 
     def test_attempt_count_in_overview(self) -> None:
-        from ai_pipeline_core.database.snapshot._spans import build_span_tree_view, format_span_overview_lines
+        from ai_pipeline_core.database.snapshot._spans import build_span_tree_view
+        from ai_pipeline_core.observability._tree_render import format_span_overview_lines
 
         tree, deployment_id = self._build_retry_tree()
         view = build_span_tree_view(tree, deployment_id)
@@ -706,19 +710,9 @@ class TestSnapshotRendering:
 
         assert "Attempts: 2" in text
 
-    def test_failed_attempts_excluded_from_failures_section(self) -> None:
-        from ai_pipeline_core.database.snapshot._spans import generate_summary_from_tree
-
-        tree, deployment_id = self._build_retry_tree()
-        summary = generate_summary_from_tree(tree, deployment_id)
-
-        assert "## Failures" in summary
-        lines_after_failures = summary.split("## Failures")[1].split("##")[0]
-        assert "attempt" not in lines_after_failures.lower()
-        assert "do_work" in lines_after_failures
-
     def test_attempt_spans_excluded_from_sibling_filename_index(self) -> None:
-        from ai_pipeline_core.database.snapshot._spans import build_span_tree_view, format_span_tree_lines
+        from ai_pipeline_core.database.snapshot._spans import build_span_tree_view
+        from ai_pipeline_core.observability._tree_render import format_span_tree_lines
 
         tree, deployment_id = self._build_retry_tree()
         view = build_span_tree_view(tree, deployment_id)

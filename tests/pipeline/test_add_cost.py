@@ -171,7 +171,6 @@ class TestDatabaseCostTotals:
     async def test_memory_tokens_only_from_llm_round(self) -> None:
         db = _MemoryDatabase()
         rid = uuid4()
-        import json
 
         llm_metrics = json.dumps({"tokens_input": 100, "tokens_output": 50})
         task_metrics = json.dumps({"tokens_input": 9999, "tokens_output": 9999})
@@ -351,49 +350,10 @@ class TestExecutionContextTotalCost:
         assert derived.total_cost_usd == pytest.approx(0.20)
 
 
-# --- Snapshot rendering with non-LLM costs ---
+# --- Span tree view with non-LLM costs ---
 
 
 class TestSnapshotCosts:
-    def test_costs_md_total_includes_non_llm_costs(self) -> None:
-        from ai_pipeline_core.database.snapshot._spans import generate_costs_from_tree
-
-        rid = uuid4()
-        base = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
-        deployment = _make_span(root_deployment_id=rid, kind=SpanKind.DEPLOYMENT, cost_usd=0.0, started_at=base, ended_at=base + timedelta(seconds=10))
-        task = _make_span(
-            root_deployment_id=rid,
-            kind=SpanKind.TASK,
-            cost_usd=0.10,
-            parent_span_id=deployment.span_id,
-            started_at=base + timedelta(seconds=1),
-            ended_at=base + timedelta(seconds=5),
-        )
-
-        costs_md = generate_costs_from_tree([deployment, task], rid)
-
-        assert "**Total**: $0.1000" in costs_md
-
-    def test_costs_md_no_llm_rounds_still_shows_total(self) -> None:
-        from ai_pipeline_core.database.snapshot._spans import generate_costs_from_tree
-
-        rid = uuid4()
-        base = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
-        deployment = _make_span(root_deployment_id=rid, kind=SpanKind.DEPLOYMENT, cost_usd=0.0, started_at=base, ended_at=base + timedelta(seconds=10))
-        operation = _make_span(
-            root_deployment_id=rid,
-            kind=SpanKind.OPERATION,
-            cost_usd=0.05,
-            parent_span_id=deployment.span_id,
-            started_at=base + timedelta(seconds=1),
-            ended_at=base + timedelta(seconds=3),
-        )
-
-        costs_md = generate_costs_from_tree([deployment, operation], rid)
-
-        assert "**Total**: $0.0500" in costs_md
-        assert "No `llm_round` spans found" not in costs_md
-
     def test_summary_total_includes_non_llm_costs(self) -> None:
         from ai_pipeline_core.database.snapshot._spans import build_span_tree_view
 
@@ -413,32 +373,3 @@ class TestSnapshotCosts:
 
         assert view is not None
         assert view.totals.cost_usd == pytest.approx(0.10)
-
-    def test_flow_plan_includes_flow_own_cost(self) -> None:
-        from ai_pipeline_core.database.snapshot._spans import generate_summary_from_tree
-
-        rid = uuid4()
-        base = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
-        deployment = _make_span(
-            root_deployment_id=rid,
-            kind=SpanKind.DEPLOYMENT,
-            cost_usd=0.0,
-            started_at=base,
-            ended_at=base + timedelta(seconds=10),
-            meta_json=json.dumps({"flow_plan": [{"name": "CostlyFlow"}]}),
-            deployment_name="test-pipeline",
-        )
-        flow = _make_span(
-            root_deployment_id=rid,
-            kind=SpanKind.FLOW,
-            cost_usd=0.10,
-            parent_span_id=deployment.span_id,
-            name="CostlyFlow",
-            started_at=base + timedelta(seconds=1),
-            ended_at=base + timedelta(seconds=5),
-            sequence_no=1,
-        )
-
-        summary = generate_summary_from_tree([deployment, flow], rid)
-
-        assert "$0.1000" in summary

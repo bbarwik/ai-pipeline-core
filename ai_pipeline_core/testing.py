@@ -36,18 +36,16 @@ async def llm_test_context(
     *,
     output_dir: Path | None = None,
     run_id: str = "llm-test",
-    generate_artifacts: bool = False,
 ) -> AsyncGenerator[DebugSession]:
     """Async context manager for integration tests with filesystem persistence.
 
-    Uses a temporary directory by default. Disables artifact generation
-    for speed unless explicitly requested.
+    Uses a temporary directory by default.
 
     Yields:
         DebugSession: Active session with execution context and filesystem database.
     """
     effective_dir = output_dir or Path(tempfile.mkdtemp(prefix="llm-test-"))
-    async with DebugSession(output_dir=effective_dir, run_id=run_id, generate_artifacts=generate_artifacts) as session:
+    async with DebugSession(output_dir=effective_dir, run_id=run_id) as session:
         yield session
 
 

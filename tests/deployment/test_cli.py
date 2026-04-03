@@ -301,7 +301,7 @@ class TestCliDatabaseFallback:
         )
         assert captured_database._base_path == wd
 
-    def test_cli_generates_artifacts_before_database_shutdown(self, tmp_path: Path) -> None:
+    def test_cli_shuts_down_database_after_run(self, tmp_path: Path) -> None:
         from ai_pipeline_core.deployment._cli import run_cli_for_deployment
 
         database = MagicMock()
@@ -309,10 +309,6 @@ class TestCliDatabaseFallback:
 
         async def _capture_run(self, **kwargs):
             return _CliResult(success=True)
-
-        async def _capture_artifacts(database_arg, output_dir):
-            assert database_arg is database
-            events.append("artifacts")
 
         async def _capture_shutdown(database_arg):
             assert database_arg is database
@@ -325,10 +321,9 @@ class TestCliDatabaseFallback:
             patch("sys.argv", ["test-cli-order", str(wd)]),
             patch.object(PipelineDeployment, "run", _capture_run),
             patch("ai_pipeline_core.deployment._cli._create_span_database_from_settings", return_value=database),
-            patch("ai_pipeline_core.deployment._cli._generate_run_artifacts", _capture_artifacts),
             patch("ai_pipeline_core.deployment._cli._shutdown_database", _capture_shutdown),
             patch("ai_pipeline_core.deployment._cli.settings", Settings(clickhouse_host="")),
         ):
             run_cli_for_deployment(deployment)
 
-        assert events == ["artifacts", "shutdown"]
+        assert events == ["shutdown"]

@@ -22,7 +22,6 @@ from pydantic import BaseModel
 from ai_pipeline_core.database import SpanKind
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
 from ai_pipeline_core.database.filesystem.overlay import create_debug_sink
-from ai_pipeline_core.database.snapshot import generate_run_artifacts
 from ai_pipeline_core.deployment._types import _NoopPublisher
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.logger._buffer import ExecutionLogBuffer
@@ -279,11 +278,9 @@ class DebugSession:
         *,
         output_dir: Path,
         run_id: str | None = None,
-        generate_artifacts: bool = True,
     ) -> None:
         self._output_dir = output_dir
         self._run_id = run_id or _make_debug_run_id("session")
-        self._generate_artifacts = generate_artifacts
         self._deployment_id = uuid7()
         self._doc_counter = 0
         self._database: FilesystemDatabase | None = None
@@ -373,12 +370,6 @@ class DebugSession:
             self._log_flush_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._log_flush_task
-
-            if self._generate_artifacts and self._database is not None:
-                try:
-                    await generate_run_artifacts(self._database, self._deployment_id, self._output_dir)
-                except Exception:
-                    logger.warning("Failed to generate run artifacts", exc_info=True)
 
             if self._database is not None:
                 await _safe_shutdown(self._database)
