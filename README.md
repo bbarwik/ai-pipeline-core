@@ -1400,7 +1400,8 @@ ai-pipeline-core/
 |   +-- exceptions.py      # Framework exceptions (LLMError, DocumentNameError, etc.)
 |-- tools/
 |   |-- dev-cli/           # Dev CLI — enforces correct test/lint/check workflows
-|   +-- docs-generator/    # AI-focused documentation generator (separate workspace package)
+|   |-- docs-generator/    # AI-focused documentation generator (separate workspace package)
+|   +-- trace-inspector/   # Trace inspection — generates markdown debug bundles from execution data
 |-- .ai-docs/             # Auto-generated API guides for AI coding agents
 |-- tests/                 # Comprehensive test suite
 |-- examples/              # Usage examples

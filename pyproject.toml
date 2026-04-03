@@ -211,6 +211,7 @@ max-public-methods = 30
 "tools/dev-cli/**/*.py" = ["T20", "D", "DOC", "TID251", "S", "ARG", "PLW", "PLR", "PLC0415", "PERF", "RUF059", "C901", "E741", "PIE"]
 "tools/docs-generator/**/*.py" = ["T20", "TID251"]
 "tools/docs-generator/tests/**/*.py" = ["T20", "D", "DOC", "PLC0415", "PLC1901", "PLC2701", "S", "ARG", "FBT", "PLW", "PLR", "TRY", "SIM", "ASYNC", "C4", "B017", "B018", "E402", "I001", "PT011", "PT012", "PT017", "PT018", "RUF012", "RUF015", "RUF029", "RUF059", "RUF069", "TID251", "A002"]
+"tools/trace-inspector/**/*.py" = ["T20", "D", "DOC", "TID251", "S", "ARG", "PLR", "PLC0415", "PLC2701", "PERF", "RUF059"]
 
 [tool.ruff.format]
 # Use double quotes for strings
@@ -247,7 +248,7 @@ ignore-setters = true
 [tool.basedpyright]
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
-include = ["ai_pipeline_core"]
+include = ["ai_pipeline_core", "tools/trace-inspector/src"]
 exclude = [
     "**/__pycache__",
     "**/node_modules",
@@ -316,7 +317,7 @@ include = [
 ]
 
 [tool.uv.workspace]
-members = ["tools/docs-generator", "tools/dev-cli"]
+members = ["tools/docs-generator", "tools/dev-cli", "tools/trace-inspector"]
 
 [tool.dev-cli.infrastructure]
 integration = { env = ["OPENAI_API_KEY", "OPENAI_BASE_URL"], label = "LLM API" }
@@ -327,3 +328,5 @@ pubsub_live = { env = ["PUBSUB_PROJECT_ID"], label = "Pub/Sub live (GCP)" }
 [tool.uv.sources]
 docs-generator = { workspace = true }
 dev-cli = { workspace = true }
+trace-inspector = { workspace = true }
+ai-pipeline-core = { workspace = true }
