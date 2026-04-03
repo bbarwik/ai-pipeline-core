@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _CONTENT_PREVIEW_LENGTH = 200
 
 
-def infer_db_path(replay_file: Path) -> Path:
+def _infer_db_path(replay_file: Path) -> Path:
     """Walk up from a replay file to find a snapshot root."""
     current = replay_file.resolve().parent
     while current != current.parent:
@@ -65,7 +65,7 @@ def _resolve_database_for_span(db_path: str | None) -> tuple[Database, str]:
 
 
 def _resolve_database_for_file(replay_file: Path, db_path: str | None) -> tuple[FilesystemDatabase, str]:
-    resolved_path = Path(db_path).resolve() if db_path else infer_db_path(replay_file)
+    resolved_path = Path(db_path).resolve() if db_path else _infer_db_path(replay_file)
     return FilesystemDatabase(resolved_path, read_only=True), str(resolved_path)
 
 

@@ -15,7 +15,7 @@ from ai_pipeline_core._llm_core.types import TokenUsage
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.llm import Conversation
 from ai_pipeline_core.prompt_compiler.components import Role
-from ai_pipeline_core.prompt_compiler.render import render_multi_line_messages, render_preview, render_text
+from ai_pipeline_core.prompt_compiler.render import _render_multi_line_messages, render_preview, render_text
 from ai_pipeline_core.prompt_compiler.spec import (
     ListField,
     PromptSpec,
@@ -203,7 +203,7 @@ def test_structured_field_renders_json_in_xml() -> None:
         finding: Finding = StructuredField(description="Primary finding")
 
     spec = RenderStructSpec(finding=Finding(title="Oracle attack", severity="critical"))
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
 
     assert len(messages) == 1
     field_name, xml_block = messages[0]
@@ -241,7 +241,7 @@ def test_structured_field_nested_model() -> None:
         detail: NestedDetail = StructuredField(description="Detail")
 
     spec = NestedSpec(detail=NestedDetail(category="infra", tags=["aws", "k8s"]))
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     assert len(messages) == 1
     _, xml_block = messages[0]
     assert '"category": "infra"' in xml_block
@@ -271,7 +271,7 @@ def test_list_field_renders_items_in_xml() -> None:
             Finding(title="C", severity="medium"),
         ]
     )
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
 
     assert len(messages) == 1
     field_name, xml_block = messages[0]
@@ -319,7 +319,7 @@ def test_list_field_single_item() -> None:
         findings: list[Finding] = ListField(description="Findings")
 
     spec = SingleSpec(findings=[Finding(title="Only", severity="low")])
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     _, xml_block = messages[0]
     assert "<item_1>" in xml_block
     assert "<item_2>" not in xml_block
@@ -344,7 +344,7 @@ def test_list_field_string_items() -> None:
         queries: list[str] = ListField(description="Search queries")
 
     spec = StringListSpec(queries=["defi oracle", "flash loan exploit"])
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
 
     assert len(messages) == 1
     _, xml_block = messages[0]
@@ -369,7 +369,7 @@ def test_list_field_empty_list() -> None:
         items: list[str] = ListField(description="Items", default=[])
 
     spec = EmptyListSpec()
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
 
     assert len(messages) == 1
     _, xml_block = messages[0]
@@ -420,7 +420,7 @@ def test_mixed_field_types_coexist() -> None:
     # ListField placeholder with count
     assert "(1 items provided in <findings> tags in previous message)" in rendered
 
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     field_names = [name for name, _ in messages]
     assert field_names == ["feedback", "finding", "findings"]
 
@@ -442,7 +442,7 @@ def test_mixed_fields_preserve_declaration_order() -> None:
         beta=["b1", "b2"],
         gamma="short",
     )
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     assert [name for name, _ in messages] == ["alpha", "beta"]
 
 
@@ -672,7 +672,7 @@ def test_list_field_with_nested_models() -> None:
             NestedDetail(category="app", tags=["python"]),
         ]
     )
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     _, xml_block = messages[0]
     assert "<item_1>" in xml_block
     assert '"category": "infra"' in xml_block
@@ -701,7 +701,7 @@ def test_follow_up_spec_with_structured_field() -> None:
     assert "# Role" not in rendered
     assert "(provided in <finding> tags in previous message)" in rendered
 
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     assert len(messages) == 1
     assert messages[0][0] == "finding"
 
@@ -739,7 +739,7 @@ def test_structured_field_json_is_indented() -> None:
         finding: Finding = StructuredField(description="Finding")
 
     spec = IndentSpec(finding=Finding(title="Test", severity="high"))
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     _, xml_block = messages[0]
     # indent=2 means fields should be on separate lines with 2-space indent
     assert '  "title": "Test"' in xml_block
@@ -759,6 +759,6 @@ def test_list_field_basemodel_items_json_is_indented() -> None:
         findings: list[Finding] = ListField(description="Findings")
 
     spec = IndentListSpec(findings=[Finding(title="Test", severity="high")])
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     _, xml_block = messages[0]
     assert '  "title": "Test"' in xml_block

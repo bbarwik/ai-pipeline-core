@@ -29,7 +29,6 @@ from .documents import (
     find_all,
     find_document,
     find_latest,
-    is_document_sha256,
     replace_extension,
     sanitize_url,
 )
@@ -53,7 +52,6 @@ from .llm import (
     ToolOutput,
 )
 from .logger import (
-    LoggingConfig,
     setup_logging,
 )
 from .pipeline import (
@@ -76,6 +74,13 @@ from .pipeline import (
     traced_operation,
 )
 from .prompt_compiler import Guide, ListField, MultiLineField, OutputRule, OutputT, PromptSpec, Role, Rule, StructuredField, render_preview, render_text
+from .providers import (
+    ExternalProvider,
+    ProviderAuthError,
+    ProviderError,
+    ProviderOutcome,
+    StatelessPollingProvider,
+)
 from .replay import ExperimentOverrides, ExperimentResult, execute_span, experiment_batch, experiment_span
 from .settings import Settings
 
@@ -97,12 +102,12 @@ __all__ = [
     "DocumentValidationError",
     "ExperimentOverrides",
     "ExperimentResult",
+    "ExternalProvider",
     "FlowOptions",
     "Guide",
     "LLMError",
     "LimitKind",
     "ListField",
-    "LoggingConfig",
     "ModelName",
     "ModelOptions",
     "MultiLineField",
@@ -116,10 +121,14 @@ __all__ = [
     "PipelineLimit",
     "PipelineTask",
     "PromptSpec",
+    "ProviderAuthError",
+    "ProviderError",
+    "ProviderOutcome",
     "RemoteDeployment",
     "Role",
     "Rule",
     "Settings",
+    "StatelessPollingProvider",
     "StructuredField",
     "StubNotImplementedError",
     "TaskBatch",
@@ -139,7 +148,6 @@ __all__ = [
     "find_document",
     "find_latest",
     "get_run_id",
-    "is_document_sha256",
     "llm",
     "pipeline_concurrency",
     "pipeline_test_context",

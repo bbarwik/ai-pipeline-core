@@ -2,7 +2,7 @@
 # CLASSES: DeploymentResult, FlowAction, FlowDirective, PipelineDeployment, RemoteDeployment
 # DEPENDS: BaseModel, Generic, StrEnum
 # PURPOSE: Pipeline deployment utilities for unified, type-safe deployments.
-# VERSION: 0.19.2
+# VERSION: 0.19.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports

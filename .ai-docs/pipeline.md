@@ -2,7 +2,7 @@
 # CLASSES: LimitKind, PipelineLimit, FlowOptions, PipelineFlow, TaskHandle, TaskBatch, PipelineTask
 # DEPENDS: BaseModel, StrEnum
 # PURPOSE: Pipeline framework primitives.
-# VERSION: 0.19.2
+# VERSION: 0.19.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -679,7 +679,7 @@ def test_pipeline_test_context_sets_and_restores() -> None:
     assert get_execution_context() is before
 ```
 
-**Add cost persists to span record** (`tests/pipeline/test_add_cost.py:265`)
+**Add cost persists to span record** (`tests/pipeline/test_add_cost.py:264`)
 
 ```python
 @pytest.mark.asyncio
@@ -798,7 +798,7 @@ def test_flow_options_is_frozen(self):
         options.core_model = "new-model"
 ```
 
-**Inf raises** (`tests/pipeline/test_add_cost.py:202`)
+**Inf raises** (`tests/pipeline/test_add_cost.py:201`)
 
 ```python
 def test_inf_raises(self) -> None:

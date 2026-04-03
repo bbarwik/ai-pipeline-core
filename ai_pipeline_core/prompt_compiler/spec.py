@@ -22,8 +22,8 @@ OutputT = TypeVar("OutputT", default=str)
 
 _XML_TAG_PATTERN = re.compile(r"</?[a-zA-Z]\w*[\s>/]")
 
-MAX_TASK_CHARS = 2000
-MAX_TASK_LINES = 40
+_MAX_TASK_CHARS = 2000
+_MAX_TASK_LINES = 40
 
 # Pattern matching Python-style {identifier} placeholders in task text
 _FIELD_PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
@@ -184,7 +184,7 @@ def _warn_large_task(name: str, task: str) -> None:
     """Warn when task text is excessively large — suggest using Guides for detailed instructions."""
     char_count = len(task)
     line_count = len(task.splitlines())
-    if char_count <= MAX_TASK_CHARS and line_count <= MAX_TASK_LINES:
+    if char_count <= _MAX_TASK_CHARS and line_count <= _MAX_TASK_LINES:
         return
     logger.warning(
         "PromptSpec '%s' task is too large (%d chars, %d lines). "
@@ -194,8 +194,8 @@ def _warn_large_task(name: str, task: str) -> None:
         name,
         char_count,
         line_count,
-        MAX_TASK_CHARS,
-        MAX_TASK_LINES,
+        _MAX_TASK_CHARS,
+        _MAX_TASK_LINES,
     )
 
 

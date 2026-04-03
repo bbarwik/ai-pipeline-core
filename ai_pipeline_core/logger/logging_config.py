@@ -13,7 +13,6 @@ from typing import Any
 import yaml
 
 __all__ = [
-    "LoggingConfig",
     "setup_logging",
 ]
 
@@ -27,7 +26,7 @@ _DEFAULT_LOG_LEVELS = {
 }
 
 
-class LoggingConfig:
+class _LoggingConfig:
     """Manages logging configuration for the pipeline.
 
     Provides centralized logging configuration with stdlib logging.
@@ -151,7 +150,7 @@ class LoggingConfig:
 
 
 # Global configuration instance
-_logging_config: LoggingConfig | None = None
+_logging_config: _LoggingConfig | None = None
 _setup_lock = threading.Lock()
 
 
@@ -170,7 +169,7 @@ def setup_logging(config_path: Path | None = None, level: str | None = None) -> 
     global _logging_config  # noqa: PLW0603
 
     with _setup_lock:
-        _logging_config = LoggingConfig(config_path)
+        _logging_config = _LoggingConfig(config_path)
         _logging_config.apply()
 
         # Override level if provided

@@ -1,6 +1,6 @@
 [project]
 name = "ai-pipeline-core"
-version = "0.19.2"
+version = "0.19.3"
 description = "Core utilities for AI-powered processing pipelines using prefect"
 readme = "README.md"
 license = {text = "MIT"}
@@ -168,6 +168,7 @@ max-public-methods = 30
 "dependencies_docs/**/*.py" = ["D", "DOC", "PLC0415"]
 ".vulture_whitelist.py" = ["B018", "E402", "F401", "F821", "D", "PLC2701"]
 "ai_pipeline_core/__init__.py" = ["RUF067", "TID251"]
+"ai_pipeline_core/providers.py" = ["PLR6301"]
 "ai_pipeline_core/testing.py" = ["TID251"]
 "ai_pipeline_core/deployment/_cli.py" = ["TID251", "PLR0912", "PLR0914", "PLR0915", "UP047"]
 "ai_pipeline_core/deployment/_helpers.py" = ["PLC0415", "BLE001"]

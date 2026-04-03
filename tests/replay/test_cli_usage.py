@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from ai_pipeline_core.database.filesystem._backend import FilesystemDatabase
-from ai_pipeline_core.replay.cli import infer_db_path, main
+from ai_pipeline_core.replay.cli import _infer_db_path, main
 from tests.replay.conftest import make_span
 
 
@@ -179,10 +179,10 @@ def test_main_batch_uses_find_and_experiment_helpers(tmp_path: Path, monkeypatch
     assert "Ran 1 replay experiments" in capsys.readouterr().out
 
 
-def test_infer_db_path_finds_span_snapshot_root(tmp_path: Path) -> None:
+def test__infer_db_path_finds_span_snapshot_root(tmp_path: Path) -> None:
     snapshot_root = tmp_path / "snapshot"
     (snapshot_root / "spans").mkdir(parents=True)
     replay_file = snapshot_root / "spans" / f"{uuid4()}.json"
     replay_file.write_text("{}", encoding="utf-8")
 
-    assert infer_db_path(replay_file) == snapshot_root
+    assert _infer_db_path(replay_file) == snapshot_root

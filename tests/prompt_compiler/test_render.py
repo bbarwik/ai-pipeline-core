@@ -13,7 +13,7 @@ from ai_pipeline_core.documents import Document
 from ai_pipeline_core.prompt_compiler.components import Guide, OutputRule, Role, Rule
 from ai_pipeline_core.prompt_compiler.render import (
     _MAX_FIELD_VALUE_LENGTH,
-    RESULT_OPEN,
+    _RESULT_OPEN,
     _format_numbered_rule,
     _pascal_to_title,
     _render_documents_actual,
@@ -487,7 +487,7 @@ def test_render_text_output_rules_before_structure() -> None:
     assert rules_pos < structure_pos
     assert "1. Use bullet list format" in rendered
     assert "## Section" in rendered
-    assert RESULT_OPEN in rendered
+    assert _RESULT_OPEN in rendered
 
 
 def test_render_text_documents_empty_list_uses_preview() -> None:
@@ -801,8 +801,8 @@ class TestFieldValueValidation:
         assert len(caplog.records) == 0
 
     def test_auto_promoted_field_in_multi_line_messages(self):
-        """Auto-promoted regular fields appear in render_multi_line_messages output."""
-        from ai_pipeline_core.prompt_compiler.render import render_multi_line_messages
+        """Auto-promoted regular fields appear in _render_multi_line_messages output."""
+        from ai_pipeline_core.prompt_compiler.render import _render_multi_line_messages
 
         class AutoSpec(PromptSpec):
             """Doc."""
@@ -813,6 +813,6 @@ class TestFieldValueValidation:
             feedback: str = Field(description="Feedback")
 
         spec = AutoSpec(feedback="line1\nline2")
-        messages = render_multi_line_messages(spec)
+        messages = _render_multi_line_messages(spec)
         assert len(messages) == 1
         assert messages[0] == ("feedback", "<feedback>line1\nline2</feedback>")

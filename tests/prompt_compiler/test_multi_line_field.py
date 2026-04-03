@@ -223,14 +223,14 @@ def test_render_text_multi_line_field_only_no_regular_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Rendering: render_multi_line_messages
+# Rendering: _render_multi_line_messages
 # ---------------------------------------------------------------------------
 
 
-def test_render_multi_line_messages_returns_xml_blocks() -> None:
-    """render_multi_line_messages returns list of (field_name, xml_string) pairs."""
+def test__render_multi_line_messages_returns_xml_blocks() -> None:
+    """_render_multi_line_messages returns list of (field_name, xml_string) pairs."""
     from ai_pipeline_core.prompt_compiler import MultiLineField
-    from ai_pipeline_core.prompt_compiler.render import render_multi_line_messages
+    from ai_pipeline_core.prompt_compiler.render import _render_multi_line_messages
 
     class MsgSpec(PromptSpec):
         """Doc."""
@@ -244,7 +244,7 @@ def test_render_multi_line_messages_returns_xml_blocks() -> None:
         project: str = Field(description="Project name")
 
     spec = MsgSpec(review="review content", notes="note content", project="ACME")
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
 
     assert len(messages) == 2
     field_names = [name for name, _ in messages]
@@ -256,9 +256,9 @@ def test_render_multi_line_messages_returns_xml_blocks() -> None:
         assert xml_block == f"<{field_name}>{getattr(spec, field_name)}</{field_name}>"
 
 
-def test_render_multi_line_messages_empty_when_no_multi_line_fields() -> None:
-    """render_multi_line_messages returns empty list when no multi-line fields."""
-    from ai_pipeline_core.prompt_compiler.render import render_multi_line_messages
+def test__render_multi_line_messages_empty_when_no_multi_line_fields() -> None:
+    """_render_multi_line_messages returns empty list when no multi-line fields."""
+    from ai_pipeline_core.prompt_compiler.render import _render_multi_line_messages
 
     class NoMlSpec(PromptSpec):
         """Doc."""
@@ -269,14 +269,14 @@ def test_render_multi_line_messages_empty_when_no_multi_line_fields() -> None:
 
         item: str = Field(description="Item")
 
-    messages = render_multi_line_messages(NoMlSpec(item="x"))
+    messages = _render_multi_line_messages(NoMlSpec(item="x"))
     assert messages == []
 
 
-def test_render_multi_line_messages_preserves_field_order() -> None:
+def test__render_multi_line_messages_preserves_field_order() -> None:
     """Multi-line messages are returned in field declaration order."""
     from ai_pipeline_core.prompt_compiler import MultiLineField
-    from ai_pipeline_core.prompt_compiler.render import render_multi_line_messages
+    from ai_pipeline_core.prompt_compiler.render import _render_multi_line_messages
 
     class OrderSpec(PromptSpec):
         """Doc."""
@@ -290,7 +290,7 @@ def test_render_multi_line_messages_preserves_field_order() -> None:
         third: str = MultiLineField(description="Third")
 
     spec = OrderSpec(first="a", second="b", third="c")
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     assert [name for name, _ in messages] == ["first", "second", "third"]
 
 
@@ -383,8 +383,8 @@ def test_regular_field_long_value_auto_promoted() -> None:
 
 
 def test_regular_field_auto_promoted_included_in_multi_line_messages() -> None:
-    """Auto-promoted regular fields are included in render_multi_line_messages output."""
-    from ai_pipeline_core.prompt_compiler.render import render_multi_line_messages
+    """Auto-promoted regular fields are included in _render_multi_line_messages output."""
+    from ai_pipeline_core.prompt_compiler.render import _render_multi_line_messages
 
     class AutoSpec(PromptSpec):
         """Doc."""
@@ -398,7 +398,7 @@ def test_regular_field_auto_promoted_included_in_multi_line_messages() -> None:
 
     long_value = "x" * (_MAX_FIELD_VALUE_LENGTH + 1)
     spec = AutoSpec(feedback=long_value, item="short")
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     field_names = [name for name, _ in messages]
     assert "feedback" in field_names
     assert "item" not in field_names

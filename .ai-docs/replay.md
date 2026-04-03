@@ -1,7 +1,7 @@
 # MODULE: replay
 # CLASSES: ExperimentResult, ExperimentOverrides
 # PURPOSE: Generic replay and experimentation entry points.
-# VERSION: 0.19.2
+# VERSION: 0.19.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -39,16 +39,6 @@ class ExperimentOverrides:
 ## Functions
 
 ```python
-def infer_db_path(replay_file: Path) -> Path:
-    """Walk up from a replay file to find a snapshot root."""
-    current = replay_file.resolve().parent
-    while current != current.parent:
-        if (current / "spans").is_dir() or (current / "blobs").is_dir():
-            return current
-        current = current.parent
-    raise FileNotFoundError(f"Could not find a snapshot root above {replay_file}. Use --db-path to point at the FilesystemDatabase root.")
-
-
 def main(argv: list[str] | None = None) -> int:
     """Run the replay CLI."""
     parser = argparse.ArgumentParser(prog="ai-replay", description="Execute or inspect replayable spans")
@@ -376,18 +366,6 @@ def test_main_batch_uses_find_and_experiment_helpers(tmp_path: Path, monkeypatch
     assert "Ran 1 replay experiments" in capsys.readouterr().out
 ```
 
-**Infer db path finds span snapshot root** (`tests/replay/test_cli_usage.py:182`)
-
-```python
-def test_infer_db_path_finds_span_snapshot_root(tmp_path: Path) -> None:
-    snapshot_root = tmp_path / "snapshot"
-    (snapshot_root / "spans").mkdir(parents=True)
-    replay_file = snapshot_root / "spans" / f"{uuid4()}.json"
-    replay_file.write_text("{}", encoding="utf-8")
-
-    assert infer_db_path(replay_file) == snapshot_root
-```
-
 **Execute span installs replay execution context** (`tests/replay/test_execute_span.py:121`)
 
 ```python
@@ -407,6 +385,39 @@ async def test_execute_span_installs_replay_execution_context(memory_database) -
     assert _SEEN_CONTEXT["run_id"].startswith(f"replay-{str(span.span_id)[:8]}-")
     assert _SEEN_CONTEXT["publisher_type"] is _NoopPublisher
     assert _SEEN_CONTEXT["disable_cache"] is True
+```
+
+**Execute span copies input artifacts when source and sink differ** (`tests/replay/test_replay_portability.py:17`)
+
+```python
+@pytest.mark.asyncio
+async def test_execute_span_copies_input_artifacts_when_source_and_sink_differ(
+    memory_database,
+    sample_text_doc: ReplayTextDocument,
+) -> None:
+    sink_database = type(memory_database)()
+    await store_document_in_database(memory_database, sample_text_doc)
+    payload = b"binary-payload"
+    payload_sha = compute_content_sha256(payload)
+    await memory_database.save_blob(_BlobRecord(content_sha256=payload_sha, content=payload))
+
+    span = make_span(
+        kind="task",
+        name="portable",
+        target=f"function:{__name__}:portability_function",
+        input_value={"document": sample_text_doc, "payload": payload},
+    )
+    await memory_database.insert_span(span)
+
+    result = await execute_span(
+        span.span_id,
+        source_db=memory_database,
+        sink_db=sink_database,
+    )
+
+    assert result == f"{sample_text_doc.name}:{len(payload)}"
+    assert await sink_database.get_document(sample_text_doc.sha256) is not None
+    assert await sink_database.get_blob(payload_sha) is not None
 ```
 
 

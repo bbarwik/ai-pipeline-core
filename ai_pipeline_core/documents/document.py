@@ -39,7 +39,7 @@ from ai_pipeline_core._token_estimates import estimate_binary_tokens, estimate_i
 from ai_pipeline_core.documents._context import DocumentSha256
 from ai_pipeline_core.documents._hashing import compute_content_sha256, compute_document_sha256
 from ai_pipeline_core.documents.exceptions import DocumentNameError, DocumentSizeError
-from ai_pipeline_core.documents.utils import _DATA_URI_PATTERN, _serialize_content_bytes, is_document_sha256
+from ai_pipeline_core.documents.utils import _DATA_URI_PATTERN, _is_document_sha256, _serialize_content_bytes
 
 from ._mime_type import (
     detect_mime_type,
@@ -626,7 +626,7 @@ class Document[TContent: BaseModel = Any](BaseModel):
     def _validate_derived_from(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         """derived_from must be document SHA256 hashes or URLs. URIs are size-capped."""
         for src in v:
-            if is_document_sha256(src):
+            if _is_document_sha256(src):
                 continue
             if "://" not in src:
                 raise ValueError(f"derived_from entry must be a document SHA256 hash or a URL (containing '://'), got: {src!r}")
@@ -649,14 +649,14 @@ class Document[TContent: BaseModel = Any](BaseModel):
     def _validate_triggered_by(cls, v: tuple[DocumentSha256, ...]) -> tuple[DocumentSha256, ...]:
         """triggered_by must be valid document SHA256 hashes."""
         for trigger in v:
-            if not is_document_sha256(trigger):
+            if not _is_document_sha256(trigger):
                 raise ValueError(f"triggered_by entry must be a document SHA256 hash, got: {trigger}")
         return v
 
     @model_validator(mode="after")
     def _validate_no_provenance_overlap(self) -> Self:
         """Reject documents where the same SHA256 appears in both derived_from and triggered_by."""
-        derived_sha256s = {src for src in self.derived_from if is_document_sha256(src)}
+        derived_sha256s = {src for src in self.derived_from if _is_document_sha256(src)}
         if derived_sha256s:
             overlap = derived_sha256s & set(self.triggered_by)
             if overlap:
@@ -838,13 +838,13 @@ class Document[TContent: BaseModel = Any](BaseModel):
 
     @property
     def content_documents(self) -> tuple[str, ...]:
-        """Document SHA256 hashes from derived_from (filtered by is_document_sha256)."""
-        return tuple(src for src in self.derived_from if is_document_sha256(src))
+        """Document SHA256 hashes from derived_from (filtered by _is_document_sha256)."""
+        return tuple(src for src in self.derived_from if _is_document_sha256(src))
 
     @property
     def content_references(self) -> tuple[str, ...]:
         """Non-hash reference strings from derived_from (URLs, file paths, etc.)."""
-        return tuple(src for src in self.derived_from if not is_document_sha256(src))
+        return tuple(src for src in self.derived_from if not _is_document_sha256(src))
 
     def has_derived_from(self, source: Document | str) -> bool:
         """Check if a source (Document or string) is in this document's derived_from."""

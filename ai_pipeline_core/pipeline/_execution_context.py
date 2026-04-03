@@ -26,7 +26,7 @@ from ai_pipeline_core._execution_context_state import (
 )
 from ai_pipeline_core.database._protocol import DatabaseWriter
 from ai_pipeline_core.documents import Document, DocumentSha256
-from ai_pipeline_core.documents.utils import is_document_sha256
+from ai_pipeline_core.documents.utils import _is_document_sha256
 from ai_pipeline_core.logger._buffer import ExecutionLogBuffer
 from ai_pipeline_core.logger._handler import LogContext, reset_log_context, set_log_context
 from ai_pipeline_core.pipeline._span_types import SpanSink
@@ -137,7 +137,7 @@ class _TaskDocumentContext:
 
         for doc in documents:
             for src in doc.derived_from:
-                if not is_document_sha256(src):
+                if not _is_document_sha256(src):
                     continue
                 if src in self.output_sha256s and src != doc.sha256:
                     warnings.append(f"Document '{doc.name}' references derived_from {src[:12]}... created in the same task (same-task interdependency)")

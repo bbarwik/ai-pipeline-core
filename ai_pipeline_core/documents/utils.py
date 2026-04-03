@@ -18,7 +18,6 @@ __all__ = [
     "find_all",
     "find_document",
     "find_latest",
-    "is_document_sha256",
     "replace_extension",
     "sanitize_url",
 ]
@@ -67,7 +66,7 @@ def sanitize_url(url: str) -> str:
 _MIN_HASH_UNIQUE_CHARS = 6
 
 
-def is_document_sha256(value: str) -> bool:
+def _is_document_sha256(value: str) -> bool:  # pyright: ignore[reportUnusedFunction]  # used by document.py, _execution_context.py
     """Check if a string is a valid base32-encoded SHA256 hash (26 chars, A-Z2-7, sufficient entropy)."""
     if not isinstance(value, str) or len(value) != 26:  # pyright: ignore[reportUnnecessaryIsInstance]
         return False

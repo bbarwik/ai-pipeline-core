@@ -2,7 +2,7 @@
 # CLASSES: Citation, TokenUsage, ModelOptions, Conversation, ToolOutput, Tool, ToolCallRecord
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.19.2
+# VERSION: 0.19.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -32,8 +32,6 @@ type ModelName = (
     ]
     | str
 )
-
-MAX_TOOL_ROUNDS_DEFAULT = 10
 ```
 
 ## Public API
@@ -294,7 +292,7 @@ class Conversation(BaseModel, Generic[T]):
         *,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> Conversation[str]:
@@ -323,7 +321,7 @@ class Conversation(BaseModel, Generic[T]):
         include_input_documents: bool = True,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> Conversation[str]: ...
@@ -337,7 +335,7 @@ class Conversation(BaseModel, Generic[T]):
         include_input_documents: bool = True,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> Conversation[U]: ...
@@ -350,7 +348,7 @@ class Conversation(BaseModel, Generic[T]):
         include_input_documents: bool = True,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> Conversation[Any]:
@@ -388,8 +386,8 @@ class Conversation(BaseModel, Generic[T]):
         # Set stop sequence when output_structure is set (result tag wrapping)
         if spec.output_structure is not None:
             opts = conv.model_options or ModelOptions()
-            if RESULT_CLOSE not in (opts.stop or ()):
-                stop = (*opts.stop, RESULT_CLOSE) if opts.stop else (RESULT_CLOSE,)
+            if _RESULT_CLOSE not in (opts.stop or ()):
+                stop = (*opts.stop, _RESULT_CLOSE) if opts.stop else (_RESULT_CLOSE,)
                 conv = conv.with_model_options(opts.model_copy(update={"stop": stop}))  # nosemgrep: no-document-model-copy
 
         # Determine whether to include input documents in prompt text
@@ -400,7 +398,7 @@ class Conversation(BaseModel, Generic[T]):
             effective_include_docs = include_input_documents
 
         # Add multi-line field values as a single user message before the prompt
-        ml_messages = render_multi_line_messages(spec)
+        ml_messages = _render_multi_line_messages(spec)
         if ml_messages:
             combined = "\n".join(xml_block for _, xml_block in ml_messages)
             conv = conv.model_copy(update={"messages": conv.messages + (UserMessage(combined),)})
@@ -441,7 +439,7 @@ class Conversation(BaseModel, Generic[T]):
         *,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> Conversation[U]:
@@ -546,7 +544,7 @@ class Tool:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        cls.name = to_snake_case(cls.__name__)
+        cls.name = _to_snake_case(cls.__name__)
 
         if cls.__dict__.get("_abstract_tool", False) is True:
             return
@@ -624,42 +622,6 @@ class ToolCallRecord:
     input: BaseModel
     output: ToolOutput
     round: int
-```
-
-## Functions
-
-```python
-def to_snake_case(name: str) -> str:
-    """Convert PascalCase to snake_case, handling consecutive capitals.
-
-    >>> to_snake_case("HTTPClient")
-    'http_client'
-    >>> to_snake_case("GetWeather")
-    'get_weather'
-    """
-    return _SNAKE_RE.sub("_", name).lower()
-
-
-def generate_tool_schema(tool: Tool) -> dict[str, Any]:
-    """Generate OpenAI Chat Completions tool schema from a Tool instance.
-
-    Example::
-
-        schema = generate_tool_schema(my_tool_instance)
-        # {"type": "function", "function": {"name": "...", "description": "...", ...}}
-    """
-    tool_cls = type(tool)
-    schema = tool_cls.Input.model_json_schema()
-    _make_strict_schema(schema)
-    return {
-        "type": "function",
-        "function": {
-            "name": tool_cls.name,
-            "description": dedent(tool_cls.__doc__ or "").strip(),
-            "parameters": schema,
-            "strict": True,
-        },
-    }
 ```
 
 ## Examples
@@ -816,33 +778,6 @@ def test_citation_has_slots(self):
     assert hasattr(Citation, "__slots__"), "Citation should have slots=True"
 ```
 
-**Generate tool schema all fields required** (`tests/llm/test_tools.py:203`)
-
-```python
-def test_generate_tool_schema_all_fields_required() -> None:
-    """Strict mode ensures all fields are in required list."""
-    schema = generate_tool_schema(GetWeather())
-    params = schema["function"]["parameters"]
-    assert set(params["required"]) == {"city", "unit"}
-```
-
-**Generate tool schema basic** (`tests/llm/test_tools.py:166`)
-
-```python
-def test_generate_tool_schema_basic() -> None:
-    schema = generate_tool_schema(GetWeather())
-    assert schema["type"] == "function"
-    func = schema["function"]
-    assert func["name"] == "get_weather"
-    assert "Get the current weather" in func["description"]
-    assert func["strict"] is True
-    params = func["parameters"]
-    assert params["type"] == "object"
-    assert "city" in params["properties"]
-    assert "unit" in params["properties"]
-    assert params["additionalProperties"] is False
-```
-
 **Tool calls for empty when no match** (`tests/llm/test_conversation_tools.py:212`)
 
 ```python
@@ -872,6 +807,45 @@ def test_tool_calls_for_returns_tuple() -> None:
 def test_tool_with_custom_output() -> None:
     """Tool with custom Output extending BaseModel is valid."""
     assert issubclass(CustomOutputTool.Output, BaseModel)
+```
+
+**Tool call record frozen** (`tests/llm/test_tools.py:243`)
+
+```python
+def test_tool_call_record_frozen() -> None:
+    tool_output = GetWeather.Output(weather="sunny")
+    record = ToolCallRecord(
+        tool=GetWeather,
+        input=GetWeather.Input(city="Paris"),
+        output=ToolOutput(content=tool_output.model_dump_json(), data=tool_output),
+        round=1,
+    )
+    assert record.tool is GetWeather
+    assert record.round == 1
+```
+
+**Tool call records not accumulated across sends** (`tests/llm/test_conversation_tools.py:232`)
+
+```python
+def test_tool_call_records_not_accumulated_across_sends() -> None:
+    """Each send() call produces independent tool_call_records — no cross-send accumulation.
+
+    Phase 1 records must NOT appear in Phase 2's tool_call_records.
+    This enables the collection pattern: phase1.tool_call_records + phase2.tool_call_records.
+    """
+    phase1_records = (ToolCallRecord(tool=ToolA, input=ToolA.Input(x="a"), output=ToolOutput(content="r1"), round=1),)
+    conv_after_phase1 = Conversation(model="test").model_copy(update={"_tool_call_records": phase1_records})
+
+    phase2_records = (ToolCallRecord(tool=ToolB, input=ToolB.Input(y="b"), output=ToolOutput(content="r2"), round=1),)
+    conv_after_phase2 = conv_after_phase1.model_copy(update={"_tool_call_records": phase2_records})
+
+    # Phase 1 has only its own records
+    assert len(conv_after_phase1.tool_call_records) == 1
+    assert conv_after_phase1.tool_call_records[0].tool is ToolA
+
+    # Phase 2 has only its own records — NOT phase1 + phase2
+    assert len(conv_after_phase2.tool_call_records) == 1
+    assert conv_after_phase2.tool_call_records[0].tool is ToolB
 ```
 
 

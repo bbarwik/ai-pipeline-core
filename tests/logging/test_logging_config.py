@@ -11,28 +11,28 @@ from ai_pipeline_core.database import LogRecord
 from ai_pipeline_core.logger import setup_logging
 from ai_pipeline_core.logger._buffer import ExecutionLogBuffer
 from ai_pipeline_core.logger._handler import ExecutionLogHandler
-from ai_pipeline_core.logger.logging_config import LoggingConfig
+from ai_pipeline_core.logger.logging_config import _LoggingConfig
 
 
-class TestLoggingConfig:
-    """Test LoggingConfig class."""
+class Test_LoggingConfig:
+    """Test _LoggingConfig class."""
 
     def test_default_config_path_from_env(self):
         """Test getting config path from environment."""
         with patch.dict(os.environ, {"AI_PIPELINE_LOGGING_CONFIG": "/path/to/config.yml"}):
-            config = LoggingConfig()
+            config = _LoggingConfig()
             assert config.config_path == Path("/path/to/config.yml")
 
     def test_default_config_path_from_prefect_env(self):
         """Test getting config path from Prefect environment."""
         with patch.dict(os.environ, {"PREFECT_LOGGING_SETTINGS_PATH": "/prefect/config.yml"}):
-            config = LoggingConfig()
+            config = _LoggingConfig()
             assert config.config_path == Path("/prefect/config.yml")
 
     def test_no_config_path_returns_none(self):
         """Test that no env vars results in None config path."""
         with patch.dict(os.environ, clear=True):
-            config = LoggingConfig()
+            config = _LoggingConfig()
             assert config.config_path is None
 
     def test_load_config_from_file(self, tmp_path: Path) -> None:
@@ -46,7 +46,7 @@ handlers:
     class: logging.StreamHandler
 """)
 
-        config = LoggingConfig(config_path=config_file)
+        config = _LoggingConfig(config_path=config_file)
         loaded = config.load_config()
 
         assert loaded["version"] == 1
@@ -55,7 +55,7 @@ handlers:
 
     def test_load_default_config_when_no_file(self):
         """Test loading default config when no file exists."""
-        config = LoggingConfig()
+        config = _LoggingConfig()
         loaded = config.load_config()
 
         assert loaded["version"] == 1
@@ -70,7 +70,7 @@ handlers:
 
     def test_default_config_suppresses_noisy_third_party_loggers(self):
         """httpx and httpcore INFO logs must be suppressed by default."""
-        config = LoggingConfig()
+        config = _LoggingConfig()
         loaded = config.load_config()
         loggers = loaded["loggers"]
 
@@ -80,7 +80,7 @@ handlers:
     @patch("logging.config.dictConfig")
     def test_apply_config(self, mock_dict_config: Mock) -> None:
         """Test applying logging configuration."""
-        config = LoggingConfig()
+        config = _LoggingConfig()
         config.apply()
 
         mock_dict_config.assert_called_once()
@@ -93,8 +93,8 @@ handlers:
         with patch.dict(os.environ, clear=True):
             # Use patch to inject the config during initialization
             custom_config = {"version": 1, "loggers": {"prefect": {"level": "DEBUG"}}}
-            with patch.object(LoggingConfig, "load_config", return_value=custom_config):
-                config = LoggingConfig()
+            with patch.object(_LoggingConfig, "load_config", return_value=custom_config):
+                config = _LoggingConfig()
                 config.apply()
 
                 # Should set Prefect env var
@@ -104,14 +104,14 @@ handlers:
 class TestSetupLogging:
     """Test setup_logging function."""
 
-    @patch("ai_pipeline_core.logger.logging_config.LoggingConfig.apply")
+    @patch("ai_pipeline_core.logger.logging_config._LoggingConfig.apply")
     def test_setup_logging_basic(self, mock_apply: Mock) -> None:
         """Test basic setup_logging call."""
         setup_logging()
         mock_apply.assert_called_once()
 
     @patch("ai_pipeline_core.logger.logging_config.logging.getLogger")
-    @patch("ai_pipeline_core.logger.logging_config.LoggingConfig.apply")
+    @patch("ai_pipeline_core.logger.logging_config._LoggingConfig.apply")
     def test_setup_logging_with_level(self, mock_apply: Mock, mock_get_logger: Mock) -> None:
         """Test setup_logging with custom level."""
         mock_logger = MagicMock()
@@ -126,7 +126,7 @@ class TestSetupLogging:
         # Should set Prefect env
         assert os.environ["PREFECT_LOGGING_LEVEL"] == "DEBUG"
 
-    @patch("ai_pipeline_core.logger.logging_config.LoggingConfig")
+    @patch("ai_pipeline_core.logger.logging_config._LoggingConfig")
     def test_setup_logging_with_config_path(self, mock_config_class: Mock, tmp_path: Path) -> None:
         """Test setup_logging with custom config path."""
         config_file = tmp_path / "custom.yml"

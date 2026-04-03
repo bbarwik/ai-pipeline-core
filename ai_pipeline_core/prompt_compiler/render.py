@@ -18,11 +18,11 @@ _VOWELS = frozenset("aeiouAEIOU")
 
 _MAX_FIELD_VALUE_LENGTH = 500
 
-RESULT_TAG = "result"
-RESULT_OPEN = f"<{RESULT_TAG}>"
-RESULT_CLOSE = f"</{RESULT_TAG}>"
+_RESULT_TAG = "result"
+_RESULT_OPEN = f"<{_RESULT_TAG}>"
+_RESULT_CLOSE = f"</{_RESULT_TAG}>"
 
-_RESULT_TAG_RULE = f"Write your complete response inside {RESULT_OPEN} tags. Do not add any XML tags inside {RESULT_OPEN}."
+_RESULT_TAG_RULE = f"Write your complete response inside {_RESULT_OPEN} tags. Do not add any XML tags inside {_RESULT_OPEN}."
 
 
 def _role_sentence(text: str) -> str:
@@ -205,7 +205,7 @@ def _render_list_xml(field_name: str, items: list[Any] | tuple[Any, ...]) -> str
     return "\n".join(parts)
 
 
-def render_multi_line_messages(spec: PromptSpec[Any]) -> list[tuple[str, str]]:
+def _render_multi_line_messages(spec: PromptSpec[Any]) -> list[tuple[str, str]]:  # pyright: ignore[reportUnusedFunction]  # used by conversation.py
     """Return XML-tagged message blocks for multi-line, structured, and list fields.
 
     Each entry is ``(field_name, xml_block)``.
@@ -256,7 +256,7 @@ def render_preview(spec_class: type[PromptSpec[Any]], *, include_input_documents
     return text
 
 
-_EXTRACT_PATTERN = re.compile(rf"<{RESULT_TAG}>(.*?)(?:</{RESULT_TAG}>|$)", re.DOTALL)
+_EXTRACT_PATTERN = re.compile(rf"<{_RESULT_TAG}>(.*?)(?:</{_RESULT_TAG}>|$)", re.DOTALL)
 
 
 def _extract_result(text: str) -> str:  # pyright: ignore[reportUnusedFunction]  # used by conversation.py
@@ -265,4 +265,4 @@ def _extract_result(text: str) -> str:  # pyright: ignore[reportUnusedFunction] 
     return match.group(1).strip() if match else text
 
 
-__all__ = ["render_multi_line_messages", "render_preview", "render_text"]
+__all__ = ["render_preview", "render_text"]

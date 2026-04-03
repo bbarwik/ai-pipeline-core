@@ -15,13 +15,11 @@ from typing import Any
 
 from ai_pipeline_core.database import SpanRecord
 from ai_pipeline_core.database._types import get_token_count
-from ai_pipeline_core.documents.utils import is_document_sha256
 
 __all__ = [
     "duration_seconds",
     "ensure_directory",
     "get_token_count",
-    "is_document_sha256",
     "parse_json_object",
     "parse_json_object_lenient",
     "prepare_output_dir",

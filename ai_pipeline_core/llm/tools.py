@@ -18,7 +18,7 @@ from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict
 
-__all__ = ["Tool", "ToolCallRecord", "ToolOutput", "generate_tool_schema", "to_snake_case"]
+__all__ = ["Tool", "ToolCallRecord", "ToolOutput"]
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +27,12 @@ _SNAKE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _RESERVED_FIELD_NAMES = frozenset({"strict", "additionalProperties"})
 
 
-def to_snake_case(name: str) -> str:
+def _to_snake_case(name: str) -> str:
     """Convert PascalCase to snake_case, handling consecutive capitals.
 
-    >>> to_snake_case("HTTPClient")
+    >>> _to_snake_case("HTTPClient")
     'http_client'
-    >>> to_snake_case("GetWeather")
+    >>> _to_snake_case("GetWeather")
     'get_weather'
     """
     return _SNAKE_RE.sub("_", name).lower()
@@ -73,7 +73,7 @@ class Tool:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        cls.name = to_snake_case(cls.__name__)
+        cls.name = _to_snake_case(cls.__name__)
 
         if cls.__dict__.get("_abstract_tool", False) is True:
             return
@@ -285,12 +285,12 @@ def _make_strict_schema(schema: dict[str, Any]) -> None:
         _make_strict_schema(cast(dict[str, Any], items))
 
 
-def generate_tool_schema(tool: Tool) -> dict[str, Any]:
+def _generate_tool_schema(tool: Tool) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]  # used by conversation.py
     """Generate OpenAI Chat Completions tool schema from a Tool instance.
 
     Example::
 
-        schema = generate_tool_schema(my_tool_instance)
+        schema = _generate_tool_schema(my_tool_instance)
         # {"type": "function", "function": {"name": "...", "description": "...", ...}}
     """
     tool_cls = type(tool)

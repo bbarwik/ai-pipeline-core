@@ -43,7 +43,23 @@ All operations must be asynchronous. No blocking I/O calls allowed.
 
 ### 1.2 Immutability & Safety
 
-- No mutable global variables (constants or initialized-once immutable globals only). Exception: import-time registries (e.g., `_file_rules.py` class registries) are allowed with `# nosemgrep` + justification comment and a `reset_registries()` function for test isolation
+- **No mutable global state that creates inter-task dependencies.** Module-level variables fall into three permitted categories:
+
+  **Category 1 — Constants and frozen configuration.** `settings = Settings()`, frozen mappings, `frozenset` constants, module-level type aliases. Always allowed.
+
+  **Category 2 — Infrastructure singletons.** HTTP client pools, provider facades, rate limiters. Allowed when ALL of the following hold:
+
+  - The variable is assigned exactly once at module scope and never reassigned.
+  - Internal state (connections, caches, locks) is a private implementation detail that never leaks to callers through the public API.
+  - The singleton is **caller-stateless**: calling `await provider.fetch(url)` produces the same result regardless of what other tasks, flows, or deployments have previously called on the singleton. No task writes state that another task reads through the singleton.
+  - The singleton exposes an `override()` context manager for test replacement, backed by a ContextVar for per-test isolation.
+  - The variable is annotated with a `# infrastructure singleton` comment at the assignment site.
+
+  **Category 3 — Import-time registries.** Class registries populated by `__init_subclass__` hooks during module import. Allowed with `# nosemgrep` plus a justification comment, and a `reset_registries()` function for test isolation.
+
+  **Everything else is forbidden.** If Task A must run before Task B for B to produce correct output, that dependency must flow through Documents, function arguments, database state, or an external service — never through a module-level variable.
+
+  **The litmus test:** Delete all calls to the global from Task A. Run Task B in isolation. Does Task B still produce correct output? If yes, the global is infrastructure (category 2). If no, it carries business state and must be replaced with a Document.
 - Default timeouts on all operations — nothing hangs indefinitely
 - Strict type checking throughout
 - Pydantic models use `frozen=True` where possible

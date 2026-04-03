@@ -1,11 +1,12 @@
-"""Tests for is_document_sha256 function."""
+"""Tests for _is_document_sha256 function."""
 
 import hashlib
 from base64 import b32encode
 
 import pytest
 
-from ai_pipeline_core.documents import Document, is_document_sha256
+from ai_pipeline_core.documents import Document
+from ai_pipeline_core.documents.utils import _is_document_sha256
 
 
 class _Sha256SampleDoc(Document):
@@ -22,14 +23,14 @@ def _suppress_registration():
 
 
 class TestIsDocumentSha256:
-    """Test the is_document_sha256 function."""
+    """Test the _is_document_sha256 function."""
 
     def test_real_document_hash(self):
         """Test with a real document SHA256 hash."""
 
         # Create a real document and get its hash
         doc = _Sha256SampleDoc.create_root(name="test.txt", content="test content", reason="test input")
-        assert is_document_sha256(doc.sha256)
+        assert _is_document_sha256(doc.sha256)
 
     def test_various_real_hashes(self):
         """Test with various real SHA256 hashes."""
@@ -44,26 +45,26 @@ class TestIsDocumentSha256:
 
         for content in test_contents:
             sha256_hash = b32encode(hashlib.sha256(content).digest()).decode("ascii").upper().rstrip("=")[:26]
-            assert is_document_sha256(sha256_hash), f"Failed for content: {content!r}"
+            assert _is_document_sha256(sha256_hash), f"Failed for content: {content!r}"
 
     def test_insufficient_entropy(self):
         """Test that low-entropy strings are rejected."""
         # All same character - definitely not a real hash
-        assert not is_document_sha256("A" * 26)
-        assert not is_document_sha256("2" * 26)
-        assert not is_document_sha256("7" * 26)
+        assert not _is_document_sha256("A" * 26)
+        assert not _is_document_sha256("2" * 26)
+        assert not _is_document_sha256("7" * 26)
 
         # Only 2 unique characters
-        assert not is_document_sha256("AB" * 13)
+        assert not _is_document_sha256("AB" * 13)
 
         # Only 3 unique characters
-        assert not is_document_sha256("ABC" * 8 + "AB")
+        assert not _is_document_sha256("ABC" * 8 + "AB")
 
         # 5 unique characters (just below threshold of 6)
         test_str = "ABCDE" * 5 + "A"  # 26 chars with 5 unique
         assert len(test_str) == 26
         assert len(set(test_str)) == 5
-        assert not is_document_sha256(test_str)
+        assert not _is_document_sha256(test_str)
 
     def test_sufficient_entropy(self):
         """Test that strings with sufficient entropy are accepted."""
@@ -71,50 +72,50 @@ class TestIsDocumentSha256:
         test_str = "ABCDEF" * 4 + "AB"  # 26 chars with 6 unique
         assert len(test_str) == 26
         assert len(set(test_str)) == 6
-        assert is_document_sha256(test_str)
+        assert _is_document_sha256(test_str)
 
         # More than 6 unique characters
         test_str = "ABCDEFGHIJ23456" + "ABCDEFGHIJK"  # 26 chars with 15 unique
         assert len(test_str) == 26
-        assert is_document_sha256(test_str)
+        assert _is_document_sha256(test_str)
 
     def test_wrong_length(self):
         """Test that strings with wrong length are rejected."""
         # Too short
-        assert not is_document_sha256("ABC")
-        assert not is_document_sha256("A" * 25)
+        assert not _is_document_sha256("ABC")
+        assert not _is_document_sha256("A" * 25)
 
         # Too long
-        assert not is_document_sha256("A" * 27)
-        assert not is_document_sha256("ABCDEFGHIJKLMNOPQRSTUVWXYZ2")
+        assert not _is_document_sha256("A" * 27)
+        assert not _is_document_sha256("ABCDEFGHIJKLMNOPQRSTUVWXYZ2")
 
         # Old 52-char format
-        assert not is_document_sha256("A" * 52)
+        assert not _is_document_sha256("A" * 52)
 
         # With padding
-        assert not is_document_sha256("A" * 26 + "====")
+        assert not _is_document_sha256("A" * 26 + "====")
 
     def test_invalid_characters(self):
         """Test that strings with invalid base32 characters are rejected."""
         # Lowercase letters (base32 is uppercase only)
-        assert not is_document_sha256("a" * 26)
-        assert not is_document_sha256("AbCdEfGhIjKlMnOpQrStUvWxYz")
+        assert not _is_document_sha256("a" * 26)
+        assert not _is_document_sha256("AbCdEfGhIjKlMnOpQrStUvWxYz")
 
         # Invalid digits (0, 1, 8, 9 are not in base32)
-        assert not is_document_sha256("0" * 26)
-        assert not is_document_sha256("1" * 26)
-        assert not is_document_sha256("8" * 26)
-        assert not is_document_sha256("9" * 26)
+        assert not _is_document_sha256("0" * 26)
+        assert not _is_document_sha256("1" * 26)
+        assert not _is_document_sha256("8" * 26)
+        assert not _is_document_sha256("9" * 26)
 
         # Mixed invalid characters
         test_str = "ABCDEFGH" + "0189" + "ABCDEFGHIJKLMN"  # Contains 0,1,8,9
         assert len(test_str) == 26
-        assert not is_document_sha256(test_str)
+        assert not _is_document_sha256(test_str)
 
         # Special characters
-        assert not is_document_sha256("A" * 12 + "=" + "A" * 13)
-        assert not is_document_sha256("A" * 12 + "-" + "A" * 13)
-        assert not is_document_sha256("A" * 12 + "_" + "A" * 13)
+        assert not _is_document_sha256("A" * 12 + "=" + "A" * 13)
+        assert not _is_document_sha256("A" * 12 + "-" + "A" * 13)
+        assert not _is_document_sha256("A" * 12 + "_" + "A" * 13)
 
     def test_valid_base32_characters(self):
         """Test that all valid base32 characters are accepted."""
@@ -122,22 +123,22 @@ class TestIsDocumentSha256:
         valid_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
         test_str = valid_chars[:26]
         assert len(test_str) == 26
-        assert is_document_sha256(test_str)
+        assert _is_document_sha256(test_str)
 
     def test_edge_cases(self):
         """Test edge cases and special inputs."""
         # Non-string inputs
-        assert not is_document_sha256(None)  # type: ignore[arg-type]
-        assert not is_document_sha256(123)  # type: ignore[arg-type]
-        assert not is_document_sha256([])  # type: ignore[arg-type]
-        assert not is_document_sha256(b"A" * 26)  # type: ignore[arg-type]
+        assert not _is_document_sha256(None)  # type: ignore[arg-type]
+        assert not _is_document_sha256(123)  # type: ignore[arg-type]
+        assert not _is_document_sha256([])  # type: ignore[arg-type]
+        assert not _is_document_sha256(b"A" * 26)  # type: ignore[arg-type]
 
         # Empty string
-        assert not is_document_sha256("")
+        assert not _is_document_sha256("")
 
         # Whitespace
-        assert not is_document_sha256(" " * 26)
-        assert not is_document_sha256("A" * 25 + " ")
+        assert not _is_document_sha256(" " * 26)
+        assert not _is_document_sha256("A" * 25 + " ")
 
     def test_integration_with_document_derived_from(self):
         """Test that it works correctly with document derived_from field."""
@@ -146,7 +147,7 @@ class TestIsDocumentSha256:
         doc = _Sha256DerivedSampleDoc.create_root(name="test.txt", content="integration test", reason="test input")
 
         # The hash should be valid
-        assert is_document_sha256(doc.sha256)
+        assert _is_document_sha256(doc.sha256)
 
         # Create another document with the first as source
         doc2 = _Sha256DerivedSampleDoc(
@@ -174,7 +175,7 @@ class TestIsDocumentSha256:
         # Test should be very fast (sub-millisecond)
         start = time.perf_counter()
         for _ in range(1000):
-            is_document_sha256(real_hash)
+            _is_document_sha256(real_hash)
         elapsed = time.perf_counter() - start
 
         # Should process 1000 hashes in well under a second

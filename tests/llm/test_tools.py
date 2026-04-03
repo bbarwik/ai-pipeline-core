@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import BaseModel, Field
 
-from ai_pipeline_core.llm.tools import Tool, ToolCallRecord, ToolOutput, generate_tool_schema, to_snake_case
+from ai_pipeline_core.llm.tools import Tool, ToolCallRecord, ToolOutput, _generate_tool_schema, _to_snake_case
 
 
 # ── Valid Tool for reuse across tests ────────────────────────────────────────
@@ -163,8 +163,8 @@ def test_tool_with_custom_output() -> None:
 # ── Schema generation ────────────────────────────────────────────────────────
 
 
-def test_generate_tool_schema_basic() -> None:
-    schema = generate_tool_schema(GetWeather())
+def test__generate_tool_schema_basic() -> None:
+    schema = _generate_tool_schema(GetWeather())
     assert schema["type"] == "function"
     func = schema["function"]
     assert func["name"] == "get_weather"
@@ -177,7 +177,7 @@ def test_generate_tool_schema_basic() -> None:
     assert params["additionalProperties"] is False
 
 
-def test_generate_tool_schema_strict_mode_nested() -> None:
+def test__generate_tool_schema_strict_mode_nested() -> None:
     """Strict mode recursively adds additionalProperties: false."""
 
     class NestedTool(Tool):
@@ -192,7 +192,7 @@ def test_generate_tool_schema_strict_mode_nested() -> None:
         async def run(self, input: Input) -> Output:
             return self.Output(result="")
 
-    schema = generate_tool_schema(NestedTool())
+    schema = _generate_tool_schema(NestedTool())
     params = schema["function"]["parameters"]
     # Nested model must produce $defs with strict mode applied
     assert "$defs" in params, "Nested model should produce $defs"
@@ -200,30 +200,30 @@ def test_generate_tool_schema_strict_mode_nested() -> None:
         assert definition.get("additionalProperties") is False
 
 
-def test_generate_tool_schema_all_fields_required() -> None:
+def test__generate_tool_schema_all_fields_required() -> None:
     """Strict mode ensures all fields are in required list."""
-    schema = generate_tool_schema(GetWeather())
+    schema = _generate_tool_schema(GetWeather())
     params = schema["function"]["parameters"]
     assert set(params["required"]) == {"city", "unit"}
 
 
-# ── to_snake_case ───────────────────────────────────────────────────────────
+# ── _to_snake_case ───────────────────────────────────────────────────────────
 
 
 def test_snake_case_simple() -> None:
-    assert to_snake_case("GetWeather") == "get_weather"
+    assert _to_snake_case("GetWeather") == "get_weather"
 
 
 def test_snake_case_consecutive_capitals() -> None:
-    assert to_snake_case("HTTPClient") == "http_client"
+    assert _to_snake_case("HTTPClient") == "http_client"
 
 
 def test_snake_case_single_word() -> None:
-    assert to_snake_case("Search") == "search"
+    assert _to_snake_case("Search") == "search"
 
 
 def test_snake_case_already_lower() -> None:
-    assert to_snake_case("search") == "search"
+    assert _to_snake_case("search") == "search"
 
 
 # ── ToolOutput ───────────────────────────────────────────────────────────────

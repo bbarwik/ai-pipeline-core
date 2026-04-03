@@ -24,6 +24,7 @@ This framework is the foundation of AI projects at [research.tech](https://resea
 - **Workflow Orchestration**: Class-based `PipelineTask`, `PipelineFlow`, and `PipelineDeployment` with annotation-driven document types and import-time validation
 - **Auto-Persistence**: `PipelineTask` saves returned documents to the active database backend automatically with provenance tracking
 - **Image Processing**: Automatic image tiling/splitting for LLM vision models with model-specific presets
+- **External Providers**: Base classes for integrating external services — `ExternalProvider` for synchronous HTTP APIs and `StatelessPollingProvider` for submit-then-poll patterns, with managed HTTP lifecycle, transport retries, exponential backoff, cost tracking, and ContextVar-based test overrides
 - **Observability**: Database-backed execution DAGs, logs, replay payloads, and `ai-trace` download support
 - **Prompt Compiler**: Type-safe prompt specifications replacing Jinja2 templates — typed Python classes for roles, rules, guides, and output formats with definition-time validation and a CLI tool for inspection
 - **Replay**: Capture and re-execute any LLM conversation, pipeline task, or flow from recorded span JSON files or database-backed runs with document resolution via SHA256 references
@@ -584,6 +585,8 @@ from ai_pipeline_core import PipelineCoreError, NonRetriableError, LLMError, Emp
 - `NonRetriableError` — Signals that an operation must not be retried (stops task/flow retry loops immediately)
 - `LLMError` — LLM generation failures (retries exhausted, timeouts, degeneration)
 - `EmptyResponseError` — Blank/empty LLM response (subclass of `LLMError`, triggers retry with cache disabled)
+- `ProviderError` — External provider call failed after all retries (subclass of `PipelineCoreError`)
+- `ProviderAuthError` — Authentication/authorization failure (401/403), never retried (subclass of both `ProviderError` and `NonRetriableError`)
 - `DocumentValidationError` — Document validation failures
 - `DocumentSizeError` — Document exceeds size limits
 - `DocumentNameError` — Invalid document name (path traversal, etc.)
@@ -1286,6 +1289,7 @@ Always import from the top-level package when possible:
 ```python
 # Top-level imports (preferred)
 from ai_pipeline_core import Document, PipelineTask, PipelineFlow, PipelineDeployment, Conversation, Tool
+from ai_pipeline_core import ExternalProvider, StatelessPollingProvider, ProviderOutcome, ProviderError, ProviderAuthError
 from ai_pipeline_core import collect_tasks, as_task_completed, run_tasks_until, TaskHandle, TaskBatch
 
 # Sub-package imports for symbols not at top level
@@ -1396,6 +1400,7 @@ ai-pipeline-core/
 |   |-- pipeline/          # PipelineTask, PipelineFlow, parallel primitives, FlowOptions, concurrency limits
 |   |-- prompt_compiler/   # Type-safe prompt specs, rendering, and CLI tool
 |   |-- replay/            # Replay system (capture, serialize, resolve, execute)
+|   |-- providers.py       # External provider base classes (ExternalProvider, StatelessPollingProvider)
 |   |-- settings.py        # Configuration management (Pydantic BaseSettings)
 |   +-- exceptions.py      # Framework exceptions (LLMError, DocumentNameError, etc.)
 |-- tools/

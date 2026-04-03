@@ -2,24 +2,13 @@
 # CLASSES: Attachment, Document, DocumentValidationError, DocumentSizeError, DocumentNameError
 # DEPENDS: BaseModel, Exception
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.19.2
+# VERSION: 0.19.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
-from ai_pipeline_core import (
-    Attachment,
-    Document,
-    DocumentSha256,
-    ensure_extension,
-    find_all,
-    find_document,
-    find_latest,
-    is_document_sha256,
-    replace_extension,
-    sanitize_url,
-)
+from ai_pipeline_core import Attachment, Document, DocumentSha256, ensure_extension, find_all, find_document, find_latest, replace_extension, sanitize_url
 ```
 
 ## Types & Constants
@@ -183,13 +172,13 @@ class Document(BaseModel):
 
     @property
     def content_documents(self) -> tuple[str, ...]:
-        """Document SHA256 hashes from derived_from (filtered by is_document_sha256)."""
-        return tuple(src for src in self.derived_from if is_document_sha256(src))
+        """Document SHA256 hashes from derived_from (filtered by _is_document_sha256)."""
+        return tuple(src for src in self.derived_from if _is_document_sha256(src))
 
     @property
     def content_references(self) -> tuple[str, ...]:
         """Non-hash reference strings from derived_from (URLs, file paths, etc.)."""
-        return tuple(src for src in self.derived_from if not is_document_sha256(src))
+        return tuple(src for src in self.derived_from if not _is_document_sha256(src))
 
     @final
     @cached_property
@@ -684,19 +673,6 @@ def sanitize_url(url: str) -> str:
         sanitized = "unnamed"
 
     return sanitized
-
-
-def is_document_sha256(value: str) -> bool:
-    """Check if a string is a valid base32-encoded SHA256 hash (26 chars, A-Z2-7, sufficient entropy)."""
-    if not isinstance(value, str) or len(value) != 26:  # pyright: ignore[reportUnnecessaryIsInstance]
-        return False
-
-    # Check if all characters are valid base32 (A-Z, 2-7)
-    if not re.match(r"^[A-Z2-7]{26}$", value):
-        return False
-
-    unique_chars = len(set(value))
-    return unique_chars >= _MIN_HASH_UNIQUE_CHARS
 
 
 def ensure_extension(name: str, ext: str) -> str:

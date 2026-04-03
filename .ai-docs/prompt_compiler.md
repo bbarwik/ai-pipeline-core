@@ -2,27 +2,13 @@
 # CLASSES: Role, Rule, OutputRule, Guide, PromptSpec
 # DEPENDS: BaseModel, Role
 # PURPOSE: Prompt compiler for type-safe, validated prompt specifications.
-# VERSION: 0.19.2
+# VERSION: 0.19.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
 
 ```python
 from ai_pipeline_core import Guide, ListField, MultiLineField, OutputRule, PromptSpec, Role, Rule, StructuredField, render_preview, render_text
-```
-
-## Types & Constants
-
-```python
-RESULT_TAG = "result"
-
-RESULT_OPEN = f"<{RESULT_TAG}>"
-
-RESULT_CLOSE = f"</{RESULT_TAG}>"
-
-MAX_TASK_CHARS = 2000
-
-MAX_TASK_LINES = 40
 ```
 
 ## Public API
@@ -287,30 +273,6 @@ def render_text(
     return "\n\n".join(sections)
 
 
-def render_multi_line_messages(spec: PromptSpec[Any]) -> list[tuple[str, str]]:
-    """Return XML-tagged message blocks for multi-line, structured, and list fields.
-
-    Each entry is ``(field_name, xml_block)``.
-    Order matches field declaration order on the spec class.
-
-    Includes declared MultiLineFields, StructuredFields, ListFields, and
-    regular fields whose values exceed the inline limit (auto-promoted).
-    """
-    spec_cls = type(spec)
-    result: list[tuple[str, str]] = []
-    for field_name, field_info in spec_cls.model_fields.items():
-        value = getattr(spec, field_name)
-        if _is_list_field(field_info):
-            items = value if isinstance(value, (list, tuple)) else [value]
-            result.append((field_name, _render_list_xml(field_name, items)))
-        elif _is_structured_field(field_info):
-            rendered = _render_structured_value(value)
-            result.append((field_name, f"<{field_name}>\n{rendered}\n</{field_name}>"))
-        elif _is_multi_line_field(field_info) or _is_long_or_multiline(str(value)):
-            result.append((field_name, f"<{field_name}>{value}</{field_name}>"))
-    return result
-
-
 def render_preview(spec_class: type[PromptSpec[Any]], *, include_input_documents: bool = True) -> str:
     """Render a spec CLASS with placeholder values for dynamic fields.
 
@@ -568,7 +530,7 @@ def test_mixed_field_types_coexist() -> None:
     # ListField placeholder with count
     assert "(1 items provided in <findings> tags in previous message)" in rendered
 
-    messages = render_multi_line_messages(spec)
+    messages = _render_multi_line_messages(spec)
     field_names = [name for name, _ in messages]
     assert field_names == ["feedback", "finding", "findings"]
 ```

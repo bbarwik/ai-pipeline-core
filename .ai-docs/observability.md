@@ -1,22 +1,11 @@
 # MODULE: observability
 # PURPOSE: Observability system for AI pipelines.
-# VERSION: 0.19.2
+# VERSION: 0.19.3
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
-
-## Types & Constants
-
-```python
-TraceDatabase = Database | FilesystemDatabase | ClickHouseDatabase
-```
 
 ## Functions
 
 ```python
-async def show_deployment(reader: DatabaseReader, deployment_id: UUID) -> str:
-    """Render a deployment summary for ai-trace show."""
-    return await generate_summary(reader, deployment_id)
-
-
 def main(argv: list[str] | None = None) -> int:
     """Run the ai-trace CLI."""
     db_parent = argparse.ArgumentParser(add_help=False)
@@ -75,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
 
 ## Examples
 
-**Main download command writes span summary artifacts** (`tests/observability/test_trace_cli_spans.py:265`)
+**Main download command writes span summary artifacts** (`tests/observability/test_trace_cli_spans.py:251`)
 
 ```python
 def test_main_download_command_writes_span_summary_artifacts(
@@ -91,12 +80,10 @@ def test_main_download_command_writes_span_summary_artifacts(
 
     assert result == 0
     assert "Downloaded deployment" in capsys.readouterr().out
-    assert (output_dir / "summary.md").exists()
-    assert (output_dir / "costs.md").exists()
     assert (output_dir / "logs.jsonl").exists()
 ```
 
-**Main show command reads span snapshot** (`tests/observability/test_trace_cli_spans.py:253`)
+**Main show command reads span snapshot** (`tests/observability/test_trace_cli_spans.py:239`)
 
 ```python
 def test_main_show_command_reads_span_snapshot(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -110,23 +97,6 @@ def test_main_show_command_reads_span_snapshot(self, tmp_path: Path, capsys: pyt
     assert "conversation: analyze_document" in output
     assert "task started" in output
     assert '"rounds": 1' in output
-```
-
-**Show deployment renders nested operation round and tool call** (`tests/observability/test_trace_cli_spans.py:241`)
-
-```python
-@pytest.mark.asyncio
-async def test_show_deployment_renders_nested_operation_round_and_tool_call(self, tmp_path: Path) -> None:
-    database, deployment_id, _conversation_id = await _seed_span_snapshot(tmp_path)
-
-    output = await show_deployment(database, deployment_id)
-
-    assert "# span-cli-pipeline / span-run" in output
-    assert "Tree" in output
-    assert "operation: collect_context completed 9.0s" in output
-    assert "conversation: analyze_document 5.0s gpt-5.1 2K in / 2K cache / 180 out / 25 reasoning $0.4200" in output
-    assert "llm_round[1]: gpt-5.1 2.0s 2K in / 2K cache / 180 out / 25 reasoning $0.4200" in output
-    assert "tool_call[1]: web_search completed 1.0s" in output
 ```
 
 **No laminar span calls remain** (`tests/observability/test_laminar_sink.py:407`)
@@ -155,7 +125,7 @@ def test_build_runtime_sinks_includes_laminar_sink_when_key_is_set() -> None:
     assert isinstance(sinks[0], LaminarSpanSink)
 ```
 
-**Db path returns span filesystem database** (`tests/observability/test_trace_cli_spans.py:204`)
+**Db path returns span filesystem database** (`tests/observability/test_trace_cli_spans.py:203`)
 
 ```python
 def test_db_path_returns_span_filesystem_database(self, tmp_path: Path) -> None:
@@ -180,6 +150,15 @@ def test_different_key_after_failure_uses_error_level(self) -> None:
 ```python
 def test_initialization_failure_uses_error_level(self) -> None:
     source = inspect.getsource(LaminarSpanSink._initialize_laminar)
+    assert "logger.error" in source
+    assert "logger.warning" not in source
+```
+
+**Project switch uses error level** (`tests/observability/test_laminar_log_levels.py:23`)
+
+```python
+def test_project_switch_uses_error_level(self) -> None:
+    source = inspect.getsource(LaminarSpanSink._warn_project_switch)
     assert "logger.error" in source
     assert "logger.warning" not in source
 ```

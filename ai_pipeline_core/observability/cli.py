@@ -24,7 +24,7 @@ __all__ = [
     "main",
 ]
 
-TraceDatabase = Database | FilesystemDatabase | ClickHouseDatabase
+_TraceDatabase = Database | FilesystemDatabase | ClickHouseDatabase
 
 
 def _parse_execution_id(value: str) -> UUID:
@@ -35,7 +35,7 @@ def _parse_execution_id(value: str) -> UUID:
         raise SystemExit(f"Invalid execution id {value!r}. Expected a UUID.") from exc
 
 
-def _resolve_connection(args: argparse.Namespace) -> TraceDatabase:
+def _resolve_connection(args: argparse.Namespace) -> _TraceDatabase:
     """Resolve CLI connection parameters."""
     if getattr(args, "db_path", None):
         base_path = Path(args.db_path).resolve()
@@ -114,7 +114,7 @@ def _render_deployment_v2(tree: list[SpanRecord], root_deployment_id: UUID) -> s
     return "\n".join(lines)
 
 
-async def _list_deployments_async(database: TraceDatabase, limit: int, status: str | None) -> int:
+async def _list_deployments_async(database: _TraceDatabase, limit: int, status: str | None) -> int:
     try:
         deployments = await database.list_deployments(limit=limit, status=status)
     finally:
@@ -133,7 +133,7 @@ async def _list_deployments_async(database: TraceDatabase, limit: int, status: s
     return 0
 
 
-async def _show_deployment_async(database: TraceDatabase, identifier: str) -> int:
+async def _show_deployment_async(database: _TraceDatabase, identifier: str) -> int:
     try:
         deployment_id, _run_id = await _resolve_identifier_async(identifier, database)
         tree = await database.get_deployment_tree(deployment_id)
@@ -148,7 +148,7 @@ async def _show_deployment_async(database: TraceDatabase, identifier: str) -> in
 
 
 async def _download_deployment_async(
-    database: TraceDatabase,
+    database: _TraceDatabase,
     identifier: str,
     output_dir: Path,
 ) -> int:
@@ -161,7 +161,7 @@ async def _download_deployment_async(
     return 0
 
 
-async def _show_llm_calls_async(database: TraceDatabase, identifier: str) -> int:
+async def _show_llm_calls_async(database: _TraceDatabase, identifier: str) -> int:
     """Show all LLM calls in a deployment."""
     import json
 
@@ -195,7 +195,7 @@ async def _show_llm_calls_async(database: TraceDatabase, identifier: str) -> int
     return 0
 
 
-async def _show_docs_async(database: TraceDatabase, identifier: str) -> int:
+async def _show_docs_async(database: _TraceDatabase, identifier: str) -> int:
     """List all documents in a deployment."""
     try:
         deployment_id, _run_id = await _resolve_identifier_async(identifier, database)
@@ -215,7 +215,7 @@ async def _show_docs_async(database: TraceDatabase, identifier: str) -> int:
     return 0
 
 
-async def _show_doc_async(database: TraceDatabase, sha256: str) -> int:
+async def _show_doc_async(database: _TraceDatabase, sha256: str) -> int:
     """Show a single document by SHA256."""
     try:
         hydrated = await database.get_document_with_content(sha256)

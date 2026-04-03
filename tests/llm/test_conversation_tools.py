@@ -107,7 +107,7 @@ def test_approximate_tokens_count_with_tool_messages() -> None:
 
 async def test_duplicate_tool_name_detected() -> None:
     """Two tools with same snake_case name raise ValueError via real send() code path."""
-    from ai_pipeline_core.llm.tools import to_snake_case
+    from ai_pipeline_core.llm.tools import _to_snake_case
 
     class MySearch(Tool):
         """Search A."""
@@ -134,7 +134,7 @@ async def test_duplicate_tool_name_detected() -> None:
             return self.Output(value="b")
 
     # Verify names collide
-    assert to_snake_case(MySearch.__name__) == to_snake_case(My_Search.__name__) == "my_search"
+    assert _to_snake_case(MySearch.__name__) == _to_snake_case(My_Search.__name__) == "my_search"
 
     # ValueError is raised before any LLM call, exercising the real _execute_send code path
     conv = Conversation(model="test")

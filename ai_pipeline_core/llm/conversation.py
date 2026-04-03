@@ -30,7 +30,7 @@ from ai_pipeline_core.database import SpanKind
 from ai_pipeline_core.documents import Document
 from ai_pipeline_core.pipeline._execution_context import get_execution_context, get_sinks
 from ai_pipeline_core.pipeline._track_span import track_span
-from ai_pipeline_core.prompt_compiler.render import RESULT_CLOSE, _extract_result, render_multi_line_messages, render_text
+from ai_pipeline_core.prompt_compiler.render import _RESULT_CLOSE, _extract_result, _render_multi_line_messages, render_text
 from ai_pipeline_core.prompt_compiler.spec import PromptSpec
 
 from . import _conversation_messages as _message_helpers
@@ -52,7 +52,7 @@ from ._conversation_messages import (
 )
 from ._substitutor import URLSubstitutor
 from ._tool_loop import execute_tool_loop
-from .tools import Tool, ToolCallRecord, ToolOutput, generate_tool_schema
+from .tools import Tool, ToolCallRecord, ToolOutput, _generate_tool_schema
 
 __all__ = [
     "_LLM_ROUND_REPLAY_TARGET",
@@ -81,7 +81,7 @@ _escape_xml_metadata = _message_helpers._escape_xml_metadata
 _SYSTEM_PROMPT_DOCUMENT_NAME = "system_prompt"
 
 _CHARS_PER_TOKEN = 4
-MAX_TOOL_ROUNDS_DEFAULT = 10
+_MAX_TOOL_ROUNDS_DEFAULT = 10
 _LLM_ROUND_REPLAY_TARGET = f"function:{__name__}:_replay_llm_round"
 
 T = TypeVar("T", default=str, bound=str | BaseModel)
@@ -536,7 +536,7 @@ class Conversation(BaseModel, Generic[T]):
         expected_cost: float | None,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
     ) -> tuple[tuple[AnyMessage, ...], ModelResponse[Any], tuple[ToolCallRecord, ...], str]:
         """Common preparation, LLM call (or tool loop), and response restoration."""
         if tool_choice is not None and not tools:
@@ -568,7 +568,7 @@ class Conversation(BaseModel, Generic[T]):
         tool_schemas: list[dict[str, Any]] | None = None
         tool_lookup: dict[str, Tool] | None = None
         if tools:
-            tool_schemas = [generate_tool_schema(t) for t in tools]
+            tool_schemas = [_generate_tool_schema(t) for t in tools]
             tool_lookup = {}
             for t in tools:
                 name = type(t).name
@@ -715,7 +715,7 @@ class Conversation(BaseModel, Generic[T]):
         *,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> Conversation[str]:
@@ -742,7 +742,7 @@ class Conversation(BaseModel, Generic[T]):
         *,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> Conversation[U]:
@@ -775,7 +775,7 @@ class Conversation(BaseModel, Generic[T]):
         include_input_documents: bool = True,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> Conversation[str]: ...
@@ -789,7 +789,7 @@ class Conversation(BaseModel, Generic[T]):
         include_input_documents: bool = True,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> Conversation[U]: ...
@@ -802,7 +802,7 @@ class Conversation(BaseModel, Generic[T]):
         include_input_documents: bool = True,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
-        max_tool_rounds: int = MAX_TOOL_ROUNDS_DEFAULT,
+        max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
     ) -> Conversation[Any]:
@@ -840,8 +840,8 @@ class Conversation(BaseModel, Generic[T]):
         # Set stop sequence when output_structure is set (result tag wrapping)
         if spec.output_structure is not None:
             opts = conv.model_options or ModelOptions()
-            if RESULT_CLOSE not in (opts.stop or ()):
-                stop = (*opts.stop, RESULT_CLOSE) if opts.stop else (RESULT_CLOSE,)
+            if _RESULT_CLOSE not in (opts.stop or ()):
+                stop = (*opts.stop, _RESULT_CLOSE) if opts.stop else (_RESULT_CLOSE,)
                 conv = conv.with_model_options(opts.model_copy(update={"stop": stop}))  # nosemgrep: no-document-model-copy
 
         # Determine whether to include input documents in prompt text
@@ -852,7 +852,7 @@ class Conversation(BaseModel, Generic[T]):
             effective_include_docs = include_input_documents
 
         # Add multi-line field values as a single user message before the prompt
-        ml_messages = render_multi_line_messages(spec)
+        ml_messages = _render_multi_line_messages(spec)
         if ml_messages:
             combined = "\n".join(xml_block for _, xml_block in ml_messages)
             conv = conv.model_copy(update={"messages": conv.messages + (UserMessage(combined),)})
