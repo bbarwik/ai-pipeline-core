@@ -199,7 +199,7 @@ def _warn_large_task(name: str, task: str) -> None:
     )
 
 
-def _validate_prompt_spec(cls: type, name: str, follows: type[PromptSpec] | None) -> None:  # noqa: C901, PLR0912, PLR0915
+def _validate_prompt_spec(cls: type, name: str, follows: type[PromptSpec] | None) -> None:  # noqa: C901, PLR0912, PLR0914, PLR0915
     """Validate a PromptSpec subclass at definition time."""
     # File-level structural rules — import and check exemption early, but defer
     # register_spec() to the end to avoid poisoning the registry if later validation fails.
@@ -283,7 +283,8 @@ def _validate_prompt_spec(cls: type, name: str, follows: type[PromptSpec] | None
         _check_no_duplicates(cast(tuple[type[Document], ...], input_docs), attr="input_documents", spec_name=name)
 
     # Derive _output_type from generic parameter (PromptSpec[X] -> X)
-    output_type: type[str] | type[BaseModel] = str  # default when no explicit generic arg
+    # Supports: str (default), BaseModel subclass, or list[BaseModel]
+    output_type: Any = str  # default when no explicit generic arg
     # Check __orig_bases__ first (standard Python generic alias), then fall back
     # to parent's __pydantic_generic_metadata__ (Pydantic-resolved concrete class)
     for base in getattr(cls, "__orig_bases__", ()):
@@ -303,8 +304,19 @@ def _validate_prompt_spec(cls: type, name: str, follows: type[PromptSpec] | None
                 if arg is not str:
                     output_type = arg
                 break
-    if output_type is not str and not (isinstance(output_type, type) and issubclass(output_type, BaseModel)):  # pyright: ignore[reportUnnecessaryIsInstance]
-        raise TypeError(f"PromptSpec '{name}' generic parameter must be 'str' or a BaseModel subclass, got {output_type!r}")
+    if output_type is not str:
+        # Check for list[BaseModel] pattern
+        if typing.get_origin(output_type) is list:
+            list_args = typing.get_args(output_type)
+            if not list_args or not isinstance(list_args[0], type) or not issubclass(list_args[0], BaseModel):
+                inner = repr(list_args[0]) if list_args else "?"
+                raise TypeError(
+                    f"PromptSpec '{name}' generic parameter list[T] requires T to be a BaseModel subclass, "
+                    f"got list[{inner}]. "
+                    f"Use PromptSpec[list[MyModel]] where MyModel is a BaseModel subclass."
+                )
+        elif not (isinstance(output_type, type) and issubclass(output_type, BaseModel)):
+            raise TypeError(f"PromptSpec '{name}' generic parameter must be 'str', a BaseModel subclass, or list[BaseModel], got {output_type!r}")
     cls._output_type = output_type
 
     # Validate component tuples (optional, default empty)
@@ -432,7 +444,7 @@ class PromptSpec[OutputT = str](BaseModel):
     guides: ClassVar[tuple[type[Guide], ...]]
     rules: ClassVar[tuple[type[Rule], ...]]
     output_rules: ClassVar[tuple[type[OutputRule], ...]]
-    _output_type: ClassVar[type[str] | type[BaseModel]]
+    _output_type: ClassVar[Any]  # type[str] | type[BaseModel] | list[type[BaseModel]]
     output_structure: ClassVar[str | None]
 
     def __init_subclass__(cls, *, follows: type[PromptSpec] | None = None, stub: bool = False, **kwargs: Any) -> None:

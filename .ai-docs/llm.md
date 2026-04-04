@@ -2,7 +2,7 @@
 # CLASSES: Citation, TokenUsage, ModelOptions, Conversation, ToolOutput, Tool, ToolCallRecord
 # DEPENDS: BaseModel, Generic
 # PURPOSE: Large Language Model integration via LiteLLM proxy.
-# VERSION: 0.19.3
+# VERSION: 0.20.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -17,16 +17,16 @@ from ai_pipeline_core import Citation, Conversation, ModelName, ModelOptions, To
 type ModelName = (
     Literal[
         # Core models
-        "gemini-3-pro",
-        "gpt-5.1",
+        "gemini-3.1-pro",
+        "gpt-5.4",
         # Small models
         "gemini-3-flash",
-        "gpt-5-mini",
+        "gpt-5.4-mini",
         "grok-4.1-fast",
         "gemini-3.1-flash-lite",
         # Search models
         "gemini-3-flash-search",
-        "gpt-5-mini-search",
+        "gpt-5.4-mini-search",
         "grok-4.1-fast-search",
         "sonar-pro-search",
     ]
@@ -410,7 +410,7 @@ class Conversation(BaseModel, Generic[T]):
         if spec._output_type is not str:
             return await conv.send_structured(
                 prompt_text,
-                response_format=cast(type[BaseModel], spec._output_type),
+                response_format=spec._output_type,
                 tools=tools,
                 tool_choice=tool_choice,
                 max_tool_rounds=max_tool_rounds,
@@ -435,15 +435,20 @@ class Conversation(BaseModel, Generic[T]):
     async def send_structured(
         self,
         content: ConversationContent,
-        response_format: type[U],
+        response_format: Any,
         *,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
         max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> Conversation[U]:
-        """Send message expecting structured response, returns NEW Conversation[U] with .parsed.
+    ) -> Conversation[Any]:
+        """Send message expecting structured response, returns NEW Conversation with .parsed.
+
+        ``response_format`` accepts ``type[BaseModel]`` for single-model output or
+        ``list[type[BaseModel]]`` for list output. For list types, the framework
+        wraps the schema in a single-field object (required by all LLM providers)
+        and unwraps the response transparently.
 
         Quality degrades beyond ~2-3K output tokens or nesting >2 levels.
         Never use dict types in response_format — use lists of typed models.
@@ -461,7 +466,7 @@ class Conversation(BaseModel, Generic[T]):
             tool_choice=tool_choice,
             max_tool_rounds=max_tool_rounds,
         )
-        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records, "_conversation_id": new_conversation_id})  # type: ignore[return-value]
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records, "_conversation_id": new_conversation_id})
 
     def tool_calls_for(self, tool_cls: type[Tool]) -> tuple[ToolCallRecord, ...]:
         """Filter tool call records by tool class.

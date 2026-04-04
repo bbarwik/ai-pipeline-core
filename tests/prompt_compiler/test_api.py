@@ -78,8 +78,7 @@ class SpecWithInputDocs(PromptSpec):
         ("gemini-3-flash", True),
         ("GEMINI-2.5-PRO", True),
         ("openai/gemini-proxy", True),
-        ("gpt-5.1", False),
-        ("claude-4", False),
+        ("gpt-5.4", False),
         ("grok-4.1-fast", False),
     ],
 )

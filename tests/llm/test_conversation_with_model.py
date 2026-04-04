@@ -9,16 +9,16 @@ class TestWithModel:
     def test_with_model_changes_model(self):
         """with_model() returns a new Conversation with the specified model."""
         conv = Conversation(model="gemini-3-flash")
-        new_conv = conv.with_model("gemini-3-pro")
+        new_conv = conv.with_model("gemini-3.1-pro")
 
-        assert new_conv.model == "gemini-3-pro"
+        assert new_conv.model == "gemini-3.1-pro"
         assert conv.model == "gemini-3-flash"  # original unchanged
 
     def test_with_model_preserves_options(self):
         """with_model() preserves model_options from the original."""
         opts = ModelOptions(system_prompt="test", reasoning_effort="high")
         conv = Conversation(model="gemini-3-flash", model_options=opts)
-        new_conv = conv.with_model("gpt-5.1")
+        new_conv = conv.with_model("gpt-5.4")
 
         assert new_conv.model_options is opts
         assert new_conv.model_options.system_prompt == "test"
@@ -26,7 +26,7 @@ class TestWithModel:
     def test_with_model_preserves_substitutor_setting(self):
         """with_model() preserves enable_substitutor flag."""
         conv = Conversation(model="gemini-3-flash", enable_substitutor=False)
-        new_conv = conv.with_model("gpt-5.1")
+        new_conv = conv.with_model("gpt-5.4")
 
         assert new_conv.enable_substitutor is False
 

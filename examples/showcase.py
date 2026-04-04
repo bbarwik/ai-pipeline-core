@@ -144,7 +144,7 @@ class ExplainConcept(Tool):
 
 
 class ShowcaseFlowOptions(FlowOptions):
-    core_model: str = "gemini-3-pro"
+    core_model: str = "gemini-3.1-pro"
     fast_model: str = "gemini-3-flash"
     reasoning_effort: Literal["low", "medium", "high"] = "medium"
 

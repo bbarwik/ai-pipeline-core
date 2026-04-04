@@ -142,7 +142,7 @@ def test_format_span_tree_lines_include_snapshot_filenames() -> None:
         sequence_no=1,
         started_at=base + timedelta(seconds=3),
         ended_at=base + timedelta(seconds=4),
-        meta_json=json.dumps({"model": "gpt-5.1", "purpose": "analyze_document"}),
+        meta_json=json.dumps({"model": "gpt-5.4", "purpose": "analyze_document"}),
     )
     llm_round = _make_span(
         span_id=uuid4(),
@@ -154,7 +154,7 @@ def test_format_span_tree_lines_include_snapshot_filenames() -> None:
         sequence_no=1,
         started_at=base + timedelta(seconds=4),
         ended_at=base + timedelta(seconds=5),
-        meta_json=json.dumps({"model": "gpt-5.1", "round_index": 1}),
+        meta_json=json.dumps({"model": "gpt-5.4", "round_index": 1}),
     )
 
     view = build_span_tree_view([deployment, flow, task, conversation, llm_round], deployment_id)

@@ -125,7 +125,7 @@ async def _seed_span_snapshot(base_path: Path) -> tuple[FilesystemDatabase, UUID
         ended_at=base + timedelta(seconds=9),
         meta_json=json.dumps({
             "purpose": "analyze_document",
-            "model": "gpt-5.1",
+            "model": "gpt-5.4",
         }),
         metrics_json=json.dumps({
             "tokens_input": 2200,
@@ -147,7 +147,7 @@ async def _seed_span_snapshot(base_path: Path) -> tuple[FilesystemDatabase, UUID
         cost_usd=0.42,
         meta_json=json.dumps({
             "round_index": 1,
-            "model": "gpt-5.1",
+            "model": "gpt-5.4",
         }),
         metrics_json=json.dumps({
             "tokens_input": 2200,

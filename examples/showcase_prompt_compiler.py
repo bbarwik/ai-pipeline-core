@@ -265,7 +265,7 @@ class IssueVerdictSpec(PromptSpec[RiskVerdict]):
 
 
 class WarmupAcknowledgementSpec(PromptSpec):
-    """Warmup prompt to populate cache before forking into parallel debate calls."""
+    """Acknowledgement prompt to populate cache before parallel debate calls."""
 
     input_documents = STEP09_DOCUMENTS
     role = SeniorVCAnalyst
@@ -596,7 +596,7 @@ def main() -> None:
     )
     print(conv.content)  # text response
 
-    conv = Conversation(model="gemini-3-pro")
+    conv = Conversation(model="gemini-3.1-pro")
     conv = await conv.send_spec(
         IssueVerdictSpec(item="Smart contract authority"),
         documents=docs,

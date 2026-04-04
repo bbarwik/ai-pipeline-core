@@ -97,28 +97,26 @@ def _is_test_module(cls: type) -> bool:
     return any(p == "tests" or p.startswith("test_") or p == "conftest" for p in parts)
 
 
-def _warn_content_type_issues(cls: type[Document]) -> None:
-    """Warn about content type misconfigurations on a Document subclass (non-test only)."""
+def _enforce_content_type_rules(cls: type[Document]) -> None:
+    """Enforce content type rules on a Document subclass at definition time.
+
+    Co-location: the root content model must be defined in the exact same module as the
+    Document subclass. This prevents the "Model Explosion" anti-pattern where content models
+    drift into shared ``models/`` packages.
+
+    Tests and framework internals are exempt from co-location enforcement.
+    """
     if _is_test_module(cls):
         return
 
-    # Colocation: content model should live in same module as the Document subclass
+    # Co-location enforcement: content model must live in same module as the Document subclass
     ct = cls._content_type
     if ct is not None and ct.__module__ != cls.__module__:
-        logger.warning(
-            "Document subclass '%s' and its content model '%s' should be defined in the same module. "
-            "'%s' is in '%s' but '%s' is in '%s'. "
-            "Move '%s' to '%s' or move '%s' to '%s'.",
-            cls.__name__,
-            ct.__name__,
-            cls.__name__,
-            cls.__module__,
-            ct.__name__,
-            ct.__module__,
-            ct.__name__,
-            cls.__module__,
-            cls.__name__,
-            ct.__module__,
+        raise TypeError(
+            f"Document subclass '{cls.__name__}' and its content model '{ct.__name__}' "
+            f"must be defined in the same module. "
+            f"'{cls.__name__}' is in '{cls.__module__}' but '{ct.__name__}' is in '{ct.__module__}'. "
+            f"Move '{ct.__name__}' to '{cls.__module__}' or move '{cls.__name__}' to '{ct.__module__}'."
         )
 
     # Structured-only FILES without Document[T]: likely missing generic parameter
@@ -167,12 +165,18 @@ def _validate_content_schema(
     original_content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
     content_bytes: bytes,
     name: str,
+    *,
+    is_list: bool = False,
 ) -> None:
     """Validate content against declared schema. Called from create()/create_root().
 
+    When ``is_list`` is True, validates each item in the list against ``content_type``.
     Fast path for BaseModel instances (isinstance check, no parsing).
     Falls back to byte-level parse+validate for structured formats (JSON, YAML).
     """
+    if is_list:
+        _validate_list_content_schema(content_type, original_content, content_bytes, name)
+        return
     if isinstance(original_content, BaseModel):
         if not isinstance(original_content, content_type):
             raise TypeError(f"Expected content of type {content_type.__name__}, got {type(original_content).__name__}")
@@ -187,6 +191,81 @@ def _validate_content_schema(
             content_type.model_validate_json(content_bytes)
     except Exception as e:
         raise TypeError(f"Content does not validate against {content_type.__name__}: {e}") from e
+
+
+def _validate_list_items(item_type: type[BaseModel], items: list[Any]) -> None:
+    """Validate each item in a list against ``item_type``."""
+    for i, item in enumerate(items):
+        if isinstance(item, BaseModel) and not isinstance(item, item_type):
+            raise TypeError(f"List item [{i}]: expected {item_type.__name__}, got {type(item).__name__}")
+        if isinstance(item, dict):
+            try:
+                item_type.model_validate(item)
+            except Exception as e:
+                raise TypeError(f"List item [{i}] does not validate against {item_type.__name__}: {e}") from e
+        elif not isinstance(item, BaseModel):
+            raise TypeError(f"List item [{i}]: expected {item_type.__name__} or dict, got {type(item).__name__}")
+
+
+def _parse_list_bytes(content_bytes: bytes, name: str, item_type: type[BaseModel]) -> list[Any]:
+    """Parse structured content bytes as a list by extension."""
+    name_lower = name.lower()
+    if name_lower.endswith((".yaml", ".yml")):
+        yaml = YAML()
+        raw = yaml.load(content_bytes.decode("utf-8"))  # type: ignore[no-untyped-call]
+    elif name_lower.endswith(".json"):
+        raw = json.loads(content_bytes)
+    else:
+        raise TypeError(
+            f"Document[list[{item_type.__name__}]] requires .json or .yaml extension for list content, got: '{name}'. Use a structured file extension."
+        )
+    if not isinstance(raw, list):
+        raise TypeError(f"Expected list content for Document[list[{item_type.__name__}]], got {type(raw).__name__}")
+    return raw  # type: ignore[no-any-return]
+
+
+def _validate_list_content_schema(
+    item_type: type[BaseModel],
+    original_content: str | bytes | dict[str, Any] | list[Any] | BaseModel,
+    content_bytes: bytes,
+    name: str,
+) -> None:
+    """Validate list content where each item must match ``item_type``."""
+    if isinstance(original_content, list):
+        _validate_list_items(item_type, original_content)
+        return
+    raw = _parse_list_bytes(content_bytes, name, item_type)
+    _validate_list_items(item_type, raw)
+
+
+def _extract_content_type(cls: type) -> None:
+    """Extract content type from Document[T] or Document[list[T]] generic parameter.
+
+    When inheriting from Document[T], Pydantic creates a concrete intermediate class.
+    The type info is in the parent's ``__pydantic_generic_metadata__``.
+    Supports both ``Document[ModelType]`` and ``Document[list[ModelType]]``.
+    """
+    for base in cls.__bases__:
+        meta = getattr(base, "__pydantic_generic_metadata__", None)
+        if not (meta and meta.get("origin") is Document and meta.get("args")):
+            continue
+        ct = meta["args"][0]
+        if get_origin(ct) is list:
+            list_args = get_args(ct)
+            if not list_args or not isinstance(list_args[0], type) or not issubclass(list_args[0], BaseModel):
+                inner = repr(list_args[0]) if list_args else "?"
+                raise TypeError(
+                    f"Document subclass '{cls.__name__}' generic parameter list[T] requires T to be a BaseModel subclass, got list[{inner}]. "
+                    f"Use Document[list[MyModel]] where MyModel is a BaseModel subclass."
+                )
+            cls._content_type = list_args[0]
+            cls._content_is_list = True
+            return
+        if not isinstance(ct, type) or not issubclass(ct, BaseModel):
+            raise TypeError(f"Document subclass '{cls.__name__}' generic parameter must be a BaseModel subclass or list[BaseModel], got {ct!r}")
+        cls._content_type = ct
+        cls._content_is_list = False
+        return
 
 
 class Document[TContent: BaseModel = Any](BaseModel):
@@ -228,7 +307,10 @@ class Document[TContent: BaseModel = Any](BaseModel):
     """Maximum allowed total size in bytes (default 25MB)."""
 
     _content_type: ClassVar[type[BaseModel] | None] = None
-    """Content schema declared via generic parameter (Document[ModelType]). None for untyped documents."""
+    """Content schema declared via generic parameter (Document[ModelType] or Document[list[ModelType]]). None for untyped documents."""
+
+    _content_is_list: ClassVar[bool] = False
+    """True when declared as Document[list[ModelType]] — content is validated/parsed as a list of items."""
 
     FILES: ClassVar[type[StrEnum] | None] = None
     """Allowed filenames enum. Define as nested ``class FILES(StrEnum)`` or assign an external StrEnum subclass."""
@@ -247,17 +329,7 @@ class Document[TContent: BaseModel = Any](BaseModel):
             return
 
         # Extract content type from generic parameter.
-        # When inheriting from Document[T], Pydantic creates a concrete intermediate class.
-        # The type info is in the parent's __pydantic_generic_metadata__.
-        # Same pattern as PromptSpec (spec.py:186-204).
-        for base in cls.__bases__:
-            meta = getattr(base, "__pydantic_generic_metadata__", None)
-            if meta and meta.get("origin") is Document and meta.get("args"):
-                ct = meta["args"][0]
-                if not isinstance(ct, type) or not issubclass(ct, BaseModel):
-                    raise TypeError(f"Document subclass '{cls.__name__}' generic parameter must be a BaseModel subclass, got {ct!r}")
-                cls._content_type = ct
-                break
+        _extract_content_type(cls)
 
         if cls.__name__.startswith("Test"):
             raise TypeError(
@@ -270,7 +342,7 @@ class Document[TContent: BaseModel = Any](BaseModel):
             if not isinstance(files_attr, type) or not issubclass(files_attr, StrEnum):
                 raise TypeError(f"Document subclass '{cls.__name__}'.FILES must be an Enum of string values")
 
-        _warn_content_type_issues(cls)
+        _enforce_content_type_rules(cls)
 
         # Check that the Document's model_fields only contain the allowed fields
         # It prevents AI models from adding additional fields to documents
@@ -319,7 +391,7 @@ class Document[TContent: BaseModel = Any](BaseModel):
 
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
-            _validate_content_schema(cls._content_type, content, content_bytes, name)
+            _validate_content_schema(cls._content_type, content, content_bytes, name, is_list=cls._content_is_list)
         logger.info("Creating root document '%s' (%s): %s", name, cls.__name__, reason)
         return cls(
             name=name,
@@ -360,7 +432,7 @@ class Document[TContent: BaseModel = Any](BaseModel):
             )
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
-            _validate_content_schema(cls._content_type, content, content_bytes, name)
+            _validate_content_schema(cls._content_type, content, content_bytes, name, is_list=cls._content_is_list)
         return cls(
             name=name,
             content=content_bytes,
@@ -396,7 +468,7 @@ class Document[TContent: BaseModel = Any](BaseModel):
             )
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
-            _validate_content_schema(cls._content_type, content, content_bytes, name)
+            _validate_content_schema(cls._content_type, content, content_bytes, name, is_list=cls._content_is_list)
         return cls(
             name=name,
             content=content_bytes,
@@ -435,7 +507,7 @@ class Document[TContent: BaseModel = Any](BaseModel):
                 )
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
-            _validate_content_schema(cls._content_type, content, content_bytes, name)
+            _validate_content_schema(cls._content_type, content, content_bytes, name, is_list=cls._content_is_list)
         return cls(
             name=name,
             content=content_bytes,
@@ -797,20 +869,33 @@ class Document[TContent: BaseModel = Any](BaseModel):
     def parsed(self) -> TContent:
         """Content parsed against the declared generic type parameter. Cached.
 
-        Returns the Pydantic model declared via Document[ModelType].
+        Returns the Pydantic model declared via Document[ModelType], or a list
+        of models for Document[list[ModelType]].
         Raises TypeError if the Document subclass has no declared content type.
         Use parse(ModelType) for explicit parsing on untyped documents.
         """
         content_type = self.__class__._content_type
         if content_type is None:
             raise TypeError(f"{self.__class__.__name__} has no declared content type. Use parse(ModelType) for explicit parsing.")
+        if self.__class__._content_is_list:
+            return cast(TContent, self.as_pydantic_model(list[content_type]))
         return cast(TContent, self.as_pydantic_model(content_type))
 
     @final
     @classmethod
     def get_content_type(cls) -> type[BaseModel] | None:
-        """Return the declared content type from the generic parameter, or None."""
+        """Return the declared content type from the generic parameter, or None.
+
+        For ``Document[list[T]]``, returns T (the item type). Use ``content_is_list``
+        to check whether the content type is a list.
+        """
         return cls._content_type
+
+    @final
+    @classmethod
+    def content_is_list(cls) -> bool:
+        """Return True if declared as Document[list[T]]."""
+        return cls._content_is_list
 
     def _parse_structured(self) -> Any:
         """Parse content as JSON or YAML based on extension. Strict — no guessing."""

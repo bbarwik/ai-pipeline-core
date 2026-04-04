@@ -4,7 +4,7 @@ This package provides the Conversation class for LLM interactions with built-in
 retry logic and structured output generation using Pydantic models.
 
 Primary API:
-    Conversation class - Immutable, Document-based, warmup+fork friendly
+    Conversation class - Immutable, Document-based LLM interaction
 
 Primitive types (ModelOptions, ModelName, etc.) are re-exported from _llm_core.
 """

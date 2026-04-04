@@ -543,7 +543,7 @@ def test_spec_output_type_explicit_str() -> None:
 
 
 def test_spec_output_type_rejects_invalid_generic_param() -> None:
-    with pytest.raises(TypeError, match=r"generic parameter must be 'str' or a BaseModel subclass"):
+    with pytest.raises(TypeError, match=r"generic parameter must be 'str', a BaseModel subclass, or list\[BaseModel\]"):
 
         class BadOutputSpec(PromptSpec[int]):  # type: ignore[type-arg]
             """Doc."""

@@ -12,14 +12,14 @@ Architecture::
         │   └── CompetitorAnalyzer (RemoteDeployment, inline mode)
         │       └── CompetitorAnalysisPipeline (child deployment)
         │           ├── ResearchFlow      → tool-assisted research
-        │           ├── AssessmentFlow    → warmup + fork dual-perspective analysis
+        │           ├── AssessmentFlow    → dual-perspective analysis
         │           └── ScoringFlow       → structured threat scoring
         └── SynthesisFlow         → compile landscape report with traced_operation
 
 Features demonstrated:
     - RemoteDeployment with inline fallback
     - Parent-to-child span linkage (visible via ai-trace)
-    - Warmup + fork pattern for parallel LLM calls sharing cached context
+    - Parallel LLM calls sharing cached context
     - Tool use within child deployment
     - Structured output via send_structured
     - traced_operation for lightweight operation spans
@@ -270,7 +270,7 @@ class ResearchFlow(PipelineFlow):
         return await ResearchTask.run(documents)
 
 
-# --- Assessment flow (warmup + fork for dual-perspective analysis) ---
+# --- Assessment flow (dual-perspective analysis) ---
 
 
 class AssessmentTask(PipelineTask):

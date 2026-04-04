@@ -176,7 +176,7 @@ pipeline.run_cli(initializer=initialize)
 from ai_pipeline_core.llm import Conversation, ModelOptions
 
 # Create a conversation with model and optional context
-conv = Conversation(model="gemini-3-pro")
+conv = Conversation(model="gemini-3.1-pro")
 
 # Add documents to cacheable context prefix (shared across forks)
 conv = conv.with_context(doc1, doc2, doc3)
@@ -276,7 +276,7 @@ class Analysis(BaseModel):
 
 
 # Generate structured output via Conversation
-conv = Conversation(model="gemini-3-pro")
+conv = Conversation(model="gemini-3.1-pro")
 conv = await conv.send_structured(
     "Analyze this product review: ...",
     response_format=Analysis,
@@ -371,6 +371,29 @@ plan = ResearchPlanDocument.derive(
 # Introspection
 ResearchPlanDocument.get_content_type()  # ResearchDefinition
 ```
+
+List content is also supported — `Document[list[ModelType]]` validates each item:
+
+```python
+class FindingItem(BaseModel, frozen=True):
+    title: str
+    severity: str
+
+
+class FindingsDocument(Document[list[FindingItem]]):
+    """Document containing a list of findings."""
+
+
+doc = FindingsDocument.create_root(
+    name="findings.json",
+    content=[FindingItem(title="XSS", severity="high")],
+    reason="audit output",
+)
+doc.parsed  # list[FindingItem]
+doc.content_is_list()  # True
+```
+
+**Co-location rule:** The content model must be defined in the same module as the Document subclass. Cross-module content models raise `TypeError` at import time.
 
 ## Core Concepts
 
@@ -479,7 +502,7 @@ The `Conversation` class provides immutable, stateful conversation management:
 from ai_pipeline_core.llm import Conversation, ModelOptions
 
 # Create with model and optional configuration
-conv = Conversation(model="gemini-3-pro")
+conv = Conversation(model="gemini-3.1-pro")
 
 # Add documents to cacheable context prefix (shared across forks)
 conv = conv.with_context(doc1, doc2, doc3)
@@ -503,26 +526,19 @@ print(conv.content)  # Response text
 conv = await conv.send("Now summarize the key points")
 print(conv.content)
 
-# Structured output
+# Structured output — single model
 conv = await conv.send_structured("Extract entities", response_format=Entities)
 print(conv.parsed)  # Entities instance
+
+# Structured output — list of models (auto-wrapped for provider compatibility)
+conv = await conv.send_structured("Extract all findings", response_format=list[Finding])
+print(conv.parsed)  # list[Finding] — framework wraps/unwraps transparently
 
 # Add multiple documents at once
 conv = conv.with_documents([doc1, doc2, doc3])
 
 # Inject prior assistant output (e.g., from another conversation)
 conv = conv.with_assistant_message("Previous analysis result...")
-
-# Warmup + fork pattern for parallel calls with shared cache
-import asyncio
-
-base = await conv.send("Acknowledge the context")  # Warmup
-# Fork: create parallel conversations from the same base
-results = await asyncio.gather(
-    base.send("Analyze source 1"),
-    base.send("Analyze source 2"),
-    base.send("Analyze source 3"),
-)
 
 # Approximate token count for all context and messages
 print(conv.approximate_tokens_count)
@@ -552,7 +568,7 @@ print(conv.tool_call_records)  # Records of all tool calls made
 - `temperature`: Generation randomness (usually omit -- use provider defaults)
 - `stop`: Stop sequences (tuple of strings, used internally by `send_spec` for `</result>` tags)
 
-**ModelName predefined values:** `"gemini-3-pro"`, `"gpt-5.1"`, `"gemini-3-flash"`, `"gpt-5-mini"`, `"grok-4.1-fast"`, `"gemini-3-flash-search"`, `"gpt-5-mini-search"`, `"grok-4.1-fast-search"`, `"sonar-pro-search"` (also accepts any string for custom models).
+**ModelName predefined values:** `"gemini-3.1-pro"`, `"gpt-5.4"`, `"gemini-3-flash"`, `"gpt-5.4-mini"`, `"grok-4.1-fast"`, `"gemini-3-flash-search"`, `"gpt-5.4-mini-search"`, `"grok-4.1-fast-search"`, `"sonar-pro-search"` (also accepts any string for custom models).
 
 ### Image Processing
 
@@ -693,8 +709,8 @@ class ConfigurableFlow(PipelineFlow):
         ...
 
 
-flow = ConfigurableFlow(model="gemini-3-pro", temperature=0.7)
-flow.get_params()  # {"model": "gemini-3-pro", "temperature": 0.7}
+flow = ConfigurableFlow(model="gemini-3.1-pro", temperature=0.7)
+flow.get_params()  # {"model": "gemini-3.1-pro", "temperature": 0.7}
 ```
 
 **Flow ClassVar configuration:**
@@ -708,9 +724,9 @@ Flow retries are controlled by the deployment (see `flow_retries` on `PipelineDe
 
 ```python
 class ResearchOptions(FlowOptions):
-    analysis_model: ModelName = "gemini-3-pro"
+    analysis_model: ModelName = "gemini-3.1-pro"
     verification_model: ModelName = "grok-4.1-fast"
-    synthesis_model: ModelName = "gemini-3-pro"
+    synthesis_model: ModelName = "gemini-3.1-pro"
     max_sources: int = 10
 ```
 
@@ -723,7 +739,7 @@ class MyPipeline(PipelineDeployment[MyOptions, MyResult]):
     pubsub_service_type = "research"  # Enables Pub/Sub event publishing
 
     def build_flows(self, options: MyOptions) -> list[PipelineFlow]:
-        return [AnalysisFlow(), ReportFlow(model="gemini-3-pro")]
+        return [AnalysisFlow(), ReportFlow(model="gemini-3.1-pro")]
 
     @staticmethod
     def build_result(

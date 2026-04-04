@@ -175,7 +175,7 @@ async def test_laminar_sink_maps_llm_round_to_gen_ai_attributes(monkeypatch: pyt
             cost_usd=0.5,
             first_token_ms=4,
         ),
-        meta={"model": "gpt-5.1", "response_id": "resp-123"},
+        meta={"model": "gpt-5.4", "response_id": "resp-123"},
     )
 
     assert _FakeLaminar.initialize_calls == [
@@ -201,8 +201,8 @@ async def test_laminar_sink_maps_llm_round_to_gen_ai_attributes(monkeypatch: pyt
         "gen_ai.usage.cost": 0.5,
         "gen_ai.input.messages": '[{"role": "user", "content": "hello"}]',
         "gen_ai.output.messages": '"world"',
-        "gen_ai.request.model": "gpt-5.1",
-        "gen_ai.response.model": "gpt-5.1",
+        "gen_ai.request.model": "gpt-5.4",
+        "gen_ai.response.model": "gpt-5.4",
         "gen_ai.response.id": "resp-123",
     }
     assert _FakeLaminar.start_calls[1]["output"] == "world"
@@ -250,7 +250,7 @@ async def test_laminar_sink_is_fail_open(monkeypatch: pytest.MonkeyPatch) -> Non
             time_taken_ms=10,
             log_summary={"total": 0, "warnings": 0, "errors": 0, "last_error": ""},
         ),
-        meta={"model": "gpt-5.1", "response_id": "resp-123"},
+        meta={"model": "gpt-5.4", "response_id": "resp-123"},
     )
 
 

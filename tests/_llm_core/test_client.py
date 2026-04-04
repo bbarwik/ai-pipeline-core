@@ -287,8 +287,8 @@ class TestModelNameToOpenRouter:
         assert "-search" not in result
 
     def test_known_provider_prefix(self):
-        result = _model_name_to_openrouter_model("gpt-5-mini")
-        assert result == "openai/gpt-5-mini"
+        result = _model_name_to_openrouter_model("gpt-5.4-mini")
+        assert result == "openai/gpt-5.4-mini"
 
     def test_unknown_model_passthrough(self):
         result = _model_name_to_openrouter_model("unknown-model-xyz")
@@ -525,7 +525,7 @@ class TestGenerateImpl:
 
         msg = CoreMessage(role=Role.USER, content="hi")
         opts = ModelOptions(retries=0, cache_ttl=None)
-        result = await _generate_impl([msg], model="gpt-5-mini", model_options=opts)
+        result = await _generate_impl([msg], model="gpt-5.4-mini", model_options=opts)
         assert result.content == "OK"
 
     @patch("ai_pipeline_core._llm_core.client.settings")

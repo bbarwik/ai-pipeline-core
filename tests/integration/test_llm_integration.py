@@ -421,7 +421,7 @@ class TestLLMIntegration:
         assert encoded.value["$type"] == "pydantic"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("model", ["gemini-3-pro", "gpt-5.1", "gemini-3-flash", "gpt-5-mini", "grok-4.1-fast"])
+    @pytest.mark.parametrize("model", ["gemini-3.1-pro", "gpt-5.4", "gemini-3-flash", "gpt-5.4-mini", "grok-4.1-fast"])
     async def test_current_date_awareness(self, model):
         """LLM correctly reports the current date injected via Conversation.current_date."""
         today = date.today().isoformat()

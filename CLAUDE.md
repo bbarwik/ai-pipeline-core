@@ -96,29 +96,16 @@ These rules govern how LLM-related code must be written.
 - Implement prefix-based caching with configurable TTL
 - Prefer sending identical large prefixes across calls over sending tailored smaller prompts per call
 
-### 2.2 Warmup + Fork Pattern
-
-When multiple LLM calls share the same context:
-
-1. **Warmup call**: Send shared context with a short warmup message. This populates the cache.
-2. **Capture warmup response**: The LLM acknowledges. **This response must be kept** — it becomes part of the shared prefix for all forks.
-3. **Fork**: Create N parallel calls. Each fork's messages start with the warmup conversation (warmup message + warmup response), then append per-fork content.
-
-**Critical**: The warmup response is essential. Without it, fork messages diverge immediately after the warmup message — the provider only caches `context + warmup message` (a few hundred tokens). Discarding the warmup response defeats the purpose.
-
-**Timing constraint**: All forked calls must be sent within 5 minutes of the warmup call (cache TTL).
-
-### 2.3 Preparation-First Execution
+### 2.2 Preparation-First Execution
 
 Because cache lives at most 5 minutes:
 
 1. **Fetch phase**: Gather all external data (web content, screenshots, API responses)
-2. **Warmup phase**: Send shared context to LLM
-3. **Execution phase**: Fire all forked LLM calls simultaneously
+2. **Execution phase**: Fire all LLM calls with shared context prefix
 
 **Anti-pattern**: Interleaving slow I/O with LLM calls causes cache misses because later calls may arrive after cache TTL expires.
 
-### 2.4 No Batching
+### 2.3 No Batching
 
 Do not batch multiple items into a single LLM call to "save tokens." With caching:
 - Separate calls are nearly as cheap as batched calls (shared prefix is cached)
@@ -126,7 +113,7 @@ Do not batch multiple items into a single LLM call to "save tokens." With cachin
 - Separate calls are easier to implement, retry, and debug
 - Separate calls return structured output per item without complex parsing
 
-### 2.5 Image Handling
+### 2.4 Image Handling
 
 Maximum image resolution is 3000x3000 pixels. The framework handles per-model downscaling internally via `ImagePreset`.
 
@@ -137,17 +124,17 @@ Maximum image resolution is 3000x3000 pixels. The framework handles per-model do
 4. **If wider than limit** — Trim width (left-aligned crop). Web content is left-aligned, so right-side content is typically less important.
 5. **Describe the split in text prompt** — "Screenshot was split into N sequential parts with overlap"
 
-### 2.6 Model Cost Tiers
+### 2.5 Model Cost Tiers
 
-- **Expensive** (pro/flagship): gemini-3-pro, gpt-5.1. Use for complex reasoning, final synthesis.
+- **Expensive** (pro/flagship): gemini-3.1-pro, gpt-5.4. Use for complex reasoning, final synthesis.
 - **Cheap** (flash/fast): gemini-3-flash, grok-4.1-fast. Use for high-volume tasks, formatting, conversion, structured output extraction.
 - **Too small** (nano/lite): Insufficient for production pipeline tasks. Do not use.
 
-### 2.7 Model Reference Preservation
+### 2.6 Model Reference Preservation
 
 **Do not remove model references that appear unfamiliar.** Models are released frequently and the codebase may reference models that are newer than the AI coding agent's training data. If a model name exists in code, assume it is valid unless there is concrete evidence otherwise (e.g., provider returns "model not found" error).
 
-### 2.8 Structured Output
+### 2.7 Structured Output
 
 Structured LLM output rules:
 - Send schema to LLM automatically via `response_format` (never explain JSON structure in prompts)
@@ -185,13 +172,13 @@ class VerificationResult(BaseModel):
     is_valid: bool  # Decision follows from decomposition
 ```
 
-### 2.9 Document XML Wrapping
+### 2.8 Document XML Wrapping
 
 When documents are added to LLM context, the framework wraps them in XML. This boundary separates data from instructions — the **prompt injection defense**.
 
 **All structured data for LLM context must be wrapped in a Document.** Never construct XML manually (e.g., f-string `<document>` tags). The framework handles escaping, ID generation, and consistent formatting.
 
-### 2.10 Thinking Models
+### 2.9 Thinking Models
 
 All LLMs (2026) perform internal reasoning. The framework must NOT add:
 - Chain-of-thought prompting
@@ -200,7 +187,7 @@ All LLMs (2026) perform internal reasoning. The framework must NOT add:
 
 These are redundant and can interfere with the model's native reasoning. Reasoning effort is controlled via `ModelOptions.reasoning_effort` where supported.
 
-### 2.11 Long Response Handling
+### 2.10 Long Response Handling
 
 LLMs produce quality degradation in responses longer than 3-5K tokens. Use:
 - Conversational follow-up patterns for building long outputs incrementally
@@ -208,13 +195,13 @@ LLMs produce quality degradation in responses longer than 3-5K tokens. Use:
 
 Tasks requiring long outputs should not use a single call requesting a large response.
 
-### 2.12 Additional LLM Anti-Patterns
+### 2.11 Additional LLM Anti-Patterns
 
-Beyond the rules above (no batching §2.4, no CoT §2.10, no input trimming §2.1):
+Beyond the rules above (no batching §2.3, no CoT §2.9, no input trimming §2.1):
 
 | Anti-Pattern | Why It's Wrong |
 |--------------|----------------|
-| Generic `reasoning: str` scratchpad fields | Redundant with model's native reasoning; use domain-specific decomposition fields (§2.8) |
+| Generic `reasoning: str` scratchpad fields | Redundant with model's native reasoning; use domain-specific decomposition fields (§2.7) |
 | Numeric confidence scores without criteria | Each call interprets scale differently; hallucinated results |
 | Explaining JSON structure in prompts | Redundant with schema sent via `response_format`; degrades quality |
 

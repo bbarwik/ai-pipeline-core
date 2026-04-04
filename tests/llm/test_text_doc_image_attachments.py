@@ -55,7 +55,7 @@ class TestTextDocWithImageAttachment:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         assert len(image_parts) >= 1, f"Expected ImageContent for screenshot attachment, got part types: {[type(p).__name__ for p in parts]}"
@@ -69,7 +69,7 @@ class TestTextDocWithImageAttachment:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
         assert "Unique marker text." in combined_text
@@ -85,7 +85,7 @@ class TestTextDocWithImageAttachment:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
         assert '<attachment name="screen.jpg">' in combined_text
@@ -103,7 +103,7 @@ class TestTextDocWithImageAttachment:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         assert len(image_parts) >= 2, f"Expected 2+ ImageContent parts, got {len(image_parts)}"
@@ -120,7 +120,7 @@ class TestTextDocWithImageAttachment:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
@@ -138,7 +138,7 @@ class TestTextDocWithImageAttachment:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         assert len(image_parts) >= 1
@@ -156,7 +156,7 @@ class TestTextDocWithImageAttachment:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
         assert 'description="Homepage screenshot"' in combined_text
@@ -171,7 +171,7 @@ class TestTextDocWithImageAttachment:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         assert len(image_parts) >= 2, f"Expected 2+ image tiles for tall attachment, got {len(image_parts)}"
@@ -194,7 +194,7 @@ class TestTextDocWithPdfAttachment:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         pdf_parts = [p for p in parts if isinstance(p, PDFContent)]
         assert len(pdf_parts) >= 1, f"Expected PDFContent for PDF attachment, got part types: {[type(p).__name__ for p in parts]}"
@@ -209,7 +209,7 @@ class TestTextDocWithPdfAttachment:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         pdf_parts = [p for p in parts if isinstance(p, PDFContent)]
         assert len(pdf_parts) == 1
@@ -232,7 +232,7 @@ class TestTextDocWithAllAttachmentTypes:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
@@ -254,7 +254,7 @@ class TestTextDocWithAllAttachmentTypes:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
         assert "<document>" in combined_text
@@ -274,7 +274,7 @@ class TestImageDocumentContentParts:
         """Small image (no splitting needed) must produce ImageContent."""
         doc = ConcreteDocument.create_root(name="photo.jpg", content=_make_image_bytes(100, 100), reason="test input")
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         assert len(image_parts) == 1, f"Expected 1 ImageContent, got {len(image_parts)}. Types: {[type(p).__name__ for p in parts]}"
@@ -283,7 +283,7 @@ class TestImageDocumentContentParts:
         """ImageContent.data must decode back to a valid image."""
         doc = ConcreteDocument.create_root(name="photo.jpg", content=_make_image_bytes(200, 150), reason="test input")
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         assert len(image_parts) >= 1
@@ -294,7 +294,7 @@ class TestImageDocumentContentParts:
         """PNG image must produce ImageContent with correct mime_type."""
         doc = ConcreteDocument.create_root(name="icon.png", content=_make_image_bytes(100, 100, fmt="PNG"), reason="test input")
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         assert len(image_parts) == 1
@@ -304,7 +304,7 @@ class TestImageDocumentContentParts:
         """Image exceeding model limits must be split into multiple parts."""
         doc = ConcreteDocument.create_root(name="tall.jpg", content=_make_image_bytes(1000, 5000), reason="test input")
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         text_parts = [p for p in parts if isinstance(p, TextContent)]
@@ -317,7 +317,7 @@ class TestImageDocumentContentParts:
         """Each split image part must be a valid image."""
         doc = ConcreteDocument.create_root(name="tall.jpg", content=_make_image_bytes(1000, 5000), reason="test input")
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         for i, part in enumerate(image_parts):
@@ -328,7 +328,7 @@ class TestImageDocumentContentParts:
         """ImageContent must serialize to base64 correctly (JSON round-trip)."""
         doc = ConcreteDocument.create_root(name="small.jpg", content=_make_image_bytes(50, 50), reason="test input")
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         assert len(image_parts) == 1
@@ -356,7 +356,7 @@ class TestImageDocWithAttachments:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
@@ -373,7 +373,7 @@ class TestImageDocWithAttachments:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
         assert len(image_parts) >= 2, f"Expected 2+ ImageContent (main + attachment), got {len(image_parts)}"
@@ -391,7 +391,7 @@ class TestPdfDocWithAttachments:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         pdf_parts = [p for p in parts if isinstance(p, PDFContent)]
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
@@ -417,7 +417,7 @@ class TestInvalidAttachments:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
         assert "Valid text content." in combined_text
@@ -434,7 +434,7 @@ class TestInvalidAttachments:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
         assert "Text content." in combined_text
@@ -448,7 +448,7 @@ class TestInvalidAttachments:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
         assert "Valid text." in combined_text
@@ -468,7 +468,7 @@ class TestInvalidAttachments:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         combined_text = "".join(p.text for p in parts if isinstance(p, TextContent))
         image_parts = [p for p in parts if isinstance(p, ImageContent)]
@@ -484,7 +484,7 @@ class TestTextDocNoAttachments:
         """Text-only document produces a single TextContent."""
         doc = ConcreteDocument.create_root(name="simple.md", content="Simple content.", reason="test input")
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         assert len(parts) == 1
         assert isinstance(parts[0], TextContent)
@@ -501,7 +501,7 @@ class TestTextDocNoAttachments:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gemini-3-pro")
+        parts = _document_to_content_parts(doc, "gemini-3.1-pro")
 
         # Pure text case: should be one TextContent with everything inlined
         assert len(parts) == 1

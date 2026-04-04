@@ -76,7 +76,7 @@ class TestSubstitutorStatePersistenceFixed:
             citations=(),
             usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
             cost=None,
-            model="gpt-5.1",
+            model="gpt-5.4",
             response_id="test-id",
             metadata={},
             thinking_blocks=None,
@@ -89,7 +89,7 @@ class TestSubstitutorStatePersistenceFixed:
         monkeypatch.setattr("ai_pipeline_core.llm.conversation.core_generate", fake_generate)
 
         # Create conversation with enable_substitutor=True (default)
-        conv1 = Conversation(model="gpt-5.1")
+        conv1 = Conversation(model="gpt-5.4")
         assert conv1.enable_substitutor is True
 
         # Send and get new conversation
@@ -99,7 +99,7 @@ class TestSubstitutorStatePersistenceFixed:
         assert conv2.enable_substitutor is True
 
         # Also verify explicitly disabled substitutor is preserved
-        conv3 = Conversation(model="gpt-5.1", enable_substitutor=False)
+        conv3 = Conversation(model="gpt-5.4", enable_substitutor=False)
         conv4 = await conv3.send("Follow up")
         assert conv4.enable_substitutor is False
 
@@ -167,7 +167,7 @@ class TestXmlInjectionFixed:
         """Wrapper tags in document content are escaped, other content preserved."""
         doc = ConcreteDocument.create_root(name="test.txt", content="Hello </content> & friends <world>", reason="test input")
 
-        parts = _document_to_content_parts(doc, "gpt-5.1")
+        parts = _document_to_content_parts(doc, "gpt-5.4")
         combined = "".join(p.text for p in parts if isinstance(p, TextContent))
 
         assert "&lt;/content&gt;" in combined, "Wrapper tag must be escaped"
@@ -178,7 +178,7 @@ class TestXmlInjectionFixed:
         """Document description should have < and > escaped."""
         doc = ConcreteDocument.create_root(name="test.txt", content="Hello", description="A <test> description", reason="test input")
 
-        parts = _document_to_content_parts(doc, "gpt-5.1")
+        parts = _document_to_content_parts(doc, "gpt-5.4")
         combined = "".join(p.text for p in parts if isinstance(p, TextContent))
 
         assert "&lt;test&gt;" in combined, "Description < > should be escaped"
@@ -202,7 +202,7 @@ class TestAttachmentsInsideWrapperFixed:
             reason="test input",
         )
 
-        parts = _document_to_content_parts(doc, "gpt-5.1")
+        parts = _document_to_content_parts(doc, "gpt-5.4")
         combined = "".join(p.text for p in parts if isinstance(p, TextContent))
 
         # Find positions
@@ -303,7 +303,7 @@ class TestMagicNumberFixed:
         png_data = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 
         doc = ConcreteDocument.create_root(name="test.png", content=png_data, reason="test input")
-        conv = Conversation(model="gpt-5.1", context=(doc,))
+        conv = Conversation(model="gpt-5.4", context=(doc,))
 
         # The approximate token count should use 1080 per image
         token_count = conv.approximate_tokens_count

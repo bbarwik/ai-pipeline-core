@@ -91,7 +91,11 @@ class ModelResponse(BaseModel, Generic[T]):
 
     @field_serializer("parsed", when_used="always")
     def serialize_parsed(self, value: T) -> Any:
-        """Serialize parsed value - convert BaseModel to dict."""
+        """Serialize parsed value - convert BaseModel or list[BaseModel] to dict/list."""
         if isinstance(value, BaseModel):
             return value.model_dump()
+        if isinstance(value, list):
+            if all(isinstance(item, BaseModel) for item in value):
+                return [item.model_dump() for item in value]
+            return value
         return value

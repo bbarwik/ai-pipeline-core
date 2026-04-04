@@ -2,7 +2,7 @@
 # CLASSES: Attachment, Document, DocumentValidationError, DocumentSizeError, DocumentNameError
 # DEPENDS: BaseModel, Exception
 # PURPOSE: Document system for AI pipeline flows.
-# VERSION: 0.19.3
+# VERSION: 0.20.0
 # AUTO-GENERATED from source code — do not edit. Run: make docs-ai-build
 
 ## Imports
@@ -217,13 +217,16 @@ class Document(BaseModel):
     def parsed(self) -> TContent:
         """Content parsed against the declared generic type parameter. Cached.
 
-        Returns the Pydantic model declared via Document[ModelType].
+        Returns the Pydantic model declared via Document[ModelType], or a list
+        of models for Document[list[ModelType]].
         Raises TypeError if the Document subclass has no declared content type.
         Use parse(ModelType) for explicit parsing on untyped documents.
         """
         content_type = self.__class__._content_type
         if content_type is None:
             raise TypeError(f"{self.__class__.__name__} has no declared content type. Use parse(ModelType) for explicit parsing.")
+        if self.__class__._content_is_list:
+            return cast(TContent, self.as_pydantic_model(list[content_type]))
         return cast(TContent, self.as_pydantic_model(content_type))
 
     @final
@@ -248,6 +251,12 @@ class Document(BaseModel):
         if not self.is_text:
             raise ValueError(f"Document is not text: {self.name}")
         return self.content.decode("utf-8")
+
+    @final
+    @classmethod
+    def content_is_list(cls) -> bool:
+        """Return True if declared as Document[list[T]]."""
+        return cls._content_is_list
 
     @classmethod
     def create(
@@ -278,7 +287,7 @@ class Document(BaseModel):
             )
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
-            _validate_content_schema(cls._content_type, content, content_bytes, name)
+            _validate_content_schema(cls._content_type, content, content_bytes, name, is_list=cls._content_is_list)
         return cls(
             name=name,
             content=content_bytes,
@@ -317,7 +326,7 @@ class Document(BaseModel):
                 )
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
-            _validate_content_schema(cls._content_type, content, content_bytes, name)
+            _validate_content_schema(cls._content_type, content, content_bytes, name, is_list=cls._content_is_list)
         return cls(
             name=name,
             content=content_bytes,
@@ -349,7 +358,7 @@ class Document(BaseModel):
 
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
-            _validate_content_schema(cls._content_type, content, content_bytes, name)
+            _validate_content_schema(cls._content_type, content, content_bytes, name, is_list=cls._content_is_list)
         logger.info("Creating root document '%s' (%s): %s", name, cls.__name__, reason)
         return cls(
             name=name,
@@ -386,7 +395,7 @@ class Document(BaseModel):
             )
         content_bytes = _convert_content(name, content)
         if cls._content_type is not None:
-            _validate_content_schema(cls._content_type, content, content_bytes, name)
+            _validate_content_schema(cls._content_type, content, content_bytes, name, is_list=cls._content_is_list)
         return cls(
             name=name,
             content=content_bytes,
@@ -430,7 +439,11 @@ class Document(BaseModel):
     @final
     @classmethod
     def get_content_type(cls) -> type[BaseModel] | None:
-        """Return the declared content type from the generic parameter, or None."""
+        """Return the declared content type from the generic parameter, or None.
+
+        For ``Document[list[T]]``, returns T (the item type). Use ``content_is_list``
+        to check whether the content type is a list.
+        """
         return cls._content_type
 
     @final
@@ -485,17 +498,7 @@ class Document(BaseModel):
             return
 
         # Extract content type from generic parameter.
-        # When inheriting from Document[T], Pydantic creates a concrete intermediate class.
-        # The type info is in the parent's __pydantic_generic_metadata__.
-        # Same pattern as PromptSpec (spec.py:186-204).
-        for base in cls.__bases__:
-            meta = getattr(base, "__pydantic_generic_metadata__", None)
-            if meta and meta.get("origin") is Document and meta.get("args"):
-                ct = meta["args"][0]
-                if not isinstance(ct, type) or not issubclass(ct, BaseModel):
-                    raise TypeError(f"Document subclass '{cls.__name__}' generic parameter must be a BaseModel subclass, got {ct!r}")
-                cls._content_type = ct
-                break
+        _extract_content_type(cls)
 
         if cls.__name__.startswith("Test"):
             raise TypeError(
@@ -508,7 +511,7 @@ class Document(BaseModel):
             if not isinstance(files_attr, type) or not issubclass(files_attr, StrEnum):
                 raise TypeError(f"Document subclass '{cls.__name__}'.FILES must be an Enum of string values")
 
-        _warn_content_type_issues(cls)
+        _enforce_content_type_rules(cls)
 
         # Check that the Document's model_fields only contain the allowed fields
         # It prevents AI models from adding additional fields to documents
@@ -801,6 +804,16 @@ def test_attachment_order_does_not_matter(self):
     assert compute_document_sha256(doc1) == compute_document_sha256(doc2)
 ```
 
+**Document list content is list false for scalar** (`tests/documents/test_document_list_content.py:31`)
+
+```python
+def test_document_list_content_is_list_false_for_scalar() -> None:
+    class ScalarDoc(Document[ItemModel]):
+        """Document with scalar content type."""
+
+    assert ScalarDoc.content_is_list() is False
+```
+
 **Document mime type** (`tests/documents/test_document_core.py:949`)
 
 ```python
@@ -808,15 +821,6 @@ def test_document_mime_type(self):
     """Document.mime_type returns detected MIME type."""
     doc = ConcreteTestDocument.create_root(name="data.json", content={"key": "value"}, reason="test input")
     assert doc.mime_type == "application/json"
-```
-
-**Document no detected mime type** (`tests/documents/test_document_core.py:969`)
-
-```python
-def test_document_no_detected_mime_type(self):
-    """Document has no detected_mime_type attribute (renamed to mime_type)."""
-    doc = ConcreteTestDocument.create_root(name="test.txt", content="hello", reason="test input")
-    assert not hasattr(doc, "detected_mime_type")
 ```
 
 
@@ -1019,6 +1023,26 @@ def test_document_instantiate_base_class_raises() -> None:
         Document(name="test.txt", content=b"data")
 ```
 
+**Document list rejects list int** (`tests/documents/test_document_list_content.py:114`)
+
+```python
+def test_document_list_rejects_list_int() -> None:
+    with pytest.raises(TypeError, match="requires T to be a BaseModel subclass"):
+
+        class BadListDoc2(Document[list[int]]):  # type: ignore[type-arg]
+            """Bad."""
+```
+
+**Document list rejects list str** (`tests/documents/test_document_list_content.py:107`)
+
+```python
+def test_document_list_rejects_list_str() -> None:
+    with pytest.raises(TypeError, match="requires T to be a BaseModel subclass"):
+
+        class BadListDoc(Document[list[str]]):  # type: ignore[type-arg]
+            """Bad."""
+```
+
 **Cannot instantiate document** (`tests/documents/test_document_core.py:138`)
 
 ```python
@@ -1028,47 +1052,23 @@ def test_cannot_instantiate_document(self):
         Document(name="test.txt", content=b"test")
 ```
 
-**Model validate blocked on document** (`tests/documents/test_document_serialization_metadata.py:129`)
+**Document list rejects non structured extension** (`tests/documents/test_document_list_content.py:70`)
 
 ```python
-@pytest.mark.asyncio
-async def test_model_validate_blocked_on_document():
-    """model_validate is blocked on Document subclasses."""
-    with pytest.raises(TypeError, match=r"model_validate.*not supported"):
-        DebugSampleDocument.model_validate({"name": "x.txt", "content": "x"})
+def test_document_list_rejects_non_structured_extension() -> None:
+    items = [ItemModel(name="a", value=1)]
+    with pytest.raises(ValueError):
+        ListDoc.create_root(name="items.txt", content=items, reason="test")
 ```
 
-**Content plus attachments exceeding limit** (`tests/documents/test_document_core.py:1052`)
+**Document list rejects wrong item type** (`tests/documents/test_document_list_content.py:61`)
 
 ```python
-def test_content_plus_attachments_exceeding_limit(self):
-    """Content + attachments exceeding MAX_CONTENT_SIZE is rejected by model_validator."""
-    # Content is 7 bytes (under 10-byte limit), but total with attachment is 12
-    with pytest.raises(DocumentSizeError, match="including attachments"):
-        SmallDocument(
-            name="test.txt",
-            content=b"1234567",  # 7 bytes
-            attachments=(Attachment(name="a.txt", content=b"12345"),),  # 5 bytes => total 12
-        )
-```
+def test_document_list_rejects_wrong_item_type() -> None:
+    class OtherModel(BaseModel):
+        x: str
 
-**Content plus attachments exceeding limit rejected** (`tests/documents/test_document_attachments.py:142`)
-
-```python
-def test_content_plus_attachments_exceeding_limit_rejected(self):
-    with pytest.raises(DocumentSizeError, match="including attachments"):
-        SmallLimitDoc(
-            name="test.txt",
-            content=b"A" * 30,  # 30 bytes
-            attachments=(Attachment(name="a.txt", content=b"B" * 25),),  # total 55 > 50
-        )
-```
-
-**Model copy clears attachments** (`tests/documents/test_document_attachments.py:167`)
-
-```python
-def test_model_copy_clears_attachments(self):
-    doc = SampleFlowDoc(name="test.txt", content=b"Hello")
-    with pytest.raises(TypeError, match=r"model_copy.*not supported"):
-        doc.model_copy(update={"attachments": ()})
+    items = [OtherModel(x="nope")]
+    with pytest.raises(TypeError, match="expected ItemModel"):
+        ListDoc.create_root(name="items.json", content=items, reason="test")
 ```

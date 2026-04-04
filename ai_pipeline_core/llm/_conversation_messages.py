@@ -6,8 +6,6 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel
-
 from ai_pipeline_core._llm_core import CoreMessage
 from ai_pipeline_core._llm_core._validation import validate_text
 from ai_pipeline_core._llm_core.model_response import ModelResponse
@@ -16,6 +14,7 @@ from ai_pipeline_core.documents import Document
 from ai_pipeline_core.documents._hashing import compute_content_sha256
 from ai_pipeline_core.llm._images import validated_binary_parts
 
+from ._list_wrappers import get_list_item_type, is_list_output_type
 from .tools import Tool
 
 __all__ = [
@@ -248,10 +247,16 @@ def _core_messages_to_db_span_input(messages: list[CoreMessage]) -> list[dict[st
     return result
 
 
-def _response_format_path(response_format: type[BaseModel] | None) -> str:
-    """Convert a response model class to an importable path."""
+def _response_format_path(response_format: Any) -> str:
+    """Convert a response model class to an importable path.
+
+    For ``list[T]`` output types, returns ``list[module:QualName]``.
+    """
     if response_format is None:
         return ""
+    if is_list_output_type(response_format):
+        item_type = get_list_item_type(response_format)
+        return f"list[{item_type.__module__}:{item_type.__qualname__}]"
     return f"{response_format.__module__}:{response_format.__qualname__}"
 
 

@@ -166,6 +166,7 @@ async def execute_tool_loop(
     substitutor: URLSubstitutor | None,
     build_tool_result_message: Callable[[str, str, str], Any],
     response_format: type[BaseModel] | None = None,
+    _list_item_type: type[BaseModel] | None = None,
 ) -> tuple[list[Any], ModelResponse[Any], tuple[ToolCallRecord, ...]]:
     """Execute the tool auto-loop.
 
@@ -192,6 +193,7 @@ async def execute_tool_loop(
             expected_cost=expected_cost,
             round_index=round_num,
             tool_schemas=tool_schemas,
+            _list_item_type=_list_item_type,
         )
 
         if not response.has_tool_calls:
@@ -264,6 +266,7 @@ async def execute_tool_loop(
             expected_cost=expected_cost,
             round_index=round_num + 1,
             tool_schemas=[],
+            _list_item_type=_list_item_type,
         )
     except Exception as forced_exc:
         logger.warning(

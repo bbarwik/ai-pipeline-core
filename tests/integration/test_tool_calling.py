@@ -1,6 +1,6 @@
 """Integration tests for tool calling across providers.
 
-Tests the complete tool loop with real LLM APIs: grok-4.1-fast, gemini-3-flash, gpt-5-mini.
+Tests the complete tool loop with real LLM APIs: grok-4.1-fast, gemini-3-flash, gpt-5.4-mini.
 Each test is parameterized by model AND streaming mode to verify both paths.
 """
 
@@ -25,7 +25,7 @@ pytestmark = [
 ]
 
 # Models to test tool calling
-TOOL_MODELS = ("grok-4.1-fast", "gemini-3-flash", "gpt-5-mini")
+TOOL_MODELS = ("grok-4.1-fast", "gemini-3-flash", "gpt-5.4-mini")
 STREAM_MODES = (False, True)
 
 

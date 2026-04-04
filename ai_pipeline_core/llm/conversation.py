@@ -50,6 +50,7 @@ from ._conversation_messages import (
     _serialize_response_tool_calls,
     _serialize_tool_config,
 )
+from ._list_wrappers import get_list_item_type, get_or_create_wrapper, is_list_output_type, unwrap_list_response
 from ._substitutor import URLSubstitutor
 from ._tool_loop import execute_tool_loop
 from .tools import Tool, ToolCallRecord, ToolOutput, _generate_tool_schema
@@ -84,7 +85,7 @@ _CHARS_PER_TOKEN = 4
 _MAX_TOOL_ROUNDS_DEFAULT = 10
 _LLM_ROUND_REPLAY_TARGET = f"function:{__name__}:_replay_llm_round"
 
-T = TypeVar("T", default=str, bound=str | BaseModel)
+T = TypeVar("T", default=str)
 U = TypeVar("U", bound=BaseModel)
 
 
@@ -365,8 +366,11 @@ class Conversation(BaseModel, Generic[T]):
         return result
 
     @staticmethod
-    def _restore_response(response: ModelResponse[Any], substitutor: URLSubstitutor, response_format: type[BaseModel] | None = None) -> ModelResponse[Any]:
-        """Restore shortened URLs/addresses in LLM response."""
+    def _restore_response(response: ModelResponse[Any], substitutor: URLSubstitutor, response_format: Any = None) -> ModelResponse[Any]:
+        """Restore shortened URLs/addresses in LLM response.
+
+        For list[BaseModel] output types, re-parses the array JSON with TypeAdapter.
+        """
         if substitutor.pattern_count == 0:
             return response
         restored = substitutor.restore(response.content)
@@ -375,9 +379,15 @@ class Conversation(BaseModel, Generic[T]):
         update: dict[str, Any] = {"content": restored}
         if response_format is not None and not isinstance(response.parsed, str):
             try:
-                update["parsed"] = response_format.model_validate_json(restored)
+                if is_list_output_type(response_format):
+                    from pydantic import TypeAdapter
+
+                    update["parsed"] = TypeAdapter(response_format).validate_json(restored)
+                else:
+                    update["parsed"] = response_format.model_validate_json(restored)
             except Exception:
-                logger.warning("URL-restored content failed structured re-parse for %s; falling back to plain text.", response_format.__name__)
+                format_name = getattr(response_format, "__name__", str(response_format))
+                logger.warning("URL-restored content failed structured re-parse for %s; falling back to plain text.", format_name)
                 update["parsed"] = restored
         else:
             update["parsed"] = restored
@@ -429,9 +439,17 @@ class Conversation(BaseModel, Generic[T]):
         expected_cost: float | None = None,
         round_index: int = 1,
         tool_schemas: list[dict[str, Any]] | None = None,
+        _list_item_type: type[BaseModel] | None = None,
     ) -> ModelResponse[Any]:
-        """Single LLM call wrapper — used directly and by the tool loop."""
-        response_format_path = _response_format_path(response_format) or None
+        """Single LLM call wrapper — used directly and by the tool loop.
+
+        When ``_list_item_type`` is set, the span stores the item type (importable)
+        with a ``_response_format_is_list`` flag instead of the wrapper type, so that
+        replay can reconstruct the wrapper without codec changes.
+        """
+        # For observability, show the declared output type (list[T] or T), not the wrapper
+        declared_format: Any = list[_list_item_type] if _list_item_type else response_format
+        response_format_path = _response_format_path(declared_format) or None
         span_input_preview = _core_messages_to_span_input(core_messages)
         span_input_db = _core_messages_to_db_span_input(core_messages)
         if effective_options and effective_options.system_prompt:
@@ -440,12 +458,13 @@ class Conversation(BaseModel, Generic[T]):
             span_input_db = [system_entry] + span_input_db
         execution_ctx = get_execution_context()
         llm_target = _LLM_ROUND_REPLAY_TARGET
-        llm_input = {
+        llm_input: dict[str, Any] = {
             "messages": core_messages,
             "model": self.model,
             "model_options": effective_options,
             "tool_choice": tool_choice,
-            "response_format": response_format,
+            "response_format": _list_item_type if _list_item_type else response_format,
+            "_response_format_is_list": _list_item_type is not None,
             "purpose": purpose,
             "expected_cost": expected_cost,
             "round_index": round_index,
@@ -531,16 +550,27 @@ class Conversation(BaseModel, Generic[T]):
     async def _execute_send(
         self,
         content: ConversationContent,
-        response_format: type[BaseModel] | None,
+        response_format: Any,
         purpose: str | None,
         expected_cost: float | None,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
         max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
     ) -> tuple[tuple[AnyMessage, ...], ModelResponse[Any], tuple[ToolCallRecord, ...], str]:
-        """Common preparation, LLM call (or tool loop), and response restoration."""
+        """Common preparation, LLM call (or tool loop), and response restoration.
+
+        ``response_format`` accepts ``type[BaseModel]``, ``list[type[BaseModel]]``, or ``None``.
+        For list types, wraps in a single-field object model before the LLM call and unwraps after.
+        """
         if tool_choice is not None and not tools:
             raise ValueError(f"tool_choice='{tool_choice}' requires tools= to be provided. Pass a list of Tool instances with tools=[...].")
+
+        # Detect list output type and resolve wrapper
+        list_item_type: type[BaseModel] | None = None
+        actual_response_format: type[BaseModel] | None = response_format
+        if response_format is not None and is_list_output_type(response_format):
+            list_item_type = get_list_item_type(response_format)
+            actual_response_format = get_or_create_wrapper(list_item_type)
 
         docs = _normalize_content(content)
         new_messages = self.messages + docs
@@ -590,9 +620,10 @@ class Conversation(BaseModel, Generic[T]):
         # Build span input from pre-substitution messages (shows full context with binary placeholders)
         span_input = _core_messages_to_span_input(core_messages)
         conversation_target = f"decoded_method:{type(self).__module__}:{type(self).__qualname__}.{'send_structured' if response_format else 'send'}"
-        conversation_input = {
+        conversation_input: dict[str, Any] = {
             "content": content,
-            "response_format": response_format,
+            "response_format": list_item_type if list_item_type else actual_response_format,
+            "_response_format_is_list": list_item_type is not None,
             "tools": serialized_tools,
             "tool_choice": tool_choice,
             "max_tool_rounds": max_tool_rounds,
@@ -628,18 +659,20 @@ class Conversation(BaseModel, Generic[T]):
                         effective_options=effective_options,
                         substitutor=substitutor,
                         build_tool_result_message=lambda tid, fn, c: ToolResultMessage(tool_call_id=tid, function_name=fn, content=c),
-                        response_format=response_format,
+                        response_format=actual_response_format,
+                        _list_item_type=list_item_type,
                     )
                 else:
                     response = await self._invoke_llm(
                         core_messages=core_messages,
                         effective_options=effective_options,
                         context_count=context_count,
-                        response_format=response_format,
+                        response_format=actual_response_format,
                         purpose=purpose,
                         expected_cost=expected_cost,
                         round_index=1,
                         tool_schemas=tool_schemas,
+                        _list_item_type=list_item_type,
                     )
             except (Exception, asyncio.CancelledError) as exc:
                 span_ctx.set_meta(
@@ -663,6 +696,13 @@ class Conversation(BaseModel, Generic[T]):
                     error_message=str(exc),
                 )
                 raise
+            # Unwrap list response FIRST: extract list from wrapper, rewrite content as JSON array.
+            # Must happen before URL restoration so .content is array JSON when TypeAdapter parses it.
+            if list_item_type is not None and not response.has_tool_calls:
+                response = unwrap_list_response(response, list_item_type)
+                if accumulated_tool_messages:
+                    accumulated_tool_messages[-1] = response
+
             if substitutor:
                 response = self._restore_response(response, substitutor, response_format)
                 if accumulated_tool_messages:
@@ -738,15 +778,20 @@ class Conversation(BaseModel, Generic[T]):
     async def send_structured(
         self,
         content: ConversationContent,
-        response_format: type[U],
+        response_format: Any,
         *,
         tools: list[Tool] | None = None,
         tool_choice: Literal["auto", "required", "none"] | None = None,
         max_tool_rounds: int = _MAX_TOOL_ROUNDS_DEFAULT,
         purpose: str | None = None,
         expected_cost: float | None = None,
-    ) -> Conversation[U]:
-        """Send message expecting structured response, returns NEW Conversation[U] with .parsed.
+    ) -> Conversation[Any]:
+        """Send message expecting structured response, returns NEW Conversation with .parsed.
+
+        ``response_format`` accepts ``type[BaseModel]`` for single-model output or
+        ``list[type[BaseModel]]`` for list output. For list types, the framework
+        wraps the schema in a single-field object (required by all LLM providers)
+        and unwraps the response transparently.
 
         Quality degrades beyond ~2-3K output tokens or nesting >2 levels.
         Never use dict types in response_format — use lists of typed models.
@@ -764,7 +809,7 @@ class Conversation(BaseModel, Generic[T]):
             tool_choice=tool_choice,
             max_tool_rounds=max_tool_rounds,
         )
-        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records, "_conversation_id": new_conversation_id})  # type: ignore[return-value]
+        return self.model_copy(update={"messages": new_messages, "_tool_call_records": records, "_conversation_id": new_conversation_id})
 
     @overload
     async def send_spec(
@@ -864,7 +909,7 @@ class Conversation(BaseModel, Generic[T]):
         if spec._output_type is not str:
             return await conv.send_structured(
                 prompt_text,
-                response_format=cast(type[BaseModel], spec._output_type),
+                response_format=spec._output_type,
                 tools=tools,
                 tool_choice=tool_choice,
                 max_tool_rounds=max_tool_rounds,
@@ -970,17 +1015,25 @@ async def _replay_llm_round(
     model_options: ModelOptions | None = None,
     tool_choice: str | None = None,
     response_format: type[BaseModel] | None = None,
+    _response_format_is_list: bool = False,
     purpose: str | None = None,
     expected_cost: float | None = None,
     round_index: int = 1,
     tool_schemas: list[dict[str, Any]] | None = None,
 ) -> ModelResponse[Any]:
-    """Replay one recorded llm_round boundary against the primitive LLM client."""
+    """Replay one recorded llm_round boundary against the primitive LLM client.
+
+    When ``_response_format_is_list`` is True, ``response_format`` is the item type
+    and a wrapper model is reconstructed for the actual LLM call.
+    """
     _ = round_index
-    if response_format is not None:
-        return await core_generate_structured(
+    actual_format = response_format
+    if _response_format_is_list and response_format is not None:
+        actual_format = get_or_create_wrapper(response_format)
+    if actual_format is not None:
+        result = await core_generate_structured(
             messages,
-            response_format,
+            actual_format,
             model=model,
             model_options=model_options,
             purpose=purpose,
@@ -989,6 +1042,9 @@ async def _replay_llm_round(
             tools=tool_schemas,
             tool_choice=tool_choice,
         )
+        if _response_format_is_list and response_format is not None:
+            result = unwrap_list_response(result, response_format)
+        return result
     return await core_generate(
         messages,
         model=model,

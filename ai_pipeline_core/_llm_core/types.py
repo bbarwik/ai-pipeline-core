@@ -34,16 +34,16 @@ __all__ = [
 type ModelName = (
     Literal[
         # Core models
-        "gemini-3-pro",
-        "gpt-5.1",
+        "gemini-3.1-pro",
+        "gpt-5.4",
         # Small models
         "gemini-3-flash",
-        "gpt-5-mini",
+        "gpt-5.4-mini",
         "grok-4.1-fast",
         "gemini-3.1-flash-lite",
         # Search models
         "gemini-3-flash-search",
-        "gpt-5-mini-search",
+        "gpt-5.4-mini-search",
         "grok-4.1-fast-search",
         "sonar-pro-search",
     ]

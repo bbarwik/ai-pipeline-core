@@ -79,7 +79,7 @@ class TestModelResponseSerialization:
         response = create_test_model_response(
             content="Test content",
             reasoning_content="Some reasoning",
-            model="gpt-5.1",
+            model="gpt-5.4",
             response_id="test-123",
             cost=0.01,
         )
@@ -208,11 +208,11 @@ class TestStructuredModelResponse:
         parsed = self.ExampleModel(field1="x", field2=1)
         response = create_test_structured_model_response(
             parsed=parsed,
-            model="gpt-5.1",
+            model="gpt-5.4",
             response_id="test-id",
             cost=0.02,
         )
 
-        assert response.model == "gpt-5.1"
+        assert response.model == "gpt-5.4"
         assert response.response_id == "test-id"
         assert response.cost == pytest.approx(0.02)

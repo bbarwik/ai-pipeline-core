@@ -47,7 +47,7 @@ class TestFlowOptionsInheritance:
         class ProjectFlowOptions(FlowOptions):
             """Project-specific flow options."""
 
-            core_model: str = "gemini-3-pro"
+            core_model: str = "gemini-3.1-pro"
             small_model: str = "grok-4.1-fast"
             batch_max_chars: int = Field(default=100_000, gt=0)
             batch_max_files: int = Field(default=25, gt=0)
@@ -55,7 +55,7 @@ class TestFlowOptionsInheritance:
 
         # Test with defaults
         options = ProjectFlowOptions()
-        assert options.core_model == "gemini-3-pro"
+        assert options.core_model == "gemini-3.1-pro"
         assert options.small_model == "grok-4.1-fast"
         assert options.batch_max_chars == 100_000
         assert options.batch_max_files == 25
@@ -124,7 +124,7 @@ class TestFlowOptionsInheritance:
         class ValidatedFlowOptions(FlowOptions):
             """Options with custom validation."""
 
-            core_model: str = "gemini-3-pro"
+            core_model: str = "gemini-3.1-pro"
             small_model: str = "grok-4.1-fast"
             temperature: float = Field(default=0.7, ge=0.0, le=2.0)
 
@@ -139,7 +139,7 @@ class TestFlowOptionsInheritance:
         assert options.temperature == pytest.approx(0.5)
 
         # Valid high temperature with different models
-        options = ValidatedFlowOptions(temperature=1.8, core_model="gpt-5.1", small_model="gpt-5-mini")
+        options = ValidatedFlowOptions(temperature=1.8, core_model="gpt-5.4", small_model="gpt-5.4-mini")
         assert options.temperature == pytest.approx(1.8)
 
         # Invalid temperature
@@ -184,7 +184,7 @@ class TestPipelineFlowWithInheritedOptions:
         """Test PipelineFlow with custom FlowOptions subclass."""
 
         class CustomFlowOptions(FlowOptions):
-            core_model: str = "gemini-3-pro"
+            core_model: str = "gemini-3.1-pro"
             batch_size: int = Field(default=10, gt=0)
             enable_logging: bool = Field(default=True)
 
@@ -206,7 +206,7 @@ class TestPipelineFlowWithInheritedOptions:
             retry_count: int = 3
 
         class AdvancedFlowOptions(FlowOptions):
-            core_model: str = "gemini-3-pro"
+            core_model: str = "gemini-3.1-pro"
             small_model: str = "grok-4.1-fast"
             api_config: APIConfig = Field(default_factory=APIConfig)
             processing_modes: list[str] = Field(default_factory=lambda: ["fast", "accurate"])
@@ -239,7 +239,7 @@ class TestPipelineFlowWithInheritedOptions:
         """Test FlowOptions with multiple inheritance levels."""
 
         class BaseProjectOptions(FlowOptions):
-            core_model: str = "gemini-3-pro"
+            core_model: str = "gemini-3.1-pro"
             organization: str = "default-org"
             environment: str = "development"
 
@@ -255,8 +255,8 @@ class TestPipelineFlowWithInheritedOptions:
 
     def test_with_pydantic_field_definitions(self):
         """Test FlowOptions with Pydantic Field definitions."""
-        PRIMARY_MODELS = ["gpt-5.1", "gpt-5-mini"]
-        SMALL_MODELS = ["gpt-5-mini", "gemini-3-flash"]
+        PRIMARY_MODELS = ["gpt-5.4", "gpt-5.4-mini"]
+        SMALL_MODELS = ["gpt-5.4-mini", "gemini-3-flash"]
         SEARCH_MODELS = ["sonar", "gemini-3-flash-search"]
 
         class ProjectFlowOptions(FlowOptions):

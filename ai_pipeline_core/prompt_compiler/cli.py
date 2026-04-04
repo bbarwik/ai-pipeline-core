@@ -8,7 +8,7 @@ import sys
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_args, get_origin
 
 from .render import render_preview
 from .spec import PromptSpec
@@ -137,11 +137,14 @@ def _discover_all_specs(root: Path) -> tuple[list[type[PromptSpec[Any]]], list[s
 
 
 def _output_label(spec_cls: type[PromptSpec[Any]]) -> str:
-    """Build output type label like 'str', 'str [structure]', or 'RiskVerdict'."""
+    """Build output type label like 'str', 'str [structure]', 'RiskVerdict', or 'list[RiskVerdict]'."""
     if spec_cls._output_type is str:
-        if spec_cls.output_structure:
+        if getattr(spec_cls, "output_structure", None):
             return "str [structure]"
         return "str"
+    if get_origin(spec_cls._output_type) is list:
+        item_type = get_args(spec_cls._output_type)[0]
+        return f"list[{item_type.__name__}]"
     return spec_cls._output_type.__name__
 
 
