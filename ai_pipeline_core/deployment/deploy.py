@@ -23,6 +23,7 @@ import annotationlib
 import argparse
 import asyncio
 import base64
+import os
 import shlex
 import shutil
 import subprocess
@@ -45,7 +46,7 @@ from ai_pipeline_core.settings import settings
 
 __all__ = [
     "_Deployer",
-    "_main",
+    "main",
 ]
 
 _UV_TARGET_PLATFORM = "x86_64-unknown-linux-gnu"
@@ -89,7 +90,7 @@ class _Deployer:
         → Prefect deployment
 
     Worker install (pull step):
-        extract tarball → uv pip install --target /opt/ai-pipeline-deps/<pkg>/<hash>/
+        extract tarball → uv pip install --target <dependency-root>/<pkg>/<hash>/
         → unzip project wheel → bootstrap entrypoint
     """
 
@@ -306,9 +307,9 @@ class _Deployer:
     def _build_install_body(self) -> str:
         """Build the bash body of the worker-side install script.
 
-        Installs dependencies into a per-deployment immutable prefix under
-        ``/opt/ai-pipeline-deps/<pkg>/<hash>/`` via ``uv pip install --target``
-        and unzips the project wheel into the per-run pull directory. Generates
+        Installs dependencies into a per-deployment immutable prefix under the
+        configured dependency root via ``uv pip install --target`` and unzips
+        the project wheel into the per-run pull directory. Generates
         a bootstrap module that becomes the runtime entrypoint: it reads the
         hint file, prepends the deps prefix to ``sys.path`` via
         ``site.addsitedir``, then loads the original flow via
@@ -335,7 +336,8 @@ WHEEL={wheel}
 LOCK=/tmp/ai-pipeline-core.install.lock
 tar xzf "$BUNDLE"
 HASH=$(sha256sum wheels/*.whl | awk '{{print $1}}' | sort | sha256sum | cut -c1-16)
-PREFIX="/opt/ai-pipeline-deps/$PKG/$HASH"
+PREFIX_ROOT="${{AI_PIPELINE_DEPS_ROOT:-/opt/ai-pipeline-deps}}"
+PREFIX="$PREFIX_ROOT/$PKG/$HASH"
 MARKER="$PREFIX/.complete"
 (
   flock -x 9
@@ -451,6 +453,10 @@ unzip -q -o "$WHEEL" -d .
 
         self._info(f"Creating deployment for flow '{flow.name}'")  # pyright: ignore[reportPossiblyUnboundVariable]
 
+        job_environment = {"AI_PIPELINE_TARGET_ENTRYPOINT": project_entrypoint}
+        if dependency_root := os.getenv("AI_PIPELINE_DEPS_ROOT"):
+            job_environment["AI_PIPELINE_DEPS_ROOT"] = dependency_root
+
         deployment = RunnerDeployment(
             name=self.config["package"],
             flow_name=flow.name,  # pyright: ignore[reportPossiblyUnboundVariable]
@@ -462,7 +468,7 @@ unzip -q -o "$WHEEL" -d .
             description=flow.description or f"Deployment for {self.config['package']} v{self.config['version']}",  # pyright: ignore[reportPossiblyUnboundVariable]
             storage=_PullStepStorage(pull_steps),
             parameters={},
-            job_variables={"env": {"AI_PIPELINE_TARGET_ENTRYPOINT": project_entrypoint}},
+            job_variables={"env": job_environment},
             paused=False,
         )
 
@@ -524,7 +530,7 @@ unzip -q -o "$WHEEL" -d .
         print("=" * 70)
 
 
-def _main() -> None:
+def main() -> None:
     """Command-line interface for deployment script."""
     setup_logging()
     parser = argparse.ArgumentParser(
@@ -557,4 +563,4 @@ Prerequisites:
 
 
 if __name__ == "__main__":
-    _main()
+    main()

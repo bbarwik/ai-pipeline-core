@@ -5,7 +5,7 @@ import logging
 import re
 from dataclasses import replace
 from secrets import SystemRandom
-from typing import Any, overload
+from typing import Any, Literal, overload
 
 import httpx
 import openai
@@ -255,21 +255,7 @@ def _stamp_reasoning_replay_stripped(outcome: AttemptOutcome) -> AttemptOutcome:
 
 async def _execute_attempt(req: AttemptRequest) -> AttemptOutcome:
     try:
-        api_kwargs, prompt_cache_key = _prepare_api_kwargs(req)
-        watchdog = _make_watchdog(req)
-        messages = api_kwargs.pop("messages")
-        async with (
-            _transport.open_stream(req, messages=messages, api_kwargs=api_kwargs) as raw,
-            StreamSession(raw, watchdog=watchdog) as session,
-        ):
-            completion = await session.drain()
-        response = _build_model_response(completion, req, prompt_cache_key=prompt_cache_key)
-        if req.call.debug.capture_trace:
-            trace = await _aipl.fetch_trace(response.transport.aipl.call_id or req.call_id)
-            if trace is not None:
-                transport = replace(response.transport, aipl=replace(response.transport.aipl, trace=trace))
-                response = response.model_copy(update={"transport": transport})
-        return AttemptOutcome(response=response, headers=completion.aipl_headers)
+        return await _execute_attempt_transport(req)
     except _TERMINAL_FAILURES as exc:
         if isinstance(exc, PayloadTooLargeError):
             raise
@@ -318,6 +304,25 @@ async def _execute_attempt(req: AttemptRequest) -> AttemptOutcome:
         if _should_advance_direct_provider_fallback(req, exc, outcome):
             return replace(outcome, advance_to_fallback=True)
         return outcome
+
+
+async def _execute_attempt_transport(req: AttemptRequest) -> AttemptOutcome:
+    """Prepare and execute one HTTP attempt, including optional trace hydration."""
+    api_kwargs, prompt_cache_key = _prepare_api_kwargs(req)
+    watchdog = _make_watchdog(req)
+    messages = api_kwargs.pop("messages")
+    async with (
+        _transport.open_stream(req, messages=messages, api_kwargs=api_kwargs) as raw,
+        StreamSession(raw, watchdog=watchdog) as session,
+    ):
+        completion = await session.drain()
+    response = _build_model_response(completion, req, prompt_cache_key=prompt_cache_key)
+    if req.call.debug.capture_trace:
+        trace = await _aipl.fetch_trace(response.transport.aipl.call_id or req.call_id)
+        if trace is not None:
+            transport = replace(response.transport, aipl=replace(response.transport.aipl, trace=trace))
+            response = response.model_copy(update={"transport": transport})
+    return AttemptOutcome(response=response, headers=completion.aipl_headers)
 
 
 def _check_capabilities(req: AttemptRequest) -> None:
@@ -444,7 +449,11 @@ def _messages_for_transport(req: AttemptRequest) -> tuple[CoreMessage, ...]:
         return messages
     messages = _ensure_structured_system_prompt(messages)
     if not req.model.supports_json_schema:
-        messages = _append_schema_to_last_user(messages, response_format)
+        messages = _append_schema_to_last_user(
+            messages,
+            response_format,
+            mode=req.model.schema_prompt_mode,
+        )
     return messages
 
 
@@ -461,6 +470,8 @@ def _ensure_structured_system_prompt(messages: tuple[CoreMessage, ...]) -> tuple
 def _append_schema_to_last_user(
     messages: tuple[CoreMessage, ...],
     response_format: type[BaseModel] | ListOf,
+    *,
+    mode: Literal["simplified", "full_json_schema"],
 ) -> tuple[CoreMessage, ...]:
     """Append a prose schema description to the last USER message.
 
@@ -473,7 +484,7 @@ def _append_schema_to_last_user(
     """
     if not messages:
         return messages
-    schema_text = describe_schema_for_prompt(response_format)
+    schema_text = describe_schema_for_prompt(response_format, mode=mode)
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
         if message.role != Role.USER:
