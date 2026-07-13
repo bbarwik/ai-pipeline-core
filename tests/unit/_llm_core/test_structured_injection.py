@@ -120,8 +120,8 @@ def test_schema_not_injected_when_flag_true() -> None:
 
 
 def test_schema_prompt_mode_serialization_is_backward_compatible() -> None:
-    default_model = AIModel(name="default")
-    full_model = AIModel(name="full", schema_prompt_mode="full_json_schema")
+    default_model = DEFAULT_TEST_MODEL
+    full_model = DEFAULT_TEST_MODEL.model_copy(update={"schema_prompt_mode": "full_json_schema"})
 
     assert "schema_prompt_mode" not in default_model.model_dump()
     assert full_model.model_dump()["schema_prompt_mode"] == "full_json_schema"
