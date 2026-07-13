@@ -53,14 +53,29 @@ _SCHEMA_PROMPT_HEADER = (
 )
 
 
-def describe_schema_for_prompt(response_format: type[BaseModel] | ListOf) -> str:
-    """Build a prose schema description + minimal example for prompt injection.
+def describe_schema_for_prompt(
+    response_format: type[BaseModel] | ListOf,
+    *,
+    mode: Literal["simplified", "full_json_schema"] = "simplified",
+) -> str:
+    """Render the configured schema representation for prompt injection.
 
     Used when ``AIModel.supports_json_schema`` is ``False`` to coax models
     that ignore the wire-level ``response_format`` (or that the proxy
     downgraded from ``json_schema`` to ``json_object``) into returning a
     JSON document that still validates against the declared Pydantic shape.
     """
+    if mode == "simplified":
+        return _describe_simplified_schema(response_format)
+    if isinstance(response_format, ListOf):
+        schema = schema_for_list(response_format.inner)
+    else:
+        schema = schema_for_model(response_format)
+    return f"{_SCHEMA_PROMPT_HEADER}\n\nJSON Schema:\n```json\n{json.dumps(schema, indent=2)}\n```"
+
+
+def _describe_simplified_schema(response_format: type[BaseModel] | ListOf) -> str:
+    """Build the legacy prose schema description and minimal example."""
     if isinstance(response_format, ListOf):
         inner = response_format.inner
         body = _describe_model(inner, depth=0)
@@ -98,7 +113,7 @@ _PRIMITIVE_LABELS: dict[type, str] = {str: "string", bool: "boolean", int: "inte
 
 
 def _annotation_label(annotation: Any) -> str:
-    """One-line type label for a field annotation."""
+    """Return the legacy one-line type label for a field annotation."""
     if annotation is None or annotation is type(None):
         return "null"
     if isinstance(annotation, type):
@@ -114,7 +129,7 @@ def _annotation_label(annotation: Any) -> str:
 
 
 def _bare_type_label(annotation: type) -> str:
-    """Render the label for an annotation that is a bare class (BaseModel/Enum/primitive)."""
+    """Render the legacy label for a bare annotation class."""
     if issubclass(annotation, BaseModel):
         return f"object ({annotation.__name__})"
     if issubclass(annotation, Enum):
@@ -124,7 +139,7 @@ def _bare_type_label(annotation: type) -> str:
 
 
 def _container_label(annotation: Any, origin: Any) -> str:
-    """Render array-style annotations (``list[T]`` / ``tuple[T, ...]``)."""
+    """Render array-style annotations for the simplified prompt."""
     args = get_args(annotation)
     if origin is list:
         (inner,) = args or (Any,)
@@ -135,7 +150,7 @@ def _container_label(annotation: Any, origin: Any) -> str:
 
 
 def _nested_model(annotation: Any) -> type[BaseModel] | None:
-    """If the annotation directly wraps a BaseModel subclass, return it for recursion."""
+    """Return a directly nested model, if present."""
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return annotation
     origin = get_origin(annotation)
@@ -147,7 +162,7 @@ def _nested_model(annotation: Any) -> type[BaseModel] | None:
 
 
 def _example_for_model(model: type[BaseModel]) -> dict[str, Any]:
-    """Build a minimal example object from a Pydantic model."""
+    """Build the legacy minimal example object."""
     return {name: _example_for_annotation(info.annotation) for name, info in model.model_fields.items()}
 
 
@@ -155,7 +170,7 @@ _PRIMITIVE_EXAMPLES: dict[type, Any] = {bool: False, int: 0, float: 0.0, str: ""
 
 
 def _example_for_annotation(annotation: Any) -> Any:
-    """Pick a placeholder value matching the field annotation."""
+    """Pick a legacy placeholder matching the field annotation."""
     if isinstance(annotation, type):
         return _bare_type_example(annotation)
     origin = get_origin(annotation)
@@ -171,7 +186,7 @@ def _example_for_annotation(annotation: Any) -> Any:
 
 
 def _bare_type_example(annotation: type) -> Any:
-    """Render an example value for a bare class annotation (BaseModel/Enum/primitive)."""
+    """Render a legacy example value for a bare annotation class."""
     if issubclass(annotation, BaseModel):
         return _example_for_model(annotation)
     if issubclass(annotation, Enum):

@@ -432,7 +432,7 @@ class TestInstallScript:
         assert "--target" in body, "Install must use a per-deployment prefix (--target), not system Python"
         assert "--system" not in body, "Install must not mutate shared system site-packages"
         assert "--find-links" not in body, "Direct wheel args should be used, not --find-links"
-        assert "/opt/ai-pipeline-deps/" in body, "Per-deployment prefix must live under /opt/ai-pipeline-deps/"
+        assert 'PREFIX_ROOT="${AI_PIPELINE_DEPS_ROOT:-/opt/ai-pipeline-deps}"' in body
         assert "flock" in body, "Install must be guarded by a global lock to serialize concurrent first-installs"
         assert "tar xzf" in body, "Install must extract the bundle first"
         assert ".ai_pipeline_deps_prefix" in body, "Pull dir must carry the deps prefix hint for the bootstrap"
@@ -577,6 +577,13 @@ class TestBuildBundle:
 class TestPullStepConfiguration:
     """Verify pull steps use the correct install script."""
 
+    async def test_dependency_root_is_persisted_in_job_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AI_PIPELINE_DEPS_ROOT", "/tmp/compass-gate0-deps")
+
+        deployment = await _capture_deployed_runner()
+
+        assert deployment.job_variables["env"]["AI_PIPELINE_DEPS_ROOT"] == "/tmp/compass-gate0-deps"
+
     async def test_pull_step_uses_offline_install(self) -> None:
         """The pull step install script must install into a per-deployment prefix."""
         deployment = await _capture_deployed_runner()
@@ -589,7 +596,7 @@ class TestPullStepConfiguration:
 
         assert "--no-index" in body
         assert "--target" in body
-        assert "/opt/ai-pipeline-deps/" in body
+        assert 'PREFIX_ROOT="${AI_PIPELINE_DEPS_ROOT:-/opt/ai-pipeline-deps}"' in body
         assert "tar xzf" in body
 
 

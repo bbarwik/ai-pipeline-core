@@ -1,8 +1,9 @@
 """Schema injection into transport messages for ``supports_json_schema=False``.
 
 When ``AIModel.supports_json_schema`` is ``False`` (the safe default), the
-framework appends a prose description of the response schema to the last
-USER message at the transport boundary. This unit suite proves:
+framework appends a schema prompt to the last USER message at the transport
+boundary. Simplified legacy rendering is the default; full JSON Schema is an
+explicit per-model mode. This unit suite proves:
 
 - injection happens for plain-string USER content (string concatenation),
 - injection happens for multimodal tuple content (TextContent appended),
@@ -14,7 +15,10 @@ USER message at the transport boundary. This unit suite proves:
 
 import base64
 
-from pydantic import BaseModel
+import pytest
+from pydantic import BaseModel, ConfigDict
+from pydantic import ValidationError
+from pydantic.alias_generators import to_camel
 
 from ai_pipeline_core._llm_core.client import _messages_for_transport
 from ai_pipeline_core._llm_core.request import (
@@ -38,6 +42,12 @@ class _Answer(BaseModel):
     label: str
 
 
+class _AliasedAnswer(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel)
+
+    published_or_effective_at: str | None
+
+
 def _attempt(req: LLMRequest, model: AIModel) -> AttemptRequest:
     return AttemptRequest(call=req, model=model, attempt_index=0, call_id="c1")
 
@@ -54,7 +64,7 @@ def _make_request(
     )
 
 
-def test_schema_injected_into_string_user_when_flag_false() -> None:
+def test_default_schema_prompt_preserves_simplified_legacy_rendering() -> None:
     req = _make_request(WEAK_SCHEMA_TEST_MODEL, "Pick a number.")
     out = _messages_for_transport(_attempt(req, WEAK_SCHEMA_TEST_MODEL))
     user = out[-1]
@@ -62,8 +72,25 @@ def test_schema_injected_into_string_user_when_flag_false() -> None:
     assert isinstance(user.content, str)
     assert "Pick a number." in user.content
     assert "## Response schema" in user.content
+    assert "JSON Schema:" not in user.content
     assert "`_Answer` fields:" in user.content
     assert "`value` (integer, required)" in user.content
+
+
+def test_schema_injection_uses_wire_aliases() -> None:
+    full_schema_model = WEAK_SCHEMA_TEST_MODEL.model_copy(update={"schema_prompt_mode": "full_json_schema"})
+    req = LLMRequest(
+        model=full_schema_model,
+        messages=(CoreMessage(role=Role.USER, content="Return the date."),),
+        response=ResponseSpec(format=_AliasedAnswer),
+    )
+
+    out = _messages_for_transport(_attempt(req, full_schema_model))
+
+    assert isinstance(out[-1].content, str)
+    assert "JSON Schema:" in out[-1].content
+    assert '"publishedOrEffectiveAt"' in out[-1].content
+    assert '"published_or_effective_at"' not in out[-1].content
 
 
 def test_schema_appended_as_textcontent_for_multimodal_user() -> None:
@@ -83,12 +110,24 @@ def test_schema_appended_as_textcontent_for_multimodal_user() -> None:
 
 
 def test_schema_not_injected_when_flag_true() -> None:
-    req = _make_request(DEFAULT_TEST_MODEL, "Pick a number.")
-    out = _messages_for_transport(_attempt(req, DEFAULT_TEST_MODEL))
+    native_model = DEFAULT_TEST_MODEL.model_copy(update={"schema_prompt_mode": "full_json_schema"})
+    req = _make_request(native_model, "Pick a number.")
+    out = _messages_for_transport(_attempt(req, native_model))
     user = out[-1]
     assert user.role == Role.USER
     assert isinstance(user.content, str)
     assert user.content == "Pick a number."
+
+
+def test_schema_prompt_mode_serialization_is_backward_compatible() -> None:
+    default_model = AIModel(name="default")
+    full_model = AIModel(name="full", schema_prompt_mode="full_json_schema")
+
+    assert "schema_prompt_mode" not in default_model.model_dump()
+    assert full_model.model_dump()["schema_prompt_mode"] == "full_json_schema"
+    assert AIModel.model_validate(full_model.model_dump()).schema_prompt_mode == "full_json_schema"
+    with pytest.raises(ValidationError):
+        AIModel.model_validate({"name": "invalid", "schema_prompt_mode": "other"})
 
 
 def test_schema_not_injected_without_response_format() -> None:

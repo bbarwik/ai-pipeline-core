@@ -109,6 +109,11 @@ class AIModel(BaseModel):
     """When False (safe default), append a prose schema description to the
     last USER message for structured-output requests. Set True only for
     (model, provider) pairs that natively honor strict ``json_schema``."""
+    schema_prompt_mode: Literal["simplified", "full_json_schema"] = Field(
+        default="simplified",
+        exclude_if=lambda value: value == "simplified",
+    )
+    """Prompt representation used when ``supports_json_schema`` is False."""
     vision_preset: ImagePreset = ImagePreset.DEFAULT
     preserve_input_urls: bool = False
     supports_url_substitution: bool = True

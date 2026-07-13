@@ -660,6 +660,7 @@ Key fields:
 - `supports_tools`: Whether the model supports tool/function calling. Default `True`. When `False`, a request that carries tool schemas raises `TerminalError` at preflight.
 - `supports_images`: Whether the model accepts `ImageContent` parts. Default `True`. When `False`, any image in the request raises `TerminalError` at preflight.
 - `supports_pdfs`: Whether the model accepts `PDFContent` parts. Default `True`. When `False`, any PDF in the request raises `TerminalError` at preflight.
+- `schema_prompt_mode`: Schema injected for non-native schema models: `simplified` (default, legacy behavior) or `full_json_schema`.
 - `vision_preset`: Image processing preset (`ImagePreset.DEFAULT`, `HIGH_RES`, `BALANCED`, `COMPACT`)
 - `preserve_input_urls`: Keep URLs intact (e.g. for search-style models). Default `False`; set explicitly to `True` — the framework does not infer it from the model name.
 - `cache_ttl`: Prompt cache TTL in integer minutes; use `0` to disable explicit cache markers
